@@ -17,15 +17,32 @@ enum MainMenu {
         main.addItem(makeFileMenu())
         main.addItem(makeEditMenu())
         main.addItem(makeWindowMenu())
+        main.addItem(makeHelpMenu(appName: appName))
         return main
+    }
+
+    private static func makeHelpMenu(appName: String) -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Help")
+        menu.addItem(withTitle: "Unison Online Help",
+                     action: #selector(AppDelegate.openUnisonOnlineHelp(_:)),
+                     keyEquivalent: "?")
+        // Wire as the official Help menu so the system's "Help search"
+        // (the Spotlight-style menu-item finder) lives here.
+        NSApp.helpMenu = menu
+        item.submenu = menu
+        return item
     }
 
     private static func makeAppMenu(appName: String) -> NSMenuItem {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu(title: appName)
 
+        // Use our custom action so we can populate the panel with the
+        // Unison version we're linked against (rather than just our
+        // bundle's CFBundleShortVersionString).
         appMenu.addItem(withTitle: "About \(appName)",
-                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        action: #selector(AppDelegate.showAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
 

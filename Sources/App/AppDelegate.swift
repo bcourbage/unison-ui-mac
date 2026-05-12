@@ -301,4 +301,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log.write("menu: Open Profile -> showing picker")
         showProfilePicker()
     }
+
+    @objc func openUnisonOnlineHelp(_ sender: Any?) {
+        // The legacy app pointed at http://www.cis.upenn.edu/~bcpierce/unison/docs.html
+        // which returns 404 today; the current canonical docs live in the
+        // GitHub wiki.
+        if let url = URL(string: "https://github.com/bcpierce00/unison/wiki") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func showAboutPanel(_ sender: Any?) {
+        let unisonVersion = unison_bridge_get_version().map { String(cString: $0) } ?? "unknown"
+        // We can't put HTML in NSAttributedString easily via the about
+        // panel's "Credits" key without an RTF, so plain attributed text
+        // with the Unison version + GPL attribution is the path of least
+        // resistance.
+        let credits = NSAttributedString(
+            string: """
+                A native macOS UI for Unison File Synchronizer.
+
+                Embeds Unison \(unisonVersion).
+
+                Distributed under the GNU GPL v3, like the upstream
+                project. See NOTICE.md in the source tree for attribution.
+                """,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [
+            .credits: credits,
+            .applicationName: "unison-ui-mac",
+        ])
+    }
 }

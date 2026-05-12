@@ -78,6 +78,25 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Confirmation when the user tries to close the window mid-sync.
+    /// OCaml's sync runs in `doInOtherThread` — we have no way to abort
+    /// it (see TODO: real cancel), so "stop and close" really means
+    /// "close the window and let the transfer continue in the background
+    /// until it finishes". Spelling that out in the alert prevents the
+    /// user from thinking they actually stopped the sync.
+    nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
+        MainActor.assumeIsolated {
+            guard isSyncing else { return true }
+            let alert = NSAlert()
+            alert.messageText = "Synchronization is still running"
+            alert.informativeText = "Closing this window won't stop the transfer — OCaml will keep running in the background until the current files finish. Close anyway?"
+            alert.addButton(withTitle: "Keep Syncing")
+            alert.addButton(withTitle: "Close Window")
+            alert.alertStyle = .warning
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+    }
+
     /// Replace the displayed items (e.g. after a rescan completes). Must
     /// be called on the main thread. Rebuilds the tree and expands every
     /// folder by default — matches Finder's "outline open" feel.
@@ -88,6 +107,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
         summaryLabel.stringValue = summaryText(profile: profile)
+        refreshDirectionToolbarEnabled()
     }
 
     private func configure(profile: String) {
@@ -393,6 +413,25 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Walks the toolbar's direction group and enables/disables each
+    /// subitem based on whether the current selection contains any leaf
+    /// rows. Folder-only selections with no descendant leaves (e.g., a
+    /// totally empty folder, shouldn't happen but be safe) also disable.
+    private func refreshDirectionToolbarEnabled() {
+        guard let toolbar = window?.toolbar else { return }
+        let hasLeaves = !leafRowsInSelection().isEmpty
+        for item in toolbar.items {
+            // Direction group: enable/disable each subitem so the
+            // segmented control gives per-button feedback.
+            if let group = item as? NSToolbarItemGroup,
+               group.itemIdentifier == DirectionAction.directionGroupIdentifier {
+                for sub in group.subitems {
+                    sub.isEnabled = hasLeaves
+                }
+            }
+        }
+    }
+
     /// All leaf rows reachable from the current selection. A selected
     /// folder contributes every leaf underneath it; a selected leaf
     /// contributes itself; duplicates (folder + descendant both selected)
@@ -545,6 +584,7 @@ extension ReconcileWindowController: NSOutlineViewDataSource {
 extension ReconcileWindowController: NSOutlineViewDelegate {
     func outlineViewSelectionDidChange(_ notification: Notification) {
         updateDetailsForSelection()
+        refreshDirectionToolbarEnabled()
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -556,6 +596,10 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         // StateItem for tinting, only meaningful for leaves.
         if col == .direction {
             return makeDirectionCell(in: outlineView, node: node)
+        }
+        // Local + Remote columns: colored status icon instead of plain text.
+        if col == .left || col == .right {
+            return makeStatusCell(in: outlineView, node: node, isLocal: col == .left)
         }
 
         // For folder rows, only the path column gets text; the rest are blank.
@@ -579,6 +623,25 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             }
         }
         return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
+    }
+
+    /// Builds (or recycles) a status-icon cell for the Local or Remote
+    /// column. Folder rows show no icon (empty cell).
+    private func makeStatusCell(in outlineView: NSOutlineView,
+                                node: ReconcileNode,
+                                isLocal: Bool) -> NSView {
+        let id = NSUserInterfaceItemIdentifier(isLocal ? "StatusLocal" : "StatusRemote")
+        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? StatusIconCellView ?? {
+            let v = StatusIconCellView()
+            v.identifier = id
+            return v
+        }()
+        if let row = node.row, row < items.count {
+            cell.configure(status: isLocal ? items[row].left : items[row].right)
+        } else {
+            cell.configure(status: "")  // folders have no per-side state
+        }
+        return cell
     }
 
     /// Builds (or recycles) the colored Action-column cell. Folders get an
@@ -631,7 +694,15 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         view.textField?.font = isFolder && column == .path
             ? .systemFont(ofSize: NSFont.systemFontSize - 1, weight: .semibold)
             : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
-        view.textField?.textColor = isFolder ? .secondaryLabelColor : .labelColor
+        // FAILED in the Progress column is loud red bold — most users
+        // notice a sync failure only by scrolling to the row otherwise.
+        let isFailure = (column == .progress) && text.uppercased().contains("FAIL")
+        if isFailure {
+            view.textField?.textColor = .systemRed
+            view.textField?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
+        } else {
+            view.textField?.textColor = isFolder ? .secondaryLabelColor : .labelColor
+        }
         return view
     }
 
