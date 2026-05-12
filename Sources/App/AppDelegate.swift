@@ -80,6 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Window management
 
     private func showProfilePicker() {
+        // If a reconcile window is up, close it first — the workflow is
+        // single-window: picker OR reconcile, not both.
+        if let reconcile = reconcileWindowController {
+            reconcile.window?.delegate = nil  // skip the onClose -> showPicker recursion
+            reconcile.close()
+            reconcileWindowController = nil
+        }
         let controller = profileWindowController
             ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile, items in
                 self?.profileSelected(profile, items: items)
@@ -91,7 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func profileSelected(_ profile: String, items: [StateItem]) {
         log.write("AppDelegate: profile '\(profile)' returned \(items.count) items — opening reconcile window")
-        let reconcile = ReconcileWindowController(profile: profile, items: items)
+        let reconcile = ReconcileWindowController(
+            profile: profile,
+            items: items,
+            onClose: { [weak self] in
+                guard let self else { return }
+                self.log.write("reconcile window closed — returning to picker")
+                self.reconcileWindowController = nil
+                self.showProfilePicker()
+            },
+            onRescanRequested: { [weak self] in
+                self?.rescanCurrentProfile(profile)
+            }
+        )
         reconcile.showWindow(nil)
         reconcile.window?.makeKeyAndOrderFront(nil)
         reconcileWindowController = reconcile
@@ -109,6 +128,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reconcile?.startSync()
             }
         }
+    }
+
+    /// Re-run init2 against the currently-open profile without re-running
+    /// init1 (the profile is already loaded, the SSH connection (if any)
+    /// is established). When init2Complete fires we ask the reconcile
+    /// window to replace its items in place.
+    private func rescanCurrentProfile(_ profile: String) {
+        guard let reconcile = reconcileWindowController else { return }
+        log.write("rescan: re-running init2 for profile '\(profile)'")
+        reconcile.beginRescan()
+        UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
+            self?.log.write("rescan: init2 complete — \(items.count) items")
+            reconcile?.endRescan(newItems: items)
+        }
+        unison_bridge_init2()
     }
 
     private func runRiOpsAutotest(items: [StateItem]) {

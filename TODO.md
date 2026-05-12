@@ -8,17 +8,21 @@ not for upstream contribution (per unison's CONTRIBUTING.md).
 These three together close the basic loop: open profile → reconcile → sync →
 go back / refresh / open another profile.
 
-- [ ] **Rescan button** in reconcile toolbar — re-runs `init2` against the
-      current profile to refresh the state-item list. Should reuse the
-      existing reconcile window, replace `items`, reload the table.
-- [ ] **Return to profile picker** — menu item / toolbar action / closing
-      the reconcile window all need to bring the picker back without
-      requiring quit + relaunch. The `File → Open Profile` menu item is
-      already a no-op stub; wire it up.
-- [ ] **Cancel a running sync** — no way to interrupt a transfer in
-      progress. OCaml's `Abort` module is the right entry point
-      (`Abort.all`); needs a C bridge function and a toolbar Stop button
-      that's only enabled while `isSyncing == true`.
+- [x] **Rescan button** in reconcile toolbar — re-runs `init2` against the
+      current profile via `unison_bridge_init2()`, replaces `items` in
+      place, indeterminate progress bar during the scan.
+- [x] **Return to profile picker** — `File → Open Profile` closes any open
+      reconcile window and re-shows the picker; closing the reconcile
+      window also returns to picker via `NSWindowDelegate.windowWillClose`.
+- [x] **Cancel a running sync** *(partial — matches legacy semantics)* —
+      Stop toolbar item is wired to close the reconcile window, which
+      returns to the picker. The OCaml worker continues running in the
+      background until it finishes naturally. **True mid-sync abort** would
+      need upstream to register `Abort.all` via `Callback.register` in
+      `uimacbridge.ml` (currently absent), or we'd have to patch upstream
+      ourselves. The legacy app's "Cancel" toolbar item has the same
+      limitation — it just calls `@selector(chooseProfiles)`, not a real
+      abort. Tracked under P3 if we ever want a real stop-the-transfer.
 
 ## P1 — Quality of life
 
@@ -170,6 +174,13 @@ go back / refresh / open another profile.
       generate`. Either depend on `Sources/**/*` or document the workflow.
 - [ ] **Remove test artifacts** — `~/Library/Application Support/Unison/test-tiny.prf`
       and `/tmp/unison-test-{a,b}` left from bring-up testing.
+- [ ] **Real mid-sync abort** — the current Stop button matches the legacy
+      app's behavior (close window, OCaml keeps running). Truly aborting an
+      in-flight transfer would require patching `src/uimacbridge.ml`
+      upstream to add `Callback.register "abortAll" Abort.all`, then a new
+      `unison_bridge_abort_sync()` C entry that calls it. Patching upstream
+      is the only way; from our `unison-blob.o` we can only invoke what
+      upstream registered.
 - [ ] **Add `CONTRIBUTING.md`** — restate upstream Unison's stance that
       LLM-generated code is not welcome in their repository (see
       [unison/CONTRIBUTING.md](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md),

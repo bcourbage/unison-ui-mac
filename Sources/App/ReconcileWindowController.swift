@@ -8,15 +8,20 @@ import AppKit
 /// handles the table-of-thousands case naturally — we only build cell
 /// views for visible rows, and each cell pulls from a single struct read.
 @MainActor
-final class ReconcileWindowController: NSWindowController {
+final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
+
+    typealias CloseHandler = @MainActor () -> Void
+    typealias RescanRequest = @MainActor () -> Void
 
     private var items: [StateItem]
     private let profile: String
+    private let onClose: CloseHandler
+    private let onRescanRequested: RescanRequest
     private let tableView = NSTableView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let toolbarDelegate = ReconcileToolbarDelegate()
-    private var isSyncing = false
+    private(set) var isSyncing = false
 
     enum Col: String {
         case path, left, direction, right, size, progress, type
@@ -25,9 +30,14 @@ final class ReconcileWindowController: NSWindowController {
         }
     }
 
-    init(profile: String, items: [StateItem]) {
+    init(profile: String,
+         items: [StateItem],
+         onClose: @escaping CloseHandler,
+         onRescanRequested: @escaping RescanRequest) {
         self.profile = profile
         self.items = items
+        self.onClose = onClose
+        self.onRescanRequested = onRescanRequested
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -37,8 +47,25 @@ final class ReconcileWindowController: NSWindowController {
         window.center()
         super.init(window: window)
         windowFrameAutosaveName = "ReconcileWindow"
+        window.delegate = self
         configure(profile: profile)
         installToolbar()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            onClose()
+        }
+    }
+
+    /// Replace the displayed items (e.g. after a rescan completes). Must
+    /// be called on the main thread.
+    func replaceItems(_ newItems: [StateItem]) {
+        items = newItems
+        tableView.reloadData()
+        summaryLabel.stringValue = summaryText(profile: profile)
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
@@ -147,6 +174,41 @@ final class ReconcileWindowController: NSWindowController {
         summaryLabel.stringValue = "Synchronizing \(profile)…"
         TraceLog.shared.write("ReconcileWindow: starting sync")
         unison_bridge_synchronize()
+    }
+
+    /// Toolbar Stop action — matches the legacy app's "Cancel" semantics:
+    /// returns to the profile picker. The OCaml worker continues running
+    /// in the background until it finishes naturally. True mid-sync abort
+    /// would require exposing OCaml's `Abort.all` via Callback.register,
+    /// which the upstream uimacbridge doesn't do (see TODO: real cancel).
+    func cancelSync() {
+        guard isSyncing else { NSSound.beep(); return }
+        TraceLog.shared.write("ReconcileWindow: user requested Stop — closing window (OCaml sync continues)")
+        window?.performClose(nil)
+    }
+
+    // MARK: - Rescan
+
+    /// Triggered by the toolbar's Rescan item. Delegates to AppDelegate
+    /// (via `onRescanRequested`) since the init2 handler registration is
+    /// process-global — only one owner should manage it at a time.
+    func rescan() {
+        guard !isSyncing else { NSSound.beep(); return }
+        onRescanRequested()
+    }
+
+    func beginRescan() {
+        progressBar.isHidden = false
+        progressBar.isIndeterminate = true
+        progressBar.startAnimation(nil)
+        summaryLabel.stringValue = "Rescanning \(profile)…"
+    }
+
+    func endRescan(newItems: [StateItem]) {
+        progressBar.stopAnimation(nil)
+        progressBar.isIndeterminate = false
+        progressBar.isHidden = true
+        replaceItems(newItems)
     }
 
     private func updateGlobalProgress(_ percent: Double) {

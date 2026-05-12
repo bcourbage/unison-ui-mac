@@ -64,7 +64,7 @@ The first build is slow because it builds the entire Unison OCaml core
 ```
 +------------------+         +-------------------+        +----------------+
 |   Swift / AppKit |  msg →  |   C bridge        |  msg → |   OCaml worker |
-| (@MainActor)     |  ←─────  |   (UnisonBridgeC) |  ←──── | (uimacbridge)  |
+| (@MainActor)     |  ←────  |   (UnisonBridgeC) |  ←──── | (uimacbridge)  |
 +------------------+         +-------------------+        +----------------+
         ▲                              │
         │ trampolines                  │ pthread mutex+condvar

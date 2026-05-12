@@ -35,7 +35,9 @@ enum DirectionAction {
         }
     }
 
-    static let goIdentifier = NSToolbarItem.Identifier("sync.go")
+    static let goIdentifier      = NSToolbarItem.Identifier("sync.go")
+    static let stopIdentifier    = NSToolbarItem.Identifier("sync.stop")
+    static let rescanIdentifier  = NSToolbarItem.Identifier("sync.rescan")
 
     func invoke(row: Int32) -> UnsafePointer<CChar>? {
         switch self {
@@ -55,7 +57,12 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     weak var controller: ReconcileWindowController?
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        DirectionAction.all.map(\.toolbarIdentifier) + [DirectionAction.goIdentifier, .flexibleSpace, .space]
+        DirectionAction.all.map(\.toolbarIdentifier) + [
+            DirectionAction.rescanIdentifier,
+            DirectionAction.goIdentifier,
+            DirectionAction.stopIdentifier,
+            .flexibleSpace, .space,
+        ]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -64,21 +71,38 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
          DirectionAction.skip.toolbarIdentifier,
          DirectionAction.merge.toolbarIdentifier,
          .flexibleSpace,
-         DirectionAction.goIdentifier]
+         DirectionAction.rescanIdentifier,
+         DirectionAction.goIdentifier,
+         DirectionAction.stopIdentifier]
     }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if itemIdentifier == DirectionAction.goIdentifier {
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Go"
-            item.paletteLabel = "Synchronize"
-            item.toolTip = "Run synchronization"
-            item.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Go")
-            item.target = self
-            item.action = #selector(goAction(_:))
-            return item
+        switch itemIdentifier {
+        case DirectionAction.goIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Go",
+                                    paletteLabel: "Synchronize",
+                                    toolTip: "Run synchronization",
+                                    symbol: "play.fill",
+                                    action: #selector(goAction(_:)))
+        case DirectionAction.stopIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Stop",
+                                    paletteLabel: "Cancel sync",
+                                    toolTip: "Cancel the running synchronization",
+                                    symbol: "stop.fill",
+                                    action: #selector(stopAction(_:)))
+        case DirectionAction.rescanIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Rescan",
+                                    paletteLabel: "Rescan",
+                                    toolTip: "Re-check both replicas for changes",
+                                    symbol: "arrow.clockwise",
+                                    action: #selector(rescanAction(_:)))
+        default:
+            break
         }
         guard let action = DirectionAction.all.first(where: { $0.toolbarIdentifier == itemIdentifier }) else {
             return nil
@@ -94,6 +118,22 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
         return item
     }
 
+    private func makeWorkflowItem(_ id: NSToolbarItem.Identifier,
+                                  label: String,
+                                  paletteLabel: String,
+                                  toolTip: String,
+                                  symbol: String,
+                                  action: Selector) -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.label = label
+        item.paletteLabel = paletteLabel
+        item.toolTip = toolTip
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.target = self
+        item.action = action
+        return item
+    }
+
     @objc private func toolbarAction(_ sender: NSToolbarItem) {
         guard let action = directionActionFromTag(sender.tag) else { return }
         controller?.applyDirection(action)
@@ -101,6 +141,14 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @objc private func goAction(_ sender: NSToolbarItem) {
         controller?.startSync()
+    }
+
+    @objc private func stopAction(_ sender: NSToolbarItem) {
+        controller?.cancelSync()
+    }
+
+    @objc private func rescanAction(_ sender: NSToolbarItem) {
+        controller?.rescan()
     }
 }
 
