@@ -47,6 +47,20 @@ go back / refresh / open another profile.
       line in the picker status label. Worth surfacing the full text via
       tooltip or a "Show details" disclosure, especially for SSH error
       output during connect.
+- [ ] **"Reset archives" recovery action per profile** — deletes the local
+      `ar*` / `fp*` / `lk*` files for the selected profile so the next sync
+      starts from a clean slate. Surface as a profile-context menu item
+      with a confirmation sheet ("This will make every file look new to
+      Unison — expect lots of conflicts on the next sync"). The matching
+      archive on the *remote* host can't be deleted by us; show its name +
+      host so the user can clean it up manually. Implementation:
+    - New bridge call (e.g. `unison_bridge_archive_basenames()`) that returns
+      the local + remote archive basenames after init1 — OCaml's
+      `Update.archiveName` or scanning `Os.fingerprintFile` output.
+    - Swift deletes the local files; shows the remote name in the
+      confirmation sheet.
+    - Belongs in P1 because it directly addresses the failure mode that bit
+      us during bring-up (orphan lock files + cross-host archive mismatch).
 
 ## P2 — Features from the legacy app
 
@@ -105,6 +119,14 @@ go back / refresh / open another profile.
       generate`. Either depend on `Sources/**/*` or document the workflow.
 - [ ] **Remove test artifacts** — `~/Library/Application Support/Unison/test-tiny.prf`
       and `/tmp/unison-test-{a,b}` left from bring-up testing.
+- [ ] **Add `CONTRIBUTING.md`** — restate upstream Unison's stance that
+      LLM-generated code is not welcome in their repository (see
+      [unison/CONTRIBUTING.md](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md),
+      "LLM usage" section). Disclose that *this* project was built with
+      substantial LLM assistance, which is why it intentionally lives
+      downstream and should never be proposed upstream. Pointers to where
+      we *do* welcome PRs (if any) and what we don't (anything that would
+      need to be merged into Unison).
 - [ ] **Codesigning** — currently ad-hoc. Apple Developer ID would let us
       stop seeing the "downloaded from internet" warning on every fresh
       build, but it's a paid-membership step. Personal use can stay ad-hoc.
