@@ -61,6 +61,42 @@ go back / refresh / open another profile.
       confirmation sheet.
     - Belongs in P1 because it directly addresses the failure mode that bit
       us during bring-up (orphan lock files + cross-host archive mismatch).
+- [ ] **Colorful toolbar / table icons** — the legacy app's toolbar icons
+      ([uimac/toolbar/*.tif](https://github.com/bcpierce00/unison/tree/master/src/uimac/toolbar))
+      and table-row status icons
+      ([uimac/tableicons/*.png](https://github.com/bcpierce00/unison/tree/master/src/uimac/tableicons))
+      are tinted/colored and read at a glance; our current SF Symbol set is
+      monochrome and feels flat. Two routes:
+    1. **Re-use upstream**: the .tif/.png files are GPLv3 (same as us) and
+       compatible — copy into `Resources/` and reference by name. Lowest
+       effort; matches legacy look exactly.
+    2. **Regenerate**: SF Symbols hierarchical/multicolor variants
+       (`arrow.right` with `.palette` config), or hand-drawn replacements
+       in Pixelmator/Sketch. More work; modernizes the look.
+    Pair this with row-color coding (already in P1) so the visual language
+    is consistent.
+- [ ] **Full test suite** (promoted from P3 — every bug we've hit recently
+      would have been caught by tests: silent-local-profile hang,
+      orphan-lock crash, `warnPanel` inverted semantics, deadlock-from-
+      aborting-stubs. Land before the bigger P2 features so the test
+      harness is in place when we start touching ignore / diff / new-profile
+      logic). Target coverage:
+    - **Bridge unit tests** (XCTest): each `unison_bridge_*` entry point
+      against a known minimal OCaml state. Spin up the runtime, exercise
+      get_version / unison_directory / init1 against a test profile, verify
+      results.
+    - **State-item marshaling**: build fake `stateItem` arrays in OCaml-test
+      callbacks, check Swift `[StateItem]` matches field-by-field.
+    - **UI tests** (XCUITest): launch → pick profile → reconcile shows →
+      Go → completes. Use the `UNISON_AUTOTEST_*` env-var hooks. Run against
+      a /tmp test profile so no network or user state is involved.
+    - **Concurrency/stress**: the existing `1000-calls-in-7ms` benchmark
+      should be promoted to a perf test, plus a re-entrance test (callback
+      that re-enters the bridge).
+    - **Memory leaks**: scripted runs under `leaks(1)` after sync.
+    - **Modal warn/fatal sheets**: scripted scenarios that fire each path
+      (warn-proceed, warn-cancel, fatal-dismiss) and verify the UI returns
+      to a usable state (`abortInFlight()` actually fires).
 
 ## P2 — Features from the legacy app
 
@@ -130,21 +166,6 @@ go back / refresh / open another profile.
 - [ ] **Codesigning** — currently ad-hoc. Apple Developer ID would let us
       stop seeing the "downloaded from internet" warning on every fresh
       build, but it's a paid-membership step. Personal use can stay ad-hoc.
-- [ ] **Full test suite** — currently no automated tests at all. Target
-      coverage:
-    - **Bridge unit tests** (XCTest): each `unison_bridge_*` entry point
-      against a known minimal OCaml state. Spin up the runtime, exercise
-      get_version / unison_directory / init1 against a test profile, verify
-      results.
-    - **State-item marshaling**: build fake `stateItem` arrays in OCaml-test
-      callbacks, check Swift `[StateItem]` matches field-by-field.
-    - **UI tests** (XCUITest): launch → pick profile → reconcile shows →
-      Go → completes. Use the `UNISON_AUTOTEST_*` env-var hooks. Run against
-      a /tmp test profile so no network or user state is involved.
-    - **Concurrency/stress**: the existing `1000-calls-in-7ms` benchmark
-      should be promoted to a perf test, plus a re-entrance test (callback
-      that re-enters the bridge).
-    - **Memory leaks**: scripted runs under `leaks(1)` after sync.
 
 ## Carried-over reminders (memory notes)
 
@@ -191,12 +212,21 @@ app from "one-shot" into something with a real workflow loop:
    equivalent) over the bridge, adding a "Stop" toolbar item that's only
    visible while syncing, plus a wait/clean-up path on the Swift side.
 
-After P0, the two newly-added P1 items (color coding + details footer) are
-high-leverage UI wins — they're what make the reconcile window actually
-*usable* for scanning a hundred-file changeset. Both are pure Swift; no
-bridge work needed.
+After P0, **land the test suite before the P2 features.** The pattern of
+the last few iterations — bugs found by hand, fixed, re-broken by the next
+change — argues for tests to be in place when we start touching the bigger
+P2 surface area (ignore actions, diff viewer, new-profile editor).
 
-The full menu mirror, ignore actions, and diff viewer (P2) take the app from
-"works for me" to "drop-in replacement for the legacy app." The test suite
-is the right hardening step before any of that, but realistically can come
-after the must-have features land.
+The other high-leverage P1 items are color coding + details footer + colored
+icons — they're what make the reconcile window actually *usable* for scanning
+a hundred-file changeset. All three are pure Swift; no bridge work needed,
+so they can sneak in between test-harness work and P2 features.
+
+Order I'd suggest:
+1. P0 — return to picker, rescan, cancel sync
+2. P1 — test suite (XCTest + XCUITest + stress + leaks)
+3. P1 — color coding + details footer + colored icons (visual polish)
+4. P1 — reset-archives recovery action (safety net for the failure mode
+   we've seen most often)
+5. P2 — ignore actions, diff viewer, force older/newer, full menu mirror,
+   new-profile editor
