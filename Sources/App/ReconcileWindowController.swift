@@ -568,6 +568,25 @@ private enum DirectionVisual {
         default:      return direction
         }
     }
+
+    /// Aggregate variants for folder rows. Uniform direction → the same
+    /// glyph + tint as a leaf with that direction. All-user-skipped → the
+    /// settled gray-⊖ pair. Mixed → no badge (empty cell, clear tint).
+    static func tint(for aggregate: FolderAggregate) -> NSColor {
+        switch aggregate {
+        case .uniform(let dir):  return tint(for: dir, isUserSkipped: false)
+        case .allUserSkipped:    return NSColor.systemGray.withAlphaComponent(0.45)
+        case .mixed:             return .clear
+        }
+    }
+
+    static func glyph(for aggregate: FolderAggregate) -> String {
+        switch aggregate {
+        case .uniform(let dir):  return glyph(for: dir, isUserSkipped: false)
+        case .allUserSkipped:    return "⊖"
+        case .mixed:             return ""
+        }
+    }
 }
 
 // MARK: - NSOutlineViewDataSource
@@ -649,8 +668,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         if node.isLeaf {
             cell.configureAsFile(name: node.name)
         } else {
-            cell.configureAsFolder(name: node.name,
-                                   aggregate: node.aggregate(items: items, userSkipped: userSkipped))
+            cell.configureAsFolder(name: node.name)
         }
         return cell
     }
@@ -684,13 +702,19 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             return v
         }()
         if let row = node.row, row < items.count {
+            // Leaf: direction is the file's own state.
             let item = items[row]
             let skipped = userSkipped.contains(row)
             cell.textField?.stringValue = DirectionVisual.glyph(for: item.direction, isUserSkipped: skipped)
             cell.tint = DirectionVisual.tint(for: item.direction, isUserSkipped: skipped)
         } else {
-            cell.textField?.stringValue = ""
-            cell.tint = .clear
+            // Folder: badge reflects the aggregate of its descendants.
+            // Uniform → same glyph/tint as a leaf with that direction.
+            // Mixed → empty cell so the user can tell the folder isn't
+            //         a one-click target.
+            let agg = node.aggregate(items: items, userSkipped: userSkipped)
+            cell.textField?.stringValue = DirectionVisual.glyph(for: agg)
+            cell.tint = DirectionVisual.tint(for: agg)
         }
         return cell
     }

@@ -50,42 +50,15 @@ final class PathCellView: NSTableCellView {
         toolTip = nil
     }
 
-    func configureAsFolder(name: String, aggregate: FolderAggregate) {
+    /// Folder icon is always the native Finder blue, regardless of any
+    /// aggregate state. The aggregate is conveyed by the Action column,
+    /// not by recoloring the folder itself — folders read as folders.
+    func configureAsFolder(name: String) {
         nameField.stringValue = name
-        let (tint, tooltip) = Self.folderAppearance(for: aggregate)
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
-        iconView.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: tooltip)?
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
+        iconView.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "Folder")?
             .withSymbolConfiguration(config)
-        toolTip = tooltip
-    }
-
-    /// Folder-tint palette. Direction-based tints use the same hexes as
-    /// the Action-column badges so the visual language is consistent
-    /// across the row.
-    private static func folderAppearance(for aggregate: FolderAggregate) -> (NSColor, String) {
-        switch aggregate {
-        case .uniform("---->"):
-            return (NSColor(red: 0x97/255.0, green: 0xBB/255.0, blue: 0x68/255.0, alpha: 1.0),
-                    "All items → Remote")
-        case .uniform("<----"):
-            return (NSColor(red: 0x5A/255.0, green: 0x96/255.0, blue: 0xDE/255.0, alpha: 1.0),
-                    "All items ← Local")
-        case .uniform("<-?->"):
-            return (NSColor.systemOrange.withAlphaComponent(0.85),
-                    "All items in conflict")
-        case .uniform("<-M->"):
-            return (NSColor.systemPurple.withAlphaComponent(0.75),
-                    "All items will be merged")
-        case .uniform(let other):
-            return (.secondaryLabelColor, "Uniform: \(other)")
-        case .allUserSkipped:
-            return (NSColor.systemGray.withAlphaComponent(0.7),
-                    "All items skipped")
-        case .mixed:
-            // Default Finder-folder feel — system blue but a touch muted.
-            return (NSColor.systemBlue.withAlphaComponent(0.85),
-                    "Mixed actions in this folder")
-        }
+        toolTip = nil
     }
 }
