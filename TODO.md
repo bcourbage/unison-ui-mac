@@ -26,10 +26,25 @@ go back / refresh / open another profile.
 
 ## P1 — Quality of life
 
-- [ ] **Color-coded reconcile rows** — the original app color-codes rows by
-      action so the user can scan the change-set at a glance (e.g. green = →,
-      blue = ←, yellow/red = conflict, gray = skip). Apply via row/cell
-      background or text color in `tableView(_:viewFor:row:)`.
+- [x] **Color-coded reconcile rows** — done at the cell level: the Action
+      column cell carries a tinted "badge" (green `#97BB68` → remote, blue
+      `#5A96DE` ← local, orange conflict, purple merge) with a bolder
+      enlarged arrow glyph. Folder rows in the outline view stay uncolored.
+      *(See follow-up: folder aggregate tints.)*
+- [ ] **Folder aggregate tints in the outline view** — currently only leaf
+      rows are tinted (Action column). Folders show no color, so the user
+      can't see at a glance whether a folder contains a uniform direction
+      or a mix. Possibilities:
+    - **Solid color** when every descendant has the same direction (e.g.
+      a green strip in the folder's Action cell if all 50 files
+      underneath are `→ Remote`).
+    - **Mixed indicator** (small split-color chip, or a "·" glyph in a
+      neutral gray) when descendants disagree.
+    - **Conflict badge** if any descendant is `<-?->` — since conflicts
+      need attention regardless of how many siblings are in agreement.
+    Computing the aggregate is O(descendants) per folder; cache on the
+    ReconcileNode at tree-build time. Re-aggregate on `applyDirection`
+    (walks ancestors of changed leaves up to root).
 - [ ] **Details footer in the reconcile window** — selected row's full
       details (path, both sides' size/mtime, conflict reason). Calls
       `unisonRiToDetails`. The legacy app puts this in a bottom strip; we

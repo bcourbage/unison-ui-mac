@@ -356,13 +356,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         }
         for row in changedRows {
             guard let node = leafNode(forRow: row) else { continue }
+            // reloadItem refreshes all cell views; the DirectionCellView
+            // picks up the new tint from items[row].directionTint via
+            // viewFor delegate.
             outlineView.reloadItem(node, reloadChildren: false)
-            // reloadItem updates cell views; refresh the row view's tint too.
-            let viewRow = outlineView.row(forItem: node)
-            if viewRow >= 0,
-               let rowView = outlineView.rowView(atRow: viewRow, makeIfNecessary: false) as? TintedRowView {
-                rowView.tint = items[row].rowTint
-            }
         }
         if !changedRows.isEmpty {
             summaryLabel.stringValue = summaryText(profile: profile)
@@ -423,36 +420,62 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-// MARK: - Tinted row view (shared with the old flat-table design — direction-based)
+// MARK: - Direction-cell view (the only colored cell in the row)
 
-/// Tinted row view that draws a translucent background color based on the
-/// reconcile direction. Folders pass `.clear` so only leaves are colored.
-final class TintedRowView: NSTableRowView {
+/// Custom cell view used in the Action column. Fills its background with
+/// a direction-specific tint and renders the arrow glyph at a larger size
+/// + heavier weight so it reads at a glance, especially in dense lists.
+final class DirectionCellView: NSTableCellView {
+    private let glyphLabel = NSTextField(labelWithString: "")
+
     var tint: NSColor = .clear {
         didSet {
             guard tint != oldValue else { return }
             needsDisplay = true
         }
     }
-    override func drawBackground(in dirtyRect: NSRect) {
-        super.drawBackground(in: dirtyRect)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        glyphLabel.translatesAutoresizingMaskIntoConstraints = false
+        glyphLabel.alignment = .center
+        glyphLabel.font = .systemFont(ofSize: NSFont.systemFontSize + 4, weight: .semibold)
+        glyphLabel.textColor = .labelColor
+        addSubview(glyphLabel)
+        textField = glyphLabel
+        NSLayoutConstraint.activate([
+            glyphLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            glyphLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            glyphLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
         if tint != .clear {
+            // Inset slightly + round the corners — gives a "badge" feel
+            // rather than a column-spanning fill.
+            let badge = bounds.insetBy(dx: 2, dy: 2)
+            let path = NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3)
             tint.setFill()
-            dirtyRect.fill(using: .sourceOver)
+            path.fill()
         }
+        super.draw(dirtyRect)
     }
 }
 
 fileprivate extension StateItem {
-    /// Soft, system-color-derived tint per OCaml direction string. Uses
-    /// low alpha so the path text + selection highlight stay readable in
-    /// both light and dark mode.
-    var rowTint: NSColor {
+    /// Per-direction tint for the Action-column badge. Greens/blues are
+    /// the explicit hex values the user requested (#97BB68 and #5A96DE);
+    /// orange/purple stay system-derived at a comparable intensity.
+    var directionTint: NSColor {
         switch direction {
-        case "---->": return NSColor.systemGreen.withAlphaComponent(0.10)
-        case "<----": return NSColor.systemBlue.withAlphaComponent(0.10)
-        case "<-?->": return NSColor.systemOrange.withAlphaComponent(0.15)
-        case "<-M->": return NSColor.systemPurple.withAlphaComponent(0.12)
+        case "---->": return NSColor(red: 0x97/255.0, green: 0xBB/255.0, blue: 0x68/255.0, alpha: 1.0)
+        case "<----": return NSColor(red: 0x5A/255.0, green: 0x96/255.0, blue: 0xDE/255.0, alpha: 1.0)
+        case "<-?->": return NSColor.systemOrange.withAlphaComponent(0.85)
+        case "<-M->": return NSColor.systemPurple.withAlphaComponent(0.75)
         default:      return .clear
         }
     }
@@ -484,25 +507,16 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         updateDetailsForSelection()
     }
 
-    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
-        let id = NSUserInterfaceItemIdentifier("TintedRow")
-        let view = outlineView.makeView(withIdentifier: id, owner: self) as? TintedRowView ?? {
-            let v = TintedRowView()
-            v.identifier = id
-            return v
-        }()
-        if let node = item as? ReconcileNode, let row = node.row, row < items.count {
-            view.tint = items[row].rowTint
-        } else {
-            view.tint = .clear  // folders are uncolored
-        }
-        return view
-    }
-
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let column = tableColumn,
               let col = Col(rawValue: column.identifier.rawValue),
               let node = item as? ReconcileNode else { return nil }
+
+        // The Action column has its own colored cell type — needs the
+        // StateItem for tinting, only meaningful for leaves.
+        if col == .direction {
+            return makeDirectionCell(in: outlineView, node: node)
+        }
 
         // For folder rows, only the path column gets text; the rest are blank.
         let value: String
@@ -512,7 +526,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             case .path:      value = node.name              // last segment only — indent shows hierarchy
             case .left:      value = stateItem.left
             case .right:     value = stateItem.right
-            case .direction: value = directionGlyph(stateItem.direction)
+            case .direction: value = ""                     // handled above
             case .size:      value = formatSize(stateItem.sizeBytes, type: stateItem.fileType)
             case .progress:  value = stateItem.progress.trimmingCharacters(in: .whitespaces)
             case .type:      value = stateItem.fileType
@@ -525,6 +539,26 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             }
         }
         return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
+    }
+
+    /// Builds (or recycles) the colored Action-column cell. Folders get an
+    /// uncolored empty cell; leaves get tinted + bold arrow.
+    private func makeDirectionCell(in outlineView: NSOutlineView, node: ReconcileNode) -> NSView {
+        let id = NSUserInterfaceItemIdentifier("DirectionCell")
+        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? DirectionCellView ?? {
+            let v = DirectionCellView()
+            v.identifier = id
+            return v
+        }()
+        if let row = node.row, row < items.count {
+            let item = items[row]
+            cell.textField?.stringValue = directionGlyph(item.direction)
+            cell.tint = item.directionTint
+        } else {
+            cell.textField?.stringValue = ""
+            cell.tint = .clear
+        }
+        return cell
     }
 
     private func makeCell(in outlineView: NSOutlineView,
