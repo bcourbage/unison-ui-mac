@@ -1,0 +1,57 @@
+name: unison-ui-mac
+options:
+  bundleIdPrefix: net.courbage
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEAD_CODE_STRIPPING: NO
+    OCAMLLIBDIR: ${OCAMLLIBDIR}
+    UNISON_SRC: ${UNISON_SRC}
+    STRIPPED_ASMRUN_DIR: ${STRIPPED_ASMRUN_DIR}
+
+targets:
+  unison-ui-mac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Bridge
+      - path: Resources/AppIcon.icns
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleIconFile: AppIcon
+        LSApplicationCategoryType: public.app-category.utilities
+        # No storyboard / nib — the menu is wired programmatically in main.swift.
+        NSMainNibFile: ""
+    settings:
+      base:
+        PRODUCT_NAME: unison-ui-mac
+        PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-mac
+        INFOPLIST_FILE: Resources/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/UnisonBridgeC.h
+        HEADER_SEARCH_PATHS:
+          - $(OCAMLLIBDIR)
+          - $(SRCROOT)/Sources/Bridge
+        # NOTE: not inheriting — Xcode's Debug config defines DEBUG=1, which
+        # activates CAMLassert macros that reference caml_failed_assert (only
+        # present in OCaml's debug runtime libasmrund.a, which we don't link).
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - CAML_NAME_SPACE=1
+        LIBRARY_SEARCH_PATHS:
+          - $(OCAMLLIBDIR)
+          - $(STRIPPED_ASMRUN_DIR)
+        OTHER_LDFLAGS:
+          - $(UNISON_SRC)/unison-blob.o
+          - -lasmrun_nomain
+          - -lthreadsnat
+          - -lunixnat
+          - -lcamlstrnat
+          - -lpthread
