@@ -536,7 +536,9 @@ final class DirectionCellView: NSTableCellView {
 /// direction: OCaml's `<-?->` covers both auto-detected conflicts AND
 /// user-requested skips, but we want them to look different — the former
 /// demands attention, the latter is settled. Hence the row parameter.
-private enum DirectionVisual {
+/// Internal (not `private`) so the unit tests can pin the glyph/tint
+/// mapping without going through view introspection.
+enum DirectionVisual {
     static func tint(for direction: String, isUserSkipped: Bool) -> NSColor {
         if direction == "<-?->" && isUserSkipped {
             // Settled — neutral gray badge so the user can still see the

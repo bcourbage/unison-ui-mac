@@ -17,16 +17,27 @@ project, no `.xib` files.
 ## Status
 
 Functional for the day-to-day sync workflow:
-- Pick a profile from the `.unison/` directory
-- Reconcile (with proper credential prompts for SSH profiles)
-- Review the change-set
-- Override per-row direction
-- Synchronize, with per-row progress + global progress bar
-- Modal warning + fatal-error sheets
+- Pick a profile from the `~/Library/Application Support/Unison/` directory
+- Reconcile with proper credential prompts for SSH profiles
+- Finder-style outline view with default-expanded folders, native blue
+  folder icons, color-coded Action column per direction
+- Status icons in Local + Remote columns (Created / Modified / Deleted /
+  PropsChanged / Unchanged)
+- Folder aggregate: the Action column on folders shows the unified
+  direction when every descendant agrees
+- Details footer with `unisonRiToDetails`
+- Direction overrides (Local / Remote / Skip / Merge) with multi-row
+  + folder-level apply
+- Rescan, Profiles (back-to-picker), and soft-Cancel in the toolbar
+- Synchronize with per-row progress + global progress bar
+- Modal warning + fatal-error sheets, with a one-click "Delete N Orphan
+  Archive(s) and Retry" recovery for Unison's inconsistent-state failure
+- Window-close guard during sync
+- 53 unit tests via `make test`
 
-See [TODO.md](TODO.md) for what's still missing (rescan, return-to-picker,
-cancel, ignore actions, diff viewer, full menu mirror, color coding,
-tests, etc.).
+See [TODO.md](TODO.md) for what's still missing (ignore actions, diff
+viewer, new-profile editor, full menu mirror, force-older/newer,
+hide/delete profile, etc.).
 
 ## Build prerequisites
 
@@ -104,23 +115,31 @@ unison-ui-mac/
 ├── Sources/
 │   ├── App/                             Swift + AppKit
 │   │   ├── main.swift                   NSApplicationMain bootstrap
-│   │   ├── AppDelegate.swift            Lifecycle + handler installation
-│   │   ├── MainMenu.swift               Programmatic main menu bar
-│   │   ├── ProfileWindowController.swift Profile picker + init flow driver
-│   │   ├── ReconcileWindowController.swift  Reconcile table + sync UI
-│   │   ├── ReconcileToolbar.swift       Direction-override + Go toolbar
+│   │   ├── AppDelegate.swift            Lifecycle, handler installation, menu actions
+│   │   ├── MainMenu.swift               Programmatic main menu bar (incl. Help)
+│   │   ├── ProfileWindowController.swift  Profile picker
+│   │   ├── ReconcileWindowController.swift  Outline view + sync UI + DirectionVisual
+│   │   ├── ReconcileToolbar.swift       Toolbar (Profiles/Rescan/direction group/Go/Stop)
+│   │   ├── ReconcileTree.swift          Tree model + FolderAggregate
+│   │   ├── PathCellView.swift           Finder-style folder/file icon + name
+│   │   ├── StatusIconCellView.swift     Local/Remote status SF Symbols
+│   │   ├── ArchiveRecovery.swift        Inconsistent-archive cleanup parser
 │   │   ├── PasswordSheet.swift          SSH credential prompts
-│   │   ├── StateItem.swift              Swift mirror of `stateItem`
-│   │   ├── UnisonBridge.swift           Handler registry + trampolines
-│   │   └── TraceLog.swift               Dev logging (file-based)
+│   │   ├── StateItem.swift              Swift mirror of OCaml's `stateItem`
+│   │   ├── UnisonBridge.swift           Handler registry + Swift trampolines
+│   │   └── TraceLog.swift               Dev file logger (/tmp/unison-ui-mac.log)
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle
-│   ├── StateItemTests.swift             Value-type round-trip
-│   ├── DirectionActionTests.swift       Toolbar-identifier invariants
-│   ├── TraceLogTests.swift              Async writer + concurrent safety
-│   └── BridgeTests.swift                Live OCaml bridge + perf measure
+├── Tests/                               XCTest bundle (53 tests)
+│   ├── StateItemTests.swift             Value-type round-trip (3)
+│   ├── DirectionActionTests.swift       Toolbar-identifier invariants (4)
+│   ├── DirectionVisualTests.swift       glyph/tint mapping incl. user-skip (18)
+│   ├── StatusIconDescriptorTests.swift  Status-string → SF symbol mapping (6)
+│   ├── ReconcileTreeTests.swift         Tree + FolderAggregate (11)
+│   ├── ArchiveRecoveryTests.swift       Inconsistent-archive parser (5)
+│   ├── TraceLogTests.swift              Async writer + concurrent safety (2)
+│   └── BridgeTests.swift                Live OCaml bridge + perf measure (4)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

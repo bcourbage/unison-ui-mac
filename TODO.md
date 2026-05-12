@@ -31,41 +31,44 @@ go back / refresh / open another profile.
       `#5A96DE` ← local, orange conflict, purple merge) with a bolder
       enlarged arrow glyph. Folder rows in the outline view stay uncolored.
       *(See follow-up: folder aggregate tints.)*
-- [ ] **Folder aggregate tints in the outline view** — currently only leaf
-      rows are tinted (Action column). Folders show no color, so the user
-      can't see at a glance whether a folder contains a uniform direction
-      or a mix. Possibilities:
-    - **Solid color** when every descendant has the same direction (e.g.
-      a green strip in the folder's Action cell if all 50 files
-      underneath are `→ Remote`).
-    - **Mixed indicator** (small split-color chip, or a "·" glyph in a
-      neutral gray) when descendants disagree.
-    - **Conflict badge** if any descendant is `<-?->` — since conflicts
-      need attention regardless of how many siblings are in agreement.
-    Computing the aggregate is O(descendants) per folder; cache on the
-    ReconcileNode at tree-build time. Re-aggregate on `applyDirection`
-    (walks ancestors of changed leaves up to root).
-- [ ] **Details footer in the reconcile window** — selected row's full
-      details (path, both sides' size/mtime, conflict reason). Calls
-      `unisonRiToDetails`. The legacy app puts this in a bottom strip; we
-      can do the same.
-- [ ] **Window-close guard during sync** — closing the reconcile window
-      mid-sync should confirm or cancel cleanly, not leak the OCaml worker.
-- [ ] **Highlight FAILED rows** in the table (e.g. red status text or a
-      symbol in the Progress column). OCaml reports failures via
-      `unisonRiToProgress` returning `"FAILED"`.
+- [x] **Folder aggregate (Action column)** — folder rows show the
+      aggregate direction in the Action column (uniform → matching
+      direction badge, all-skipped → gray ⊖, mixed → empty). The folder
+      *icon* in the Path column stays the native Finder blue so folders
+      keep reading as folders. Aggregates recompute on `applyDirection`
+      and propagate up to every ancestor folder.
+- [x] **Details footer in the reconcile window** — `NSTextView` strip at
+      the bottom of the window; updates on selection via
+      `unisonRiToDetails`. Folders show "/path/\n N items in this folder".
+- [x] **Window-close guard during sync** — `NSWindowDelegate.windowShouldClose`
+      shows an NSAlert with "Keep Syncing" / "Close Window". Text is
+      explicit that closing doesn't actually abort OCaml (we don't have
+      mid-sync abort support — see real-cancel TODO).
+- [x] **Highlight FAILED rows** — Progress column renders bold systemRed
+      when the text matches "FAIL" (covers "FAILED", "Failed", etc.).
 - [ ] **Per-row progress for slow transfers** — current OCaml throttling
       (>1% change) collapses small files to a single `100%` event. For
       network sync we'll see intermediate ticks; verify the column updates
       live and consider a tiny per-row progress bar.
-- [ ] **Disable direction-override toolbar items when nothing is selected**
-      (NSToolbarItem `validate(_:)` hook). Currently they beep.
+- [x] **Disable direction-override toolbar items when nothing is selected**
+      — `outlineViewSelectionDidChange` walks the toolbar's segmented
+      direction group and toggles isEnabled on each subitem based on
+      whether any leaf rows are reachable from the selection.
 - [ ] **Tooltip on truncated paths** — the Path column uses byTruncatingMiddle;
       a tooltip with the full path would help.
 - [ ] **Status messages with newlines** — currently we take only the first
       line in the picker status label. Worth surfacing the full text via
       tooltip or a "Show details" disclosure, especially for SSH error
       output during connect.
+- [x] **Finder-style path column** — folder icon (`folder.fill` in
+      systemBlue) + folder name in system body font + labelColor. Files
+      get a neutral `doc` icon so names align vertically with folder
+      names. Both reads like Finder's list view.
+- [x] **Status icons in Local + Remote columns** — `StatusIconCellView`
+      maps the per-side change keyword to an SF Symbol with tooltip:
+      Created → plus.circle.fill green, Modified → circle blue (hollow),
+      PropsChanged → circle.dashed blue, Deleted → minus.circle.fill red,
+      "" → tiny gray dot.
 - [/] **"Reset archives" recovery action per profile** *(partial)* — the
       *reactive* path is done: when Unison hits the "inconsistent state"
       fatal during reconcile, the modal now offers a one-click
@@ -94,18 +97,12 @@ go back / refresh / open another profile.
        profiles, shareable across versions of the app.
     Recommend **option 1** unless we ever want multiple installs of the
     app to share the same hidden set — then option 3.
-- [ ] **Reconcile toolbar layout** — current order/grouping isn't great.
-      Concretely: the four direction buttons (Local / Remote / Skip /
-      Merge) should be visually distinct from workflow actions (Rescan /
-      Go / Stop) and the navigation item (Profiles). Likely fixes:
-    - Use NSToolbarItemGroup to bundle the four directions as a single
-      segmented control.
-    - Use a clearer left-to-right reading: navigation → context (Rescan)
-      → per-row actions (direction group) → flexible space → primary
-      action (Go) → escape hatch (Stop).
-    - Consistent SF Symbol weights/styles within each group.
-    - Likely pairs with the P1 "Colorful toolbar / table icons" item —
-      the icon overhaul will resurface this layout decision anyway.
+- [x] **Reconcile toolbar layout** — done. Direction overrides live in
+      an `NSToolbarItemGroup` segmented control with palette-tinted SF
+      Symbols (green/blue/orange/purple for each direction). Reading
+      order: Profiles · Rescan · `[Local | Remote | Skip | Merge]` ·
+      flex · Go · Stop. Wider spacers between clusters. Toolbar
+      identifier is `ReconcileToolbar.v3`.
 - [ ] **Colorful toolbar / table icons** — the legacy app's toolbar icons
       ([uimac/toolbar/*.tif](https://github.com/bcpierce00/unison/tree/master/src/uimac/toolbar))
       and table-row status icons
@@ -120,25 +117,29 @@ go back / refresh / open another profile.
        in Pixelmator/Sketch. More work; modernizes the look.
     Pair this with row-color coding (already in P1) so the visual language
     is consistent.
-- [/] **Test suite** — harness landed; ~13 tests passing in ~0.5s via
-      `make test`. Coverage so far and what's left:
+- [/] **Test suite** — 53 tests passing in ~0.5s via `make test`.
+      Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
           shared via TEST_HOST (one init per process). `make test` green.
-    - [x] **Pure-Swift unit tests** — StateItem (`with(direction:)`,
-          `with(progress:bytesTransferred:)` composition), DirectionAction
-          (toolbar-identifier uniqueness/stability, workflow IDs don't
-          collide with direction IDs, labels/symbols non-empty),
-          TraceLog (write produces ISO-8601-prefixed line, concurrent
-          writes don't tear).
-    - [x] **Bridge integration tests** — `unison_bridge_get_version`
+    - [x] **Pure-Swift unit tests** — StateItem composition (3),
+          DirectionAction toolbar-identifier invariants (4), TraceLog
+          ISO-8601 + concurrent-writes (2), StatusIconDescriptor mapping
+          (6), DirectionVisual glyph/tint for both leaf and aggregate
+          paths including the user-skip distinction (18),
+          ArchiveRecovery parse + local-orphan classification (5).
+    - [x] **Bridge integration tests** (3) — `unison_bridge_get_version`
           returns a non-empty version string mentioning OCaml,
           `unison_bridge_unison_directory` returns an existing absolute
           dir, ri-set ops on out-of-range rows return NULL gracefully
           (don't crash).
-    - [x] **Concurrency/stress** — `test_perf_getVersionRoundTrip` runs
-          1000 sync round-trips through the bridge as an XCTest perf
-          measure (~10ms steady-state on M1 Max, regression gate at 10%).
+    - [x] **Concurrency/stress** (1) — `test_perf_getVersionRoundTrip`
+          runs 1000 sync round-trips through the bridge as an XCTest
+          perf measure (~10ms steady-state on M1 Max, regression gate
+          at 10%).
+    - [x] **ReconcileTree** (11) — empty/single/nested/sibling
+          building; FolderAggregate uniform/mixed/all-skipped including
+          the partial-skip "still needs attention" edge case.
     - [ ] **State-item marshaling** — need to drive `unisonInit2Complete`
           with a known reconcile state (e.g., the /tmp/unison-test-{a,b}
           fixture) and verify the resulting `[StateItem]` field-by-field.
@@ -169,18 +170,21 @@ go back / refresh / open another profile.
 - [ ] **Force older / newer direction** — `unisonRiForceOlder` /
       `unisonRiForceNewer` aren't wired. Worth surfacing as toolbar items or
       Edit-menu actions.
-- [ ] **Details pane** — selected-row inspector showing
-      `unisonRiToDetails` (full path, modification time, etc.). Could be a
-      bottom drawer or right-side pane in the reconcile window.
+- [x] **Details pane** — done as a footer (`NSTextView` at the bottom of
+      the reconcile window). Shows `unisonRiToDetails` on leaf selection,
+      and "<folder>/\n N items" on folder selection.
 - [ ] **New Profile editor** — `File → New Profile…` currently just beeps.
       A minimal editor: name, two roots (with file pickers), `path =`
       filters, ignore patterns, save to `~/Library/Application Support/Unison/<name>.prf`.
 - [ ] **Hide Merge toolbar item if `merge` pref isn't set** — the action only
       works with a configured merge tool; right now it succeeds in the UI
       but fails at sync time.
-- [ ] **Help menu → Unison Online Help** — open
-      `https://github.com/bcpierce00/unison/wiki` in the browser. The legacy
-      app pointed at the old UPenn URL (now 404); use the current wiki.
+- [x] **Help menu → Unison Online Help** — done. New Help menu in the
+      bar with the upstream wiki link; `NSApp.helpMenu` wired so system
+      Help-search hits it.
+- [x] **About panel** — customized via `orderFrontStandardAboutPanel(options:)`;
+      shows the embedded Unison version (via `unison_bridge_get_version`)
+      and the GPLv3 attribution.
 - [ ] **Help menu → Report an Issue** — opens
       `https://github.com/bcourbage/unison-ui-mac/issues/new` (or a
       pre-filled URL with the body templated with app version + OS version,
