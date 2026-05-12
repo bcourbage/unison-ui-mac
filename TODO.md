@@ -122,6 +122,21 @@ go back / refresh / open another profile.
 - [ ] **Help menu → Unison Online Help** — open
       `https://github.com/bcpierce00/unison/wiki` in the browser. The legacy
       app pointed at the old UPenn URL (now 404); use the current wiki.
+- [ ] **Help menu → Report an Issue** — opens
+      `https://github.com/bcourbage/unison-ui-mac/issues/new` (or a
+      pre-filled URL with the body templated with app version + OS version,
+      via query params: `?title=...&body=...&labels=bug`). GitHub Issues is
+      the email relay — neither side exposes their address. Two
+      prerequisites and a fallback:
+    1. The repo must be **public** for non-collaborators to file issues.
+       Currently private; flip when ready to accept external bug reports.
+    2. Consider creating an **issue template**
+       (`.github/ISSUE_TEMPLATE/bug_report.md`) so reports come in
+       structured with version / steps to reproduce / log excerpt.
+    3. **Fallback for users without GitHub accounts**: an iCloud
+       "Hide My Email" alias (e.g. `unison-ui-mac@hidemy.email`) wired to
+       a `mailto:` link, listed in the About panel. Apple forwards mail
+       without revealing your real address; revocable if abused.
 - [ ] **Mirror the legacy app's full menu structure** (App-specific items
       only — leave macOS defaults alone). The legacy [MainMenu.xib](unison/src/uimac/English.lproj/MainMenu.xib)
       includes at least:
