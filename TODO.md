@@ -79,28 +79,42 @@ go back / refresh / open another profile.
        in Pixelmator/Sketch. More work; modernizes the look.
     Pair this with row-color coding (already in P1) so the visual language
     is consistent.
-- [ ] **Full test suite** (promoted from P3 — every bug we've hit recently
-      would have been caught by tests: silent-local-profile hang,
-      orphan-lock crash, `warnPanel` inverted semantics, deadlock-from-
-      aborting-stubs. Land before the bigger P2 features so the test
-      harness is in place when we start touching ignore / diff / new-profile
-      logic). Target coverage:
-    - **Bridge unit tests** (XCTest): each `unison_bridge_*` entry point
-      against a known minimal OCaml state. Spin up the runtime, exercise
-      get_version / unison_directory / init1 against a test profile, verify
-      results.
-    - **State-item marshaling**: build fake `stateItem` arrays in OCaml-test
-      callbacks, check Swift `[StateItem]` matches field-by-field.
-    - **UI tests** (XCUITest): launch → pick profile → reconcile shows →
-      Go → completes. Use the `UNISON_AUTOTEST_*` env-var hooks. Run against
-      a /tmp test profile so no network or user state is involved.
-    - **Concurrency/stress**: the existing `1000-calls-in-7ms` benchmark
-      should be promoted to a perf test, plus a re-entrance test (callback
-      that re-enters the bridge).
-    - **Memory leaks**: scripted runs under `leaks(1)` after sync.
-    - **Modal warn/fatal sheets**: scripted scenarios that fire each path
-      (warn-proceed, warn-cancel, fatal-dismiss) and verify the UI returns
-      to a usable state (`abortInFlight()` actually fires).
+- [/] **Test suite** — harness landed; ~13 tests passing in ~0.5s via
+      `make test`. Coverage so far and what's left:
+    - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
+          hosted by the app, runs via `xcodebuild test`. OCaml runtime
+          shared via TEST_HOST (one init per process). `make test` green.
+    - [x] **Pure-Swift unit tests** — StateItem (`with(direction:)`,
+          `with(progress:bytesTransferred:)` composition), DirectionAction
+          (toolbar-identifier uniqueness/stability, workflow IDs don't
+          collide with direction IDs, labels/symbols non-empty),
+          TraceLog (write produces ISO-8601-prefixed line, concurrent
+          writes don't tear).
+    - [x] **Bridge integration tests** — `unison_bridge_get_version`
+          returns a non-empty version string mentioning OCaml,
+          `unison_bridge_unison_directory` returns an existing absolute
+          dir, ri-set ops on out-of-range rows return NULL gracefully
+          (don't crash).
+    - [x] **Concurrency/stress** — `test_perf_getVersionRoundTrip` runs
+          1000 sync round-trips through the bridge as an XCTest perf
+          measure (~10ms steady-state on M1 Max, regression gate at 10%).
+    - [ ] **State-item marshaling** — need to drive `unisonInit2Complete`
+          with a known reconcile state (e.g., the /tmp/unison-test-{a,b}
+          fixture) and verify the resulting `[StateItem]` field-by-field.
+          Tricky because OCaml init can only happen once; tests would
+          need to coordinate on a shared init1+init2 setup.
+    - [ ] **UI tests** (XCUITest) — launch → pick profile → reconcile
+          shows → Go → completes. Use the `UNISON_AUTOTEST_*` env hooks
+          we already have. Separate test target since UI tests run out-
+          of-process.
+    - [ ] **Modal warn/fatal sheet paths** — scripted scenarios for
+          warn-proceed, warn-cancel, and fatal-dismiss. Each must verify
+          `abortInFlight()` actually fires and the picker is usable
+          afterward.
+    - [ ] **Memory leaks** — `leaks(1)` after sync, scripted run.
+    - [ ] **Re-entrance** — handler that fires from OCaml→C→Swift then
+          re-enters the bridge from the handler. Tests the 3-worker
+          design from the bring-up.
 
 ## P2 — Features from the legacy app
 

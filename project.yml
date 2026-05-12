@@ -55,3 +55,22 @@ targets:
           - -lunixnat
           - -lcamlstrnat
           - -lpthread
+
+  unison-ui-macTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: unison-ui-mac
+    settings:
+      base:
+        PRODUCT_NAME: unison-ui-macTests
+        PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-macTests
+        # Tests link into the running app process (TEST_HOST below), so the
+        # OCaml runtime is already initialized by AppDelegate.applicationDidFinishLaunching.
+        # No need to re-link blob.o or libasmrun here.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/unison-ui-mac.app/Contents/MacOS/unison-ui-mac
+        BUNDLE_LOADER: $(TEST_HOST)
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES

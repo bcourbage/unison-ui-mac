@@ -36,11 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Spin up the OCaml runtime on its dedicated thread. This blocks
         // briefly (~hundreds of ms) — acceptable during launch.
-        let args = CommandLine.arguments
-        var cArgs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
-        cArgs.append(nil)
+        //
+        // Pass only argv[0]: OCaml's Prefs.parseCmdLine rejects anything it
+        // doesn't recognize. macOS / XCTest pass us flags like
+        // `-NSTreatUnknownArgumentsAsOpen` which would cause Unison to print
+        // its help text and exit. The GUI doesn't expose CLI args — profile
+        // selection happens through the picker — so a clean argv is correct.
+        let programName = CommandLine.arguments.first ?? "unison-ui-mac"
+        var cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(programName), nil]
         cArgs.withUnsafeMutableBufferPointer { buf in
-            unison_bridge_startup(Int32(args.count), buf.baseAddress)
+            unison_bridge_startup(1, buf.baseAddress)
         }
         for p in cArgs { free(p) }
 

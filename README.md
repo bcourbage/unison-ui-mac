@@ -49,6 +49,7 @@ make build      # builds unison-blob.o (via upstream Unison make), strips
                 # libasmrun's main.n.o, regenerates xcodeproj, runs xcodebuild
 make run        # builds + launches the binary directly (stderr -> terminal)
 make app        # builds + `open`s the .app (detached, no terminal output)
+make test       # runs the XCTest bundle (`unison-ui-macTests`)
 make open       # opens unison-ui-mac.xcodeproj in Xcode
 make clean      # cleans .build/; preserves xcodeproj
 make distclean  # also removes the generated xcodeproj
@@ -115,6 +116,11 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
+├── Tests/                               XCTest bundle
+│   ├── StateItemTests.swift             Value-type round-trip
+│   ├── DirectionActionTests.swift       Toolbar-identifier invariants
+│   ├── TraceLogTests.swift              Async writer + concurrent safety
+│   └── BridgeTests.swift                Live OCaml bridge + perf measure
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

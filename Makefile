@@ -59,6 +59,19 @@ build: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 run: build
 	$(BUILT_BIN) $(RUNARGS)
 
+.PHONY: test
+test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+	xcodebuild \
+		-project $(XCODEPROJ) \
+		-scheme unison-ui-mac \
+		-configuration $(CONFIG) \
+		-derivedDataPath $(DERIVED) \
+		-destination 'platform=macOS' \
+		OCAMLLIBDIR=$(OCAMLLIBDIR) \
+		UNISON_SRC=$(UNISON_SRC) \
+		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
+		test
+
 .PHONY: app
 app: build
 	open $(BUILT_APP) $(if $(RUNARGS),--args $(RUNARGS),)
