@@ -758,6 +758,34 @@ const char *unison_bridge_ri_set_to_local(int row)  { return _ri_set_via("unison
 const char *unison_bridge_ri_set_skip(int row)      { return _ri_set_via("unisonRiSetConflict", row); }
 const char *unison_bridge_ri_set_merge(int row)     { return _ri_set_via("unisonRiSetMerge",    row); }
 
+/* Per-row getter. Same dispatch pattern as the ri_set_* functions but
+ * doesn't mutate state — just reads `unisonRiToDetails` for the row. */
+struct ri_details_io {
+    int  row;
+    char buf[4096];
+};
+
+static void _ocaml_ri_get_details(void *user) {
+    struct ri_details_io *io = user;
+    io->buf[0] = '\0';
+    if (io->row < 0 || (size_t)io->row >= g_ri_count) return;
+    const value *fn = caml_named_value("unisonRiToDetails");
+    if (fn == NULL) return;
+    value result = caml_callback(*fn, g_ri_roots[io->row]);
+    strncpy(io->buf, String_val(result), sizeof(io->buf) - 1);
+    io->buf[sizeof(io->buf) - 1] = '\0';
+}
+
+const char *unison_bridge_ri_get_details(int row) {
+    static _Thread_local char buf[4096];
+    struct ri_details_io io = { .row = row };
+    run_on_ocaml_thread(_ocaml_ri_get_details, &io);
+    if (io.buf[0] == '\0') return NULL;
+    strncpy(buf, io.buf, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+}
+
 static void _ocaml_synchronize(void *user) {
     (void)user;
     const value *closure = caml_named_value("unisonSynchronize");

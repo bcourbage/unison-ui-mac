@@ -141,6 +141,12 @@ const char *unison_bridge_ri_set_to_local(int row);   /* unisonRiSetLeft:  remot
 const char *unison_bridge_ri_set_skip(int row);       /* unisonRiSetConflict */
 const char *unison_bridge_ri_set_merge(int row);      /* unisonRiSetMerge */
 
+/* Calls OCaml's unisonRiToDetails for the given row and returns the
+ * multi-line details string (path, both sides' size/mtime, conflict
+ * reason). Returned pointer is owned by the bridge and stable until the
+ * next call from the same thread — copy if you need to retain it. */
+const char *unison_bridge_ri_get_details(int row);
+
 /* === Synchronize — run the transfer over the current direction overrides ===
  *
  * Asynchronous. During sync, OCaml fires displayStatus + displayGlobalProgress

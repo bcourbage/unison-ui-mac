@@ -26,6 +26,17 @@ enum DirectionAction {
         }
     }
 
+    /// Per-action accent for the toolbar icon. Same palette as the row tints
+    /// (see StateItem.rowTint) so the visual language is consistent.
+    var accentColor: NSColor {
+        switch self {
+        case .toRemote: return .systemGreen
+        case .toLocal:  return .systemBlue
+        case .skip:     return .systemOrange
+        case .merge:    return .systemPurple
+        }
+    }
+
     var toolbarIdentifier: NSToolbarItem.Identifier {
         switch self {
         case .toRemote: return .init("dir.toRemote")
@@ -35,10 +46,12 @@ enum DirectionAction {
         }
     }
 
-    static let goIdentifier       = NSToolbarItem.Identifier("sync.go")
-    static let stopIdentifier     = NSToolbarItem.Identifier("sync.stop")
-    static let rescanIdentifier   = NSToolbarItem.Identifier("sync.rescan")
-    static let profilesIdentifier = NSToolbarItem.Identifier("nav.profiles")
+    static let goIdentifier         = NSToolbarItem.Identifier("sync.go")
+    static let stopIdentifier       = NSToolbarItem.Identifier("sync.stop")
+    static let rescanIdentifier     = NSToolbarItem.Identifier("sync.rescan")
+    static let profilesIdentifier   = NSToolbarItem.Identifier("nav.profiles")
+    /// Segmented-control group hosting all four direction items.
+    static let directionGroupIdentifier = NSToolbarItem.Identifier("dir.group")
 
     func invoke(row: Int32) -> UnsafePointer<CChar>? {
         switch self {
@@ -49,6 +62,9 @@ enum DirectionAction {
         }
     }
 
+    /// Display order in the toolbar group, left → right.
+    /// Local first (matches direction column reading "Local → Remote"), then
+    /// Remote, then non-direction outcomes (Skip, Merge).
     static let all: [DirectionAction] = [.toLocal, .toRemote, .skip, .merge]
 }
 
@@ -58,24 +74,24 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     weak var controller: ReconcileWindowController?
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        DirectionAction.all.map(\.toolbarIdentifier) + [
-            DirectionAction.profilesIdentifier,
-            DirectionAction.rescanIdentifier,
-            DirectionAction.goIdentifier,
-            DirectionAction.stopIdentifier,
-            .flexibleSpace, .space,
-        ]
+        [DirectionAction.profilesIdentifier,
+         DirectionAction.rescanIdentifier,
+         DirectionAction.directionGroupIdentifier,
+         DirectionAction.goIdentifier,
+         DirectionAction.stopIdentifier,
+         .flexibleSpace, .space]
     }
 
+    /// Reading order: navigation (Profiles) → context refresh (Rescan) →
+    /// per-row direction overrides (segmented group) → flexible space →
+    /// primary action (Go) → escape hatch (Stop). Placing Stop on the far
+    /// right separates "destructive" from "primary" visually.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [DirectionAction.profilesIdentifier,
-         .space,
-         DirectionAction.toLocal.toolbarIdentifier,
-         DirectionAction.toRemote.toolbarIdentifier,
-         DirectionAction.skip.toolbarIdentifier,
-         DirectionAction.merge.toolbarIdentifier,
-         .flexibleSpace,
          DirectionAction.rescanIdentifier,
+         .space,
+         DirectionAction.directionGroupIdentifier,
+         .flexibleSpace,
          DirectionAction.goIdentifier,
          DirectionAction.stopIdentifier]
     }
@@ -90,6 +106,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     paletteLabel: "Choose Profile",
                                     toolTip: "Return to the profile picker",
                                     symbol: "list.bullet",
+                                    tint: nil,
                                     action: #selector(profilesAction(_:)))
         case DirectionAction.goIdentifier:
             return makeWorkflowItem(itemIdentifier,
@@ -97,6 +114,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     paletteLabel: "Synchronize",
                                     toolTip: "Run synchronization",
                                     symbol: "play.fill",
+                                    tint: .systemGreen,
                                     action: #selector(goAction(_:)))
         case DirectionAction.stopIdentifier:
             return makeWorkflowItem(itemIdentifier,
@@ -104,6 +122,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     paletteLabel: "Cancel sync",
                                     toolTip: "Cancel the running synchronization",
                                     symbol: "stop.fill",
+                                    tint: .systemRed,
                                     action: #selector(stopAction(_:)))
         case DirectionAction.rescanIdentifier:
             return makeWorkflowItem(itemIdentifier,
@@ -111,39 +130,71 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     paletteLabel: "Rescan",
                                     toolTip: "Re-check both replicas for changes",
                                     symbol: "arrow.clockwise",
+                                    tint: nil,
                                     action: #selector(rescanAction(_:)))
+        case DirectionAction.directionGroupIdentifier:
+            return makeDirectionGroup(itemIdentifier)
         default:
-            break
-        }
-        guard let action = DirectionAction.all.first(where: { $0.toolbarIdentifier == itemIdentifier }) else {
             return nil
         }
-        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.label = action.label
-        item.paletteLabel = action.label
-        item.toolTip = action.label
-        item.image = NSImage(systemSymbolName: action.systemSymbol, accessibilityDescription: action.label)
-        item.target = self
-        item.action = #selector(toolbarAction(_:))
-        item.tag = directionActionTag(action)
-        return item
     }
+
+    // MARK: - Item factories
 
     private func makeWorkflowItem(_ id: NSToolbarItem.Identifier,
                                   label: String,
                                   paletteLabel: String,
                                   toolTip: String,
                                   symbol: String,
+                                  tint: NSColor?,
                                   action: Selector) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = label
         item.paletteLabel = paletteLabel
         item.toolTip = toolTip
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.image = symbolImage(symbol, accessibility: label, tint: tint)
         item.target = self
         item.action = action
         return item
     }
+
+    /// Build a single segmented group containing all four direction overrides.
+    /// `selectionMode = .momentary` because each click is an action (not a
+    /// toggle) — clicking "← Local" applies that direction to the selection,
+    /// it isn't a sticky state on the toolbar.
+    private func makeDirectionGroup(_ id: NSToolbarItem.Identifier) -> NSToolbarItemGroup {
+        let group = NSToolbarItemGroup(itemIdentifier: id)
+        group.label = "Direction"
+        group.paletteLabel = "Set Direction"
+        group.controlRepresentation = .expanded
+        group.selectionMode = .momentary
+
+        let subitems: [NSToolbarItem] = DirectionAction.all.map { action in
+            let sub = NSToolbarItem(itemIdentifier: action.toolbarIdentifier)
+            sub.label = action.label
+            sub.paletteLabel = action.label
+            sub.toolTip = action.label
+            sub.image = symbolImage(action.systemSymbol,
+                                    accessibility: action.label,
+                                    tint: action.accentColor)
+            sub.target = self
+            sub.action = #selector(toolbarAction(_:))
+            sub.tag = directionActionTag(action)
+            return sub
+        }
+        group.subitems = subitems
+        return group
+    }
+
+    /// SF Symbol with optional palette tint. nil tint = system monochrome.
+    private func symbolImage(_ name: String, accessibility: String, tint: NSColor?) -> NSImage? {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: accessibility)
+        guard let tint else { return image }
+        let config = NSImage.SymbolConfiguration(paletteColors: [tint])
+        return image?.withSymbolConfiguration(config)
+    }
+
+    // MARK: - Actions
 
     @objc private func toolbarAction(_ sender: NSToolbarItem) {
         guard let action = directionActionFromTag(sender.tag) else { return }

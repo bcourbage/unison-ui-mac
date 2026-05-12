@@ -51,20 +51,46 @@ go back / refresh / open another profile.
       line in the picker status label. Worth surfacing the full text via
       tooltip or a "Show details" disclosure, especially for SSH error
       output during connect.
-- [ ] **"Reset archives" recovery action per profile** — deletes the local
-      `ar*` / `fp*` / `lk*` files for the selected profile so the next sync
-      starts from a clean slate. Surface as a profile-context menu item
-      with a confirmation sheet ("This will make every file look new to
-      Unison — expect lots of conflicts on the next sync"). The matching
-      archive on the *remote* host can't be deleted by us; show its name +
-      host so the user can clean it up manually. Implementation:
-    - New bridge call (e.g. `unison_bridge_archive_basenames()`) that returns
-      the local + remote archive basenames after init1 — OCaml's
-      `Update.archiveName` or scanning `Os.fingerprintFile` output.
-    - Swift deletes the local files; shows the remote name in the
-      confirmation sheet.
-    - Belongs in P1 because it directly addresses the failure mode that bit
-      us during bring-up (orphan lock files + cross-host archive mismatch).
+- [/] **"Reset archives" recovery action per profile** *(partial)* — the
+      *reactive* path is done: when Unison hits the "inconsistent state"
+      fatal during reconcile, the modal now offers a one-click
+      "Delete N Orphan Archive(s) and Retry" button (see
+      `ArchiveRecovery.swift`). What's still missing is the *proactive*
+      path: a profile-context menu item in the picker that wipes ar/fp/lk
+      *before* any error, with a clear warning. Implementation hint: would
+      need a bridge call to resolve the local+remote archive basenames
+      from the profile's roots so we can delete only the relevant files
+      instead of guessing from a fatal message after the fact.
+- [ ] **Hide / delete profile from the picker** — destructive on disk
+      (delete) or app-only (hide). Both belong in a right-click context
+      menu on profile rows, with a confirmation sheet for delete.
+      Implementation question for "hide" is *where to store the state* so
+      the CLI `unison <profile>` keeps working — three reasonable options:
+    1. **Store in `NSUserDefaults`** under `net.courbage.unison-ui-mac`.
+       The list of hidden basenames lives in the app's prefs. CLI users
+       see all profiles; only this app filters. Cleanest if "hide" is
+       conceptually a per-app view setting.
+    2. **Marker comment in the .prf file** like `# unison-ui-mac:hidden`.
+       Unison ignores comments, so CLI is unaffected. Single source of
+       truth (the file itself), but the file must be writable and the
+       comment can be lost on profile edits.
+    3. **Sidecar file** like `~/Library/Application Support/Unison/.uimac-hidden`
+       listing hidden basenames. Like (1) but stored next to the
+       profiles, shareable across versions of the app.
+    Recommend **option 1** unless we ever want multiple installs of the
+    app to share the same hidden set — then option 3.
+- [ ] **Reconcile toolbar layout** — current order/grouping isn't great.
+      Concretely: the four direction buttons (Local / Remote / Skip /
+      Merge) should be visually distinct from workflow actions (Rescan /
+      Go / Stop) and the navigation item (Profiles). Likely fixes:
+    - Use NSToolbarItemGroup to bundle the four directions as a single
+      segmented control.
+    - Use a clearer left-to-right reading: navigation → context (Rescan)
+      → per-row actions (direction group) → flexible space → primary
+      action (Go) → escape hatch (Stop).
+    - Consistent SF Symbol weights/styles within each group.
+    - Likely pairs with the P1 "Colorful toolbar / table icons" item —
+      the icon overhaul will resurface this layout decision anyway.
 - [ ] **Colorful toolbar / table icons** — the legacy app's toolbar icons
       ([uimac/toolbar/*.tif](https://github.com/bcpierce00/unison/tree/master/src/uimac/toolbar))
       and table-row status icons

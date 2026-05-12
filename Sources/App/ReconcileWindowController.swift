@@ -20,6 +20,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     private let tableView = NSTableView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
+    private let detailsTextView = NSTextView()
+    private let detailsScroll = NSScrollView()
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
 
@@ -114,7 +116,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         scroll.hasHorizontalScroller = true
         scroll.borderType = .lineBorder
 
-        let stack = NSStackView(views: [summaryLabel, progressBar, scroll])
+        configureDetailsPanel()
+
+        let stack = NSStackView(views: [summaryLabel, progressBar, scroll, detailsScroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -128,9 +132,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
             summaryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
             progressBar.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
+            detailsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
+            detailsScroll.heightAnchor.constraint(equalToConstant: 90),
         ])
 
         UnisonBridge.installReloadRowHandler { [weak self] row, progress, bytes in
@@ -158,7 +164,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     private func installToolbar() {
         guard let window else { return }
         toolbarDelegate.controller = self
-        let toolbar = NSToolbar(identifier: "ReconcileToolbar")
+        // Identifier suffix bump after each schema change forces the
+        // autosaved layout to reset — otherwise users keep the old buttons
+        // and miss new ones. Bump when item identifiers or grouping change.
+        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v2")
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -231,6 +240,40 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         replaceItems(newItems)
     }
 
+    // MARK: - Details panel
+
+    private func configureDetailsPanel() {
+        detailsTextView.isEditable = false
+        detailsTextView.isSelectable = true
+        detailsTextView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        detailsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        detailsTextView.drawsBackground = true
+        detailsTextView.backgroundColor = .textBackgroundColor
+        detailsTextView.string = "Select a row to see details."
+        detailsTextView.textColor = .secondaryLabelColor
+
+        detailsScroll.documentView = detailsTextView
+        detailsScroll.hasVerticalScroller = true
+        detailsScroll.borderType = .lineBorder
+        detailsScroll.autohidesScrollers = true
+    }
+
+    private func updateDetailsForSelection() {
+        let row = tableView.selectedRow
+        guard row >= 0, row < items.count else {
+            detailsTextView.string = "Select a row to see details."
+            detailsTextView.textColor = .secondaryLabelColor
+            return
+        }
+        // Lazy fetch — only when the user actually selects a row.
+        if let cstr = unison_bridge_ri_get_details(Int32(row)) {
+            detailsTextView.string = String(cString: cstr)
+        } else {
+            detailsTextView.string = items[row].path  // fallback
+        }
+        detailsTextView.textColor = .labelColor
+    }
+
     /// Update the status line during a scan (e.g. "Looking for changes…").
     /// First line only — same filter the picker used.
     func updateScanStatus(_ msg: String) {
@@ -284,9 +327,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
             changedRows.insert(row)
         }
         if !changedRows.isEmpty {
-            // Reload only the changed rows + all columns we touch.
+            // reloadData only refreshes cell views — the NSTableRowView's
+            // background tint must be updated explicitly.
             let allCols = IndexSet(integersIn: 0..<tableView.numberOfColumns)
             tableView.reloadData(forRowIndexes: changedRows, columnIndexes: allCols)
+            for row in changedRows {
+                guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? TintedRowView else { continue }
+                rowView.tint = items[row].rowTint
+            }
             summaryLabel.stringValue = summaryText(profile: profile)
         }
     }
@@ -311,7 +359,58 @@ extension ReconcileWindowController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 }
 
+/// Tinted row view that draws a translucent background color based on the
+/// reconcile direction (green for "to remote", blue for "to local",
+/// orange for conflict, purple for merge, clear otherwise). The system
+/// alternating-row + selection highlight still apply on top.
+final class TintedRowView: NSTableRowView {
+    var tint: NSColor = .clear {
+        didSet {
+            guard tint != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        if tint != .clear {
+            tint.setFill()
+            dirtyRect.fill(using: .sourceOver)
+        }
+    }
+}
+
+private extension StateItem {
+    /// Soft, system-color-derived tint per OCaml direction string. Uses
+    /// low alpha so the path text + selection highlight stay readable in
+    /// both light and dark mode.
+    var rowTint: NSColor {
+        switch direction {
+        case "---->": return NSColor.systemGreen.withAlphaComponent(0.10)  // local → remote
+        case "<----": return NSColor.systemBlue.withAlphaComponent(0.10)   // remote → local
+        case "<-?->": return NSColor.systemOrange.withAlphaComponent(0.15) // conflict
+        case "<-M->": return NSColor.systemPurple.withAlphaComponent(0.12) // merge
+        default:      return .clear
+        }
+    }
+}
+
 extension ReconcileWindowController: NSTableViewDelegate {
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateDetailsForSelection()
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard row < items.count else { return nil }
+        let id = NSUserInterfaceItemIdentifier("TintedRow")
+        let view = tableView.makeView(withIdentifier: id, owner: self) as? TintedRowView ?? {
+            let v = TintedRowView()
+            v.identifier = id
+            return v
+        }()
+        view.tint = items[row].rowTint
+        return view
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let column = tableColumn,
               let col = Col(rawValue: column.identifier.rawValue),
