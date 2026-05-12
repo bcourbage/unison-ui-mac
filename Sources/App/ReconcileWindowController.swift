@@ -30,12 +30,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Initialize with no items. The owner (AppDelegate) is expected to
+    /// drive init1+init2 against this window, calling `beginInitialScan()`
+    /// before invoking the bridge and `replaceItems(_:)` when results
+    /// arrive. The empty state is shown until then.
     init(profile: String,
-         items: [StateItem],
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest) {
         self.profile = profile
-        self.items = items
+        self.items = []
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         let window = NSWindow(
@@ -187,7 +190,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         window?.performClose(nil)
     }
 
-    // MARK: - Rescan
+    // MARK: - Scanning (initial or rescan)
 
     /// Triggered by the toolbar's Rescan item. Delegates to AppDelegate
     /// (via `onRescanRequested`) since the init2 handler registration is
@@ -197,11 +200,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         onRescanRequested()
     }
 
-    func beginRescan() {
+    /// Show the indeterminate progress + status. Used for both the first
+    /// scan after opening the window and re-scans triggered from toolbar.
+    func beginScanning(_ message: String) {
         progressBar.isHidden = false
         progressBar.isIndeterminate = true
         progressBar.startAnimation(nil)
-        summaryLabel.stringValue = "Rescanning \(profile)…"
+        summaryLabel.stringValue = message
+    }
+
+    func beginInitialScan() {
+        beginScanning("Opening \(profile)…")
+    }
+
+    func beginRescan() {
+        beginScanning("Rescanning \(profile)…")
     }
 
     func endRescan(newItems: [StateItem]) {
@@ -209,6 +222,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         progressBar.isIndeterminate = false
         progressBar.isHidden = true
         replaceItems(newItems)
+    }
+
+    /// Update the status line during a scan (e.g. "Looking for changes…").
+    /// First line only — same filter the picker used.
+    func updateScanStatus(_ msg: String) {
+        let firstLine = msg.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? msg
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            summaryLabel.stringValue = trimmed
+        }
     }
 
     private func updateGlobalProgress(_ percent: Double) {

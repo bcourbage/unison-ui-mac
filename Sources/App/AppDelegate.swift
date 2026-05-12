@@ -93,19 +93,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reconcileWindowController = nil
         }
         let controller = profileWindowController
-            ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile, items in
-                self?.profileSelected(profile, items: items)
+            ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile in
+                self?.profileSelected(profile)
             }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         profileWindowController = controller
     }
 
-    private func profileSelected(_ profile: String, items: [StateItem]) {
-        log.write("AppDelegate: profile '\(profile)' returned \(items.count) items — opening reconcile window")
+    /// User picked a profile in the picker. Open the reconcile window
+    /// in its "scanning" state immediately, then drive init1 → (prompts) →
+    /// init2 → populate. The user sees the destination window right away
+    /// rather than waiting in the picker.
+    private func profileSelected(_ profile: String) {
+        log.write("AppDelegate: profile '\(profile)' picked — opening reconcile window in scanning state")
+
+        // Mirror OCaml status messages into the reconcile window's summary
+        // line so the user sees "Looking for changes ..." live. Also keep
+        // logging to TraceLog for dev visibility.
+        UnisonBridge.installStatusHandler { [weak self] msg in
+            TraceLog.shared.write("[ocaml→status] \(msg.prefix(200))")
+            self?.reconcileWindowController?.updateScanStatus(msg)
+        }
+
         let reconcile = ReconcileWindowController(
             profile: profile,
-            items: items,
             onClose: { [weak self] in
                 guard let self else { return }
                 self.log.write("reconcile window closed — returning to picker")
@@ -118,20 +130,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         reconcile.showWindow(nil)
         reconcile.window?.makeKeyAndOrderFront(nil)
+        reconcile.beginInitialScan()
         reconcileWindowController = reconcile
         profileWindowController?.close()
 
-        if ProcessInfo.processInfo.environment["UNISON_AUTOTEST_RI_OPS"] != nil {
-            log.write("AUTOTEST_RI_OPS: starting direction-override test")
-            DispatchQueue.main.async { [weak self] in
-                self?.runRiOpsAutotest(items: items)
+        // Wire init1/init2 handlers, then kick off init1. Init2Complete will
+        // populate the reconcile window via endRescan/replaceItems.
+        UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
+            self?.log.write("init1 complete (needs_prompt=\(needsPrompt))")
+            guard let self else { return }
+            if needsPrompt {
+                self.drivePromptLoop()
+            } else {
+                self.log.write("init1 ok — calling init2")
+                unison_bridge_init2()
             }
         }
-        if ProcessInfo.processInfo.environment["UNISON_AUTOTEST_SYNC"] != nil {
-            log.write("AUTOTEST_SYNC: triggering startSync")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak reconcile] in
-                reconcile?.startSync()
+        UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
+            self?.log.write("init2 complete — \(items.count) reconcile items")
+            reconcile?.endRescan(newItems: items)
+            // Autotest hooks live here so they run after the items land.
+            self?.maybeRunAutotestHooks(reconcile: reconcile, items: items)
+        }
+
+        profile.withCString { unison_bridge_init1($0) }
+    }
+
+    /// SSH credential prompt loop. Runs after init1Complete with
+    /// `needs_prompt = true`. Sheets are hosted by whichever window is
+    /// currently active in the workflow — typically the reconcile window,
+    /// since the picker has already closed by this point.
+    private var pendingPasswordSheet: PasswordSheet?
+
+    private func drivePromptLoop() {
+        guard let cstr = unison_bridge_connection_prompt() else {
+            log.write("connection: no more prompts — calling connection_end + init2")
+            unison_bridge_connection_end()
+            unison_bridge_init2()
+            return
+        }
+        let prompt = String(cString: cstr)
+        log.write("connection prompt: \(prompt)")
+        let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
+            guard let self else { return }
+            self.pendingPasswordSheet = nil
+            guard let response else {
+                self.log.write("connection: user cancelled")
+                unison_bridge_connection_cancel()
+                // Cancelling drops us back to the picker — closing reconcile
+                // triggers the onClose -> showProfilePicker path.
+                self.reconcileWindowController?.close()
+                return
             }
+            unison_bridge_connection_reply(response)
+            self.drivePromptLoop()
+        }
+        pendingPasswordSheet = sheet
+        if let parent = reconcileWindowController?.window ?? profileWindowController?.window {
+            sheet.runAsSheet(over: parent)
         }
     }
 
@@ -148,6 +204,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reconcile?.endRescan(newItems: items)
         }
         unison_bridge_init2()
+    }
+
+    private func maybeRunAutotestHooks(reconcile: ReconcileWindowController?, items: [StateItem]) {
+        if ProcessInfo.processInfo.environment["UNISON_AUTOTEST_RI_OPS"] != nil {
+            log.write("AUTOTEST_RI_OPS: starting direction-override test")
+            DispatchQueue.main.async { [weak self] in
+                self?.runRiOpsAutotest(items: items)
+            }
+        }
+        if ProcessInfo.processInfo.environment["UNISON_AUTOTEST_SYNC"] != nil {
+            log.write("AUTOTEST_SYNC: triggering startSync")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak reconcile] in
+                reconcile?.startSync()
+            }
+        }
     }
 
     private func runRiOpsAutotest(items: [StateItem]) {
@@ -174,11 +245,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reset every active window's in-flight UI state. Called after a fatal
     /// alert is dismissed — OCaml's worker thread is unwinding past the
     /// failure point, so no completion callback will arrive on its own.
+    /// Strategy now that the scan happens in the reconcile window: close
+    /// the reconcile window, which routes via onClose back to the picker.
     private func abortAllInFlight() {
-        profileWindowController?.abortInFlight()
-        // Reconcile-window aborts would close it; for now we just leave it
-        // open since the failure usually happens during init, before the
-        // reconcile window appears.
+        if let sheet = pendingPasswordSheet?.window, let parent = sheet.sheetParent {
+            parent.endSheet(sheet)
+        }
+        pendingPasswordSheet = nil
+        if let reconcile = reconcileWindowController {
+            log.write("abortAllInFlight: closing reconcile window")
+            reconcile.close()
+            // onClose handler will reopen the picker.
+        }
     }
 
     // MARK: - Diagnostics

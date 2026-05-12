@@ -1,13 +1,14 @@
 import AppKit
 
 /// Lists `.prf` profiles in the Unison preferences directory and lets the
-/// user pick one. Mirrors the legacy `ProfileController.m` — same data
-/// (directory listing of *.prf), simpler implementation (no nib, modern
-/// view-based NSTableView, programmatic Auto Layout).
+/// user pick one. Pure picker — no init/scan logic. Once the user picks
+/// a profile, `onComplete(profile)` fires and the AppDelegate is
+/// responsible for closing the picker, opening the reconcile window, and
+/// driving init1/init2.
 @MainActor
 final class ProfileWindowController: NSWindowController {
 
-    typealias Completion = @MainActor (_ profile: String, _ items: [StateItem]) -> Void
+    typealias Completion = @MainActor (_ profile: String) -> Void
 
     private let unisonDirectory: String
     private let onComplete: Completion
@@ -16,8 +17,6 @@ final class ProfileWindowController: NSWindowController {
     private let tableView = NSTableView()
     private let openButton = NSButton(title: "Open", target: nil, action: nil)
     private let pathLabel = NSTextField(labelWithString: "")
-    private let progressSpinner = NSProgressIndicator()
-    private let statusLabel = NSTextField(labelWithString: "")
 
     init(unisonDirectory: String, onComplete: @escaping Completion) {
         self.unisonDirectory = unisonDirectory
@@ -71,23 +70,7 @@ final class ProfileWindowController: NSWindowController {
         openButton.action = #selector(openSelected)
         openButton.keyEquivalent = "\r"
 
-        progressSpinner.style = .spinning
-        progressSpinner.controlSize = .small
-        progressSpinner.isDisplayedWhenStopped = false
-
-        statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.stringValue = ""
-        statusLabel.lineBreakMode = .byTruncatingMiddle
-        statusLabel.maximumNumberOfLines = 1
-        statusLabel.usesSingleLineMode = true
-        statusLabel.cell?.wraps = false
-        statusLabel.cell?.isScrollable = false
-        // Cap width so a long file path can't push other UI off-screen.
-        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let bottomRow = NSStackView(views: [progressSpinner, statusLabel, NSView(), openButton])
+        let bottomRow = NSStackView(views: [NSView(), openButton])
         bottomRow.orientation = .horizontal
         bottomRow.distribution = .fill
         bottomRow.spacing = 8
@@ -125,68 +108,9 @@ final class ProfileWindowController: NSWindowController {
         TraceLog.shared.write("ProfileWindow: \(profiles.count) profiles in \(unisonDirectory)")
     }
 
-    private var passwordSheet: PasswordSheet?
-
-    private func beginBusy(_ status: String) {
-        statusLabel.stringValue = status
-        progressSpinner.startAnimation(nil)
-    }
-
-    private func endBusy() {
-        progressSpinner.stopAnimation(nil)
-        statusLabel.stringValue = ""
-    }
-
-    /// Called after a fatal-error sheet (or a warning where the user chose
-    /// "Cancel sync") — the in-flight init1/init2 will not fire its
-    /// completion callback, so we reset the picker UI ourselves.
-    func abortInFlight() {
-        endBusy()
-        openButton.isEnabled = true
-        tableView.isEnabled = true
-        if let sheet = passwordSheet?.window, let parent = window {
-            parent.endSheet(sheet)
-        }
-        passwordSheet = nil
-    }
-
-    /// Drives Remote.openConnection's state machine. Calls connectionPrompt,
-    /// shows a sheet for each non-nil prompt, sends the user's response, and
-    /// either loops (further prompt) or calls connectionEnd then init2.
-    private func drivePromptLoop() {
-        guard let cstr = unison_bridge_connection_prompt() else {
-            // No more prompts — finalize and proceed.
-            TraceLog.shared.write("connection: no more prompts — calling connection_end + init2")
-            unison_bridge_connection_end()
-            unison_bridge_init2()
-            return
-        }
-        let prompt = String(cString: cstr)
-        TraceLog.shared.write("connection prompt: \(prompt)")
-        let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
-            guard let self else { return }
-            self.passwordSheet = nil
-            guard let response else {
-                TraceLog.shared.write("connection: user cancelled")
-                unison_bridge_connection_cancel()
-                self.endBusy()
-                self.openButton.isEnabled = true
-                self.tableView.isEnabled = true
-                return
-            }
-            unison_bridge_connection_reply(response)
-            // Loop — the next prompt may be another field, or nil for done.
-            self.drivePromptLoop()
-        }
-        passwordSheet = sheet
-        if let parent = self.window {
-            sheet.runAsSheet(over: parent)
-        }
-    }
-
     /// Programmatic entry — selects the named profile in the table and
-    /// triggers the init flow as if the user had double-clicked. Used by
-    /// the env-var autotest hook in AppDelegate.
+    /// triggers Open as if the user had double-clicked. Used by the
+    /// env-var autotest hook in AppDelegate.
     func autoSelectAndOpen(profile: String) {
         guard let idx = profiles.firstIndex(of: profile) else {
             TraceLog.shared.write("AUTOTEST: profile '\(profile)' not found")
@@ -200,46 +124,8 @@ final class ProfileWindowController: NSWindowController {
         let row = tableView.selectedRow
         guard row >= 0, row < profiles.count else { NSSound.beep(); return }
         let profile = profiles[row]
-        TraceLog.shared.write("ProfileWindow: selected '\(profile)' — calling init1")
-
-        openButton.isEnabled = false
-        tableView.isEnabled = false
-        beginBusy("Opening \(profile)…")
-
-        // Mirror OCaml status messages into our status label so the user sees
-        // "Looking for changes ..." style updates. Take only the first line —
-        // Unison sometimes sends multi-line warning blocks that would push
-        // the status bar to multi-line height and clobber the layout. Real
-        // warning/error UI is on the TODO list.
-        UnisonBridge.installStatusHandler { [weak self] msg in
-            let firstLine = msg.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? msg
-            let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty {
-                self?.statusLabel.stringValue = trimmed
-            }
-        }
-
-        UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
-            TraceLog.shared.write("init1 complete (needs_prompt=\(needsPrompt))")
-            guard let self else { return }
-            if needsPrompt {
-                self.drivePromptLoop()
-            } else {
-                TraceLog.shared.write("init1 ok — calling init2")
-                unison_bridge_init2()
-            }
-        }
-
-        UnisonBridge.installInit2CompleteHandler { [weak self] items in
-            TraceLog.shared.write("init2 complete — \(items.count) reconcile items")
-            guard let self else { return }
-            self.endBusy()
-            self.openButton.isEnabled = true
-            self.tableView.isEnabled = true
-            self.onComplete(profile, items)
-        }
-
-        profile.withCString { unison_bridge_init1($0) }
+        TraceLog.shared.write("ProfileWindow: selected '\(profile)' — handing off to AppDelegate")
+        onComplete(profile)
     }
 }
 
