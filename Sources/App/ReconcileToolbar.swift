@@ -87,10 +87,14 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     /// primary action (Go) → escape hatch (Stop). Placing Stop on the far
     /// right separates "destructive" from "primary" visually.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // Two .space items between clusters give a clearer visual break than
+        // one — Profiles/Rescan are navigation+context, the direction group
+        // is per-row action, Go/Stop are workflow primary/escape.
         [DirectionAction.profilesIdentifier,
          DirectionAction.rescanIdentifier,
-         .space,
+         .space, .space,
          DirectionAction.directionGroupIdentifier,
+         .space, .space,
          .flexibleSpace,
          DirectionAction.goIdentifier,
          DirectionAction.stopIdentifier]

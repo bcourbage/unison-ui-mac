@@ -1,10 +1,12 @@
 import AppKit
 
-/// Layer 1: read-only listing of reconciliation results.
-/// Future layers will add direction overrides + a Go button.
+/// Reconcile-window view: an `NSOutlineView` that mirrors Finder's
+/// hierarchical view. Files are leaves; intermediate path segments are
+/// folders. The tree is rebuilt on every `replaceItems(_:)` from the
+/// flat `[StateItem]` we get from OCaml.
 ///
-/// Performance note: rows live entirely in the Swift array `items`; no
-/// per-row bridge calls during scrolling. NSTableView's view recycling
+/// Performance note: rows live entirely in the Swift `items` array; no
+/// per-row bridge calls during scrolling. NSOutlineView's view recycling
 /// handles the table-of-thousands case naturally — we only build cell
 /// views for visible rows, and each cell pulls from a single struct read.
 @MainActor
@@ -14,10 +16,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     typealias RescanRequest = @MainActor () -> Void
 
     private var items: [StateItem]
+    private var tree = ReconcileTree(items: [])
     private let profile: String
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
-    private let tableView = NSTableView()
+    private let outlineView = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
@@ -57,6 +60,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         installToolbar()
     }
 
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
     // MARK: - NSWindowDelegate
 
     nonisolated func windowWillClose(_ notification: Notification) {
@@ -66,14 +71,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Replace the displayed items (e.g. after a rescan completes). Must
-    /// be called on the main thread.
+    /// be called on the main thread. Rebuilds the tree and expands every
+    /// folder by default — matches Finder's "outline open" feel.
     func replaceItems(_ newItems: [StateItem]) {
         items = newItems
-        tableView.reloadData()
+        tree = ReconcileTree(items: newItems)
+        outlineView.reloadData()
+        outlineView.expandItem(nil, expandChildren: true)
         summaryLabel.stringValue = summaryText(profile: profile)
     }
-
-    required init?(coder: NSCoder) { fatalError("not implemented") }
 
     private func configure(profile: String) {
         guard let contentView = window?.contentView else { return }
@@ -90,6 +96,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         addColumn(.progress, title: "Progress", width: 80, min: 60)
         addColumn(.type, title: "Type", width: 60, min: 50)
 
+        // The "outline column" hosts the disclosure chevron + indent.
+        outlineView.outlineTableColumn = outlineView.tableColumn(withIdentifier: Col.path.identifier)
+
         progressBar.style = .bar
         progressBar.isIndeterminate = false
         progressBar.minValue = 0
@@ -97,21 +106,24 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         progressBar.doubleValue = 0
         progressBar.isHidden = true
 
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.allowsMultipleSelection = true
-        tableView.allowsColumnReordering = true
-        tableView.allowsColumnResizing = true
-        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        tableView.style = .inset
-        tableView.usesAutomaticRowHeights = false
-        tableView.rowHeight = 20
-        tableView.autosaveName = "ReconcileTable"
-        tableView.autosaveTableColumns = true
+        outlineView.dataSource = self
+        outlineView.delegate = self
+        outlineView.usesAlternatingRowBackgroundColors = true
+        outlineView.allowsMultipleSelection = true
+        outlineView.allowsColumnReordering = true
+        outlineView.allowsColumnResizing = true
+        outlineView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        outlineView.style = .inset
+        outlineView.usesAutomaticRowHeights = false
+        outlineView.rowHeight = 20
+        outlineView.indentationPerLevel = 14
+        outlineView.indentationMarkerFollowsCell = true
+        outlineView.autosaveName = "ReconcileOutline"
+        outlineView.autosaveTableColumns = true
+        outlineView.autosaveExpandedItems = false  // we re-expand on each populate
 
         let scroll = NSScrollView()
-        scroll.documentView = tableView
+        scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.borderType = .lineBorder
@@ -156,7 +168,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         c.width = width
         c.minWidth = min
         c.resizingMask = isPrimary ? [.autoresizingMask, .userResizingMask] : .userResizingMask
-        tableView.addTableColumn(c)
+        outlineView.addTableColumn(c)
     }
 
     // MARK: - Toolbar
@@ -167,7 +179,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         // Identifier suffix bump after each schema change forces the
         // autosaved layout to reset — otherwise users keep the old buttons
         // and miss new ones. Bump when item identifiers or grouping change.
-        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v2")
+        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v3")
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -188,18 +200,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         unison_bridge_synchronize()
     }
 
-    /// Toolbar "Profiles" action — return to the picker. Just performs
-    /// the window close; the windowWillClose -> onClose handler routes
-    /// back to AppDelegate.showProfilePicker.
+    /// Toolbar "Profiles" action — return to the picker.
     func returnToPicker() {
         window?.performClose(nil)
     }
 
-    /// Toolbar Stop action — matches the legacy app's "Cancel" semantics:
-    /// returns to the profile picker. The OCaml worker continues running
-    /// in the background until it finishes naturally. True mid-sync abort
-    /// would require exposing OCaml's `Abort.all` via Callback.register,
-    /// which the upstream uimacbridge doesn't do (see TODO: real cancel).
+    /// Toolbar Stop action — closes the window (returns to picker).
+    /// OCaml worker continues until it finishes naturally; real mid-sync
+    /// abort would need upstream-registered Abort.all (see TODO).
     func cancelSync() {
         guard isSyncing else { NSSound.beep(); return }
         TraceLog.shared.write("ReconcileWindow: user requested Stop — closing window (OCaml sync continues)")
@@ -208,16 +216,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Scanning (initial or rescan)
 
-    /// Triggered by the toolbar's Rescan item. Delegates to AppDelegate
-    /// (via `onRescanRequested`) since the init2 handler registration is
-    /// process-global — only one owner should manage it at a time.
     func rescan() {
         guard !isSyncing else { NSSound.beep(); return }
         onRescanRequested()
     }
 
-    /// Show the indeterminate progress + status. Used for both the first
-    /// scan after opening the window and re-scans triggered from toolbar.
     func beginScanning(_ message: String) {
         progressBar.isHidden = false
         progressBar.isIndeterminate = true
@@ -259,23 +262,38 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateDetailsForSelection() {
-        let row = tableView.selectedRow
-        guard row >= 0, row < items.count else {
+        guard let node = selectedNodes().first else {
             detailsTextView.string = "Select a row to see details."
             detailsTextView.textColor = .secondaryLabelColor
             return
         }
-        // Lazy fetch — only when the user actually selects a row.
-        if let cstr = unison_bridge_ri_get_details(Int32(row)) {
-            detailsTextView.string = String(cString: cstr)
+        if let row = node.row {
+            // Leaf — fetch details from OCaml.
+            if let cstr = unison_bridge_ri_get_details(Int32(row)) {
+                detailsTextView.string = String(cString: cstr)
+            } else {
+                detailsTextView.string = items[row].path
+            }
         } else {
-            detailsTextView.string = items[row].path  // fallback
+            // Folder — show its path + how many descendants are affected.
+            let leafCount = leafRows(under: node).count
+            detailsTextView.string = "\(folderFullPath(node))/\n\(leafCount) item\(leafCount == 1 ? "" : "s") in this folder"
         }
         detailsTextView.textColor = .labelColor
     }
 
-    /// Update the status line during a scan (e.g. "Looking for changes…").
-    /// First line only — same filter the picker used.
+    /// Walk a folder node's ancestors to reconstruct the full path. Used
+    /// by the details panel — leaves know their `fullPath` already.
+    private func folderFullPath(_ node: ReconcileNode) -> String {
+        var parts: [String] = []
+        var cursor: ReconcileNode? = node
+        while let n = cursor, !n.name.isEmpty {
+            parts.insert(n.name, at: 0)
+            cursor = n.parent
+        }
+        return parts.joined(separator: "/")
+    }
+
     func updateScanStatus(_ msg: String) {
         let firstLine = msg.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? msg
         let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
@@ -293,9 +311,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         guard row >= 0, row < items.count else { return }
         let path = items[row].path
         items[row] = items[row].with(progress: progress, bytesTransferred: bytesTransferred)
-        let allCols = IndexSet(integersIn: 0..<tableView.numberOfColumns)
-        tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: allCols)
+        if let node = leafNode(forRow: row) {
+            outlineView.reloadItem(node, reloadChildren: false)
+        }
         TraceLog.shared.write("reloadRow[\(row)] \(path): progress='\(progress)' bytes=\(bytesTransferred)")
+    }
+
+    /// O(items) walk to find the leaf for a row. Fine for the per-row
+    /// update path — fires at most ~once per file during sync. If we ever
+    /// hit profiles where this is hot, cache row → node in a dictionary.
+    private func leafNode(forRow row: Int) -> ReconcileNode? {
+        for node in tree.allNodes where node.row == row {
+            return node
+        }
+        return nil
     }
 
     private func syncDidComplete() {
@@ -308,14 +337,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Direction overrides
 
-    /// Applied to all currently-selected rows. The bridge call is synchronous
-    /// (round-trip through the OCaml worker), so we update the row's direction
-    /// from the value OCaml returns rather than guessing — keeps Swift and
-    /// OCaml state in lockstep even if Unison's rules differ from our model.
+    /// Applied to every leaf row in the current selection — including
+    /// leaves *underneath* selected folders. Single click on a folder thus
+    /// becomes "apply this action to every file in that folder".
     func applyDirection(_ action: DirectionAction) {
-        let rows = tableView.selectedRowIndexes
+        let rows = leafRowsInSelection()
         guard !rows.isEmpty else { NSSound.beep(); return }
-        var changedRows = IndexSet()
+        var changedRows: [Int] = []
         for row in rows {
             guard row < items.count else { continue }
             let raw = action.invoke(row: Int32(row))
@@ -324,19 +352,59 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
                 continue
             }
             items[row] = items[row].with(direction: str)
-            changedRows.insert(row)
+            changedRows.append(row)
         }
-        if !changedRows.isEmpty {
-            // reloadData only refreshes cell views — the NSTableRowView's
-            // background tint must be updated explicitly.
-            let allCols = IndexSet(integersIn: 0..<tableView.numberOfColumns)
-            tableView.reloadData(forRowIndexes: changedRows, columnIndexes: allCols)
-            for row in changedRows {
-                guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? TintedRowView else { continue }
+        for row in changedRows {
+            guard let node = leafNode(forRow: row) else { continue }
+            outlineView.reloadItem(node, reloadChildren: false)
+            // reloadItem updates cell views; refresh the row view's tint too.
+            let viewRow = outlineView.row(forItem: node)
+            if viewRow >= 0,
+               let rowView = outlineView.rowView(atRow: viewRow, makeIfNecessary: false) as? TintedRowView {
                 rowView.tint = items[row].rowTint
             }
+        }
+        if !changedRows.isEmpty {
             summaryLabel.stringValue = summaryText(profile: profile)
         }
+    }
+
+    // MARK: - Selection helpers
+
+    /// Currently-selected nodes (folders + leaves), in NSOutlineView's
+    /// row order.
+    private func selectedNodes() -> [ReconcileNode] {
+        outlineView.selectedRowIndexes.compactMap {
+            outlineView.item(atRow: $0) as? ReconcileNode
+        }
+    }
+
+    /// All leaf rows reachable from the current selection. A selected
+    /// folder contributes every leaf underneath it; a selected leaf
+    /// contributes itself; duplicates (folder + descendant both selected)
+    /// are de-duplicated.
+    private func leafRowsInSelection() -> [Int] {
+        var seen = Set<Int>()
+        var result: [Int] = []
+        for node in selectedNodes() {
+            for row in leafRows(under: node) where !seen.contains(row) {
+                seen.insert(row)
+                result.append(row)
+            }
+        }
+        return result
+    }
+
+    /// All leaf rows in the subtree rooted at `node` (inclusive when node
+    /// is itself a leaf).
+    private func leafRows(under node: ReconcileNode) -> [Int] {
+        var out: [Int] = []
+        func walk(_ n: ReconcileNode) {
+            if let row = n.row { out.append(row); return }
+            for c in n.children { walk(c) }
+        }
+        walk(node)
+        return out
     }
 
     private func summaryText(profile: String, syncDone: Bool = false) -> String {
@@ -355,14 +423,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-extension ReconcileWindowController: NSTableViewDataSource {
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
-}
+// MARK: - Tinted row view (shared with the old flat-table design — direction-based)
 
 /// Tinted row view that draws a translucent background color based on the
-/// reconcile direction (green for "to remote", blue for "to local",
-/// orange for conflict, purple for merge, clear otherwise). The system
-/// alternating-row + selection highlight still apply on top.
+/// reconcile direction. Folders pass `.clear` so only leaves are colored.
 final class TintedRowView: NSTableRowView {
     var tint: NSColor = .clear {
         didSet {
@@ -379,61 +443,96 @@ final class TintedRowView: NSTableRowView {
     }
 }
 
-private extension StateItem {
+fileprivate extension StateItem {
     /// Soft, system-color-derived tint per OCaml direction string. Uses
     /// low alpha so the path text + selection highlight stay readable in
     /// both light and dark mode.
     var rowTint: NSColor {
         switch direction {
-        case "---->": return NSColor.systemGreen.withAlphaComponent(0.10)  // local → remote
-        case "<----": return NSColor.systemBlue.withAlphaComponent(0.10)   // remote → local
-        case "<-?->": return NSColor.systemOrange.withAlphaComponent(0.15) // conflict
-        case "<-M->": return NSColor.systemPurple.withAlphaComponent(0.12) // merge
+        case "---->": return NSColor.systemGreen.withAlphaComponent(0.10)
+        case "<----": return NSColor.systemBlue.withAlphaComponent(0.10)
+        case "<-?->": return NSColor.systemOrange.withAlphaComponent(0.15)
+        case "<-M->": return NSColor.systemPurple.withAlphaComponent(0.12)
         default:      return .clear
         }
     }
 }
 
-extension ReconcileWindowController: NSTableViewDelegate {
-    func tableViewSelectionDidChange(_ notification: Notification) {
+// MARK: - NSOutlineViewDataSource
+
+extension ReconcileWindowController: NSOutlineViewDataSource {
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if let node = item as? ReconcileNode { return node.children.count }
+        return tree.root.children.count
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let node = item as? ReconcileNode { return node.children[index] }
+        return tree.root.children[index]
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        guard let node = item as? ReconcileNode else { return false }
+        return !node.isLeaf
+    }
+}
+
+// MARK: - NSOutlineViewDelegate
+
+extension ReconcileWindowController: NSOutlineViewDelegate {
+    func outlineViewSelectionDidChange(_ notification: Notification) {
         updateDetailsForSelection()
     }
 
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        guard row < items.count else { return nil }
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("TintedRow")
-        let view = tableView.makeView(withIdentifier: id, owner: self) as? TintedRowView ?? {
+        let view = outlineView.makeView(withIdentifier: id, owner: self) as? TintedRowView ?? {
             let v = TintedRowView()
             v.identifier = id
             return v
         }()
-        view.tint = items[row].rowTint
+        if let node = item as? ReconcileNode, let row = node.row, row < items.count {
+            view.tint = items[row].rowTint
+        } else {
+            view.tint = .clear  // folders are uncolored
+        }
         return view
     }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let column = tableColumn,
               let col = Col(rawValue: column.identifier.rawValue),
-              row < items.count else { return nil }
-        let item = items[row]
+              let node = item as? ReconcileNode else { return nil }
+
+        // For folder rows, only the path column gets text; the rest are blank.
         let value: String
-        switch col {
-        case .path:      value = item.path
-        case .left:      value = item.left
-        case .right:     value = item.right
-        case .direction: value = directionGlyph(item.direction)
-        case .size:      value = formatSize(item.sizeBytes, type: item.fileType)
-        case .progress:  value = item.progress.trimmingCharacters(in: .whitespaces)
-        case .type:      value = item.fileType
+        if let row = node.row, row < items.count {
+            let stateItem = items[row]
+            switch col {
+            case .path:      value = node.name              // last segment only — indent shows hierarchy
+            case .left:      value = stateItem.left
+            case .right:     value = stateItem.right
+            case .direction: value = directionGlyph(stateItem.direction)
+            case .size:      value = formatSize(stateItem.sizeBytes, type: stateItem.fileType)
+            case .progress:  value = stateItem.progress.trimmingCharacters(in: .whitespaces)
+            case .type:      value = stateItem.fileType
+            }
+        } else {
+            // Folder
+            switch col {
+            case .path: value = node.name
+            default:    value = ""
+            }
         }
-        return makeCell(in: tableView, identifier: column.identifier, text: value, column: col)
+        return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
     }
 
-    private func makeCell(in tableView: NSTableView,
+    private func makeCell(in outlineView: NSOutlineView,
                           identifier: NSUserInterfaceItemIdentifier,
                           text: String,
-                          column: Col) -> NSView {
-        let view = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? {
+                          column: Col,
+                          isFolder: Bool) -> NSView {
+        let view = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? {
             let v = NSTableCellView()
             let tf = NSTextField(labelWithString: "")
             tf.translatesAutoresizingMaskIntoConstraints = false
@@ -453,6 +552,11 @@ extension ReconcileWindowController: NSTableViewDelegate {
         view.textField?.alignment = (column == .size) ? .right :
                                     (column == .progress) ? .right :
                                     (column == .direction) ? .center : .left
+        // Folder names get a slight emphasis to read as containers.
+        view.textField?.font = isFolder && column == .path
+            ? .systemFont(ofSize: NSFont.systemFontSize - 1, weight: .semibold)
+            : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+        view.textField?.textColor = isFolder ? .secondaryLabelColor : .labelColor
         return view
     }
 
@@ -467,7 +571,6 @@ extension ReconcileWindowController: NSTableViewDelegate {
     }
 
     private func formatSize(_ bytes: Int64, type: String) -> String {
-        // Directories carry 0 in OCaml's reporting; skip showing 0 B for them.
         if bytes == 0 && type.uppercased() == "DIR" { return "" }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
