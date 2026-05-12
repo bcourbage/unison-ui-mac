@@ -163,9 +163,33 @@ go back / refresh / open another profile.
       downstream and should never be proposed upstream. Pointers to where
       we *do* welcome PRs (if any) and what we don't (anything that would
       need to be merged into Unison).
-- [ ] **Codesigning** — currently ad-hoc. Apple Developer ID would let us
-      stop seeing the "downloaded from internet" warning on every fresh
-      build, but it's a paid-membership step. Personal use can stay ad-hoc.
+- [ ] **App signing** — currently ad-hoc (`codesign --force --sign -` via
+      the default Xcode build settings). On macOS Tahoe 26, ad-hoc-signed
+      apps trigger a one-time Gatekeeper prompt the first time they're
+      launched, and re-prompt after every rebuild if you launch via Finder.
+      Options, increasing in effort/cost:
+    1. **Stay ad-hoc** — fine for personal use; live with the one-time
+       prompt. Current state.
+    2. **Sign with a free Apple ID developer certificate** — open Xcode →
+       Settings → Accounts, add your Apple ID, pick "Sign in with Apple
+       Developer" → free 7-day-rotating certificate. Stops the prompt for
+       local use but the cert needs renewing weekly and the app still
+       isn't notarized so other Macs would refuse it.
+    3. **Apple Developer Program ($99/year) + notarization** — get a
+       Developer ID Application certificate, set `CODE_SIGN_STYLE = Manual`
+       + `CODE_SIGN_IDENTITY = "Developer ID Application: ..."` in
+       project.yml, then `xcrun notarytool submit ... --wait --staple` as
+       a Makefile target. Required for any distribution outside the App
+       Store. Probably overkill for personal use.
+    4. **Mac App Store** — not viable; we embed GPLv3 code and the App
+       Store license terms aren't GPL-compatible.
+      Additional bits any signed-for-distribution build needs:
+    - `Hardened Runtime` enabled (already a default for new Xcode projects
+      but worth verifying after we touch entitlements).
+    - An entitlements file granting at minimum: outgoing network (SSH),
+      and File Access exceptions for the directories the user syncs.
+    - `LSMinimumSystemVersion` in Info.plist (already set to 15.0;
+      ratchet up if we start using post-15 APIs).
 
 ## Carried-over reminders (memory notes)
 
