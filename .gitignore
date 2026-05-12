@@ -8,6 +8,10 @@ DerivedData/
 # macOS
 .DS_Store
 
+# Coverage / profiling artifacts
+*.profraw
+*.profdata
+
 # Editor noise
 *.swp
 *~
