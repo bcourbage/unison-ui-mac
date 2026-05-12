@@ -103,4 +103,80 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(Set(names), ["a", "x", "y", "b", "z"])
         XCTAssertEqual(tree.allNodes.filter(\.isLeaf).count, 3)
     }
+
+    // MARK: - FolderAggregate
+
+    private func item(_ path: String, direction: String) -> StateItem {
+        StateItem(
+            path: path, left: "", right: "", direction: direction,
+            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0
+        )
+    }
+
+    func test_aggregate_uniformDirection_whenAllChildrenAgree() {
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "---->"),
+            item("a/z", direction: "---->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        XCTAssertEqual(folder.aggregate(items: items, userSkipped: []),
+                       .uniform("---->"))
+    }
+
+    func test_aggregate_mixed_whenChildrenDisagree() {
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "<----"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        XCTAssertEqual(folder.aggregate(items: items, userSkipped: []),
+                       .mixed)
+    }
+
+    func test_aggregate_allUserSkipped_overridesUniformDirection() {
+        // Every child shares direction "<-?->", but every child is also
+        // user-skipped → folder should report .allUserSkipped, not
+        // .uniform("<-?->"), so it reads as "settled" rather than
+        // "needs attention".
+        let items = [
+            item("a/x", direction: "<-?->"),
+            item("a/y", direction: "<-?->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        XCTAssertEqual(folder.aggregate(items: items, userSkipped: [0, 1]),
+                       .allUserSkipped)
+    }
+
+    func test_aggregate_partialUserSkipped_keepsUniformConflict() {
+        // Half the children are user-skipped, half aren't. The unskipped
+        // ones still need attention so the folder stays "needs attention".
+        let items = [
+            item("a/x", direction: "<-?->"),
+            item("a/y", direction: "<-?->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        XCTAssertEqual(folder.aggregate(items: items, userSkipped: [0]),
+                       .uniform("<-?->"))
+    }
+
+    func test_aggregate_nestedFolders_recurseThroughChildren() {
+        // a/sub/x → ---->
+        // a/sub/y → ---->
+        // The top-level "a" should also see uniform("---->") because
+        // every leaf under it agrees.
+        let items = [
+            item("a/sub/x", direction: "---->"),
+            item("a/sub/y", direction: "---->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let topA = tree.root.children[0]
+        XCTAssertEqual(topA.name, "a")
+        XCTAssertEqual(topA.aggregate(items: items, userSkipped: []),
+                       .uniform("---->"))
+    }
 }

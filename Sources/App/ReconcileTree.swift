@@ -27,6 +27,55 @@ final class ReconcileNode {
     var isLeaf: Bool { row != nil }
 }
 
+/// Folder-level summary of every leaf reachable from a `ReconcileNode`.
+/// Computed by walking the subtree; used to tint folder icons in the
+/// outline view so a uniform folder reads at a glance.
+enum FolderAggregate: Equatable {
+    /// Every leaf has the same direction string (e.g. "---->") AND no
+    /// leaf is user-skipped.
+    case uniform(String)
+    /// Every leaf was explicitly skipped by the user. Distinct from
+    /// uniform("<-?->") because the user-decided state should look
+    /// "settled" rather than "needs attention".
+    case allUserSkipped
+    /// Anything else — descendants disagree, OR a mix of user-skipped
+    /// and other directions, OR there are no leaves (e.g. a folder that
+    /// has lost all its children due to filtering — shouldn't happen).
+    case mixed
+}
+
+extension ReconcileNode {
+    /// Walk the subtree and classify it. O(leaves under this node).
+    /// Folders call this lazily on each render; the controller caches
+    /// the result when convenient.
+    func aggregate(items: [StateItem], userSkipped: Set<Int>) -> FolderAggregate {
+        var directions = Set<String>()
+        var skippedCount = 0
+        var leafCount = 0
+
+        func walk(_ node: ReconcileNode) {
+            if let row = node.row, row < items.count {
+                directions.insert(items[row].direction)
+                if userSkipped.contains(row) { skippedCount += 1 }
+                leafCount += 1
+            } else {
+                for c in node.children { walk(c) }
+            }
+        }
+        walk(self)
+
+        if leafCount == 0 { return .mixed }
+        if skippedCount == leafCount { return .allUserSkipped }
+        if directions.count == 1, let only = directions.first {
+            // Special case: every leaf is "<-?->" but a mix of skipped
+            // and not — the unskipped ones still need attention, so the
+            // folder should read as conflict-orange rather than gray.
+            return .uniform(only)
+        }
+        return .mixed
+    }
+}
+
 /// Builds a path-segment tree from a flat `[StateItem]` so an NSOutlineView
 /// can render the reconcile as Finder-style indented folders.
 ///

@@ -391,11 +391,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
             }
             changedRows.append(row)
         }
+        // Reload changed leaves AND every ancestor folder up to the root —
+        // folder aggregates may have flipped from "mixed" to "uniform" or
+        // vice versa. De-dup via identity so shared ancestors only redraw
+        // once when several leaves under the same folder all change.
+        var nodesToReload: [ObjectIdentifier: ReconcileNode] = [:]
         for row in changedRows {
-            guard let node = leafNode(forRow: row) else { continue }
-            // reloadItem refreshes all cell views; makeDirectionCell will
-            // re-consult DirectionVisual.{glyph,tint} which read the
-            // updated direction string + userSkipped membership.
+            guard let leaf = leafNode(forRow: row) else { continue }
+            nodesToReload[ObjectIdentifier(leaf)] = leaf
+            var ancestor = leaf.parent
+            while let n = ancestor, !n.name.isEmpty {
+                nodesToReload[ObjectIdentifier(n)] = n
+                ancestor = n.parent
+            }
+        }
+        for node in nodesToReload.values {
             outlineView.reloadItem(node, reloadChildren: false)
         }
         if !changedRows.isEmpty {
@@ -601,28 +611,48 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         if col == .left || col == .right {
             return makeStatusCell(in: outlineView, node: node, isLocal: col == .left)
         }
+        // Path column: Finder-style icon + name. Folders get a tinted
+        // folder icon that reflects the aggregate direction of their
+        // descendants; files get a neutral doc icon.
+        if col == .path {
+            return makePathCell(in: outlineView, node: node)
+        }
 
-        // For folder rows, only the path column gets text; the rest are blank.
+        // Remaining text-only columns: Size, Progress, Type. Folders
+        // leave them blank — folder aggregate stats are out of scope
+        // for v1 of this column.
         let value: String
         if let row = node.row, row < items.count {
             let stateItem = items[row]
             switch col {
-            case .path:      value = node.name              // last segment only — indent shows hierarchy
-            case .left:      value = stateItem.left
-            case .right:     value = stateItem.right
-            case .direction: value = ""                     // handled above
             case .size:      value = formatSize(stateItem.sizeBytes, type: stateItem.fileType)
             case .progress:  value = stateItem.progress.trimmingCharacters(in: .whitespaces)
             case .type:      value = stateItem.fileType
+            case .path, .left, .right, .direction: value = ""  // handled above
             }
         } else {
-            // Folder
-            switch col {
-            case .path: value = node.name
-            default:    value = ""
-            }
+            value = ""
         }
         return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
+    }
+
+    /// Builds (or recycles) the Path-column cell with Finder-style icon
+    /// + name. Folder icons are tinted per the folder's aggregate
+    /// direction; files get a neutral doc icon.
+    private func makePathCell(in outlineView: NSOutlineView, node: ReconcileNode) -> NSView {
+        let id = NSUserInterfaceItemIdentifier("PathCell")
+        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? PathCellView ?? {
+            let v = PathCellView()
+            v.identifier = id
+            return v
+        }()
+        if node.isLeaf {
+            cell.configureAsFile(name: node.name)
+        } else {
+            cell.configureAsFolder(name: node.name,
+                                   aggregate: node.aggregate(items: items, userSkipped: userSkipped))
+        }
+        return cell
     }
 
     /// Builds (or recycles) a status-icon cell for the Local or Remote
@@ -690,10 +720,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         view.textField?.alignment = (column == .size) ? .right :
                                     (column == .progress) ? .right :
                                     (column == .direction) ? .center : .left
-        // Folder names get a slight emphasis to read as containers.
-        view.textField?.font = isFolder && column == .path
-            ? .systemFont(ofSize: NSFont.systemFontSize - 1, weight: .semibold)
-            : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+        view.textField?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
         // FAILED in the Progress column is loud red bold — most users
         // notice a sync failure only by scrolling to the row otherwise.
         let isFailure = (column == .progress) && text.uppercased().contains("FAIL")
@@ -701,8 +728,9 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             view.textField?.textColor = .systemRed
             view.textField?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
         } else {
-            view.textField?.textColor = isFolder ? .secondaryLabelColor : .labelColor
+            view.textField?.textColor = .labelColor
         }
+        _ = isFolder  // folder-vs-leaf distinction handled by PathCellView now
         return view
     }
 
