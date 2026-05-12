@@ -34,7 +34,18 @@ enum UnisonBridge {
     /// At this point OCaml's worker thread is unwinding — any in-flight
     /// init1/init2/sync will NOT fire its complete callback. The Swift UI
     /// needs to reset its busy state itself.
-    nonisolated(unsafe) static var fatalDismissedHandler: ((_ msg: String) -> Void)?
+    ///
+    /// `shouldRetry` is true when the modal offered a recovery action
+    /// (e.g. "Delete orphan archives and retry") AND the user chose it. In
+    /// that case the caller is expected to re-trigger the in-flight
+    /// operation (typically by calling `profileSelected` again).
+    nonisolated(unsafe) static var fatalDismissedHandler: ((_ msg: String, _ shouldRetry: Bool) -> Void)?
+
+    /// Override hook for tests / autotest. When set, the fatal trampoline
+    /// consults this for the path to the local Unison directory used by
+    /// `ArchiveRecovery`. Production code reads it from
+    /// `unison_bridge_unison_directory()`.
+    nonisolated(unsafe) static var unisonDirectoryOverride: String?
 
     static func installStatusHandler(_ handler: @escaping (String) -> Void) {
         statusHandler = handler
@@ -76,10 +87,11 @@ enum UnisonBridge {
     }
 
     /// Install the fatal-error sheet handler. After the user dismisses the
-    /// modal, `onDismiss(msg)` is called on the main queue. OCaml's worker
-    /// thread is unwinding past the failure point, so the caller is
-    /// responsible for resetting any in-flight UI state.
-    static func installFatalHandler(onDismiss: @escaping (String) -> Void) {
+    /// modal, `onDismiss(msg, shouldRetry)` is called on the main queue.
+    /// OCaml's worker thread is unwinding past the failure point, so the
+    /// caller is responsible for resetting any in-flight UI state, and —
+    /// when shouldRetry is true — for re-triggering the operation.
+    static func installFatalHandler(onDismiss: @escaping (String, Bool) -> Void) {
         fatalDismissedHandler = onDismiss
         unison_bridge_set_fatal_handler(_swiftFatalTrampoline)
     }
@@ -187,14 +199,41 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
     guard let opaque else { return }
     let text = msg.map { String(cString: $0) } ?? "<no message>"
     let opaqueBits = Int(bitPattern: opaque)
+
+    // Try to extract a recovery option BEFORE dispatching to main —
+    // ArchiveRecovery.parse only touches the filesystem and the message
+    // string, so it's safe here. Recovery is offered only when at least
+    // one orphan archive file exists locally.
+    let unisonDir = UnisonBridge.unisonDirectoryOverride
+        ?? unison_bridge_unison_directory().map { String(cString: $0) }
+        ?? NSString(string: "~/Library/Application Support/Unison").expandingTildeInPath
+    let recovery = ArchiveRecovery.parse(message: text, unisonDirectory: unisonDir)
+
     DispatchQueue.main.async {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Unison error"
         alert.informativeText = text
-        alert.addButton(withTitle: "OK")
-        _ = alert.runModal()
+
+        var shouldRetry = false
+
+        if let recovery, recovery.hasLocalOrphans {
+            let count = recovery.localOrphans.filter { $0.lastPathComponent.hasPrefix("ar") }.count
+            alert.addButton(withTitle: "Delete \(count) Orphan Archive\(count == 1 ? "" : "s") and Retry")
+            alert.addButton(withTitle: "OK")
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                let deleted = recovery.deleteLocalOrphans()
+                TraceLog.shared.write("ArchiveRecovery: deleted \(deleted.count) file(s):")
+                for p in deleted { TraceLog.shared.write("  \(p)") }
+                shouldRetry = true
+            }
+        } else {
+            alert.addButton(withTitle: "OK")
+            _ = alert.runModal()
+        }
+
         unison_bridge_fatal_response(UnsafeMutableRawPointer(bitPattern: opaqueBits))
-        UnisonBridge.fatalDismissedHandler?(text)
+        UnisonBridge.fatalDismissedHandler?(text, shouldRetry)
     }
 }

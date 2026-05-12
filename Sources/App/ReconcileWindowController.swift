@@ -179,6 +179,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         unison_bridge_synchronize()
     }
 
+    /// Toolbar "Profiles" action — return to the picker. Just performs
+    /// the window close; the windowWillClose -> onClose handler routes
+    /// back to AppDelegate.showProfilePicker.
+    func returnToPicker() {
+        window?.performClose(nil)
+    }
+
     /// Toolbar Stop action — matches the legacy app's "Cancel" semantics:
     /// returns to the profile picker. The OCaml worker continues running
     /// in the background until it finishes naturally. True mid-sync abort

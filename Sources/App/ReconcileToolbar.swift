@@ -35,9 +35,10 @@ enum DirectionAction {
         }
     }
 
-    static let goIdentifier      = NSToolbarItem.Identifier("sync.go")
-    static let stopIdentifier    = NSToolbarItem.Identifier("sync.stop")
-    static let rescanIdentifier  = NSToolbarItem.Identifier("sync.rescan")
+    static let goIdentifier       = NSToolbarItem.Identifier("sync.go")
+    static let stopIdentifier     = NSToolbarItem.Identifier("sync.stop")
+    static let rescanIdentifier   = NSToolbarItem.Identifier("sync.rescan")
+    static let profilesIdentifier = NSToolbarItem.Identifier("nav.profiles")
 
     func invoke(row: Int32) -> UnsafePointer<CChar>? {
         switch self {
@@ -58,6 +59,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         DirectionAction.all.map(\.toolbarIdentifier) + [
+            DirectionAction.profilesIdentifier,
             DirectionAction.rescanIdentifier,
             DirectionAction.goIdentifier,
             DirectionAction.stopIdentifier,
@@ -66,7 +68,9 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [DirectionAction.toLocal.toolbarIdentifier,
+        [DirectionAction.profilesIdentifier,
+         .space,
+         DirectionAction.toLocal.toolbarIdentifier,
          DirectionAction.toRemote.toolbarIdentifier,
          DirectionAction.skip.toolbarIdentifier,
          DirectionAction.merge.toolbarIdentifier,
@@ -80,6 +84,13 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
+        case DirectionAction.profilesIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Profiles",
+                                    paletteLabel: "Choose Profile",
+                                    toolTip: "Return to the profile picker",
+                                    symbol: "list.bullet",
+                                    action: #selector(profilesAction(_:)))
         case DirectionAction.goIdentifier:
             return makeWorkflowItem(itemIdentifier,
                                     label: "Go",
@@ -149,6 +160,10 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @objc private func rescanAction(_ sender: NSToolbarItem) {
         controller?.rescan()
+    }
+
+    @objc private func profilesAction(_ sender: NSToolbarItem) {
+        controller?.returnToPicker()
     }
 }
 

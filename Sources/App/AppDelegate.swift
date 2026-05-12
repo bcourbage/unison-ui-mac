@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var profileWindowController: ProfileWindowController?
     private var reconcileWindowController: ReconcileWindowController?
     private var unisonDirectory: String = ""
+    /// Tracks the profile we last asked OCaml to load. Used by the fatal
+    /// recovery path to re-run init1+init2 against the same profile after
+    /// the user accepts an "auto-fix" action (e.g. orphan archive cleanup).
+    private var lastAttemptedProfile: String?
 
     private let log = TraceLog.shared
 
@@ -29,9 +33,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.abortAllInFlight()
             }
         }
-        UnisonBridge.installFatalHandler { [weak self] msg in
-            self?.log.write("fatal dismissed: \(msg.prefix(120))")
-            self?.abortAllInFlight()
+        UnisonBridge.installFatalHandler { [weak self] msg, shouldRetry in
+            guard let self else { return }
+            self.log.write("fatal dismissed (retry=\(shouldRetry)): \(msg.prefix(120))")
+            if shouldRetry, let profile = self.lastAttemptedProfile {
+                self.log.write("recovery: re-running profileSelected for '\(profile)'")
+                self.abortAllInFlight()
+                // Tiny defer so the reconcile-window close has flushed before
+                // we re-open with the same profile. Without this, the new
+                // window opens then is immediately replaced.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    self?.profileSelected(profile)
+                }
+            } else {
+                self.abortAllInFlight()
+            }
         }
 
         // Spin up the OCaml runtime on its dedicated thread. This blocks
@@ -107,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// rather than waiting in the picker.
     private func profileSelected(_ profile: String) {
         log.write("AppDelegate: profile '\(profile)' picked — opening reconcile window in scanning state")
+        lastAttemptedProfile = profile
 
         // Mirror OCaml status messages into the reconcile window's summary
         // line so the user sees "Looking for changes ..." live. Also keep
