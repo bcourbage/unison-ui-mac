@@ -424,9 +424,14 @@ collapsed on GitHub's web view. Expand for the historical detail.*
        but doesn't depend on network or GitHub auth.
     Either of (1) or (2) also unblocks the P2 "Report an Issue" Help
     item that's still pending.
-- [ ] **Gate dev hooks behind a Debug build flag** — `UNISON_AUTOTEST_*`
-      env vars and the TraceLog file at `/tmp/unison-ui-mac.log` are dev-only.
-      Either remove them in Release or feature-gate so they're inert.
+- [x] **Gate dev hooks behind a Debug build flag** — `UNISON_AUTOTEST_*`
+      env-var handling + the `runRiOpsAutotest` / `maybeRunAutotestHooks`
+      helpers in `AppDelegate.swift` are now wrapped in `#if DEBUG`
+      blocks, so the entire autotest path compiles out of Release
+      builds. Verified with `strings` against the Release binary:
+      zero AUTOTEST references. The TraceLog file at
+      /tmp/unison-ui-mac.log is no longer a concern — see the
+      os.Logger entry below; that file is gone in any build.
 - [x] **Replace TraceLog with `os.Logger`** — done. `TraceLog.shared.write`
       is now a thin shim that forwards to `os.Logger` under subsystem
       `net.courbage.unison-ui-mac`, category `general`. The
@@ -448,12 +453,28 @@ collapsed on GitHub's web view. Expand for the historical detail.*
       rows in the Progress column before deciding whether to rescan or
       close manually. The retry path (orphan-archive recovery) passes
       `forceClose: true` to override and get a fresh window.
-- [ ] **Clean shutdown of OCaml workers** — currently we just exit; no
-      `caml_remove_generational_global_root` for `g_preconn` / `g_ri_roots` on
-      app quit. Mostly cosmetic since the process is dying.
-- [ ] **Build dependency tracking** — `make xcodeproj` only regenerates when
-      `project.yml` changes; new Swift files require manual `xcodegen
-      generate`. Either depend on `Sources/**/*` or document the workflow.
+- [x] **Clean shutdown of OCaml workers** — `unison_bridge_shutdown()`
+      releases the bridge's generational global roots (`g_preconn` +
+      `g_ri_roots`) by dispatching `release_preconn` + `clear_ri_roots`
+      to the OCaml worker thread. AppDelegate calls it from
+      `applicationWillTerminate(_:)`. Idempotent + safe-after-startup;
+      the C function is a no-op pre-startup so an early-crash path
+      can't deadlock on a missing worker. Mostly cosmetic for normal
+      process exit (macOS tears down the runtime regardless), but
+      eliminates the "retained OCaml values" line items in
+      `make leaks` runs.
+- [x] **Build dependency tracking** — `make xcodeproj` now regenerates
+      automatically when a source file is **added, removed, or
+      renamed** under `Sources/App` / `Sources/Bridge` / `Tests`.
+      Mechanism: the directories themselves are listed as prereqs of
+      `.build/sources.manifest` — POSIX advances a directory's mtime
+      on add/remove/rename but NOT on file-content edits, so the
+      manifest only updates when the file LIST changes (cmp-checked
+      to avoid spurious updates on a no-op `touch <dir>`). The
+      manifest is in turn a prereq of `$(XCODEPROJ)`, so xcodegen
+      runs only when the manifest's mtime actually moves. Verified:
+      `touch Sources/App/_Test.swift && make build` regenerates;
+      idempotent builds in between don't.
 - [ ] **Remove test artifacts** — `~/Library/Application Support/Unison/test-tiny.prf`
       and `/tmp/unison-test-{a,b}` left from bring-up testing.
 - [ ] **Real mid-sync abort** — the current Stop button matches the legacy

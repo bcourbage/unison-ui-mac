@@ -96,11 +96,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
         // and trigger init1 right away. Lets us exercise the init flow from
-        // CLI without UI automation.
+        // CLI without UI automation. Compiled out in Release builds — see the
+        // top-of-file comment on the `#if DEBUG` block at the end.
+        #if DEBUG
         if let autoProfile = ProcessInfo.processInfo.environment["UNISON_AUTOTEST_PROFILE"] {
             log.write("AUTOTEST: triggering profile '\(autoProfile)'")
             profileWindowController?.autoSelectAndOpen(profile: autoProfile)
         }
+        #endif
+    }
+
+    /// Last hook before the process exits. The OCaml runtime is still
+    /// alive here — we use it to release our retained generational
+    /// global roots (preconnection + per-row stateItems) so
+    /// leak-checking tools (`leaks(1)`, ASan) don't flag them as
+    /// retained OCaml values. Mostly cosmetic since macOS tears down
+    /// the runtime on process exit anyway; the hygiene matters for
+    /// release-gate `make leaks` runs.
+    func applicationWillTerminate(_ notification: Notification) {
+        log.write("applicationWillTerminate — releasing bridge roots")
+        unison_bridge_shutdown()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -200,7 +215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.log.write("init2 complete — \(items.count) reconcile items")
             reconcile?.endRescan(newItems: items)
             // Autotest hooks live here so they run after the items land.
+            // Compiled out in Release builds.
+            #if DEBUG
             self?.maybeRunAutotestHooks(reconcile: reconcile, items: items)
+            #endif
         }
 
         profile.withCString { unison_bridge_init1($0) }
@@ -256,6 +274,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unison_bridge_init2()
     }
 
+    // MARK: - Autotest hooks (Debug-only)
+    //
+    // The `UNISON_AUTOTEST_*` env vars exist so we can exercise the
+    // init1 → init2 → ri-set → sync flow from the command line without
+    // UI automation. They're explicitly NOT for end users — they bypass
+    // the picker, mutate row state without confirmation, and trigger
+    // a real sync. Hence #if DEBUG so the entire block compiles out
+    // of Release builds.
+
+    #if DEBUG
     private func maybeRunAutotestHooks(reconcile: ReconcileWindowController?, items: [StateItem]) {
         if ProcessInfo.processInfo.environment["UNISON_AUTOTEST_RI_OPS"] != nil {
             log.write("AUTOTEST_RI_OPS: starting direction-override test")
@@ -288,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             current = raw ?? current
         }
     }
+    #endif
 
     // MARK: - Error recovery
 

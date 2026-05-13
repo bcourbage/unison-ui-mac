@@ -35,11 +35,44 @@ $(STRIPPED_ASMRUN): $(OCAMLLIBDIR)/libasmrun.a
 	ar rcs $@ $(LIBDIR)/extract/*.o
 	rm -rf $(LIBDIR)/extract
 
-# ----- Xcode project (regenerate from project.yml) -----
+# ----- Xcode project (regenerate from project.yml + source list) -----
+#
+# xcodegen reads project.yml plus the directory globs in it (Sources/App,
+# Sources/Bridge, Tests). The project file needs to regenerate when:
+#   1. project.yml itself changes, OR
+#   2. a source file is ADDED, REMOVED, or RENAMED (changes the glob result).
+#
+# Make doesn't watch glob results directly. The trick: depend on the
+# source DIRECTORIES rather than the file list. POSIX advances a
+# directory's mtime when an entry is added or removed, but NOT on
+# file content edits. So:
+#   - Touch any .swift file       → no regen (Xcode handles content via
+#                                   its own dep system).
+#   - Add / remove / rename a file → dir mtime advances → manifest regen
+#                                   → if list actually changed,
+#                                     mtime moves forward → xcodegen runs.
+#
+# The manifest content check (cmp -s) means a no-op dir touch (e.g.
+# `touch Sources/App`) doesn't trigger a spurious regen — the manifest
+# only updates its mtime when the file list materially differs.
+SOURCE_DIRS := Sources/App Sources/Bridge Tests
+SOURCES_MANIFEST := .build/sources.manifest
+
+$(SOURCES_MANIFEST): $(SOURCE_DIRS)
+	@mkdir -p $(@D)
+	@find $(SOURCE_DIRS) -type f \( -name '*.swift' -o -name '*.c' -o -name '*.h' \) | sort > $@.tmp
+	@if cmp -s $@.tmp $@ 2>/dev/null; then \
+		rm $@.tmp; \
+		touch $@; \
+	else \
+		mv $@.tmp $@; \
+		echo "Source list changed → xcodeproj will regenerate"; \
+	fi
+
 .PHONY: xcodeproj
 xcodeproj: $(XCODEPROJ)
 
-$(XCODEPROJ): project.yml
+$(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 	xcodegen generate
 
 # ----- Build via xcodebuild -----

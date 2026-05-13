@@ -571,6 +571,35 @@ void unison_bridge_startup(int argc, char *argv[]) {
 }
 
 /* =====================================================================
+ * Clean shutdown
+ *
+ * Called from AppDelegate's applicationWillTerminate. The OCaml runtime
+ * is still alive at this point — we use the existing dispatch
+ * infrastructure to release our generational global roots on the OCaml
+ * thread so any leak-checker (`leaks(1)`, ASan) doesn't flag them.
+ *
+ * Mostly cosmetic since the process is about to die and macOS will tear
+ * the runtime down anyway. The hygiene matters mainly for
+ * release-gate `make leaks` runs, where unreleased roots would
+ * otherwise show up as "leaked OCaml values".
+ *
+ * Safe to call multiple times; the per-collection clear helpers
+ * (`release_preconn`, `clear_ri_roots`) are idempotent. NOT safe to call
+ * before startup — would deadlock waiting for the OCaml worker.
+ * ===================================================================== */
+
+static void _ocaml_shutdown(void *user) {
+    (void)user;
+    release_preconn();
+    clear_ri_roots();
+}
+
+void unison_bridge_shutdown(void) {
+    if (!g_started) return;
+    run_on_ocaml_thread(_ocaml_shutdown, NULL);
+}
+
+/* =====================================================================
  * Public C -> OCaml entry points
  *
  * Each follows the same shape:

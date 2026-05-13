@@ -11,6 +11,14 @@ extern "C" {
 
 void unison_bridge_startup(int argc, char *argv[]);
 
+/* Release the bridge's OCaml generational global roots (preconnection
+ * + per-row stateItem array). Idempotent. Intended for app-termination
+ * cleanup so leak checkers don't flag retained OCaml values; doesn't
+ * tear down the OCaml runtime itself (process exit handles that).
+ * Must be called AFTER unison_bridge_startup — would deadlock
+ * otherwise (no OCaml worker to dispatch onto). */
+void unison_bridge_shutdown(void);
+
 const char *unison_bridge_get_version(void);
 
 /* Returns the path to the Unison preferences directory
