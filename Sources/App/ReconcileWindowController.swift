@@ -324,6 +324,19 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         summaryRow.alignment = .firstBaseline
         summaryRow.distribution = .fill
         summaryLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // Compression resistance LOW so the label truncates (its
+        // lineBreakMode is .byTruncatingMiddle) when the summary text
+        // grows. Defaults to .defaultHigh (750), which combined with
+        // `usesSingleLineMode = true` told AutoLayout "if my text
+        // doesn't fit, grow the parent instead of compressing me" —
+        // causing the reconcile window to widen on its own at init2
+        // completion when the summary went from "Looking for
+        // changes..." to "<profile> · 121 items · 121 → second".
+        // AppKit then walked the constraint chain up to the window
+        // itself (the only thing with no required width pin under a
+        // .resizable styleMask) and silently widened it.
+        summaryLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
         errorBannerButton.setContentHuggingPriority(.required, for: .horizontal)
         statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
 
