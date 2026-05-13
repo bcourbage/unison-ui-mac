@@ -43,9 +43,13 @@ purposes** and is distributed under the same license. See [LICENSE](LICENSE).
 If you redistribute this software (modified or unmodified):
 - Keep this NOTICE file and the [LICENSE](LICENSE) file alongside the
   distribution.
-- Make the **complete corresponding source code** available, including any
-  modifications to the upstream Unison code (none in this repository — we
-  link against an unmodified upstream build).
+- Make the **complete corresponding source code** available, including
+  the modifications this project applies to the upstream Unison
+  source. The modifications live in `patches/` (a small set of OCaml
+  callback registrations that the upstream `uimac` UI doesn't need)
+  and are auto-applied by `make apply-patches` before `make blob`
+  builds `unison-blob.o`. The `.app` bundle links against the
+  resulting patched build.
 - Disclose the Unison version this build was linked against. Run
   `make print-config` or check the "About" panel in the running app.
 

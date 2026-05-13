@@ -2,8 +2,9 @@
 
 A native macOS GUI for the [Unison File Synchronizer](https://github.com/bcpierce00/unison),
 written in Swift + AppKit. Personal project; deliberately not for upstream
-contribution (see [NOTICE.md](NOTICE.md) for the license and attribution,
-and the reasoning).
+contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
+trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
+on this fork).
 
 > 📖 **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
 
@@ -134,6 +135,7 @@ unison-ui-mac/
 ├── README.md                            This file (orientation + build)
 ├── MANUAL.md                            Full user manual (feature guide)
 ├── NOTICE.md                            Attribution and license details
+├── CONTRIBUTING.md                      Contribution policy + LLM-usage disclosure
 ├── LICENSE                              GPLv3 (full text)
 ├── TODO.md                              Outstanding work / done items by tier
 ├── Sources/
