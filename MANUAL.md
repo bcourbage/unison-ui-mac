@@ -702,12 +702,35 @@ checkout.
 
 ### Profile won't sync but CLI `unison <profile>` works
 
-Check the `clientHostName` pref in your `.prf`. If you've set it
-explicitly to a value that differs from the hostname Unison's OCaml
-runtime detects via `gethostname()` (which is what
-`ProcessInfo.hostName` returns), the archive hashes diverge. Either
-remove the `clientHostName` override or set
-`UNISONLOCALHOSTNAME=<your-hostname>` in the launch environment.
+Three things to check, in order of likelihood:
+
+**1. `clientHostName` divergence.** If you've set this pref in your
+`.prf` to a value that differs from what `gethostname()` reports
+(which is what `ProcessInfo.hostName` returns), the archive hashes
+diverge between CLI and GUI. Either remove the `clientHostName`
+override, or set `UNISONLOCALHOSTNAME=<your-hostname>` in the launch
+environment so both pick up the same value.
+
+**2. Command-line argument overrides.** This app launches OCaml with
+`argv = [program_name]` — no CLI args propagate from your shell to
+Unison. So if you typically run `unison -opt=val <profile>` to
+override a preference at the command line, the GUI won't apply that
+override (it only sees the `.prf` content). Put the override in the
+`.prf` itself via the Advanced field of the Profile Form to bring
+the GUI into parity.
+
+**3. Multi-profile session quirk.** If you switch profiles within
+one GUI session (via the picker), the GUI doesn't re-parse the
+command line for the new profile — only on first launch. The CLI
+re-parses on every profile open. For our app this is moot (we
+don't accept user CLI args anyway), but it's a documented
+divergence from upstream's `Uicommon.initPrefs` that matters if
+we ever start accepting CLI overrides at the app's launch
+arguments. See the audit comment near
+`Prefs.parseCmdLine` in `unison/src/uimacbridge.ml`:
+`do_unisonInit1` runs `parseCmdLine` only on `firstTime`, while
+upstream `Uicommon.initPrefs` runs it unconditionally (per the
+"JV (6/09): always reparse the command line" note in that file).
 
 ---
 

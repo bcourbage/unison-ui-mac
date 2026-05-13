@@ -91,12 +91,20 @@ the macOS app, it's here.**
 
 Code PRs are accepted with a few caveats:
 
-1. **No expectation of acceptance.** This is a personal-use project.
+1. **Your code WILL be touched by an LLM.** This project is built
+   end-to-end with substantial LLM assistance — that's not a stage
+   the maintainer can or wants to disable for incoming code. Review,
+   refactoring, reformatting, test additions, comment expansion,
+   commit-message tightening: all of it happens with an LLM in the
+   loop. If you're not comfortable with your contribution becoming
+   part of that workflow — for licensing, attribution, philosophical,
+   or any other reason — **please do not submit a PR**. Open an issue
+   describing the problem or proposed change instead; the maintainer
+   can independently reproduce and implement, and no LLM-vs-your-code
+   interaction occurs.
+2. **No expectation of acceptance.** This is a personal-use project.
    The maintainer reviews on availability and may reject contributions
    that don't fit the project's direction without much explanation.
-2. **PRs may be refactored with LLM assistance.** If you'd rather your
-   code not be touched by an LLM as part of integration, say so on the
-   PR and the maintainer will either land it as-is or close it.
 3. **CI hygiene**: `make test` must pass (200+ tests, ~0.6s on M-series
    Macs). New behavior should add tests where the existing patterns
    (pure-function helpers + XCTest pinning) apply.

@@ -40,17 +40,6 @@ section at the bottom so this list stays scannable.
       (default for new Xcode projects) + an entitlements file for
       outgoing SSH network access + a current `LSMinimumSystemVersion`.
 
-- [ ] **Warning/error UX completeness** — modal sheets are wired, but
-      `displayStatus` messages containing "FAILED" / "error" / "could
-      not" still appear only in the row table or the Unified Log.
-      Worth surfacing as toasts or banners in the reconcile window so
-      transient errors don't get buried.
-
-- [ ] **TUI vs GUI `setupRoots` parity** *(memory aid, not a feature)*
-      — if the GUI ever behaves differently from `unison <profile>` on
-      the same `.prf`, the first place to look is `Prefs.parseCmdLine`
-      vs `Prefs.loadTheFile` ordering inside `do_unisonInit0/1` on the
-      OCaml side.
 
 ---
 
@@ -157,6 +146,17 @@ landed across the bring-up and follow-on sessions.*
       enum + `rowOverrides: [Int: RowOverride]` dict +
       `DirectionVisual.glyph/tint(for:override:)` + new
       `FolderAggregate` cases (`.allForcedOlder` / `.allForcedNewer`).
+- [x] **Warning/error UX completeness** — multi-line `displayStatus`
+      messages already had a Details disclosure; this pass adds a
+      persistent red banner (`⚠ N issue(s) — View…`) for any status
+      line containing error-looking keywords (FAIL / error / could
+      not / permission denied / no such file / connection refused /
+      host unreachable / host key verification / Operation timed out
+      / Util.Fatal). Classifier is a pure `nonisolated static`
+      `errorLines(in:)` with 11 tests. Banner persists until rescan
+      or until the user clicks Clear in the disclosure sheet — so
+      transient errors emitted at 3% scan don't get steamrolled by
+      the next status message at 4%.
 
 ### Per-row actions
 
@@ -267,6 +267,19 @@ landed across the bring-up and follow-on sessions.*
       `NSAlert.addButton` assigns Return to the FIRST button —
       destructive confirms should add Cancel first (Return = "back
       out"). Same pattern applied to all destructive prompts.
+- [x] **TUI vs GUI `setupRoots` parity audit** — concrete finding:
+      GUI's `do_unisonInit1` in `uimacbridge.ml` runs
+      `Prefs.parseCmdLine` only on `firstTime`, while upstream's
+      `Uicommon.initPrefs` re-parses unconditionally (the "JV (6/09):
+      always reparse the command line" comment in that file).
+      Practical impact: zero — we launch OCaml with `argv =
+      [program_name]`, so there are no command-line args to lose
+      anyway. But if we ever start accepting CLI overrides at app
+      launch (e.g., `open --args …`), the GUI would apply them only
+      on the first profile open and silently drop them on subsequent
+      profile switches. Documented in `MANUAL.md`'s "Profile won't
+      sync but CLI works" troubleshooting section so the
+      divergence is findable if a related bug ever surfaces.
 
 ### Build + ops
 
@@ -306,7 +319,7 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **204 tests, ~0.6s** via `make test`, plus ad-hoc `make leaks`
+- [x] **215 tests, ~0.6s** via `make test`, plus ad-hoc `make leaks`
       for `leaks(1)`-based release checks. Coverage:
       - Pure-Swift units across StateItem (3), DirectionAction (4),
         StatusIconDescriptor (6), DirectionVisual (18 incl.

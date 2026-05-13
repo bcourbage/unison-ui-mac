@@ -53,6 +53,22 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Cached full text for the Details button. Reset on every status
     /// update so we never show stale messages.
     private var lastMultiLineStatus: String?
+
+    /// Red banner button that surfaces a count of error-looking status
+    /// messages accumulated since the last rescan. Click → NSAlert
+    /// with the full list. Hidden when `errorMessages` is empty.
+    ///
+    /// We surface a separate banner (rather than just dropping errors
+    /// into the existing single-line status display) because OCaml's
+    /// `displayStatus` rotates rapidly during scan/sync — an error
+    /// emitted at 3% scan would be overwritten by the next status
+    /// message in seconds, leaving the user with no visible signal
+    /// that anything went wrong. The banner persists until rescan.
+    private let errorBannerButton = NSButton(title: "", target: nil, action: nil)
+    /// Accumulated error-looking status messages (in arrival order,
+    /// deduplicated against immediate-prior duplicates so a status
+    /// looping the same message doesn't spam the count).
+    private var errorMessages: [String] = []
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
@@ -176,6 +192,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         items = newItems
         tree = ReconcileTree(items: newItems)
         rowOverrides.removeAll()
+        // Reset the error banner on rescan — errors from a previous
+        // scan are no longer relevant to the fresh row set.
+        errorMessages.removeAll()
+        refreshErrorBanner()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
         setSummary(summaryText(profile: profile))
@@ -208,6 +228,18 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusDetailsButton.controlSize = .small
         statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusDetailsButton.isHidden = true
+
+        // Error banner: red, sits next to the Details button. Shown
+        // only when one or more error-looking status messages have
+        // accumulated since the last rescan. Title gets re-rendered
+        // ("⚠ N issue(s) — View…") when the count changes.
+        errorBannerButton.target = self
+        errorBannerButton.action = #selector(showErrorMessages(_:))
+        errorBannerButton.bezelStyle = .inline
+        errorBannerButton.controlSize = .small
+        errorBannerButton.contentTintColor = .systemRed
+        errorBannerButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        errorBannerButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
         // Column titles use the upstream manual's terminology: the two
@@ -259,13 +291,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
         // Summary row: label takes the available width; button hugs to
         // the trailing edge and only appears when there's multi-line
-        // status to disclose.
-        let summaryRow = NSStackView(views: [summaryLabel, statusDetailsButton])
+        // status to disclose. Error banner sits next to it, also
+        // hugging trailing edge, also only visible when relevant.
+        let summaryRow = NSStackView(views: [summaryLabel, errorBannerButton, statusDetailsButton])
         summaryRow.orientation = .horizontal
         summaryRow.spacing = 6
         summaryRow.alignment = .firstBaseline
         summaryRow.distribution = .fill
         summaryLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        errorBannerButton.setContentHuggingPriority(.required, for: .horizontal)
         statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: [summaryRow, progressBar, scroll, detailsScroll])
@@ -467,6 +501,102 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             lastMultiLineStatus = nil
             summaryLabel.toolTip = nil
             statusDetailsButton.isHidden = true
+        }
+
+        // Accumulate any error-looking content into the persistent
+        // error log (separate from the transient status line, which
+        // rotates rapidly during scan/sync). Whichever lines of the
+        // status look like errors get appended; the banner button
+        // shows a count.
+        let errorLines = Self.errorLines(in: fullText)
+        if !errorLines.isEmpty {
+            for line in errorLines {
+                // Skip immediate-prior dups so a status loop reporting
+                // the same message many times doesn't inflate the count.
+                if errorMessages.last != line {
+                    errorMessages.append(line)
+                }
+            }
+            refreshErrorBanner()
+        }
+    }
+
+    /// Pure classification: which lines of a status message look like
+    /// errors? Case-insensitive substring match against a small set of
+    /// keywords Unison uses for error / failure conditions. Designed
+    /// to be testable in isolation and conservatively false-positive
+    /// — better to surface a benign "...not modified" line than miss
+    /// an actual "permission denied".
+    nonisolated static func errorLines(in text: String) -> [String] {
+        // Markers in priority order (the substring match is union, so
+        // ordering doesn't affect matching — kept ordered for clarity
+        // when scanning the list).
+        let markers: [String] = [
+            "FAIL",            // "FAILED", "Failed", "scan failed", etc.
+            "error",           // catches "Error", "ERROR:", "syntax error"
+            "could not",       // typical Unix-error prefix
+            "permission denied",
+            "no such file",
+            "connection refused",
+            "host unreachable",
+            "host key verification",  // SSH known_hosts mismatch
+            "Operation timed out",
+            "Util.Fatal",      // OCaml fatal that leaked through Trace
+        ]
+        let lowered = markers.map { $0.lowercased() }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.filter { line in
+            let lower = line.lowercased()
+            return lowered.contains { lower.contains($0) }
+        }
+    }
+
+    /// Refresh the error banner's title + visibility from
+    /// `errorMessages`. Hidden when empty.
+    private func refreshErrorBanner() {
+        let n = errorMessages.count
+        if n == 0 {
+            errorBannerButton.isHidden = true
+            errorBannerButton.title = ""
+        } else {
+            errorBannerButton.isHidden = false
+            errorBannerButton.title = "⚠ \(n) issue\(n == 1 ? "" : "s") — View…"
+        }
+    }
+
+    @objc private func showErrorMessages(_ sender: Any?) {
+        guard !errorMessages.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Errors and warnings during scan/sync"
+        alert.informativeText =
+            "\(errorMessages.count) error-looking message" +
+            "\(errorMessages.count == 1 ? "" : "s") accumulated since " +
+            "the last rescan. The list clears the next time you Rescan."
+        // Scrollable text view for the full log — `informativeText` is
+        // truncated on long content.
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .lineBorder
+        let textView = NSTextView(frame: scroll.bounds)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.string = errorMessages.enumerated()
+            .map { "\($0.offset + 1). \($0.element)" }
+            .joined(separator: "\n\n")
+        textView.autoresizingMask = [.width, .height]
+        scroll.documentView = textView
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Clear")
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            errorMessages.removeAll()
+            refreshErrorBanner()
         }
     }
 
