@@ -39,7 +39,7 @@ targets:
         # Shows in Finder's Get Info → "More info...". Short form by
         # convention; the full GPLv3 grant + upstream attribution
         # chain live in LICENSE + NOTICE.md.
-        NSHumanReadableCopyright: "Copyright © 2026 Bruno Courbage. Distributed under GPLv3. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors."
+        NSHumanReadableCopyright: "Copyright © 2026 Bruno Courbage. Licensed under GNU GPLv3 or later. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors."
         LSApplicationCategoryType: public.app-category.utilities
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""
