@@ -511,6 +511,31 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         TraceLog.shared.write("ReconcileWindow: sync complete")
     }
 
+    /// Reset transient sync-UI state without closing the window. Called
+    /// from the AppDelegate's fatal/warn-cancel handlers when sync was
+    /// in flight (`isSyncing == true` at the time the alert fired).
+    ///
+    /// Keeping the window open after a sync fatal lets the user inspect
+    /// which rows succeeded (Progress = "done") vs which failed
+    /// (Progress = bold red "FAILED") before deciding to rescan or
+    /// return to the picker. Closing the window — what we used to do
+    /// — discarded that information.
+    ///
+    /// The reconcile data itself stays valid; OCaml's reconcile state
+    /// is per-row and the row directions don't unwind on fatal. The
+    /// only thing the user can't do until they rescan is run another
+    /// sync — but the toolbar Go button stays available, and clicking
+    /// it kicks off a new sync over the (possibly post-error) state.
+    func resetSyncUIAfterAbort(reason: String) {
+        isSyncing = false
+        progressBar.stopAnimation(nil)
+        progressBar.isIndeterminate = false
+        progressBar.doubleValue = 0
+        progressBar.isHidden = true
+        setSummary("Sync interrupted — \(reason)")
+        TraceLog.shared.write("ReconcileWindow: resetSyncUIAfterAbort (\(reason))")
+    }
+
     // MARK: - Direction overrides
 
     /// Applied to every leaf row in the current selection — including

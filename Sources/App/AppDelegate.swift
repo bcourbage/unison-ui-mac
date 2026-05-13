@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UnisonBridge.installWarnHandler { [weak self] msg, cancelled in
             self?.log.write("warn dismissed (cancelled=\(cancelled)): \(msg.prefix(120))")
             if cancelled {
-                self?.abortAllInFlight()
+                self?.abortAllInFlight(reason: "you cancelled the warning")
             }
         }
         UnisonBridge.installFatalHandler { [weak self] msg, shouldRetry in
@@ -43,15 +43,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.log.write("fatal dismissed (retry=\(shouldRetry)): \(msg.prefix(120))")
             if shouldRetry, let profile = self.lastAttemptedProfile {
                 self.log.write("recovery: re-running profileSelected for '\(profile)'")
-                self.abortAllInFlight()
-                // Tiny defer so the reconcile-window close has flushed before
-                // we re-open with the same profile. Without this, the new
-                // window opens then is immediately replaced.
+                // Retry path: force the window closed so the deferred
+                // profileSelected can open a fresh one. Keeping the
+                // window in place would race the new init1+init2 calls
+                // against stale state.
+                self.abortAllInFlight(reason: "retrying after recovery",
+                                      forceClose: true)
+                // Tiny defer so the reconcile-window close has flushed
+                // before we re-open with the same profile.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     self?.profileSelected(profile)
                 }
             } else {
-                self.abortAllInFlight()
+                self.abortAllInFlight(reason: "fatal error")
             }
         }
 
@@ -277,20 +281,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Error recovery
 
-    /// Reset every active window's in-flight UI state. Called after a fatal
-    /// alert is dismissed — OCaml's worker thread is unwinding past the
-    /// failure point, so no completion callback will arrive on its own.
-    /// Strategy now that the scan happens in the reconcile window: close
-    /// the reconcile window, which routes via onClose back to the picker.
-    private func abortAllInFlight() {
+    /// Reset every active window's in-flight UI state. Called after a
+    /// fatal or warn-cancel alert is dismissed — OCaml's worker thread
+    /// is unwinding past the failure point, so no completion callback
+    /// will arrive on its own.
+    ///
+    /// **Reconcile-window strategy depends on phase:**
+    /// - **Reconcile phase** (`!isSyncing`): the user has no per-row
+    ///   detail to inspect yet (init1/init2 either never produced rows
+    ///   or aborted partway). Close the window so the picker comes
+    ///   back. The user can re-pick the profile to try again.
+    /// - **Sync phase** (`isSyncing`): rows have completed-or-FAILED
+    ///   progress text that's user-actionable info. Reset the sync UI
+    ///   in place (clear progress bar, flip `isSyncing` to false,
+    ///   update the summary line to "Sync interrupted") and keep the
+    ///   window open. The user can then inspect FAILED rows, retry,
+    ///   or close manually.
+    /// - **Force-close override** (`forceClose: true`): the retry path
+    ///   needs a fresh reconcile window (it calls `profileSelected`
+    ///   to re-run init1+init2). Close regardless of phase. The
+    ///   caller is responsible for the re-open after a short deferral.
+    ///
+    /// `reason` is appended to the in-place summary text so the user
+    /// sees why the abort happened ("fatal error" vs "you cancelled
+    /// the warning").
+    private func abortAllInFlight(reason: String, forceClose: Bool = false) {
         if let sheet = pendingPasswordSheet?.window, let parent = sheet.sheetParent {
             parent.endSheet(sheet)
         }
         pendingPasswordSheet = nil
-        if let reconcile = reconcileWindowController {
-            log.write("abortAllInFlight: closing reconcile window")
+        guard let reconcile = reconcileWindowController else { return }
+        if forceClose || !reconcile.isSyncing {
+            log.write("abortAllInFlight: closing reconcile window (forceClose=\(forceClose), reason=\(reason))")
             reconcile.close()
             // onClose handler will reopen the picker.
+        } else {
+            log.write("abortAllInFlight: sync was in-flight — resetting UI in place (reason=\(reason))")
+            reconcile.resetSyncUIAfterAbort(reason: reason)
         }
     }
 

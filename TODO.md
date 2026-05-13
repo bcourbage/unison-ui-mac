@@ -372,19 +372,6 @@ go back / refresh / open another profile.
 
 </summary>
 
-- [ ] **Inline-rename profile from the Profile Editor table** — currently
-      renaming requires opening Edit, changing the Profile Name field,
-      and saving. NSTableView supports per-cell text editing (set
-      `tableColumn.isEditable = true` + provide `tableView(_:setObjectValue:for:row:)`
-      or use `NSTextField`-based cells with editing enabled and a delegate).
-      Wire double-click on the name cell → in-place edit → on commit, run
-      the same rename pipeline that `ProfileFormWindowController.saveAction`
-      currently uses (move .prf, carry .bak, update `prefs.order` /
-      `prefs.hidden`, fire the archive-orphan warning sheet from
-      `confirmRenameWarning`). The form's rename path is the model;
-      factor the file-system + prefs steps into a shared helper
-      (`ProfileRename.swift`?) so both the inline edit and the form
-      stay in sync.
 - [ ] **Public help target** — the `<appname> Help` menu item now
       points at `MANUAL.md` on `main`. That URL 404s for
       non-collaborators while the repo is private. Pick one of:
@@ -401,9 +388,16 @@ go back / refresh / open another profile.
       Either remove them in Release or feature-gate so they're inert.
 - [ ] **Replace TraceLog with `os.Logger`** — once we're past the bring-up
       phase, file-based dev logging should go.
-- [ ] **Reconcile window during fatal/cancel** — `abortAllInFlight()` only
-      resets the picker. If a fatal fires *during sync* (after reconcile),
-      the reconcile window stays in a stale state.
+- [x] **Reconcile window during fatal/cancel** — `abortAllInFlight()`
+      now picks its strategy by phase: in reconcile phase (`!isSyncing`)
+      it closes the window so the picker comes back, as before. In sync
+      phase (`isSyncing`) it keeps the window open and calls
+      `resetSyncUIAfterAbort(reason:)` instead — flips `isSyncing` to
+      false, hides the progress bar, sets the summary line to
+      "Sync interrupted — <reason>". The user can then inspect FAILED
+      rows in the Progress column before deciding whether to rescan or
+      close manually. The retry path (orphan-archive recovery) passes
+      `forceClose: true` to override and get a fresh window.
 - [ ] **Clean shutdown of OCaml workers** — currently we just exit; no
       `caml_remove_generational_global_root` for `g_preconn` / `g_ri_roots` on
       app quit. Mostly cosmetic since the process is dying.
