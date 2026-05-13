@@ -94,22 +94,9 @@ this README is just as precise and less mechanical baggage.
 
 ## Why not a single universal binary?
 
-OCaml's native compiler emits single-arch output per invocation
-(the vendored `.o` here is `Mach-O 64-bit object arm64`), and
-Homebrew's OCaml runtime libraries (`libasmrun.a`, `libthreadsnat.a`,
-`libunixnat.a`, `libcamlstrnat.a`) are also installed single-arch
-per brew prefix — `arm64` under `/opt/homebrew/lib/ocaml`, `x86_64`
-under `/usr/local/lib/ocaml`. A universal build is possible: the
-standard Apple approach is to build the whole `.app` once on each
-architecture and `lipo` the final Mach-O executables together (this
-is what Xcode does internally when you set `ARCHS = arm64 x86_64`
-*and* both architectures' link-time dependencies are available on
-disk). `lipo`-ing only the intermediate `.o` doesn't get you there
-on its own — the runtime libs still need to be combined somehow.
-
-For now we ship arm64-only since Apple Silicon is the only target.
-The Makefile's `ARCH := $(shell uname -m)` pattern leaves the door
-open by selecting the right arch-specific vendored blob — drop an
+Apple Silicon is the only target, so we ship arm64-only. The
+Makefile's `ARCH := $(shell uname -m)` pattern leaves the door open
+by selecting the right arch-specific vendored blob — drop an
 `unison-blob-<version>-x86_64.o` next to the arm64 one (built by
 running `make vendor-blob` on an Intel host or under Rosetta) and
 Intel users would build out of the box.
