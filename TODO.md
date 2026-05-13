@@ -27,21 +27,17 @@ section at the bottom so this list stays scannable.
       longer trip the Gatekeeper prompt — the install-time `xattr
       -dr` handles it once. So **for personal use, this is settled**;
       the open question below is only about distributing builds to
-      other Macs. Three remaining options if we ever do:
-    1. **Free Apple ID developer cert** — weekly rotation. Doesn't
-       help other Macs (still not notarized), so this is strictly
-       worse than ad-hoc + install.sh for anything but Xcode-internal
-       runs.
-    2. **Apple Developer Program ($99/yr) + notarization** — required
-       for any distribution outside the App Store. Set
-       `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = "Developer
-       ID Application: …"` in `project.yml`, then `xcrun notarytool
-       submit … --wait --staple` as a Makefile target.
-    3. **Mac App Store** — not viable; we embed GPLv3 code and the
-       App Store license terms aren't GPL-compatible.
-      A notarized build would also need Hardened Runtime (default for
-      new Xcode projects) + an entitlements file for outgoing SSH
-      network access + a current `LSMinimumSystemVersion`.
+      other Macs. Distributing to other Macs would require an Apple
+      Developer account for a Developer ID Application certificate
+      plus notarization. Setup would be: `CODE_SIGN_STYLE = Manual`
+      + `CODE_SIGN_IDENTITY = "Developer ID Application: …"` in
+      `project.yml`, then `xcrun notarytool submit … --wait --staple`
+      as a Makefile target. A notarized build would also need
+      Hardened Runtime (default for new Xcode projects) + an
+      entitlements file for outgoing SSH network access + a current
+      `LSMinimumSystemVersion`. The Mac App Store route is not
+      viable — we embed GPLv3 code and the App Store license terms
+      aren't GPL-compatible.
 
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
