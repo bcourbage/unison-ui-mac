@@ -50,6 +50,13 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         headerLabel.textColor = .secondaryLabelColor
         headerLabel.lineBreakMode = .byTruncatingMiddle
         headerLabel.cell?.usesSingleLineMode = true
+        // Low horizontal compression resistance. The header changes
+        // text dynamically ("Generating diff for <long path>…",
+        // titles from displayDiff, error messages) — without this,
+        // a long file path could push the diff window wider on each
+        // re-binding. Same pathology as the reconcile summary label.
+        headerLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
 
         textView.isEditable = false
         textView.isSelectable = true

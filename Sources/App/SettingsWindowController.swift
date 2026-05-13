@@ -72,6 +72,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         pickerLayoutLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         pickerLayoutLabel.textColor = .labelColor
+        pickerLayoutLabel.lineBreakMode = .byTruncatingTail
+        pickerLayoutLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
         pickerLayoutResetButton.bezelStyle = .rounded
         pickerLayoutResetButton.target = self
         pickerLayoutResetButton.action = #selector(resetPickerLayoutAction(_:))
@@ -113,6 +116,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         layoutCountsLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         layoutCountsLabel.textColor = .labelColor
+        layoutCountsLabel.lineBreakMode = .byTruncatingTail
+        layoutCountsLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
         layoutResetButton.bezelStyle = .rounded
         layoutResetButton.target = self
         layoutResetButton.action = #selector(resetLayoutAction(_:))

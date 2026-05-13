@@ -108,6 +108,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         pathLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         pathLabel.textColor = .secondaryLabelColor
         pathLabel.lineBreakMode = .byTruncatingMiddle
+        // Low horizontal compression resistance — see the same fix
+        // on ReconcileWindowController.summaryLabel. Without this, a
+        // long Unison directory path could grow the window past the
+        // intended frame on init.
+        pathLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
         pathLabel.stringValue = unisonDirectory
 
         footerLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)

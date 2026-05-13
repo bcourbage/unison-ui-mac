@@ -363,8 +363,17 @@ and init2 walks both replicas to compute differences).
 
 Above the row list. Live-updates with status messages from OCaml during
 scanning ("Looking for changes...", "Reconciling...") and shows a count
-summary once the reconcile completes ("142 items · 3 conflicts · 12 →
-second · 4 ← first").
+summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
+12 → second · 4 ← first").
+
+The size figure between the item count and the breakdown is the **total
+bytes that will move if you hit Go now**. Sum of file sizes for rows
+with a clear direction arrow (`←` First or `→` Second); conflicts and
+`<-M->` merge rows are excluded — conflicts won't transfer until
+resolved, and merge runs an external command whose byte output isn't
+predictable in advance. User overrides on conflict rows aren't reflected
+in this total (same convention as the count breakdown) — rescan refreshes
+the snapshot after manual changes if you want an updated total.
 
 If a status message has multiple lines (typically SSH connect failures
 dumping stderr), a **"Details…"** button appears next to the summary

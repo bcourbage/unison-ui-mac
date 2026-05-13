@@ -1194,18 +1194,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     private func summaryText(profile: String, syncDone: Bool = false) -> String {
-        let total = items.count
-        let conflicts = items.filter { $0.direction == "<-?->" }.count
-        let toLeft   = items.filter { $0.direction == "<----" }.count
-        let toRight  = items.filter { $0.direction == "---->" }.count
-        let other    = total - conflicts - toLeft - toRight
-        var parts = ["\(total) items"]
-        if conflicts > 0 { parts.append("\(conflicts) conflicts") }
-        if toLeft > 0    { parts.append("\(toLeft) ← first") }
-        if toRight > 0   { parts.append("\(toRight) → second") }
-        if other > 0     { parts.append("\(other) other") }
-        let prefix = syncDone ? "Synchronized" : profile
-        return "\(prefix)  ·  " + parts.joined(separator: "  ·  ")
+        ReconcileSummary.text(items: items, profile: profile, syncDone: syncDone)
     }
 }
 

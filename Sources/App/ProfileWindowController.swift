@@ -61,6 +61,14 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         pathLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         pathLabel.textColor = .secondaryLabelColor
         pathLabel.lineBreakMode = .byTruncatingMiddle
+        // Low horizontal compression resistance so a long Unison
+        // directory path truncates within the label rather than
+        // pushing the window wider. See the same fix on
+        // ReconcileWindowController.summaryLabel for the pathology
+        // (single-line NSTextField + .resizable window → AppKit
+        // walks the constraint chain up and grows the window).
+        pathLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
         pathLabel.stringValue = unisonDirectory
 
         let column = NSTableColumn(identifier: .init("profile"))
