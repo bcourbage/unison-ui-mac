@@ -30,11 +30,28 @@ enum ReconcileSummary {
     static let directionConflict = "<-?->"
 
     /// Build the displayed summary. `syncDone == true` swaps the
-    /// leading "<profile>" for "Synchronized" — same single source
-    /// of truth used both during reconcile and after sync completion.
+    /// leading "<profile>" for "Synchronization complete" — same
+    /// single source of truth used both during reconcile and after
+    /// sync completion.
+    ///
+    /// Special case: when there are no items to report, the breakdown
+    /// (which would otherwise read "0 items" with no follow-up) is
+    /// replaced by a single explicit phrase — "Everything is up to
+    /// date" after a clean scan, or "nothing to transfer" if a sync
+    /// somehow finished with zero items. Both make the no-work-needed
+    /// state read as a positive outcome rather than an empty data row.
     static func text(items: [StateItem],
                      profile: String,
                      syncDone: Bool = false) -> String {
+        let prefix = syncDone ? "Synchronization complete" : profile
+
+        if items.isEmpty {
+            let trailing = syncDone
+                ? "nothing to transfer"
+                : "Everything is up to date"
+            return "\(prefix)  ·  \(trailing)"
+        }
+
         let total = items.count
         let conflicts = items.filter { $0.direction == directionConflict }.count
         let toLeft    = items.filter { $0.direction == directionToFirst  }.count
@@ -71,7 +88,6 @@ enum ReconcileSummary {
         if toLeft > 0    { parts.append("\(toLeft) Second → First") }
         if toRight > 0   { parts.append("\(toRight) First → Second") }
         if other > 0     { parts.append("\(other) other") }
-        let prefix = syncDone ? "Synchronized" : profile
         return "\(prefix)  ·  " + parts.joined(separator: "  ·  ")
     }
 }

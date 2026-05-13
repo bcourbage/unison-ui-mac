@@ -22,11 +22,27 @@ final class ReconcileSummaryTests: XCTestCase {
 
     // MARK: - Basic counts
 
-    func test_empty_showsZeroItemsAndNoTransferBytes() {
+    func test_empty_showsUpToDateMessage() {
+        // No items found → explicit positive phrasing rather than
+        // a sterile "0 items". User feedback was that the empty
+        // post-scan state needed to clearly state nothing-to-do.
         let out = ReconcileSummary.text(items: [], profile: "Sync")
-        XCTAssertTrue(out.hasPrefix("Sync  ·  0 items"), out)
+        XCTAssertTrue(out.contains("Sync"), out)
+        XCTAssertTrue(out.contains("Everything is up to date"), out)
+        XCTAssertFalse(out.contains("0 items"),
+                       "the empty case should NOT render as '0 items'")
         XCTAssertFalse(out.contains("KB"), "no bytes line for empty")
         XCTAssertFalse(out.contains("MB"), "no bytes line for empty")
+    }
+
+    func test_emptyPostSync_showsNothingToTransfer() {
+        // Edge case: sync somehow finished with 0 items (e.g. all
+        // rows got user-skipped before Go, then "Go" produced no
+        // actual transfers). Use the past-tense prefix + a quiet
+        // trailing clause.
+        let out = ReconcileSummary.text(items: [], profile: "Sync", syncDone: true)
+        XCTAssertTrue(out.hasPrefix("Synchronization complete"), out)
+        XCTAssertTrue(out.contains("nothing to transfer"), out)
     }
 
     func test_onlyConflicts_noTransferBytesShown() {
@@ -122,12 +138,12 @@ final class ReconcileSummaryTests: XCTestCase {
         XCTAssertTrue(out.hasPrefix("My-Profile"))
     }
 
-    func test_prefixUsesSynchronizedAfterSyncCompletes() {
+    func test_prefixUsesSynchronizationCompleteAfterSyncCompletes() {
         let out = ReconcileSummary.text(
             items: [item(direction: toSecond, size: 1)],
             profile: "My-Profile",
             syncDone: true)
-        XCTAssertTrue(out.hasPrefix("Synchronized"))
+        XCTAssertTrue(out.hasPrefix("Synchronization complete"))
         XCTAssertFalse(out.contains("My-Profile"),
                        "post-sync summary doesn't repeat the profile name")
     }
