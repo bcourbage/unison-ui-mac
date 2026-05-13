@@ -12,12 +12,9 @@ and clears the macOS quarantine attribute so Gatekeeper lets it launch.
 
 ### To run the app
 
-- **macOS 15 (Sequoia) or later.** The app's deployment target is `15.0`;
-  it will refuse to launch on earlier releases.
-- **Apple Silicon Mac.** The build produces a host-architecture binary
-  (arm64 on Apple Silicon, x86_64 on Intel) — both are supported, but you
-  must build on the same architecture you intend to run on. There is no
-  universal binary today.
+- **macOS 15 (Sequoia) or later** on an **Apple Silicon Mac**. The
+  app's deployment target is `15.0` and ships as an arm64-only binary.
+  Intel Macs are not supported.
 - **~60 MB of disk.** The bundle is around 50 MB (the embedded OCaml
   core is the bulk of it).
 - **No admin rights** beyond what `/Applications` itself requires — the
@@ -185,14 +182,10 @@ make install
   /Applications/unison-ui-mac.app`.
 - **App launches then immediately quits** — check Console.app under
   subsystem `net.courbage.unison-ui-mac` for the crash reason. Most
-  common cause is an OCaml architecture mismatch (e.g. ran the
-  installer after `brew install`ing OCaml under Rosetta).
-- **`make build` fails with "no such file or directory: …unison-blob…"** —
-  the vendored blob path doesn't exist for your architecture. By
-  default the build looks for `vendor/unison-blob-2.54.0-arm64.o`. On
-  an Intel Mac you'd need `…-x86_64.o`, which isn't shipped. Either
-  build the blob yourself with `make vendor-blob` (requires an upstream
-  clone), or override at link time: `make build BLOB=/path/to/your/blob.o`.
+  common cause is an OCaml install that doesn't match the host
+  architecture (e.g. `brew install`ing OCaml under Rosetta on Apple
+  Silicon — the runtime libs end up x86_64 and won't link with the
+  arm64 vendored blob).
 - **`make build` fails with "xcodegen: command not found"** — Homebrew
   is installed but `brew install xcodegen` hasn't run, or your shell
   hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew
