@@ -38,20 +38,28 @@ and clears the macOS quarantine attribute so Gatekeeper lets it launch.
   ```sh
   brew install ocaml xcodegen
   ```
-  Tested against OCaml 5.4.1; any 5.x release should work.
-- **A local clone of upstream Unison** at `../unison/` relative to this
-  repo (i.e. as a sibling directory):
-  ```sh
-  cd ..
-  git clone https://github.com/bcpierce00/unison.git
-  cd unison-ui-mac
-  ```
-  If you keep upstream Unison somewhere else, set `UNISON_SRC` in the
-  environment to point at the `src/` directory inside it.
-- **~2 GB free disk** for the upstream OCaml build artifacts.
-- **Time**: the first build takes 5–10 minutes because it compiles
-  Unison's entire OCaml core into `unison-blob.o`. Subsequent builds
-  only recompile changed Swift/C and finish in a few seconds.
+  Tested against OCaml 5.4.1; any 5.x release should work. OCaml is
+  needed for the runtime libraries we link (`libasmrun`, `libthreadsnat`,
+  etc.) — *not* to compile Unison itself.
+
+That's it. **No upstream Unison clone required** — a prebuilt
+`unison-blob.o` lives in `vendor/` (see
+[vendor/README.md](vendor/README.md) for provenance). The build
+compiles Swift + C, links against the vendored blob + the OCaml runtime
+from Homebrew, and finishes in a few seconds rather than the 5–10 min
+that a from-source upstream build would take. Maintainer-only target
+`make vendor-blob` rebuilds the vendored blob when upstream Unison
+bumps version.
+
+If you *do* want to build the OCaml core yourself (to verify the
+vendored blob, to test a new upstream version, or to develop with
+patched OCaml source), set `UNISON_SRC` to a local Unison checkout
+and override `BLOB`:
+
+```sh
+git clone https://github.com/bcpierce00/unison.git ../unison
+make build BLOB=$(pwd)/../unison/src/unison-blob.o
+```
 
 ## Install (recommended path)
 
@@ -60,9 +68,8 @@ and clears the macOS quarantine attribute so Gatekeeper lets it launch.
 xcode-select --install
 brew install ocaml xcodegen
 
-# 2. Clone upstream Unison and this repo as siblings
+# 2. Clone this repo
 cd ~/somewhere
-git clone https://github.com/bcpierce00/unison.git
 git clone https://github.com/bcourbage/unison-ui-mac.git
 cd unison-ui-mac
 
@@ -167,7 +174,6 @@ Unison's CLI also uses it.
 ```sh
 xcode-select --install
 brew install ocaml xcodegen
-git clone https://github.com/bcpierce00/unison.git ../unison
 make install
 ```
 
@@ -181,10 +187,12 @@ make install
   subsystem `net.courbage.unison-ui-mac` for the crash reason. Most
   common cause is an OCaml architecture mismatch (e.g. ran the
   installer after `brew install`ing OCaml under Rosetta).
-- **`make build` fails with "cannot find unison-blob.o"** — the
-  upstream Unison checkout at `../unison/` is missing or `make macui`
-  failed there. Try `cd ../unison && make macui` directly to see the
-  underlying error.
+- **`make build` fails with "no such file or directory: …unison-blob…"** —
+  the vendored blob path doesn't exist for your architecture. By
+  default the build looks for `vendor/unison-blob-2.54.0-arm64.o`. On
+  an Intel Mac you'd need `…-x86_64.o`, which isn't shipped. Either
+  build the blob yourself with `make vendor-blob` (requires an upstream
+  clone), or override at link time: `make build BLOB=/path/to/your/blob.o`.
 - **`make build` fails with "xcodegen: command not found"** — Homebrew
   is installed but `brew install xcodegen` hasn't run, or your shell
   hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew

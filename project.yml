@@ -15,6 +15,12 @@ settings:
     OCAMLLIBDIR: ${OCAMLLIBDIR}
     UNISON_SRC: ${UNISON_SRC}
     STRIPPED_ASMRUN_DIR: ${STRIPPED_ASMRUN_DIR}
+    # Absolute path to the OCaml object the Swift app links against.
+    # Set by the Makefile to either the vendored blob (default) or the
+    # freshly-built upstream blob when BLOB is overridden on the
+    # command line. See the BLOB / VENDORED_BLOB / UPSTREAM_BLOB
+    # mechanics in Makefile.
+    BLOB: ${BLOB}
 
 targets:
   unison-ui-mac:
@@ -51,7 +57,7 @@ targets:
           - $(OCAMLLIBDIR)
           - $(STRIPPED_ASMRUN_DIR)
         OTHER_LDFLAGS:
-          - $(UNISON_SRC)/unison-blob.o
+          - $(BLOB)
           - -lasmrun_nomain
           - -lthreadsnat
           - -lunixnat

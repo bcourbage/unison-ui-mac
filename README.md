@@ -28,10 +28,13 @@ major version will be flagged by the in-app version-mismatch check
 (`VersionCheck.swift`) on profile open. The Unison wire protocol
 guarantees compatibility within a major version only.
 
-When upstream cuts a new release, bump by `git pull`ing in
-`../unison/`, rerunning `make build`, and re-running the test suite; no
-changes are typically needed on this project's side unless the upstream
-`uimacbridge.ml` callback surface changes.
+The OCaml core lives as a prebuilt object file under
+[`vendor/`](vendor/) — see [vendor/README.md](vendor/README.md) for
+provenance (upstream commit hash, SHA-256, applied patches) and the
+rebuild recipe (`make vendor-blob`). The vendored blob means everyday
+builds skip the 5–10 min OCaml compile entirely. When upstream cuts
+a new release, the maintainer runs `make vendor-blob` against an
+updated upstream checkout to refresh it.
 
 ### Remote-side requirement (SSH profiles)
 
@@ -91,12 +94,14 @@ signing, copying to `/Applications`), see **[INSTALL.md](INSTALL.md)**.
 For day-to-day development, the Makefile targets are:
 
 ```sh
-make build      # Debug build by default. Compiles unison-blob.o via
-                # upstream Unison make, strips libasmrun's main.n.o,
-                # regenerates xcodeproj, runs xcodebuild. Pass
+make build      # Debug build by default. Strips libasmrun's main.n.o,
+                # regenerates xcodeproj, runs xcodebuild. Links against
+                # the vendored unison-blob.o in vendor/. Pass
                 # CONFIG=Release for an optimized build.
 make install    # Release build + sign + copy to /Applications
                 # (always Release, regardless of CONFIG)
+make vendor-blob   # Maintainer-only — rebuild vendor/unison-blob-*.o
+                #  from an upstream Unison checkout (needs ../unison/)
 make run        # build + launch the binary directly (stderr → terminal)
 make app        # build + `open`s the .app (detached, no terminal output)
 make test       # XCTest bundle — always uses Debug
@@ -106,21 +111,25 @@ make distclean  # also removes the generated xcodeproj
 make print-config  # show resolved paths
 ```
 
-Set `UNISON_SRC` if the upstream Unison checkout isn't at `../unison/src/`.
-The first build is slow (5–10 min) because it builds the entire Unison
-OCaml core (`make macui` in the upstream tree, producing the embeddable
-`unison-blob.o`). Subsequent builds only recompile changed Swift/C.
+The build links against `vendor/unison-blob-2.54.0-arm64.o`, a
+prebuilt OCaml object committed to this repo. No upstream Unison
+clone is required for `make build` / `make install`. Builds finish
+in a few seconds rather than the 5–10 min that an OCaml-from-source
+build would take. Override the blob path on the command line if you
+want to test a custom build:
+`make build BLOB=/path/to/your/unison-blob.o`.
 
 ### Local fork patches
 
 This project applies a small set of patches to the upstream Unison
-source under `$UNISON_SRC` — currently just one, registering an
-`abortAll` callback so the GUI's Stop button can do a real mid-sync
-abort. Patch files live in `patches/`; `make apply-patches` runs
-automatically as a prereq of `make blob` and is idempotent (grep
-detects "already applied" and skips). Patches stay LOCAL — never
-proposed back to bcpierce00/unison, per this project's LLM-usage
-posture (see [NOTICE.md](NOTICE.md)).
+source — currently just one, registering an `abortAll` callback so
+the GUI's Stop button can do a real mid-sync abort. Patch files live
+in [`patches/`](patches/). They're already baked into the vendored
+`unison-blob.o`; you only need to re-apply them if you're rebuilding
+the blob from an upstream clone (`make vendor-blob` does this
+automatically as a prereq). Patches stay LOCAL — never proposed back
+to bcpierce00/unison, per this project's LLM-usage posture (see
+[NOTICE.md](NOTICE.md)).
 
 ## How it works (architecture sketch)
 
@@ -168,6 +177,8 @@ unison-ui-mac/
 ├── CONTRIBUTING.md                      Contribution policy + LLM-usage disclosure
 ├── LICENSE                              GPLv3 (full text)
 ├── TODO.md                              Outstanding work / done items by tier
+├── vendor/                              Prebuilt unison-blob.o + provenance
+├── patches/                             Local fork patches against upstream Unison
 ├── Sources/
 │   ├── App/                             Swift + AppKit
 │   │   ├── main.swift                   NSApplicationMain bootstrap
