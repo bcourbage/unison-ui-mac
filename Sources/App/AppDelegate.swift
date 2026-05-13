@@ -363,14 +363,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openUiMacHelp(_ sender: Any?) {
-        // Help for THIS UI specifically. The repo is currently private,
-        // so non-collaborators won't reach the README until we flip it
-        // (or add a wiki). The link works once auth is in place; for now,
-        // log and open the URL — Safari will prompt for sign-in if needed.
-        //
-        // TODO when going public: prefer `/wiki` over the README if we
-        // populate the wiki with user-facing content.
-        if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac#readme") {
+        // Help for THIS UI specifically. Points at MANUAL.md — the
+        // feature-by-feature user guide — rather than the README,
+        // which is more developer-oriented (build steps, architecture).
+        // The repo is currently private, so non-collaborators get a
+        // sign-in prompt; flip the repo public to unblock that (see
+        // P3 "Public help target" in TODO.md).
+        if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md") {
             NSWorkspace.shared.open(url)
         }
     }

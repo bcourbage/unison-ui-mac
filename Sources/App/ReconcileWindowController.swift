@@ -681,10 +681,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             let alert = NSAlert()
             alert.alertStyle = .informational
             alert.messageText = "Can't diff “\(path)”"
+            // canDiff filters: directories, symlinks, problem rows
+            // (e.g. access errors), and rows where both sides are
+            // PropsChanged-only or one side is Unchanged + the other
+            // is PropsChanged-only. Binary files DO pass canDiff;
+            // they just produce uninformative output from `diff -u`
+            // ("Binary files differ") — so we don't mention binary
+            // in the alert text, since user can technically click
+            // Diff on a binary file and Unison will return that.
             alert.informativeText =
-                "Unison can only diff text files whose content has changed " +
-                "on both sides. This row is either a directory, a symlink, " +
-                "a binary file, or had only metadata changes."
+                "Unison can only diff rows whose content differs on both " +
+                "sides and that are actual files (not directories or " +
+                "symlinks). This row is either a directory, a symlink, " +
+                "had only metadata changes, or hit a problem during " +
+                "update detection."
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return

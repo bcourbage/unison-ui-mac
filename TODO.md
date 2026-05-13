@@ -225,7 +225,12 @@ go back / refresh / open another profile.
       `NSTextView` with light per-line coloring for unified-diff
       format (`+` green / `-` red / `@@` blue / `+++`/`---` bold,
       no tint). One window per reconcile session, reused across
-      Diff invocations. C bridge exposes:
+      Diff invocations. **Scope**: works for any row that passes
+      Unison's `canDiff` predicate — that's "both sides are files
+      with differing content." Excludes directories, symlinks,
+      problem rows, and props-only-on-both-sides changes. Does
+      NOT exclude binary files; those just produce uninformative
+      output from `diff -u` ("Binary files differ"). C bridge exposes:
       - `unison_bridge_can_diff(row) → bool` (mirrors OCaml's
         `canDiff` predicate — only text files with content changes)
       - `unison_bridge_run_show_diffs(row)` (async; result arrives
@@ -380,13 +385,13 @@ go back / refresh / open another profile.
       factor the file-system + prefs steps into a shared helper
       (`ProfileRename.swift`?) so both the inline edit and the form
       stay in sync.
-- [ ] **Public help target** — the `<appname> Help` menu item points at
-      `https://github.com/bcourbage/unison-ui-mac#readme`, which 404s for
+- [ ] **Public help target** — the `<appname> Help` menu item now
+      points at `MANUAL.md` on `main`. That URL 404s for
       non-collaborators while the repo is private. Pick one of:
     1. Flip the repo public (simplest; needs a CONTRIBUTING.md and a
        license file at the root first — see the LLM-disclosure TODO).
-    2. Enable the wiki tab and write a small page that mirrors the
-       README, link `<appname> Help` at `/wiki/Home`.
+    2. Enable the wiki tab and copy MANUAL.md content there, link
+       `<appname> Help` at `/wiki/Home`.
     3. Ship the help as an Apple Help bundle inside the .app — more work
        but doesn't depend on network or GitHub auth.
     Either of (1) or (2) also unblocks the P2 "Report an Issue" Help
