@@ -38,11 +38,13 @@ final class DirectionVisualTests: XCTestCase {
 
     // MARK: - Leaf glyph (direction + isUserSkipped)
 
-    func test_leaf_glyph_toRemote() {
+    func test_leaf_glyph_toSecond() {
+        // `---->` = propagate first → second replica → right arrow.
         XCTAssertEqual(DirectionVisual.glyph(for: "---->", isUserSkipped: false), "→")
     }
 
-    func test_leaf_glyph_toLocal() {
+    func test_leaf_glyph_toFirst() {
+        // `<----` = propagate second → first replica → left arrow.
         XCTAssertEqual(DirectionVisual.glyph(for: "<----", isUserSkipped: false), "←")
     }
 
@@ -77,11 +79,11 @@ final class DirectionVisualTests: XCTestCase {
 
     // MARK: - Leaf tint
 
-    func test_leaf_tint_toRemote_isExactGreenHex() {
+    func test_leaf_tint_toSecond_isExactGreenHex() {
         assertColor(DirectionVisual.tint(for: "---->", isUserSkipped: false), matchesRGB: greenHex)
     }
 
-    func test_leaf_tint_toLocal_isExactBlueHex() {
+    func test_leaf_tint_toFirst_isExactBlueHex() {
         assertColor(DirectionVisual.tint(for: "<----", isUserSkipped: false), matchesRGB: blueHex)
     }
 

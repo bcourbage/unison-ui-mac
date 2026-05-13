@@ -10,7 +10,7 @@ import AppKit
 /// handles the table-of-thousands case naturally — we only build cell
 /// views for visible rows, and each cell pulls from a single struct read.
 @MainActor
-final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
+final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
 
     typealias CloseHandler = @MainActor () -> Void
     typealias RescanRequest = @MainActor () -> Void
@@ -118,9 +118,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         summaryLabel.stringValue = summaryText(profile: profile)
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
-        addColumn(.left, title: "Local", width: 80, min: 60)
+        // Column titles use the upstream manual's terminology: the two
+        // endpoints are called the "first" and "second" replica/root,
+        // matching the order of the `root = …` lines in the .prf. Either
+        // side may be local or remote — there's no client/server
+        // distinction in Unison's data model.
+        addColumn(.left, title: "First", width: 80, min: 60)
         addColumn(.direction, title: "Action", width: 70, min: 60)
-        addColumn(.right, title: "Remote", width: 80, min: 60)
+        addColumn(.right, title: "Second", width: 80, min: 60)
         addColumn(.size, title: "Size", width: 80, min: 60)
         addColumn(.progress, title: "Progress", width: 80, min: 60)
         addColumn(.type, title: "Type", width: 60, min: 50)
@@ -137,6 +142,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
 
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.menu = makeRowContextMenu()
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.allowsMultipleSelection = true
         outlineView.allowsColumnReordering = true
@@ -208,7 +214,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         // Identifier suffix bump after each schema change forces the
         // autosaved layout to reset — otherwise users keep the old buttons
         // and miss new ones. Bump when item identifiers or grouping change.
-        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v3")
+        // v4 bump: DirectionAction subitem identifiers changed from
+        // dir.toLocal / dir.toRemote → dir.toFirst / dir.toSecond as
+        // part of the Local/Remote → First/Second terminology pass.
+        // Without the bump, autosaved layouts would keep the old subitem
+        // IDs and the segmented control would appear empty for users
+        // whose preferences were saved on v3.
+        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v4")
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -413,6 +425,87 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // MARK: - Ignore actions
+
+    /// Right-click context menu for the outline view. The same three Ignore
+    /// items also live on the Edit menu — both go through `applyIgnore`.
+    private func makeRowContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        // Validation: NSMenu doesn't auto-revalidate context menus on
+        // openPopupContextMenu, but it does call `validateUserInterfaceItem`
+        // on each item's target when the menu opens (we set autoenablesItems
+        // and rely on the validation method below).
+        menu.autoenablesItems = true
+        for action in IgnoreAction.all {
+            let item = NSMenuItem(title: action.label,
+                                  action: #selector(ignoreMenuAction(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.tag = action.menuTag
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    /// Right-click handler / Edit-menu handler. Both target ignore items
+    /// carry an IgnoreAction tag.
+    @objc private func ignoreMenuAction(_ sender: NSMenuItem) {
+        guard let action = IgnoreAction.from(tag: sender.tag) else { return }
+        // Edit-menu invocations operate on the table's selection. Context-menu
+        // invocations should operate on the right-clicked row if it isn't
+        // part of the current selection — matching Finder's behavior.
+        let row = rowForPendingMenuAction()
+        applyIgnore(action, row: row)
+    }
+
+    /// Resolves which leaf row a menu action targets. Prefers the
+    /// outline view's `clickedRow` (set on right-click), falling back to
+    /// the first leaf in the current selection. Returns nil when neither
+    /// resolves to a leaf — caller should beep.
+    private func rowForPendingMenuAction() -> Int? {
+        let clicked = outlineView.clickedRow
+        if clicked >= 0,
+           let node = outlineView.item(atRow: clicked) as? ReconcileNode,
+           let row = node.row {
+            return row
+        }
+        return leafRowsInSelection().first
+    }
+
+    /// Apply one of the three Ignore actions to a specific leaf row. The
+    /// bridge call recomputes OCaml's `theState`; the init2-complete handler
+    /// installed on AppDelegate fires re-entrantly and `replaceItems(_:)`
+    /// repopulates the table with the post-filter list.
+    func applyIgnore(_ action: IgnoreAction, row: Int?) {
+        guard !isSyncing else { NSSound.beep(); return }
+        guard let row, row >= 0, row < items.count else { NSSound.beep(); return }
+        let path = items[row].path
+        TraceLog.shared.write("ReconcileWindow: \(action.label) on row \(row) (\(path))")
+        if !action.invoke(row: Int32(row)) {
+            TraceLog.shared.write("  \(action.label) returned false — no state change")
+            NSSound.beep()
+        }
+        // No explicit reload needed: the bridge invokes the init2-complete
+        // handler synchronously, which calls `endRescan` / `replaceItems` and
+        // resets userSkipped + redraws the outline.
+    }
+
+    /// NSMenuItemValidation entry point. AppKit walks the responder chain
+    /// looking for whoever implements the menu item's action; for the
+    /// `ignoreMenuAction(_:)` items that's this controller, so we get the
+    /// validation call here for both context-menu and Edit-menu items.
+    /// Disabled during sync (state mutation while sync is in flight is
+    /// unsafe) and when no leaf row is the target.
+    ///
+    /// AppKit only calls this on the main thread (menu validation runs as
+    /// the menu is about to open). The class is `@MainActor` so we let the
+    /// Swift-6 isolation match the runtime guarantee.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(ignoreMenuAction(_:)) else { return true }
+        guard !isSyncing else { return false }
+        return rowForPendingMenuAction() != nil
+    }
+
     // MARK: - Selection helpers
 
     /// Currently-selected nodes (folders + leaves), in NSOutlineView's
@@ -478,8 +571,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate {
         let other    = total - conflicts - toLeft - toRight
         var parts = ["\(total) items"]
         if conflicts > 0 { parts.append("\(conflicts) conflicts") }
-        if toLeft > 0    { parts.append("\(toLeft) ← local") }
-        if toRight > 0   { parts.append("\(toRight) → remote") }
+        if toLeft > 0    { parts.append("\(toLeft) ← first") }
+        if toRight > 0   { parts.append("\(toRight) → second") }
         if other > 0     { parts.append("\(other) other") }
         let prefix = syncDone ? "Synchronized" : profile
         return "\(prefix)  ·  " + parts.joined(separator: "  ·  ")
@@ -628,9 +721,9 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         if col == .direction {
             return makeDirectionCell(in: outlineView, node: node)
         }
-        // Local + Remote columns: colored status icon instead of plain text.
+        // First + Second columns: colored status icon instead of plain text.
         if col == .left || col == .right {
-            return makeStatusCell(in: outlineView, node: node, isLocal: col == .left)
+            return makeStatusCell(in: outlineView, node: node, isFirstReplica: col == .left)
         }
         // Path column: Finder-style icon + name. Folders get a tinted
         // folder icon that reflects the aggregate direction of their
@@ -675,19 +768,23 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         return cell
     }
 
-    /// Builds (or recycles) a status-icon cell for the Local or Remote
+    /// Builds (or recycles) a status-icon cell for the First or Second
     /// column. Folder rows show no icon (empty cell).
     private func makeStatusCell(in outlineView: NSOutlineView,
                                 node: ReconcileNode,
-                                isLocal: Bool) -> NSView {
-        let id = NSUserInterfaceItemIdentifier(isLocal ? "StatusLocal" : "StatusRemote")
+                                isFirstReplica: Bool) -> NSView {
+        // Recycle identifier names retained as "StatusLocal" / "StatusRemote"
+        // — they're internal NSOutlineView pool keys, not user-visible.
+        // Renaming would invalidate cells already in the recycle pool the
+        // first time a long-running app sees the rename. Cheap to keep stable.
+        let id = NSUserInterfaceItemIdentifier(isFirstReplica ? "StatusLocal" : "StatusRemote")
         let cell = outlineView.makeView(withIdentifier: id, owner: self) as? StatusIconCellView ?? {
             let v = StatusIconCellView()
             v.identifier = id
             return v
         }()
         if let row = node.row, row < items.count {
-            cell.configure(status: isLocal ? items[row].left : items[row].right)
+            cell.configure(status: isFirstReplica ? items[row].left : items[row].right)
         } else {
             cell.configure(status: "")  // folders have no per-side state
         }

@@ -147,6 +147,25 @@ const char *unison_bridge_ri_set_merge(int row);      /* unisonRiSetMerge */
  * next call from the same thread — copy if you need to retain it. */
 const char *unison_bridge_ri_get_details(int row);
 
+/* === Per-row Ignore actions ===
+ *
+ * Add a permanent ignore pattern derived from the given row's path:
+ *   - _ignore_path: ignore exactly this path
+ *   - _ignore_ext:  ignore anything with the same extension
+ *   - _ignore_name: ignore anything with the same basename
+ *
+ * Each call synchronously (a) registers the pattern via Uicommon.addIgnorePattern,
+ * (b) re-runs `unisonUpdateForIgnore` to filter the global reconcile state,
+ * (c) re-invokes the init2-complete handler with the post-filter state-item
+ * array. Swift handles the callback the same way as a rescan: replace the
+ * table contents in place.
+ *
+ * Returns true on success; false if the row is out of range or any of the
+ * required OCaml callbacks isn't registered (would indicate a build mismatch). */
+bool unison_bridge_ignore_path(int row);
+bool unison_bridge_ignore_ext(int row);
+bool unison_bridge_ignore_name(int row);
+
 /* === Synchronize — run the transfer over the current direction overrides ===
  *
  * Asynchronous. During sync, OCaml fires displayStatus + displayGlobalProgress

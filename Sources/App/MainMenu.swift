@@ -12,9 +12,16 @@ enum MainMenu {
     static func build() -> NSMenu {
         let appName = ProcessInfo.processInfo.processName
 
+        // No File menu: this isn't a document-based app. We had one with
+        // a single "Show Profiles" item, but closing the reconcile window
+        // already returns to the picker (which is the only sensible
+        // navigation), so the menu entry was redundant. Standard window
+        // commands (⌘W to close, ⌘M to minimize) still work via the
+        // Window menu / responder chain — they don't need File menu
+        // entries. Apple's own non-document apps (Calculator, System
+        // Settings) ship without a File menu.
         let main = NSMenu()
         main.addItem(makeAppMenu(appName: appName))
-        main.addItem(makeFileMenu())
         main.addItem(makeEditMenu())
         main.addItem(makeWindowMenu())
         main.addItem(makeHelpMenu(appName: appName))
@@ -24,9 +31,24 @@ enum MainMenu {
     private static func makeHelpMenu(appName: String) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Help")
-        menu.addItem(withTitle: "Unison Online Help",
-                     action: #selector(AppDelegate.openUnisonOnlineHelp(_:)),
+
+        // Per Apple HIG: no ellipsis on items that perform their action
+        // immediately (these open a URL in the default browser; they
+        // don't prompt the user for further input first). Two related
+        // help entries, no separator between them — separators are for
+        // grouping unrelated items.
+        //
+        // Help for THIS UI — has the ⌘? shortcut because it's the more
+        // common "I don't know what this app does" entry point.
+        menu.addItem(withTitle: "\(appName) Help",
+                     action: #selector(AppDelegate.openUiMacHelp(_:)),
                      keyEquivalent: "?")
+        // Help for the upstream synchronizer — the file-format reference,
+        // the preference list, the conflict-resolution semantics live there.
+        menu.addItem(withTitle: "Unison File Synchronizer Help",
+                     action: #selector(AppDelegate.openUnisonProjectHelp(_:)),
+                     keyEquivalent: "")
+
         // Wire as the official Help menu so the system's "Help search"
         // (the Spotlight-style menu-item finder) lives here.
         NSApp.helpMenu = menu
@@ -73,23 +95,6 @@ enum MainMenu {
         return appMenuItem
     }
 
-    private static func makeFileMenu() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "File")
-        menu.addItem(withTitle: "New Profile…",
-                     action: #selector(AppDelegate.newProfile(_:)),
-                     keyEquivalent: "n")
-        menu.addItem(withTitle: "Open Profile…",
-                     action: #selector(AppDelegate.openProfile(_:)),
-                     keyEquivalent: "o")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Close",
-                     action: #selector(NSWindow.performClose(_:)),
-                     keyEquivalent: "w")
-        item.submenu = menu
-        return item
-    }
-
     private static func makeEditMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Edit")
@@ -102,6 +107,32 @@ enum MainMenu {
         menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        menu.addItem(.separator())
+        // Ignore actions — target is nil so they dispatch through the responder
+        // chain and land on ReconcileWindowController when the reconcile window
+        // is key. AppKit's automatic menu-item validation greys them out when
+        // no responder claims the selector.
+        //
+        // Selector name must match the @objc method in ReconcileWindowController.
+        // Tags must match IgnoreAction.menuTag so the receiver can re-derive
+        // which action was picked without looking up by title.
+        let ignoreSelector = Selector(("ignoreMenuAction:"))
+        for action in IgnoreAction.all {
+            let mi = NSMenuItem(title: action.label, action: ignoreSelector, keyEquivalent: "")
+            mi.tag = action.menuTag
+            menu.addItem(mi)
+        }
+
+        // Profile management — opens the Profile Editor manager window
+        // (lists every .prf with edit / delete / reorder / hide
+        // affordances). Single menu entry replaces what used to be
+        // separate Edit / Delete items.
+        menu.addItem(.separator())
+        let editor = NSMenuItem(title: "Profile Editor…",
+                                action: #selector(AppDelegate.showProfileEditor(_:)),
+                                keyEquivalent: "e")
+        editor.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(editor)
         item.submenu = menu
         return item
     }

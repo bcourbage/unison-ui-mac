@@ -1,17 +1,21 @@
 import AppKit
 
 /// One of the four direction-override operations the user can apply to
-/// selected reconcile rows. Each binds to the matching ri-set bridge call.
+/// selected reconcile rows. Each binds to the matching ri-set bridge
+/// call. Naming follows the upstream manual's terminology: the two
+/// endpoints are the "first" and "second" replicas, in .prf-line order.
+/// `toSecond` = propagate first → second (right arrow); `toFirst` =
+/// propagate second → first (left arrow).
 enum DirectionAction {
-    case toRemote   // local wins  -> data flows ➡
-    case toLocal    // remote wins -> data flows ⬅
+    case toSecond   // first wins  -> data flows first → second  ➡
+    case toFirst    // second wins -> data flows second → first  ⬅
     case skip       // mark conflict (don't sync)
     case merge      // run merge — only useful with `merge` pref configured
 
     var label: String {
         switch self {
-        case .toRemote: return "→ Remote"
-        case .toLocal:  return "← Local"
+        case .toSecond: return "→ Second"
+        case .toFirst:  return "← First"
         case .skip:     return "Skip"
         case .merge:    return "Merge"
         }
@@ -19,8 +23,8 @@ enum DirectionAction {
 
     var systemSymbol: String {
         switch self {
-        case .toRemote: return "arrow.right"
-        case .toLocal:  return "arrow.left"
+        case .toSecond: return "arrow.right"
+        case .toFirst:  return "arrow.left"
         case .skip:     return "minus.circle"
         case .merge:    return "arrow.triangle.merge"
         }
@@ -30,8 +34,8 @@ enum DirectionAction {
     /// (see StateItem.rowTint) so the visual language is consistent.
     var accentColor: NSColor {
         switch self {
-        case .toRemote: return .systemGreen
-        case .toLocal:  return .systemBlue
+        case .toSecond: return .systemGreen
+        case .toFirst:  return .systemBlue
         case .skip:     return .systemOrange
         case .merge:    return .systemPurple
         }
@@ -39,8 +43,8 @@ enum DirectionAction {
 
     var toolbarIdentifier: NSToolbarItem.Identifier {
         switch self {
-        case .toRemote: return .init("dir.toRemote")
-        case .toLocal:  return .init("dir.toLocal")
+        case .toSecond: return .init("dir.toSecond")
+        case .toFirst:  return .init("dir.toFirst")
         case .skip:     return .init("dir.skip")
         case .merge:    return .init("dir.merge")
         }
@@ -55,17 +59,22 @@ enum DirectionAction {
 
     func invoke(row: Int32) -> UnsafePointer<CChar>? {
         switch self {
-        case .toRemote: return unison_bridge_ri_set_to_remote(row)
-        case .toLocal:  return unison_bridge_ri_set_to_local(row)
+        // Bridge function names retain "to_remote / to_local" because they
+        // mirror the OCaml `unisonRiSetRight / unisonRiSetLeft` callback
+        // names — that's the layer where direction is unambiguous (right
+        // = second column, left = first column). Renaming the bridge would
+        // mean either patching upstream or adding a translation layer.
+        case .toSecond: return unison_bridge_ri_set_to_remote(row)
+        case .toFirst:  return unison_bridge_ri_set_to_local(row)
         case .skip:     return unison_bridge_ri_set_skip(row)
         case .merge:    return unison_bridge_ri_set_merge(row)
         }
     }
 
     /// Display order in the toolbar group, left → right.
-    /// Local first (matches direction column reading "Local → Remote"), then
-    /// Remote, then non-direction outcomes (Skip, Merge).
-    static let all: [DirectionAction] = [.toLocal, .toRemote, .skip, .merge]
+    /// First first (matches the column reading "First → Second"), then
+    /// Second, then non-direction outcomes (Skip, Merge).
+    static let all: [DirectionAction] = [.toFirst, .toSecond, .skip, .merge]
 }
 
 @MainActor
@@ -164,7 +173,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     /// Build a single segmented group containing all four direction overrides.
     /// `selectionMode = .momentary` because each click is an action (not a
-    /// toggle) — clicking "← Local" applies that direction to the selection,
+    /// toggle) — clicking "← First" applies that direction to the selection,
     /// it isn't a sticky state on the toolbar.
     private func makeDirectionGroup(_ id: NSToolbarItem.Identifier) -> NSToolbarItemGroup {
         let group = NSToolbarItemGroup(itemIdentifier: id)
@@ -224,8 +233,8 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
 private func directionActionTag(_ action: DirectionAction) -> Int {
     switch action {
-    case .toRemote: return 1
-    case .toLocal:  return 2
+    case .toSecond: return 1
+    case .toFirst:  return 2
     case .skip:     return 3
     case .merge:    return 4
     }
@@ -233,8 +242,8 @@ private func directionActionTag(_ action: DirectionAction) -> Int {
 
 private func directionActionFromTag(_ tag: Int) -> DirectionAction? {
     switch tag {
-    case 1: return .toRemote
-    case 2: return .toLocal
+    case 1: return .toSecond
+    case 2: return .toFirst
     case 3: return .skip
     case 4: return .merge
     default: return nil

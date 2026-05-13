@@ -15,7 +15,11 @@ final class ProfileWindowController: NSWindowController {
     private var profiles: [String] = []
 
     private let tableView = NSTableView()
-    private let openButton = NSButton(title: "Open", target: nil, action: nil)
+    // "Run" matches the CLI verb (`unison <profile>`) and the workflow —
+    // picking a profile here kicks off the init1+init2 scan that leads
+    // into reconcile + sync. "Open" was misleading: it sounded like
+    // opening a document for editing.
+    private let runButton = NSButton(title: "Run", target: nil, action: nil)
     private let pathLabel = NSTextField(labelWithString: "")
 
     init(unisonDirectory: String, onComplete: @escaping Completion) {
@@ -56,7 +60,7 @@ final class ProfileWindowController: NSWindowController {
         tableView.delegate = self
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.target = self
-        tableView.doubleAction = #selector(openSelected)
+        tableView.doubleAction = #selector(runSelected)
         tableView.style = .inset
         tableView.rowSizeStyle = .default
 
@@ -65,12 +69,16 @@ final class ProfileWindowController: NSWindowController {
         scroll.hasVerticalScroller = true
         scroll.borderType = .lineBorder
 
-        openButton.bezelStyle = .rounded
-        openButton.target = self
-        openButton.action = #selector(openSelected)
-        openButton.keyEquivalent = "\r"
+        runButton.bezelStyle = .rounded
+        runButton.target = self
+        runButton.action = #selector(runSelected)
+        runButton.keyEquivalent = "\r"
 
-        let bottomRow = NSStackView(views: [NSView(), openButton])
+        // Picker is now pure: list + Run. Create / Duplicate / Rename /
+        // Edit / Delete / Hide / Reorder all live in the Profile Editor
+        // manager window (Edit → Profile Editor…). Keeps the main view
+        // uncluttered — one canonical place for "manage my profiles".
+        let bottomRow = NSStackView(views: [NSView(), runButton])
         bottomRow.orientation = .horizontal
         bottomRow.distribution = .fill
         bottomRow.spacing = 8
@@ -97,19 +105,44 @@ final class ProfileWindowController: NSWindowController {
     private func reload() {
         let url = URL(fileURLWithPath: unisonDirectory)
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-        profiles = contents
+        let available = contents
             .filter { ($0 as NSString).pathExtension == "prf" }
             .map { ($0 as NSString).deletingPathExtension }
-            .sorted()
+        // Apply the user's view preferences (hide + custom order) — the
+        // picker shows the filtered + reordered list. Hidden profiles
+        // are deliberately excluded so they don't clutter the launch view;
+        // the user can still unhide them from the Profile Editor.
+        let prefs = ProfilePreferences.load()
+        profiles = prefs.apply(to: available, includeHidden: false)
         tableView.reloadData()
         if let defaultIdx = profiles.firstIndex(of: "default") ?? (profiles.isEmpty ? nil : 0) {
             tableView.selectRowIndexes(IndexSet(integer: defaultIdx), byExtendingSelection: false)
         }
-        TraceLog.shared.write("ProfileWindow: \(profiles.count) profiles in \(unisonDirectory)")
+        TraceLog.shared.write("ProfileWindow: \(profiles.count) profiles (of \(available.count) on disk) in \(unisonDirectory)")
+    }
+
+    /// Reload the profile list (e.g. after the editor saved a new file).
+    /// If `select` is non-nil and matches an entry, select it; otherwise
+    /// fall back to the same default-selection rule as the initial reload.
+    func reloadProfiles(select: String? = nil) {
+        reload()
+        if let target = select, let idx = profiles.firstIndex(of: target) {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            tableView.scrollRowToVisible(idx)
+        }
+    }
+
+    /// The currently-selected profile name, or nil if no row is selected.
+    /// Used by autotest entry points and any future menu actions that
+    /// want to act on "the profile the user is looking at".
+    func currentlySelectedProfile() -> String? {
+        let row = tableView.selectedRow
+        guard row >= 0, row < profiles.count else { return nil }
+        return profiles[row]
     }
 
     /// Programmatic entry — selects the named profile in the table and
-    /// triggers Open as if the user had double-clicked. Used by the
+    /// triggers Run as if the user had double-clicked. Used by the
     /// env-var autotest hook in AppDelegate.
     func autoSelectAndOpen(profile: String) {
         guard let idx = profiles.firstIndex(of: profile) else {
@@ -117,10 +150,10 @@ final class ProfileWindowController: NSWindowController {
             return
         }
         tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-        openSelected()
+        runSelected()
     }
 
-    @objc private func openSelected() {
+    @objc private func runSelected() {
         let row = tableView.selectedRow
         guard row >= 0, row < profiles.count else { NSSound.beep(); return }
         let profile = profiles[row]

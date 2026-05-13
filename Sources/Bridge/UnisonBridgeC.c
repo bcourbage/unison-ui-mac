@@ -403,23 +403,29 @@ static void register_ri_roots(value arr) {
     }
 }
 
-CAMLprim value unisonInit2Complete(value arr) {
-    CAMLparam1(arr);
+/* Shared between unisonInit2Complete (fired from OCaml when init2 finishes)
+ * and unison_bridge_update_for_ignore (fired from Swift after the user picks
+ * an Ignore action on a row). Both produce the same observable effect on
+ * the Swift side: "here is a fresh state-item array, replace the table in
+ * place" — so they go through the same handler. Caller must hold the OCaml
+ * runtime lock. */
+static void emit_state_items(value arr_in) {
+    CAMLparam1(arr_in);
     CAMLlocal1(item);
 
-    register_ri_roots(arr);
+    register_ri_roots(arr_in);
 
     if (g_init2_complete_handler == NULL) {
-        CAMLreturn(Val_unit);
+        CAMLreturn0;
     }
 
-    const size_t n = (size_t)Wosize_val(arr);
+    const size_t n = (size_t)Wosize_val(arr_in);
     unison_state_item_t *out = NULL;
     if (n > 0) {
         out = calloc(n, sizeof(*out));
         if (out == NULL) {
             fprintf(stderr, "unison-mac: OOM allocating %zu state items\n", n);
-            CAMLreturn(Val_unit);
+            CAMLreturn0;
         }
     }
 
@@ -433,7 +439,7 @@ CAMLprim value unisonInit2Complete(value arr) {
     const value *fn_bytes     = caml_named_value("unisonRiToBytesTransferred");
 
     for (size_t i = 0; i < n; i++) {
-        item = Field(arr, i);
+        item = Field(arr_in, i);
         out[i].path              = strdup(String_val(caml_callback(*fn_path, item)));
         out[i].left              = strdup(String_val(caml_callback(*fn_left, item)));
         out[i].right             = strdup(String_val(caml_callback(*fn_right, item)));
@@ -457,6 +463,12 @@ CAMLprim value unisonInit2Complete(value arr) {
     }
     free(out);
 
+    CAMLreturn0;
+}
+
+CAMLprim value unisonInit2Complete(value arr) {
+    CAMLparam1(arr);
+    emit_state_items(arr);
     CAMLreturn(Val_unit);
 }
 
@@ -785,6 +797,78 @@ const char *unison_bridge_ri_get_details(int row) {
     buf[sizeof(buf) - 1] = '\0';
     return buf;
 }
+
+/* === Per-row Ignore actions ===
+ *
+ * For a row, ask OCaml for its path, hand that path to one of the three
+ * Uicommon.ignore{Path,Ext,Name} flavors, then re-run unisonUpdateForIgnore
+ * to filter the global theState. The new state-item array is emitted via
+ * the same handler as init2 — Swift treats it as a "fresh items, replace
+ * in place" update, exactly like a rescan.
+ *
+ * Row indices in the new array bear no relationship to the old indices:
+ * unisonUpdateForIgnore drops every now-ignored row, so even the click
+ * target itself is usually gone after this returns. That's the point. */
+struct ignore_io {
+    int         row;
+    const char *ignore_fn_name;  /* "unisonIgnorePath" | "unisonIgnoreExt" | "unisonIgnoreName" */
+    bool        ok;
+};
+
+static void _ocaml_ignore(void *user) {
+    CAMLparam0();
+    CAMLlocal2(path_v, arr);
+    struct ignore_io *io = user;
+    io->ok = false;
+
+    if (io->row < 0 || (size_t)io->row >= g_ri_count) {
+        fprintf(stderr, "unison-mac: ignore row %d out of range (count=%zu)\n",
+                io->row, g_ri_count);
+        CAMLreturn0;
+    }
+
+    const value *path_fn = caml_named_value("unisonRiToPath");
+    if (path_fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonRiToPath not registered\n");
+        CAMLreturn0;
+    }
+    path_v = caml_callback(*path_fn, g_ri_roots[io->row]);
+
+    const value *ignore_fn = caml_named_value(io->ignore_fn_name);
+    if (ignore_fn == NULL) {
+        fprintf(stderr, "unison-mac: %s not registered\n", io->ignore_fn_name);
+        CAMLreturn0;
+    }
+    (void)caml_callback(*ignore_fn, path_v);
+
+    const value *upd_fn = caml_named_value("unisonUpdateForIgnore");
+    if (upd_fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonUpdateForIgnore not registered\n");
+        CAMLreturn0;
+    }
+    (void)caml_callback(*upd_fn, Val_int(0));
+
+    const value *state_fn = caml_named_value("unisonState");
+    if (state_fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonState not registered\n");
+        CAMLreturn0;
+    }
+    arr = caml_callback(*state_fn, Val_unit);
+
+    emit_state_items(arr);
+    io->ok = true;
+    CAMLreturn0;
+}
+
+static bool _ignore_via(const char *fn_name, int row) {
+    struct ignore_io io = { .row = row, .ignore_fn_name = fn_name };
+    run_on_ocaml_thread(_ocaml_ignore, &io);
+    return io.ok;
+}
+
+bool unison_bridge_ignore_path(int row) { return _ignore_via("unisonIgnorePath", row); }
+bool unison_bridge_ignore_ext(int row)  { return _ignore_via("unisonIgnoreExt",  row); }
+bool unison_bridge_ignore_name(int row) { return _ignore_via("unisonIgnoreName", row); }
 
 static void _ocaml_synchronize(void *user) {
     (void)user;

@@ -55,6 +55,16 @@ final class BridgeTests: XCTestCase {
         XCTAssertNil(unison_bridge_ri_set_skip(-1))
         XCTAssertNil(unison_bridge_ri_set_merge(0))
     }
+
+    func test_b_ignoreOps_failGracefullyWhenNoStateLoaded() {
+        // Same guard as the ri-set ops: with no reconcile state, the row
+        // is out of range so each ignore call should report failure rather
+        // than crash. Calling these is safe even when no profile is open
+        // (e.g. if a stale menu item is somehow invoked).
+        XCTAssertFalse(unison_bridge_ignore_path(0))
+        XCTAssertFalse(unison_bridge_ignore_ext(99999))
+        XCTAssertFalse(unison_bridge_ignore_name(-1))
+    }
 }
 
 /// Stress / perf tests. Promotion of the bring-up 1000-call benchmark

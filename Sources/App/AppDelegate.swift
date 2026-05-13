@@ -5,6 +5,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var profileWindowController: ProfileWindowController?
     private var reconcileWindowController: ReconcileWindowController?
+    /// "Profile Editor" manager window (lists every .prf, supports
+    /// edit/duplicate/rename/delete/reorder/hide). One at a time;
+    /// reopened = brought to front. The manager owns the single-profile
+    /// form internally, so AppDelegate doesn't need to track it.
+    private var profileEditorWindowController: ProfileEditorWindowController?
     private var unisonDirectory: String = ""
     /// Tracks the profile we last asked OCaml to load. Used by the fatal
     /// recovery path to re-run init1+init2 against the same profile after
@@ -243,11 +248,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Cycle all 4 actions on row 0 to verify each transition reaches OCaml
         // and the direction reads back correctly.
         var current = items[0].direction
-        for action in [DirectionAction.toRemote, .toLocal, .skip, .merge, .toRemote] {
+        for action in [DirectionAction.toSecond, .toFirst, .skip, .merge, .toSecond] {
             let raw: String? = {
                 switch action {
-                case .toRemote: return unison_bridge_ri_set_to_remote(0).flatMap { String(cString: $0) }
-                case .toLocal:  return unison_bridge_ri_set_to_local(0).flatMap { String(cString: $0) }
+                case .toSecond: return unison_bridge_ri_set_to_remote(0).flatMap { String(cString: $0) }
+                case .toFirst:  return unison_bridge_ri_set_to_local(0).flatMap { String(cString: $0) }
                 case .skip:     return unison_bridge_ri_set_skip(0).flatMap { String(cString: $0) }
                 case .merge:    return unison_bridge_ri_set_merge(0).flatMap { String(cString: $0) }
                 }
@@ -292,21 +297,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu actions
 
-    @objc func newProfile(_ sender: Any?) {
-        log.write("menu: New Profile (not yet implemented)")
-        NSSound.beep()
+    /// Edit → Profile Editor…  — opens the multi-profile manager window
+    /// with the full list of .prf files. From there the user can
+    /// edit/delete/reorder/hide; changes feed back to the picker via
+    /// the manager's onProfilesChanged callback.
+    @objc func showProfileEditor(_ sender: Any?) {
+        if let existing = profileEditorWindowController {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let editor = ProfileEditorWindowController(
+            unisonDirectory: unisonDirectory
+        ) { [weak self] in
+            // Picker preferences (hide / order) changed, or a profile was
+            // saved/deleted — refresh the picker to reflect the new state.
+            self?.profileWindowController?.reloadProfiles()
+        }
+        editor.showWindow(nil)
+        editor.window?.makeKeyAndOrderFront(nil)
+        profileEditorWindowController = editor
     }
 
-    @objc func openProfile(_ sender: Any?) {
-        log.write("menu: Open Profile -> showing picker")
-        showProfilePicker()
-    }
-
-    @objc func openUnisonOnlineHelp(_ sender: Any?) {
+    @objc func openUnisonProjectHelp(_ sender: Any?) {
+        // Upstream Unison docs (the file synchronizer's own help/wiki).
         // The legacy app pointed at http://www.cis.upenn.edu/~bcpierce/unison/docs.html
-        // which returns 404 today; the current canonical docs live in the
-        // GitHub wiki.
+        // which 404s today; the canonical docs live in the GitHub wiki.
         if let url = URL(string: "https://github.com/bcpierce00/unison/wiki") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func openUiMacHelp(_ sender: Any?) {
+        // Help for THIS UI specifically. The repo is currently private,
+        // so non-collaborators won't reach the README until we flip it
+        // (or add a wiki). The link works once auth is in place; for now,
+        // log and open the URL — Safari will prompt for sign-in if needed.
+        //
+        // TODO when going public: prefer `/wiki` over the README if we
+        // populate the wiki with user-facing content.
+        if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac#readme") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -317,14 +347,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // panel's "Credits" key without an RTF, so plain attributed text
         // with the Unison version + GPL attribution is the path of least
         // resistance.
+        // The About panel's credits area is narrow and wraps automatically,
+        // so we use single-line paragraphs separated by blank lines and
+        // let AppKit do the wrapping. Avoid hardcoded newlines inside a
+        // paragraph — they produce mid-sentence breaks at narrow widths.
         let credits = NSAttributedString(
             string: """
                 A native macOS UI for Unison File Synchronizer.
 
                 Embeds Unison \(unisonVersion).
 
-                Distributed under the GNU GPL v3, like the upstream
-                project. See NOTICE.md in the source tree for attribution.
+                Distributed under the GNU GPL v3, like the upstream project. See NOTICE.md in the source tree for attribution.
                 """,
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),

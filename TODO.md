@@ -64,7 +64,7 @@ go back / refresh / open another profile.
       systemBlue) + folder name in system body font + labelColor. Files
       get a neutral `doc` icon so names align vertically with folder
       names. Both reads like Finder's list view.
-- [x] **Status icons in Local + Remote columns** — `StatusIconCellView`
+- [x] **Status icons in First + Second columns** — `StatusIconCellView`
       maps the per-side change keyword to an SF Symbol with tooltip:
       Created → plus.circle.fill green, Modified → circle blue (hollow),
       PropsChanged → circle.dashed blue, Deleted → minus.circle.fill red,
@@ -74,50 +74,51 @@ go back / refresh / open another profile.
       fatal during reconcile, the modal now offers a one-click
       "Delete N Orphan Archive(s) and Retry" button (see
       `ArchiveRecovery.swift`). What's still missing is the *proactive*
-      path: a profile-context menu item in the picker that wipes ar/fp/lk
-      *before* any error, with a clear warning. Implementation hint: would
-      need a bridge call to resolve the local+remote archive basenames
-      from the profile's roots so we can delete only the relevant files
+      path: a profile-context menu item in the picker (or a button in
+      the Profile Editor manager) that wipes ar/fp/lk *before* any
+      error, with a clear warning. Implementation hint: would need a
+      bridge call to resolve the local+remote archive basenames from
+      the profile's roots so we can delete only the relevant files
       instead of guessing from a fatal message after the fact.
-- [ ] **Hide / delete profile from the picker** — destructive on disk
-      (delete) or app-only (hide). Both belong in a right-click context
-      menu on profile rows, with a confirmation sheet for delete.
-      Implementation question for "hide" is *where to store the state* so
-      the CLI `unison <profile>` keeps working — three reasonable options:
-    1. **Store in `NSUserDefaults`** under `net.courbage.unison-ui-mac`.
-       The list of hidden basenames lives in the app's prefs. CLI users
-       see all profiles; only this app filters. Cleanest if "hide" is
-       conceptually a per-app view setting.
-    2. **Marker comment in the .prf file** like `# unison-ui-mac:hidden`.
-       Unison ignores comments, so CLI is unaffected. Single source of
-       truth (the file itself), but the file must be writable and the
-       comment can be lost on profile edits.
-    3. **Sidecar file** like `~/Library/Application Support/Unison/.uimac-hidden`
-       listing hidden basenames. Like (1) but stored next to the
-       profiles, shareable across versions of the app.
-    Recommend **option 1** unless we ever want multiple installs of the
-    app to share the same hidden set — then option 3.
+      **Integration with Rename**: when this lands, the form's rename
+      path (`saveAction` in `ProfileFormWindowController.swift`) should
+      offer to invoke the same archive-cleanup logic for the *old*
+      profile name, since Unison's archive files are keyed by profile
+      name and won't follow a rename. Without cleanup the next scan
+      under the new name does a full re-scan to rebuild archives, AND
+      the old name's archive files become orphaned cruft. The two
+      features share an OCaml bridge call (resolve archive basenames
+      from roots), so they're natural co-implementers.
+- [x] **Hide / delete profile** — done via the Profile Editor manager.
+      Hide chose **option 1** from the prior design notes: stored in
+      `UserDefaults` under `net.courbage.unison-ui-mac` (key
+      `profiles.hidden`), CLI is unaffected, picker filters via
+      `ProfilePreferences.apply(to:includeHidden:false)`. Reorder uses
+      a sibling key `profiles.order`.
 - [x] **Reconcile toolbar layout** — done. Direction overrides live in
       an `NSToolbarItemGroup` segmented control with palette-tinted SF
       Symbols (green/blue/orange/purple for each direction). Reading
-      order: Profiles · Rescan · `[Local | Remote | Skip | Merge]` ·
+      order: Profiles · Rescan · `[First | Second | Skip | Merge]` ·
       flex · Go · Stop. Wider spacers between clusters. Toolbar
-      identifier is `ReconcileToolbar.v3`.
-- [ ] **Colorful toolbar / table icons** — the legacy app's toolbar icons
-      ([uimac/toolbar/*.tif](https://github.com/bcpierce00/unison/tree/master/src/uimac/toolbar))
-      and table-row status icons
-      ([uimac/tableicons/*.png](https://github.com/bcpierce00/unison/tree/master/src/uimac/tableicons))
-      are tinted/colored and read at a glance; our current SF Symbol set is
-      monochrome and feels flat. Two routes:
-    1. **Re-use upstream**: the .tif/.png files are GPLv3 (same as us) and
-       compatible — copy into `Resources/` and reference by name. Lowest
-       effort; matches legacy look exactly.
-    2. **Regenerate**: SF Symbols hierarchical/multicolor variants
-       (`arrow.right` with `.palette` config), or hand-drawn replacements
-       in Pixelmator/Sketch. More work; modernizes the look.
-    Pair this with row-color coding (already in P1) so the visual language
-    is consistent.
-- [/] **Test suite** — 53 tests passing in ~0.5s via `make test`.
+      identifier is `ReconcileToolbar.v4` (bumped from v3 when the
+      Local/Remote → First/Second terminology change renamed the
+      `dir.toLocal` / `dir.toRemote` subitems to `dir.toFirst` /
+      `dir.toSecond`).
+- [x] **Colorful toolbar / table icons** — done via option 2 (SF Symbol
+      palette tints):
+      - Toolbar: direction buttons palette-tinted (green/blue/orange/purple),
+        Go button green, Stop button red, all via
+        `NSImage.SymbolConfiguration(paletteColors: …)`.
+      - Status cells (`StatusIconCellView`): green plus.circle.fill /
+        blue circle / blue circle.dashed / red minus.circle.fill /
+        small gray dot for the per-side change state.
+      - Direction cells: badge-tinted background (matching toolbar palette)
+        with a bold arrow glyph; folder rows show aggregate badges.
+      - Path cells: blue folder.fill / neutral doc icon Finder-style.
+      The legacy `.tif`/`.png` route is still on the table if the SF
+      Symbol style ever feels insufficient, but the current state is
+      cohesive enough that there's no pressing need.
+- [/] **Test suite** — 101 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -127,12 +128,19 @@ go back / refresh / open another profile.
           ISO-8601 + concurrent-writes (2), StatusIconDescriptor mapping
           (6), DirectionVisual glyph/tint for both leaf and aggregate
           paths including the user-skip distinction (18),
-          ArchiveRecovery parse + local-orphan classification (5).
-    - [x] **Bridge integration tests** (3) — `unison_bridge_get_version`
+          ArchiveRecovery parse + local-orphan classification (5),
+          IgnoreAction label/tag invariants + DirectionAction-tag
+          non-collision (6), ProfileDocument parse/serialize/round-trip
+          including unknown-key preservation and trailing-newline
+          normalization (14), ProfilePreferences apply (filter+sort),
+          toggleHidden, forget, rename, drag-reorder index math, and
+          UserDefaults persistence round-trip (27).
+    - [x] **Bridge integration tests** (4) — `unison_bridge_get_version`
           returns a non-empty version string mentioning OCaml,
           `unison_bridge_unison_directory` returns an existing absolute
           dir, ri-set ops on out-of-range rows return NULL gracefully
-          (don't crash).
+          (don't crash), ignore-ops on out-of-range rows return false
+          gracefully.
     - [x] **Concurrency/stress** (1) — `test_perf_getVersionRoundTrip`
           runs 1000 sync round-trips through the bridge as an XCTest
           perf measure (~10ms steady-state on M1 Max, regression gate
@@ -160,9 +168,13 @@ go back / refresh / open another profile.
 
 ## P2 — Features from the legacy app
 
-- [ ] **Ignore actions** — right-click on a row → Ignore Path / Ext / Name
-      (calls `unisonIgnorePath`/`unisonIgnoreExt`/`unisonIgnoreName`, then
-      `unisonUpdateForIgnore` to re-filter the current state-item list).
+- [x] **Ignore actions** — right-click on a leaf row → Ignore Path /
+      Extension / Name, also on the Edit menu. Bridge fns
+      `unison_bridge_ignore_{path,ext,name}` add the pattern via
+      `Uicommon.addIgnorePattern`, call `unisonUpdateForIgnore` to filter
+      `theState` in place, then re-fire the init2-complete handler so the
+      reconcile window replaces items via the same code path as a rescan.
+      Disabled during sync and when the menu target isn't a leaf.
 - [ ] **Diff viewer** — Diff button / context-menu action that calls
       `runShowDiffs` for the selected row and displays the result. The OCaml
       side calls back into `displayDiff(left, right)` (currently abort stub).
@@ -173,15 +185,50 @@ go back / refresh / open another profile.
 - [x] **Details pane** — done as a footer (`NSTextView` at the bottom of
       the reconcile window). Shows `unisonRiToDetails` on leaf selection,
       and "<folder>/\n N items" on folder selection.
-- [ ] **New Profile editor** — `File → New Profile…` currently just beeps.
-      A minimal editor: name, two roots (with file pickers), `path =`
-      filters, ignore patterns, save to `~/Library/Application Support/Unison/<name>.prf`.
+- [x] **Profile Editor manager** — `Edit → Profile Editor…` (⌘⇧E)
+      opens a multi-profile window with one row per .prf and per-row
+      affordances: hamburger drag-handle (`line.3.horizontal`) for
+      reorder, eye / eye.slash toggle for hide/show, profile name.
+      Bottom-bar buttons: New…, **Duplicate…**, Edit…, Delete…, Done.
+      Duplicate copies the .prf verbatim with a "<name> copy" suggestion
+      and inserts next to its source in the custom order. **Rename is
+      not a separate button** — the form's "Profile Name" field is
+      editable, so an Edit + name-change + Save performs a rename
+      (moves the .prf + .bak, rewrites the profile's slot in both
+      `order` and `hidden` so prefs stay attached to the same logical
+      profile). **Hide and reorder are UI-only**: they live in
+      `ProfilePreferences` (a `UserDefaults` wrapper, keys
+      `profiles.hidden` + `profiles.order`) and don't touch the .prf
+      files — the CLI `unison <profile>` still sees every profile.
+- [x] **Profile form (single-profile editor)** — opens from the
+      manager's Edit / New buttons, or directly via `File → New
+      Profile…`. Form fields: name, **First** and **Second** roots
+      (matching the upstream manual's terminology — either can be a
+      local path *or* an ssh/socket URL, each with a Browse button for
+      local directories), `path =` list, **`ignore =` list**,
+      **`ignorenot =` list (include overrides)**, and an "Advanced"
+      raw-text catch-all that preserves every other key from the source
+      .prf. Save writes atomically via `NSString.write` and creates a
+      `<name>.prf.bak` backup first. *Beyond the legacy app*: the
+      legacy editor was a single raw-text view; ours separates
+      `ignore` from `ignorenot` and surfaces the structure of
+      list-valued keys.
+- [x] **Delete profile** — lives in the Profile Editor manager (no
+      longer on the picker). Confirms via NSAlert and
+      `NSFileManager.trashItem`s the `.prf` (plus any `.prf.bak`
+      sidecar). Files move to the Trash so a misclick is recoverable
+      from Finder. Unison's archive files (ar*, fp*) are intentionally
+      left alone — that's the **proactive Reset archives** TODO above.
 - [ ] **Hide Merge toolbar item if `merge` pref isn't set** — the action only
       works with a configured merge tool; right now it succeeds in the UI
       but fails at sync time.
-- [x] **Help menu → Unison Online Help** — done. New Help menu in the
-      bar with the upstream wiki link; `NSApp.helpMenu` wired so system
-      Help-search hits it.
+- [x] **Help menu → Unison Online Help** — done, now split into two
+      entries: "unison-ui-mac Help" (⌘?) → this app's README on GitHub,
+      and "Unison File Synchronizer Help…" → upstream Unison wiki.
+      `NSApp.helpMenu` wired so system Help-search hits it. **Note:**
+      the unison-ui-mac repo is private; non-collaborators won't reach
+      the README until the repo flips public or a wiki is set up. See
+      P3 follow-up "Public help target".
 - [x] **About panel** — customized via `orderFrontStandardAboutPanel(options:)`;
       shows the embedded Unison version (via `unison_bridge_get_version`)
       and the GPLv3 attribution.
@@ -211,12 +258,39 @@ go back / refresh / open another profile.
     - **Action**: Propagate Left to Right / Right to Left / Older to Newer /
       Newer to Older, Skip ("Leave Alone"), Merge, Diff, Go (Synchronize)
     - **Help**: Unison Online Help, About
-- [ ] **About panel content** — populate `NSApplication.orderFrontStandardAboutPanel`
-      with our version, "Based on Unison <version>" credit line, and a
-      Credits.rtf with the license summary.
+- [x] **About panel content** — populated via
+      `orderFrontStandardAboutPanel(options:)` with version, embedded
+      Unison version (`unison_bridge_get_version`), and a GPLv3 credits
+      paragraph as `NSAttributedString` (no Credits.rtf needed — the
+      attributed-string path works the same way). Duplicates the
+      "About panel" item above; both are this one feature.
 
 ## P3 — Hardening / hygiene
 
+- [ ] **Inline-rename profile from the Profile Editor table** — currently
+      renaming requires opening Edit, changing the Profile Name field,
+      and saving. NSTableView supports per-cell text editing (set
+      `tableColumn.isEditable = true` + provide `tableView(_:setObjectValue:for:row:)`
+      or use `NSTextField`-based cells with editing enabled and a delegate).
+      Wire double-click on the name cell → in-place edit → on commit, run
+      the same rename pipeline that `ProfileFormWindowController.saveAction`
+      currently uses (move .prf, carry .bak, update `prefs.order` /
+      `prefs.hidden`, fire the archive-orphan warning sheet from
+      `confirmRenameWarning`). The form's rename path is the model;
+      factor the file-system + prefs steps into a shared helper
+      (`ProfileRename.swift`?) so both the inline edit and the form
+      stay in sync.
+- [ ] **Public help target** — the `<appname> Help` menu item points at
+      `https://github.com/bcourbage/unison-ui-mac#readme`, which 404s for
+      non-collaborators while the repo is private. Pick one of:
+    1. Flip the repo public (simplest; needs a CONTRIBUTING.md and a
+       license file at the root first — see the LLM-disclosure TODO).
+    2. Enable the wiki tab and write a small page that mirrors the
+       README, link `<appname> Help` at `/wiki/Home`.
+    3. Ship the help as an Apple Help bundle inside the .app — more work
+       but doesn't depend on network or GitHub auth.
+    Either of (1) or (2) also unblocks the P2 "Report an Issue" Help
+    item that's still pending.
 - [ ] **Gate dev hooks behind a Debug build flag** — `UNISON_AUTOTEST_*`
       env vars and the TraceLog file at `/tmp/unison-ui-mac.log` are dev-only.
       Either remove them in Release or feature-gate so they're inert.

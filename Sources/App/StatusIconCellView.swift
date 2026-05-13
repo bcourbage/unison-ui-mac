@@ -1,6 +1,6 @@
 import AppKit
 
-/// One-glyph status icon shown in the Local and Remote columns. Maps
+/// One-glyph status icon shown in the First and Second replica columns. Maps
 /// Unison's per-side change keyword to a colored SF Symbol so the user
 /// can scan a hundred-file changeset and see what's happening on each
 /// side at a glance:

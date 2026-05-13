@@ -8,18 +8,21 @@ final class DirectionActionTests: XCTestCase {
     func test_all_containsAllFourActions() {
         XCTAssertEqual(DirectionAction.all.count, 4)
         XCTAssertEqual(Set(DirectionAction.all.map(\.toolbarIdentifier.rawValue)),
-                       ["dir.toRemote", "dir.toLocal", "dir.skip", "dir.merge"])
+                       ["dir.toSecond", "dir.toFirst", "dir.skip", "dir.merge"])
     }
 
     func test_toolbarIdentifiers_areStableAndUnique() {
         // Stable identifiers matter — they're persisted in
         // NSUserDefaults via autosavesConfiguration on the toolbar.
-        // Changing them would lose the user's customization.
+        // Changing them would lose the user's customization. (The
+        // ReconcileToolbar.v3 → v4 bump in May 2026 reset autosaves
+        // because we did change these identifiers — Local/Remote →
+        // First/Second.)
         let ids = DirectionAction.all.map(\.toolbarIdentifier.rawValue)
         XCTAssertEqual(ids.count, Set(ids).count, "Toolbar identifiers must be unique")
 
-        XCTAssertEqual(DirectionAction.toRemote.toolbarIdentifier.rawValue, "dir.toRemote")
-        XCTAssertEqual(DirectionAction.toLocal.toolbarIdentifier.rawValue,  "dir.toLocal")
+        XCTAssertEqual(DirectionAction.toSecond.toolbarIdentifier.rawValue, "dir.toSecond")
+        XCTAssertEqual(DirectionAction.toFirst.toolbarIdentifier.rawValue,  "dir.toFirst")
         XCTAssertEqual(DirectionAction.skip.toolbarIdentifier.rawValue,     "dir.skip")
         XCTAssertEqual(DirectionAction.merge.toolbarIdentifier.rawValue,    "dir.merge")
     }
