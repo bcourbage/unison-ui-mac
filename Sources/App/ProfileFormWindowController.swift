@@ -135,12 +135,34 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         secondRootField.placeholderString =
             "/Volumes/backup/sync   or   ssh://user@host//path"
 
+        // Lower horizontal compression resistance on the editable
+        // single-line fields. Defaults are .defaultHigh (750), which —
+        // with a long path like
+        // "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/Backup/Documents/"
+        // — caused AutoLayout to grow the *window* (the only thing in the
+        // constraint chain without a hard width pin) rather than truncate
+        // the field, pushing the Browse buttons and Save/Cancel offscreen.
+        // .defaultLow (250) tells AutoLayout: "feel free to compress this
+        // field; the user can scroll within it horizontally." Same fix
+        // for nameField so a long temporary name during rename doesn't
+        // do the same.
+        for field in [nameField, firstRootField, secondRootField] {
+            field.setContentCompressionResistancePriority(
+                .defaultLow, for: .horizontal)
+        }
+
         let browseFirst = makeBrowseButton(target: self,
                                            action: #selector(browseFirstRoot(_:)))
         let browseSecond = makeBrowseButton(target: self,
                                             action: #selector(browseSecondRoot(_:)))
 
-        let rootsHelp = NSTextField(labelWithString:
+        // `wrappingLabelWithString:` (vs. `labelWithString:`) sets the
+        // text field up to wrap automatically based on available width —
+        // no need for a `preferredMaxLayoutWidth` dance. The earlier
+        // `labelWithString:` version with `maximumNumberOfLines = 3`
+        // rendered as a single super-wide line and was a co-contributor
+        // to the window-growth issue described above.
+        let rootsHelp = NSTextField(wrappingLabelWithString:
             "Each root is one endpoint of the sync. A root can be a local " +
             "directory (e.g. /Users/you/Documents) or a remote URL " +
             "(ssh://user@host//path). Both can be local — there is no " +
@@ -148,8 +170,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         )
         rootsHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         rootsHelp.textColor = .secondaryLabelColor
-        rootsHelp.maximumNumberOfLines = 3
-        rootsHelp.lineBreakMode = .byWordWrapping
+        rootsHelp.maximumNumberOfLines = 0
 
         let nameRow = labeledRow(label: "Profile name", control: nameField)
         let firstRow = labeledRow(label: "First root",
