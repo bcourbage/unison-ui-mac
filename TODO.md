@@ -152,7 +152,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 185 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 201 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -244,6 +244,18 @@ go back / refresh / open another profile.
       the row context menu (so right-click → Diff is the fast
       path). Menu validation calls `canDiff` so binary / props-only
       / non-file rows grey out.
+- [x] **SSH version-mismatch check** — when a profile with an
+      `ssh://` root opens, `VersionCheck.run(...)` spawns a one-shot
+      `ssh -o BatchMode=yes host servercmd -version` in the
+      background. If the remote version differs from
+      `unison_bridge_get_version()`, surface a warning alert with
+      `NSAlert.showsSuppressionButton = true` ("Don't remind me
+      again for this host until either version changes"). Suppression
+      stored in `UserDefaults` under `versionMismatch.suppressed` as
+      a `[String]` of `"<host>|<local>|<remote>"` tokens — re-prompts
+      automatically if either side upgrades. Silent on probe failure
+      (no double-prompt for password auth — `BatchMode=yes`); Unison's
+      own connection error will speak to any real problem.
 - [x] **Force older / newer direction** — wired through new C bridge
       fns `unison_bridge_ri_force_older` / `_newer`, which use the
       existing `_ri_set_via` helper to invoke `unisonRiForceOlder` /
@@ -386,8 +398,17 @@ go back / refresh / open another profile.
 - [ ] **Gate dev hooks behind a Debug build flag** — `UNISON_AUTOTEST_*`
       env vars and the TraceLog file at `/tmp/unison-ui-mac.log` are dev-only.
       Either remove them in Release or feature-gate so they're inert.
-- [ ] **Replace TraceLog with `os.Logger`** — once we're past the bring-up
-      phase, file-based dev logging should go.
+- [x] **Replace TraceLog with `os.Logger`** — done. `TraceLog.shared.write`
+      is now a thin shim that forwards to `os.Logger` under subsystem
+      `net.courbage.unison-ui-mac`, category `general`. The
+      `/tmp/unison-ui-mac.log` text file is gone; messages live in
+      macOS Unified Logging instead (Console.app or
+      `log show --predicate 'subsystem == "net.courbage.unison-ui-mac"'`).
+      New structured `Log.*` namespace with per-category loggers
+      (lifecycle / bridge / reconcile / ocaml-status / version-check)
+      for filtering live streams; existing 29 call sites all kept
+      compiling unchanged. The 2 file-write-verification TraceLog
+      tests were removed (no file to read anymore).
 - [x] **Reconcile window during fatal/cancel** — `abortAllInFlight()`
       now picks its strategy by phase: in reconcile phase (`!isSyncing`)
       it closes the window so the picker comes back, as before. In sync

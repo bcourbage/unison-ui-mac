@@ -539,6 +539,80 @@ OCaml runtime setup. Subsequent launches reuse the same `.app` bundle.
 There's a one-time Gatekeeper prompt on macOS Tahoe 26 for ad-hoc-signed
 apps — accept it once and it stops.
 
+### How do I read this app's diagnostic logs?
+
+The app emits diagnostic info to macOS Unified Logging under subsystem
+`net.courbage.unison-ui-mac`. View it via Console.app (filter the
+"Subsystem" column) or the `log` CLI:
+
+```sh
+# Live tail of everything the app is logging:
+log stream --predicate 'subsystem == "net.courbage.unison-ui-mac"'
+
+# Filter to just bridge events (OCaml↔Swift):
+log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "bridge"'
+
+# Or just the OCaml status messages forwarded from displayStatus:
+log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "ocaml-status"'
+
+# Last hour of everything, in one shot:
+log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 1h
+```
+
+Categories: `lifecycle` (app/window open-close), `bridge`
+(OCaml↔Swift events), `reconcile` (reconcile-window state),
+`ocaml-status` (status messages forwarded from Unison's
+`displayStatus`), `version-check` (the SSH version probe; see below),
+`general` (the legacy `TraceLog` catch-all).
+
+Earlier versions of this app wrote to `/tmp/unison-ui-mac.log` — that
+file is no longer produced. Migrating to Unified Logging gives you
+filterable categories, structured search, and persistence across
+reboots without the disk-hygiene problem of a stray /tmp file.
+
+### Version-mismatch warning on profile open
+
+When you open a profile that has an `ssh://…` root, the app spawns a
+one-shot `ssh -o BatchMode=yes host servercmd -version` in the
+background and compares the result with the locally-embedded Unison
+version. If they differ, you get a warning alert:
+
+> **Unison version mismatch**  
+> This Mac has Unison 2.54.0. The remote (server.example.com) is
+> running 2.54.3. Minor-version differences usually interoperate,
+> but major-version differences can fail with cryptic RPC handshake
+> errors. If sync fails or behaves strangely, see the upstream wiki's
+> compatibility notes.
+>
+> ☐ Don't remind me again for this host (until either version changes)
+
+The checkbox persists per `(host, localVersion, remoteVersion)` triple.
+Once you suppress it, you won't see it again for that exact combination
+— but as soon as you upgrade either side, the triple changes and you'll
+see the alert again so you can re-confirm.
+
+**The probe is silent in normal operation**:
+- Uses `BatchMode=yes` — won't prompt for a password. If the remote
+  requires password auth, the probe fails silently and no alert
+  appears (Unison's own connection will prompt as usual for the
+  actual sync).
+- Times out after 5 seconds (`ConnectTimeout=5`).
+- `StrictHostKeyChecking=accept-new` — first-time hosts get added
+  to known_hosts; changed keys are rejected (mirrors typical SSH
+  workflow).
+
+**Limitations**:
+- Doesn't honor your `sshcmd` / `sshargs` prefs — invokes
+  `/usr/bin/ssh` directly. If your Unison SSH config differs
+  significantly from your shell SSH config, the probe may use a
+  different path/auth than the actual Unison connection.
+- Doesn't check `socket://` profiles. There's no `-version` probe
+  for socket-mode Unison servers without going through the actual
+  Unison protocol.
+- Only checks the FIRST `ssh://` root in the profile. The pathological
+  case of two `ssh://` roots pointing at different hosts is not
+  fully covered.
+
 ### What happens when a new version of Unison is released?
 
 Two halves of the answer — for the **local** side (the embedded Unison)

@@ -174,6 +174,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reconcileWindowController = reconcile
         profileWindowController?.close()
 
+        // Kick off the SSH version check in the background. It probes
+        // the remote with `BatchMode=yes` so it's silent if SSH keys
+        // are configured normally — and bails out (no prompt, no
+        // alert) if not. Result lands on the main queue; we surface a
+        // warning alert ONLY on mismatch AND only if the user hasn't
+        // suppressed this particular triple before. Runs in parallel
+        // with init1/init2 — by the time Unison's own connection is
+        // established, the probe is typically done.
+        runVersionCheckIfNeeded(profile: profile)
+
         // Wire init1/init2 handlers, then kick off init1. Init2Complete will
         // populate the reconcile window via endRescan/replaceItems.
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
@@ -318,6 +328,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             log.write("abortAllInFlight: sync was in-flight — resetting UI in place (reason=\(reason))")
             reconcile.resetSyncUIAfterAbort(reason: reason)
+        }
+    }
+
+    /// Spawn the SSH version probe for the given profile, surface a
+    /// "version mismatch" alert if the result warrants it. No-op for
+    /// local-only profiles (no SSH root). Silent on probe failure —
+    /// Unison's own connection error will speak to any real problem.
+    ///
+    /// Runs in the background; completion comes back on the main
+    /// queue and may show a modal alert *while init1/init2 is still
+    /// running*. That's fine — init1/init2 are async on the OCaml
+    /// side and don't block on the main queue.
+    private func runVersionCheckIfNeeded(profile: String) {
+        guard let localBridgeVersion = unison_bridge_get_version().map({ String(cString: $0) }) else {
+            Log.versionCheck.warning("version check: unison_bridge_get_version returned nil")
+            return
+        }
+        Log.versionCheck.info("starting version check for profile '\(profile, privacy: .public)'")
+        VersionCheck.run(
+            profile: profile,
+            unisonDirectory: unisonDirectory,
+            localBridgeVersion: localBridgeVersion
+        ) { [weak self] outcome in
+            self?.handleVersionCheckOutcome(outcome, profile: profile)
+        }
+    }
+
+    @MainActor
+    private func handleVersionCheckOutcome(_ outcome: VersionCheck.Outcome,
+                                           profile: String) {
+        switch outcome {
+        case .match(let v):
+            Log.versionCheck.info("version match: \(v, privacy: .public) on both sides")
+        case .noRemoteRoot:
+            Log.versionCheck.info("no remote root in profile '\(profile, privacy: .public)' — skipping")
+        case .probeFailed(let reason):
+            Log.versionCheck.info("probe skipped/failed: \(reason, privacy: .public)")
+        case .mismatch(let local, let remote, let host):
+            if VersionCheck.Suppression.isSuppressed(host: host, local: local, remote: remote) {
+                Log.versionCheck.info(
+                    "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — suppressed"
+                )
+                return
+            }
+            Log.versionCheck.notice(
+                "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — surfacing alert"
+            )
+            showVersionMismatchAlert(local: local, remote: remote, host: host)
+        }
+    }
+
+    @MainActor
+    private func showVersionMismatchAlert(local: String, remote: String, host: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unison version mismatch"
+        alert.informativeText =
+            "This Mac has Unison \(local). The remote (\(host)) is running \(remote). " +
+            "Minor-version differences usually interoperate, but major-version " +
+            "differences can fail with cryptic RPC handshake errors. " +
+            "If sync fails or behaves strangely, see the upstream wiki's " +
+            "compatibility notes:\n\nhttps://github.com/bcpierce00/unison/wiki/FAQ"
+        // NSAlert.showsSuppressionButton is purpose-built for this —
+        // adds a checkbox the user toggles, no need for a custom
+        // accessoryView.
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don't remind me again for this host (until either version changes)"
+        alert.addButton(withTitle: "OK")
+        _ = alert.runModal()
+        if alert.suppressionButton?.state == .on {
+            VersionCheck.Suppression.suppress(host: host, local: local, remote: remote)
+            Log.versionCheck.info(
+                "user suppressed mismatch alert for \(host, privacy: .public) @ \(local, privacy: .public)/\(remote, privacy: .public)"
+            )
         }
     }
 
