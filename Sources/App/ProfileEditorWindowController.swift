@@ -43,6 +43,13 @@ final class ProfileEditorWindowController: NSWindowController {
     // Avoids two ways to do the same thing.
     private let editButton = NSButton(title: "Edit…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
+    /// "Reset Archives" trashes the Unison archive files (ar*/fp*/lk*/
+    /// tm*/sc*) for the selected profile, forcing the next sync to
+    /// rebuild reconciliation state from scratch. Useful when archives
+    /// get corrupted (rare but possible — crash mid-write, etc.).
+    /// See `ArchiveHash` for how we identify which files belong to the
+    /// profile without going through OCaml.
+    private let resetArchivesButton = NSButton(title: "Reset Archives…", target: nil, action: nil)
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
 
     private var formController: ProfileFormWindowController?
@@ -62,7 +69,7 @@ final class ProfileEditorWindowController: NSWindowController {
         self.onProfilesChanged = onProfilesChanged
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
@@ -102,8 +109,8 @@ final class ProfileEditorWindowController: NSWindowController {
         scroll.hasVerticalScroller = true
         scroll.borderType = .lineBorder
 
-        for button in [newButton, duplicateButton,
-                       editButton, deleteButton, doneButton] {
+        for button in [newButton, duplicateButton, editButton,
+                       deleteButton, resetArchivesButton, doneButton] {
             button.bezelStyle = .rounded
         }
         newButton.target = self
@@ -114,16 +121,21 @@ final class ProfileEditorWindowController: NSWindowController {
         editButton.action = #selector(editAction(_:))
         deleteButton.target = self
         deleteButton.action = #selector(deleteAction(_:))
+        resetArchivesButton.target = self
+        resetArchivesButton.action = #selector(resetArchivesAction(_:))
         doneButton.target = self
         doneButton.action = #selector(doneAction(_:))
         doneButton.keyEquivalent = "\r"
 
         // Bottom row reads left-to-right by lifecycle of a profile:
-        // create (New, Duplicate), modify (Edit — also handles rename via
-        // the name field), destroy (Delete), then dismiss (Done).
+        // create (New, Duplicate), modify (Edit — also handles rename
+        // via the name field), destroy (Delete), recover (Reset
+        // Archives), then dismiss (Done) on the far right.
         let bottomRow = NSStackView(views: [
             newButton, duplicateButton,
-            editButton, deleteButton, NSView(), doneButton,
+            editButton, deleteButton,
+            resetArchivesButton,
+            NSView(), doneButton,
         ])
         bottomRow.orientation = .horizontal
         bottomRow.spacing = 8
@@ -233,6 +245,7 @@ final class ProfileEditorWindowController: NSWindowController {
         editButton.isEnabled = hasSelection
         deleteButton.isEnabled = hasSelection
         duplicateButton.isEnabled = hasSelection
+        resetArchivesButton.isEnabled = hasSelection
     }
 
     // MARK: - Actions
@@ -326,6 +339,126 @@ final class ProfileEditorWindowController: NSWindowController {
         } catch {
             showFailureAlert(text: "Couldn't duplicate profile",
                              info: "\(dstURL.path):\n\(error.localizedDescription)")
+        }
+    }
+
+    /// Proactive Reset Archives — wipes the local archive files
+    /// (ar*/fp*/lk*/tm*/sc*) for the selected profile's roots, so the
+    /// next sync rebuilds reconciliation state from scratch. Useful
+    /// when the archive is corrupted (rare but possible — typically
+    /// from a sync crash mid-write) without having to wait for the
+    /// reactive recovery to surface the "inconsistent state" fatal.
+    ///
+    /// The hash that identifies which files belong to the profile is
+    /// computed in Swift (`ArchiveHash`) by replicating upstream's
+    /// MD5 logic. The user can verify against
+    /// `unison -showArchiveName <profile>` if they want belt-and-
+    /// suspenders confirmation that we'd touch the right files.
+    @objc private func resetArchivesAction(_ sender: Any?) {
+        guard let profile = selectedProfile() else { NSSound.beep(); return }
+
+        // Compute the hash. Surface failures verbatim — these are the
+        // user-actionable cases (profile file missing, no roots, no
+        // local root) where we should NOT silently delete anything.
+        let result = ArchiveHash.compute(unisonDirectory: unisonDirectory,
+                                          profile: profile)
+        switch result {
+        case .failure(let why):
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Can't reset archives for “\(profile)”"
+            switch why {
+            case .profileFileMissing:
+                alert.informativeText =
+                    "Couldn't read \(unisonDirectory)/\(profile).prf. " +
+                    "If you deleted the .prf manually, you can still " +
+                    "clean up its archives by looking up the hash with " +
+                    "`unison -showArchiveName` and removing the matching " +
+                    "ar*/fp*/lk* files from the Unison directory."
+            case .noRoots:
+                alert.informativeText =
+                    "The profile has no `root = …` lines, so we can't " +
+                    "compute its archive hash. Edit the profile to add " +
+                    "the two replica roots first."
+            case .noLocalRoot:
+                alert.informativeText =
+                    "Both of this profile's roots are remote (ssh:// or " +
+                    "socket://). Archive files live on the local machine " +
+                    "that runs Unison — since this profile has no local " +
+                    "root, there's nothing to reset from here. Run reset " +
+                    "from a machine that hosts one of the replicas."
+            }
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        case .success(let computed):
+            confirmAndResetArchives(profile: profile, computed: computed)
+        }
+    }
+
+    /// Second-stage prompt: show the user the files we're about to
+    /// trash, with the archive hash + canonical roots for verification,
+    /// then perform the deletion via `NSFileManager.trashItem(at:)`.
+    private func confirmAndResetArchives(profile: String,
+                                         computed: ArchiveHash.Result) {
+        let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
+        let files = cleanup.findFiles(matching: computed.hash)
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Reset archives for “\(profile)”?"
+        if files.isEmpty {
+            alert.informativeText =
+                "No archive files matching this profile's hash were " +
+                "found in \(unisonDirectory). The profile's archive " +
+                "either lives on the remote side, or has already been " +
+                "cleaned up.\n\nArchive hash: \(computed.hash)\n" +
+                "Canonical roots: \(computed.rootsName)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        // Order matters: Cancel first → Return defaults to safe.
+        let fileList = files.map { "  • \($0.lastPathComponent)" }
+            .joined(separator: "\n")
+        alert.informativeText =
+            "The following archive files will be moved to the Trash:\n\n" +
+            "\(fileList)\n\n" +
+            "The next sync of this profile will rebuild reconciliation " +
+            "state from scratch (full re-scan of both replicas). For " +
+            "large replicas this can take a long time.\n\n" +
+            "Archive hash: \(computed.hash)\n" +
+            "(Verify with `unison -showArchiveName \(profile)` if you " +
+            "want to double-check.)"
+        alert.addButton(withTitle: "Cancel")
+        let trashBtn = alert.addButton(withTitle: "Move \(files.count) File\(files.count == 1 ? "" : "s") to Trash")
+        trashBtn.hasDestructiveAction = true
+
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
+        let outcome = cleanup.trash(files)
+        TraceLog.shared.write(
+            "ProfileEditor: reset archives for '\(profile)' hash=\(computed.hash) " +
+            "trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)"
+        )
+        for (url, err) in outcome.failed {
+            TraceLog.shared.write("  failed: \(url.lastPathComponent) — \(err)")
+        }
+
+        if !outcome.failed.isEmpty {
+            // Partial failure — surface so the user knows manual
+            // cleanup is needed for the rest.
+            let failedList = outcome.failed
+                .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
+                .joined(separator: "\n")
+            let fail = NSAlert()
+            fail.alertStyle = .critical
+            fail.messageText = "Some archive files couldn't be moved to Trash"
+            fail.informativeText =
+                "\(outcome.trashed.count) of \(files.count) succeeded.\n" +
+                "Failures:\n\(failedList)"
+            fail.addButton(withTitle: "OK")
+            fail.runModal()
         }
     }
 

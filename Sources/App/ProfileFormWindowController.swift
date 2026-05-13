@@ -64,15 +64,14 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
 
-    /// Set to the new name once the user has been warned about the
-    /// archive-orphan consequences of renaming *and* clicked "Use New
-    /// Name". Used to suppress the warning in both the on-field-exit
-    /// path (`controlTextDidEndEditing`) and the save backstop, so we
-    /// never prompt twice for the same rename.
-    ///
-    /// Reset to nil if the user reverts the name field back to the
-    /// original after accepting (so a re-edit triggers a fresh prompt).
-    private var renameWarningAcceptedFor: String?
+    // (Historical note: there used to be a `renameWarningAcceptedFor`
+    // flag here that gated an "archive orphan" warning on rename. The
+    // warning was based on a misunderstanding of upstream — archive
+    // files are keyed off `(thisRoot, rootsName, archiveFormat)`,
+    // none of which include the profile filename. Renaming a .prf
+    // does NOT orphan archives. The warning was removed; see the
+    // ArchiveHash.swift comment + the May-2026 commit that landed
+    // the proactive Reset Archives feature.)
 
     /// Designated initializer.
     ///
@@ -117,11 +116,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Always editable: changing the name on an existing profile
         // performs a rename at save time (move the .prf on disk, carry
         // the .bak along, update prefs.order/hidden so the user's view
-        // settings follow the renamed profile). The on-exit warning
-        // (controlTextDidEndEditing below) is the primary opportunity
-        // to back out.
+        // settings follow the renamed profile). Renaming is genuinely
+        // benign for Unison's archive state — archive files are keyed
+        // off the roots, not the profile filename — so we don't need
+        // a confirmation sheet for it. The Profile Editor's "Reset
+        // Archives" button is the way to wipe archives if the user
+        // wants to.
         nameField.isEditable = true
-        nameField.delegate = self
         if let initial = initialProfileName {
             nameField.stringValue = initial
         }
@@ -412,20 +413,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // user with the renamed-but-stale file — still consistent —
         // rather than two files (old + new) on a partial write.
         if isRename, let oldName = initialProfileName {
-            // Backstop the on-exit warning: if the user typed a new name
-            // and clicked Save without ever leaving the field (some
-            // control-click paths might not trigger
-            // controlTextDidEndEditing first), the warning hasn't fired
-            // yet. Show it now. If the user cancels here, abort the save
-            // entirely — leave the field as the user typed it and the
-            // form open. They can either change the name back, or
-            // re-click Save and confirm.
-            if renameWarningAcceptedFor != name {
-                guard confirmRenameWarning(oldName: oldName, newName: name) else {
-                    return
-                }
-                renameWarningAcceptedFor = name
-            }
+            // No confirm sheet: see comment in `configure(profile:)`.
+            // Renaming a .prf is benign for archive state because
+            // Unison's archive hash depends on roots, not the .prf
+            // filename.
             let oldURL = profileURL(forName: oldName)
             let oldBak = oldURL.appendingPathExtension("bak")
             let newBak = url.appendingPathExtension("bak")
@@ -484,72 +475,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         alert.runModal()
     }
 
-    // MARK: - Rename warning
-
-    /// Run the archive-orphan warning for a rename from `oldName` → `newName`.
-    /// Returns true if the user accepts ("Use New Name"), false if they
-    /// cancel. Caller is responsible for reverting `nameField.stringValue`
-    /// on cancel.
-    ///
-    /// Cancel is the default action (Return key + Escape), so Enter-mashing
-    /// won't accidentally orphan archives. Matches the NSAlert pattern
-    /// used by the Delete confirm in the Profile Editor.
-    private func confirmRenameWarning(oldName: String, newName: String) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Renaming will orphan Unison's archive files for “\(oldName)”"
-        alert.informativeText =
-            "Unison's archive files (ar*, fp*, lk*) are keyed to the profile name. " +
-            "Renaming this profile to “\(newName)” doesn't rename those files — they " +
-            "stay associated with “\(oldName)” in the Unison directory.\n\n" +
-            "The next time you run “\(newName)”, Unison won't find a matching archive " +
-            "and will do a full re-scan of both replicas to rebuild one. For large " +
-            "replicas this can take a long time."
-        // Cancel first so Return = "back out". The "Cancel"-titled button
-        // automatically picks up Escape too.
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Use New Name")
-        return alert.runModal() == .alertSecondButtonReturn
-    }
-}
-
-// MARK: - Name-field editing delegate
-
-extension ProfileFormWindowController: NSTextFieldDelegate {
-
-    /// Fires when the user finishes editing a text field — Tab, Return,
-    /// or clicking elsewhere. For the Profile Name field on an existing
-    /// profile, this is our cue to warn about the orphan-archive
-    /// consequences of a rename. The warning happens HERE (on field
-    /// exit) per user request, not at save time, so the user gets
-    /// feedback as soon as they commit a new name rather than after
-    /// they've finished editing every other field.
-    func controlTextDidEndEditing(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField,
-              field === nameField,
-              let original = initialProfileName else {
-            return  // not the name field, or this is a new-profile form
-        }
-        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        // If the user reverted to the original name (or never changed it),
-        // clear any previous "accepted" flag and skip the warning.
-        if typed == original {
-            renameWarningAcceptedFor = nil
-            return
-        }
-        // Already accepted this exact new name — don't re-prompt for
-        // subsequent field-exit events (e.g., the user tabs in and out
-        // of the field without re-editing).
-        if renameWarningAcceptedFor == typed { return }
-
-        if confirmRenameWarning(oldName: original, newName: typed) {
-            renameWarningAcceptedFor = typed
-        } else {
-            // Revert: restore the original name and clear the accept flag.
-            field.stringValue = original
-            renameWarningAcceptedFor = nil
-        }
-    }
+    // (The rename-warning alert + NSTextFieldDelegate that gated it
+    // were removed in May 2026 — they were based on a misunderstanding
+    // of upstream's archive-hash algorithm. The hash is computed from
+    // `(thisRoot, rootsName, archiveFormat)`, all of which come from
+    // the .prf's `root = …` lines, not the filename. Renaming the
+    // .prf doesn't change the roots, so the archive hash is stable
+    // and no orphans occur.)
 }
 
 /// Re-usable multi-line list field. One entry per line; blank lines

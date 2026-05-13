@@ -99,26 +99,30 @@ go back / refresh / open another profile.
       Created → plus.circle.fill green, Modified → circle blue (hollow),
       PropsChanged → circle.dashed blue, Deleted → minus.circle.fill red,
       "" → tiny gray dot.
-- [/] **"Reset archives" recovery action per profile** *(partial)* — the
-      *reactive* path is done: when Unison hits the "inconsistent state"
-      fatal during reconcile, the modal now offers a one-click
-      "Delete N Orphan Archive(s) and Retry" button (see
-      `ArchiveRecovery.swift`). What's still missing is the *proactive*
-      path: a profile-context menu item in the picker (or a button in
-      the Profile Editor manager) that wipes ar/fp/lk *before* any
-      error, with a clear warning. Implementation hint: would need a
-      bridge call to resolve the local+remote archive basenames from
-      the profile's roots so we can delete only the relevant files
-      instead of guessing from a fatal message after the fact.
-      **Integration with Rename**: when this lands, the form's rename
-      path (`saveAction` in `ProfileFormWindowController.swift`) should
-      offer to invoke the same archive-cleanup logic for the *old*
-      profile name, since Unison's archive files are keyed by profile
-      name and won't follow a rename. Without cleanup the next scan
-      under the new name does a full re-scan to rebuild archives, AND
-      the old name's archive files become orphaned cruft. The two
-      features share an OCaml bridge call (resolve archive basenames
-      from roots), so they're natural co-implementers.
+- [x] **"Reset archives" recovery action per profile** — both paths
+      done. The *reactive* path (when Unison hits "inconsistent state"
+      mid-reconcile) parses the fatal text via `ArchiveRecovery.swift`
+      and offers a one-click "Delete N Orphan Archive(s) and Retry"
+      button. The *proactive* path lives in the Profile Editor manager
+      as a `Reset Archives…` button: compute the archive hash via
+      `ArchiveHash.swift` (pure-Swift replication of upstream's MD5
+      logic, no OCaml round-trip needed), find matching ar*/fp*/lk*/
+      tm*/sc* files in the Unison directory, and move them to Trash
+      via `ArchiveCleanup.swift`. The confirm dialog shows the hash
+      and canonical roots so the user can cross-check against
+      `unison -showArchiveName <profile>` if they're paranoid.
+      **Rename integration discovery**: archive files are keyed off
+      `(thisRoot, rootsName, archiveFormat)` — `rootsName` comes from
+      the parsed `root = …` lines, not the .prf filename. So
+      renaming a profile (with no root changes) does NOT orphan
+      archives. The earlier "renaming will orphan archive files"
+      warning sheet was based on a misreading of upstream and has
+      been removed. Documented in `ArchiveHash.swift`'s top comment
+      so future contributors don't re-introduce the warning.
+      **Limitations** (documented in code): doesn't apply `rootalias`
+      substitutions; doesn't resolve symlinks in local paths; pins
+      `archiveFormat = 23` (upstream's current value — bump if a
+      future Unison release changes this).
 - [x] **Hide / delete profile** — done via the Profile Editor manager.
       Hide chose **option 1** from the prior design notes: stored in
       `UserDefaults` under `net.courbage.unison-ui-mac` (key
@@ -148,7 +152,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 145 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 160 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
