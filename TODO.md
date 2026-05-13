@@ -3,7 +3,16 @@
 A snapshot of what's left to do, with priority tiers. Personal-use project;
 not for upstream contribution (per unison's CONTRIBUTING.md).
 
+Each section below is collapsible. P0 (the bring-up workflow basics)
+defaults closed since it's fully done; the active work tiers default
+open so the file stays scannable on GitHub's web view.
+
+<details>
+<summary>
+
 ## P0 — Workflow gaps blocking real use
+
+</summary>
 
 These three together close the basic loop: open profile → reconcile → sync →
 go back / refresh / open another profile.
@@ -24,7 +33,14 @@ go back / refresh / open another profile.
       limitation — it just calls `@selector(chooseProfiles)`, not a real
       abort. Tracked under P3 if we ever want a real stop-the-transfer.
 
+</details>
+
+<details open>
+<summary>
+
 ## P1 — Quality of life
+
+</summary>
 
 - [x] **Color-coded reconcile rows** — done at the cell level: the Action
       column cell carries a tinted "badge" (green `#97BB68` → remote, blue
@@ -184,7 +200,14 @@ go back / refresh / open another profile.
           re-enters the bridge from the handler. Tests the 3-worker
           design from the bring-up.
 
+</details>
+
+<details open>
+<summary>
+
 ## P2 — Features from the legacy app
+
+</summary>
 
 - [x] **Ignore actions** — right-click on a leaf row → Ignore Path /
       Extension / Name, also on the Edit menu. Bridge fns
@@ -283,7 +306,14 @@ go back / refresh / open another profile.
       attributed-string path works the same way). Duplicates the
       "About panel" item above; both are this one feature.
 
+</details>
+
+<details open>
+<summary>
+
 ## P3 — Hardening / hygiene
+
+</summary>
 
 - [ ] **Inline-rename profile from the Profile Editor table** — currently
       renaming requires opening Edit, changing the Profile Name field,
@@ -368,7 +398,14 @@ go back / refresh / open another profile.
     - `LSMinimumSystemVersion` in Info.plist (already set to 15.0;
       ratchet up if we start using post-15 APIs).
 
+</details>
+
+<details>
+<summary>
+
 ## Carried-over reminders (memory notes)
+
+</summary>
 
 - [ ] **Warning/error UX completeness** — the modal sheets are wired, but
       `displayStatus` messages containing "FAILED" / "error" / "could not"
@@ -379,7 +416,14 @@ go back / refresh / open another profile.
       first place to look is `Prefs.parseCmdLine` vs `Prefs.loadTheFile`
       ordering in `do_unisonInit0/1`.
 
+</details>
+
+<details>
+<summary>
+
 ## Architecture remarks (not work items)
+
+</summary>
 
 These aren't todos but should inform future work:
 
@@ -394,9 +438,16 @@ These aren't todos but should inform future work:
   ReconcileWindowController) carries through Swift 6 strict concurrency. Any
   new UI class should adopt it.
 
----
+</details>
+
+<details>
+<summary>
 
 ## Recommendation: do the P0 items, then the colored UI + details footer
+
+</summary>
+
+*Historical note — most of this is now done; kept for the reasoning trail.*
 
 You hit the missing Rescan + return-to-picker yourself just by using the app —
 that's the strongest signal there is. The three P0 items together turn the
@@ -431,3 +482,5 @@ Order I'd suggest:
    we've seen most often)
 5. P2 — ignore actions, diff viewer, force older/newer, full menu mirror,
    new-profile editor
+
+</details>
