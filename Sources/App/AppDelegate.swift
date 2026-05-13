@@ -537,9 +537,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .foregroundColor: NSColor.labelColor,
             ]
         )
+        // Use the bundle's display name (CFBundleDisplayName → "Unison-UI-Mac")
+        // rather than a hardcoded string so the About panel title follows
+        // any future rename done through the plist.
+        let info = Bundle.main.infoDictionary
+        let appName = (info?["CFBundleDisplayName"] as? String)
+            ?? (info?["CFBundleName"] as? String)
+            ?? "Unison-UI-Mac"
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
             .credits: credits,
-            .applicationName: "unison-ui-mac",
+            .applicationName: appName,
         ])
     }
 }

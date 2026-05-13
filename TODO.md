@@ -20,25 +20,48 @@ section at the bottom so this list stays scannable.
       fallback for users without GitHub accounts, consider an iCloud
       "Hide My Email" alias wired via `mailto:` in the About panel.
 
-- [ ] **App signing** — currently ad-hoc (`codesign --force --sign -`).
-      On macOS Tahoe 26, ad-hoc-signed apps trigger a one-time
-      Gatekeeper prompt the first time they're launched, and re-prompt
-      after every rebuild if launched via Finder. Four options:
-    1. **Stay ad-hoc** — fine for personal use; live with the prompt.
-       Current state.
-    2. **Free Apple ID developer cert** — weekly rotation, stops the
-       local prompt but the app still isn't notarized so other Macs
-       refuse it.
-    3. **Apple Developer Program ($99/yr) + notarization** — required
+- [ ] **App signing for distribution** — current state is ad-hoc
+      (`codesign --force --deep --sign -`), packaged for users via
+      `install.sh`, which also clears `com.apple.quarantine` on the
+      installed copy. This means launches from `/Applications` no
+      longer trip the Gatekeeper prompt — the install-time `xattr
+      -dr` handles it once. So **for personal use, this is settled**;
+      the open question below is only about distributing builds to
+      other Macs. Three remaining options if we ever do:
+    1. **Free Apple ID developer cert** — weekly rotation. Doesn't
+       help other Macs (still not notarized), so this is strictly
+       worse than ad-hoc + install.sh for anything but Xcode-internal
+       runs.
+    2. **Apple Developer Program ($99/yr) + notarization** — required
        for any distribution outside the App Store. Set
        `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = "Developer
        ID Application: …"` in `project.yml`, then `xcrun notarytool
        submit … --wait --staple` as a Makefile target.
-    4. **Mac App Store** — not viable; we embed GPLv3 code and the
+    3. **Mac App Store** — not viable; we embed GPLv3 code and the
        App Store license terms aren't GPL-compatible.
-      Any signed-for-distribution build also needs Hardened Runtime
-      (default for new Xcode projects) + an entitlements file for
-      outgoing SSH network access + a current `LSMinimumSystemVersion`.
+      A notarized build would also need Hardened Runtime (default for
+      new Xcode projects) + an entitlements file for outgoing SSH
+      network access + a current `LSMinimumSystemVersion`.
+
+- [ ] **AppKit view-controller test coverage** — pure-logic modules
+      are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
+      `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
+      `ProfilePreferences`, `RowSelectionRules`, `PathCellView`,
+      `MainMenu`, `StateItem`, `TraceLog`). View-controllers are
+      0–22% covered — `ReconcileWindowController` (1205 lines, 9%),
+      `ProfileEditorWindowController` (707 lines, 0%),
+      `ProfileFormWindowController` (461 lines, 0%), `AppDelegate`
+      (543 lines, 22%), `DiffWindowController` (12%), `PasswordSheet`
+      (0%). Adding meaningful XCTest coverage for these would need
+      `NSApplication`-hosted UI tests with synthetic events
+      (`postEvent:atStart:`, `NSWindow.performSelector` on toolbar
+      items, etc.); a multi-day effort and fragile against AppKit
+      changes. The pragmatic posture today is: keep growing the
+      pure-logic split (extract testable rules out of controllers
+      when an opportunity comes up, like `RowSelectionRules` was
+      extracted from `ReconcileWindowController`) rather than adding
+      a UI test harness. Decision: deferred unless a regression
+      pattern emerges that pure-logic tests can't catch.
 
 
 ---
