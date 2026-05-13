@@ -91,13 +91,15 @@ signing, copying to `/Applications`), see **[INSTALL.md](INSTALL.md)**.
 For day-to-day development, the Makefile targets are:
 
 ```sh
-make build      # Release build by default (override with CONFIG=Debug).
-                # Compiles unison-blob.o via upstream Unison make, strips
-                # libasmrun's main.n.o, regenerates xcodeproj, runs xcodebuild.
-make install    # build + sign + copy to /Applications (calls install.sh)
+make build      # Debug build by default. Compiles unison-blob.o via
+                # upstream Unison make, strips libasmrun's main.n.o,
+                # regenerates xcodeproj, runs xcodebuild. Pass
+                # CONFIG=Release for an optimized build.
+make install    # Release build + sign + copy to /Applications
+                # (always Release, regardless of CONFIG)
 make run        # build + launch the binary directly (stderr → terminal)
 make app        # build + `open`s the .app (detached, no terminal output)
-make test       # XCTest bundle — always uses Debug regardless of CONFIG
+make test       # XCTest bundle — always uses Debug
 make open       # opens unison-ui-mac.xcodeproj in Xcode
 make clean      # cleans .build/; preserves xcodeproj
 make distclean  # also removes the generated xcodeproj
@@ -105,8 +107,7 @@ make print-config  # show resolved paths
 ```
 
 Set `UNISON_SRC` if the upstream Unison checkout isn't at `../unison/src/`.
-Set `CONFIG=Debug` for an unoptimized dev build with assertions. The
-first build is slow (5–10 min) because it builds the entire Unison
+The first build is slow (5–10 min) because it builds the entire Unison
 OCaml core (`make macui` in the upstream tree, producing the embeddable
 `unison-blob.o`). Subsequent builds only recompile changed Swift/C.
 

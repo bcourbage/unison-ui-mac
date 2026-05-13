@@ -70,18 +70,19 @@ cd unison-ui-mac
 make install
 ```
 
-That's it. `make install` builds the Release configuration (`make
-build`'s default) and hands off to `install.sh`, which signs, copies
-to `/Applications`, clears the quarantine attribute, and opens the app.
+That's it. `make install` builds the Release configuration (forced
+internally — `make build` on its own defaults to Debug for dev
+iteration) and hands off to `install.sh`, which signs, copies to
+`/Applications`, clears the quarantine attribute, and opens the app.
 After this you'll find **Unison-UI-Mac** in `/Applications` and in
 Launchpad. Re-run `make install` after pulling updates to refresh the
 installed copy.
 
-If you'd rather run the two halves separately:
+If you'd rather run the two halves separately, build Release explicitly:
 
 ```sh
-make build       # Release build into .build/derived/...
-./install.sh     # sign + copy + de-quarantine + launch
+make build CONFIG=Release   # Release build into .build/derived/...
+./install.sh                # sign + copy + de-quarantine + launch
 ```
 
 ## What the installer script does
@@ -90,9 +91,10 @@ make build       # Release build into .build/derived/...
 yourself; the script just makes them harder to typo. Specifically:
 
 1. **Finds the built bundle.** Looks for the Release build first, then
-   Debug, under `.build/derived/Build/Products/`. (Release is what
-   `make build` produces by default.) Errors out with a clear message
-   if neither exists ("run `make build` first").
+   Debug, under `.build/derived/Build/Products/`. (`make install`
+   produces Release; if you're calling `install.sh` directly, build
+   Release explicitly with `make build CONFIG=Release` first.) Errors
+   out with a clear message if neither exists.
 2. **Ad-hoc code-signs it**, replacing the development signature with a
    fresh one tied to no particular identity:
    ```sh
@@ -137,7 +139,8 @@ apps from untrusted sources.
 If you'd rather see every step:
 
 ```sh
-# After `make build` succeeds (Release is the default):
+# Build Release explicitly (CONFIG=Debug is the make default):
+make build CONFIG=Release
 APP=.build/derived/Build/Products/Release/unison-ui-mac.app
 
 codesign --force --deep --sign - "$APP"
@@ -145,9 +148,6 @@ sudo cp -R "$APP" /Applications/
 sudo xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
 ```
-
-(If you built with `make build CONFIG=Debug`, swap `Release` for
-`Debug` in the path.)
 
 ## Uninstall
 

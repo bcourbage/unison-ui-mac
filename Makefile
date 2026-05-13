@@ -1,10 +1,12 @@
 UNISON_SRC ?= $(HOME)/Documents/Sources/unison/src
 OCAMLLIBDIR ?= $(shell ocamlc -where)
-# Release by default — `make build`, `make run`, `make app`, `make install`
-# all produce the user-facing binary. Override with `CONFIG=Debug` for an
-# unoptimized build with assertions. `make test` ignores this and always
-# uses Debug (test config is hardcoded in the test recipe).
-CONFIG ?= Release
+# Debug by default — matches Xcode's scheme default and the convention
+# for dev-facing Makefiles. Debug builds carry `assert()` and Swift
+# preconditions and compile faster on iteration. `make install`
+# overrides this to Release internally (a user-facing install always
+# wants the optimized binary). `make test` also hardcodes Debug.
+# For an ad-hoc Release build pass `CONFIG=Release` to `make build`.
+CONFIG ?= Debug
 
 export UNISON_SRC
 export OCAMLLIBDIR
@@ -139,19 +141,22 @@ test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 app: build
 	open $(BUILT_APP) $(if $(RUNARGS),--args $(RUNARGS),)
 
-# `make install` — the end-to-end installation flow. Builds Release
-# (the default CONFIG now) and hands off to install.sh, which ad-hoc-
-# signs the bundle, copies it to /Applications, clears the quarantine
-# attribute, and opens the installed copy. This is the supported user
-# path; the manual two-line equivalent in INSTALL.md does the same
-# thing piece by piece.
+# `make install` — the end-to-end installation flow. Always builds the
+# Release configuration (regardless of the user's CONFIG setting — a
+# user-facing install wants the optimized binary, not a Debug build with
+# assertions and a multi-megabyte .debug.dylib sidecar), then hands off
+# to install.sh, which ad-hoc-signs the bundle, copies it to
+# /Applications, clears the quarantine attribute, and opens the
+# installed copy. This is the supported user path; the manual two-line
+# equivalent in INSTALL.md does the same thing piece by piece.
 #
 # Pass INSTALL_ARGS=--no-launch (or any other install.sh flag) to
 # override the default behavior, e.g.:
 #     make install INSTALL_ARGS=--no-launch
 #     make install INSTALL_ARGS="--dest $$HOME/Applications"
 .PHONY: install
-install: build
+install:
+	$(MAKE) build CONFIG=Release
 	./install.sh $(INSTALL_ARGS)
 
 # Ad-hoc leak check via `leaks(1)`. Launches the app, waits a few
