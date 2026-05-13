@@ -34,10 +34,13 @@ enum SettingsModel {
     }
 
     /// NSToolbar autosave keys we use. When `ReconcileToolbar` bumps
-    /// its identifier suffix (currently `.v4`), the old key is
+    /// its identifier suffix (currently `.v5`), the old key is
     /// orphaned; include retired versions so a reset cleans up the
-    /// trail too.
+    /// trail too. **Add a new entry here whenever the toolbar
+    /// identifier bumps**, otherwise the orphan stays in defaults
+    /// and "Reset Window & Toolbar Layout" doesn't actually clean it.
     static let toolbarConfigurationKeys: [String] = [
+        "NSToolbar Configuration ReconcileToolbar.v5",
         "NSToolbar Configuration ReconcileToolbar.v4",
         "NSToolbar Configuration ReconcileToolbar.v3",
     ]

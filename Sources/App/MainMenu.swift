@@ -159,18 +159,45 @@ enum MainMenu {
         return item
     }
 
-    /// Action menu: per-row reconcile operations grouped together.
-    /// Matches the legacy uimac app's `Action` menu structure
-    /// (Propagate, Force, Skip, Merge, Diff) plus selection helpers
-    /// (Select Conflicts, Revert to Recommendation). Every item
-    /// targets nil — the responder chain delivers them to
-    /// `ReconcileWindowController` when the reconcile window is key.
+    /// Action menu: workflow controls (Go/Stop/Rescan) on top, then
+    /// per-row reconcile operations (direction overrides, diff,
+    /// selection helpers). Matches the legacy uimac app's structure
+    /// for the per-row half. Every item targets nil — the responder
+    /// chain delivers them to `ReconcileWindowController` when the
+    /// reconcile window is key.
     private static func makeActionMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Action")
-        // Direction overrides first — these are the "decide what to
-        // sync" core. Order matches the legacy app's reading order
-        // (direction → alternatives → mtime variants).
+
+        // Workflow primary/escape actions. Canonical macOS shortcuts:
+        // ⌘⏎ for the "submit / run" primary action (matches Mail's
+        // Send, etc.); ⌘. (Command-Period) for "cancel currently
+        // running operation," which macOS has used since System 6.
+        // ⌘⇧R for Rescan keeps it parallel to Safari/Mail "Reload All"
+        // — and avoids colliding with the Profile Editor's ⌘R button.
+        let goItem = NSMenuItem(title: "Go",
+                                action: Selector(("goMenuAction:")),
+                                keyEquivalent: "\r")
+        goItem.keyEquivalentModifierMask = [.command]
+        menu.addItem(goItem)
+
+        let stopItem = NSMenuItem(title: "Stop",
+                                  action: Selector(("stopMenuAction:")),
+                                  keyEquivalent: ".")
+        stopItem.keyEquivalentModifierMask = [.command]
+        menu.addItem(stopItem)
+
+        let rescanItem = NSMenuItem(title: "Rescan",
+                                    action: Selector(("rescanMenuAction:")),
+                                    keyEquivalent: "r")
+        rescanItem.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(rescanItem)
+
+        menu.addItem(.separator())
+
+        // Direction overrides — the "decide what to sync" core. Order
+        // matches the legacy app's reading order (direction →
+        // alternatives → mtime variants).
         let directionSelector = Selector(("directionMenuAction:"))
         for action in DirectionAction.menuActions {
             let mi = NSMenuItem(title: action.label,

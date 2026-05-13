@@ -110,8 +110,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
+        // Default 1100×580. Width chosen to fit every toolbar item at
+        // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
+        // expanded subitems, Go, Stop) plus the unified-toolbar title
+        // area without spilling into the overflow chevron. The clamp
+        // below shrinks the initial frame on screens that can't host
+        // 1100×580 (Larger Text mode on a 13" MacBook, etc.) so the
+        // window never opens with its right edge offscreen.
+        let initialSize = NSSize(width: 1100, height: 580)
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let clampedSize = NSSize(
+            width:  min(initialSize.width,  screen.width  - 40),
+            height: min(initialSize.height, screen.height - 40)
+        )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            contentRect: NSRect(origin: .zero, size: clampedSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
@@ -1055,7 +1068,47 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             }
             return !leafRowsInSelection().isEmpty
         }
+        if menuItem.action == #selector(goMenuAction(_:)) {
+            // Go is the "run sync" primary. Disabled while a sync is
+            // already running (Stop is the way out) AND when the
+            // reconcile pass hasn't populated any items yet (nothing
+            // to propagate). Same gate as the toolbar's Go button.
+            return !isSyncing && !items.isEmpty
+        }
+        if menuItem.action == #selector(stopMenuAction(_:)) {
+            // Stop only meaningful mid-sync. cancelSync itself NSBeeps
+            // on a no-op call, so greying it out here keeps the menu
+            // honest.
+            return isSyncing
+        }
+        if menuItem.action == #selector(rescanMenuAction(_:)) {
+            // Same as toolbar Rescan — re-runs init2 against the same
+            // profile. Disabled mid-sync because the OCaml runtime
+            // is occupied; rescan there would stall until the sync
+            // finishes anyway.
+            return !isSyncing
+        }
         return true
+    }
+
+    // MARK: - Workflow menu dispatch (Go / Stop / Rescan)
+    //
+    // These are the responder-chain targets for the Action menu's
+    // top-of-menu workflow items. They just forward to the existing
+    // toolbar-action methods so the menu and toolbar paths share
+    // behavior. The toolbar items (in ReconcileToolbarDelegate) call
+    // the same `startSync` / `cancelSync` / `rescan` methods directly.
+
+    @objc func goMenuAction(_ sender: Any?) {
+        startSync()
+    }
+
+    @objc func stopMenuAction(_ sender: Any?) {
+        cancelSync()
+    }
+
+    @objc func rescanMenuAction(_ sender: Any?) {
+        rescan()
     }
 
     // MARK: - Selection helpers

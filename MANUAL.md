@@ -352,9 +352,11 @@ and init2 walks both replicas to compute differences).
   Folder rows show an aggregate badge: same glyph/tint as a leaf when
   every descendant agrees, empty when descendants disagree.
 - **Size** — file size, formatted by `ByteCountFormatter`.
-- **Progress** — populated during sync. Shows a custom-drawn bar with
-  overlaid percent text for in-flight rows (`5%`, `35%`, `100%`), `done`
-  when finished, bold red `FAILED` on errors. Empty when idle.
+- **Progress** — populated during sync. Shows a standard macOS
+  `NSProgressIndicator` bar (follows your **System Settings →
+  Appearance → Accent color**) with overlaid percent text for
+  in-flight rows (`5%`, `35%`, `100%`), `done` when finished, bold red
+  `FAILED` on errors. Empty when idle.
 - **Type** — `FILE`, `DIR`, `SYMLINK`, etc., as Unison reports.
 
 ### Summary line
@@ -540,21 +542,30 @@ otherwise they're greyed.
 
 ### Action menu (reconcile-window operations)
 
-| Item | Action |
-|---|---|
-| → Second | Propagate first → second for selected leaves |
-| ← First | Propagate second → first |
-| Skip | Mark selected leaves as user-skipped |
-| Merge | Run the configured `merge` command on selected leaves (greyed if `merge` pref isn't set) |
-| Force Older | Pick the older-mtime side for each selected leaf |
-| Force Newer | Pick the newer-mtime side |
-| Diff | Open the diff viewer for the selected (or right-clicked) leaf |
-| Select Conflicts | Select every leaf row that's still unresolved (`<-?->` with no user override) |
-| Revert to Unison's Recommendation | Clear user overrides on selected leaves |
+| Item | Shortcut | Action |
+|---|---|---|
+| Go | ⌘⏎ | Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows. |
+| Stop | ⌘. | Abort a running sync. Disabled when no sync is running. (See [Stop button](#stop-button-how-abort-works) for the abort semantics.) |
+| Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
+| → Second | — | Propagate first → second for selected leaves |
+| ← First | — | Propagate second → first |
+| Skip | — | Mark selected leaves as user-skipped |
+| Merge | — | Run the configured `merge` command on selected leaves (greyed if `merge` pref isn't set) |
+| Force Older | — | Pick the older-mtime side for each selected leaf |
+| Force Newer | — | Pick the newer-mtime side |
+| Diff | — | Open the diff viewer for the selected (or right-clicked) leaf |
+| Select Conflicts | — | Select every leaf row that's still unresolved (`<-?->` with no user override) |
+| Revert to Unison's Recommendation | — | Clear user overrides on selected leaves |
 
 All items dispatch via the responder chain to `ReconcileWindowController`
 when the reconcile window is key. Disabled when no reconcile window is
 key. Direction items are disabled during sync.
+
+The three workflow shortcuts follow macOS conventions:
+**⌘⏎ "submit / run"** (matches Mail's Send and similar primary actions),
+**⌘.** for "cancel currently running operation" (system-wide since
+System 6), and **⌘⇧R** for Rescan — parallel to Safari/Mail's "Reload"
+and distinct from Profile Editor's ⌘R refresh so the two never collide.
 
 ### Window menu
 
@@ -578,6 +589,9 @@ focused window via the standard responder action.
 | ⌘⇧E | Profile Editor… |
 | ⌘R (in Profile Editor) | Refresh profile list |
 | ⌘, | Settings… |
+| ⌘⏎ (in reconcile window) | Go (start sync) |
+| ⌘. (in reconcile window) | Stop (abort sync) |
+| ⌘⇧R (in reconcile window) | Rescan |
 | ⌘? | App help |
 | ⌘W | Close focused window |
 | ⌘M | Minimize focused window |

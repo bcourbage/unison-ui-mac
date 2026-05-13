@@ -51,11 +51,21 @@ struct ProgressDescriptor: Equatable {
     }
 }
 
-/// Progress-column cell. Renders Unison's `progress` field as a small
-/// bar with overlaid percent text. The bar is drawn directly into the
-/// cell (rather than via NSProgressIndicator) so it fits cleanly in
-/// the 20pt row height — NSProgressIndicator's smallest standard
-/// preset is taller than that, and we don't need its animation hooks.
+/// Progress-column cell. Renders Unison's `progress` field as a
+/// standard macOS `NSProgressIndicator` (bar style, small control
+/// size) with an overlaid percent label.
+///
+/// Earlier implementation drew the bar directly via `draw(_:)` on a
+/// layer-backed `NSTableCellView`. That had two problems user-visible:
+/// (1) the bar didn't advance during a sync — only the % text updated
+/// — because AppKit's layer-cache for `draw(_:)` overrides on a
+/// recycled table cell wasn't reliably invalidated by `needsDisplay`;
+/// (2) the muted `systemBlue @ 0.35 alpha` fill looked off-brand vs.
+/// the user's actual accent color. `NSProgressIndicator` solves both:
+/// it follows `NSColor.controlAccentColor` (so it picks up the
+/// user's System Settings → Appearance accent), and it redraws
+/// correctly under every Auto Layout / cell-reuse path because its
+/// own internals manage invalidation.
 ///
 /// State table:
 ///   - idle ("")              → empty cell (no bar, no text)
@@ -67,10 +77,22 @@ final class ProgressCellView: NSTableCellView {
 
     private var descriptor: ProgressDescriptor = .empty
     private let textOverlay = NSTextField(labelWithString: "")
+    private let bar = NSProgressIndicator()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
+
+        bar.style = .bar
+        bar.controlSize = .small
+        bar.isIndeterminate = false
+        bar.usesThreadedAnimation = false
+        bar.minValue = 0
+        bar.maxValue = 1
+        bar.doubleValue = 0
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.isHidden = true
+        addSubview(bar)
+
         textOverlay.translatesAutoresizingMaskIntoConstraints = false
         textOverlay.alignment = .center
         textOverlay.font = .monospacedDigitSystemFont(
@@ -81,7 +103,14 @@ final class ProgressCellView: NSTableCellView {
         textOverlay.cell?.usesSingleLineMode = true
         addSubview(textOverlay)
         textField = textOverlay
+
+        // Bar fills the row almost edge-to-edge; the text label sits
+        // on top, centered. `centerYAnchor` for both so they stack
+        // visually even though they're separate subviews.
         NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            bar.centerYAnchor.constraint(equalTo: centerYAnchor),
             textOverlay.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             textOverlay.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             textOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -97,36 +126,12 @@ final class ProgressCellView: NSTableCellView {
         textOverlay.font = descriptor.isFailure
             ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
             : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
-        needsDisplay = true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // Draw the bar (if any) FIRST so the overlaid text sits on top.
-        // We rely on the text-field's labelColor giving enough contrast
-        // against the 0.35-alpha blue fill; tweak the fill alpha if
-        // the text ever looks washed out.
         if let f = descriptor.fraction, !descriptor.isFailure {
-            let track = bounds.insetBy(dx: 4, dy: 5)
-            let radius: CGFloat = 3
-            // Background track — neutral, so the bar reads as
-            // "progress against a known total" rather than "color blob".
-            NSColor.separatorColor.withAlphaComponent(0.6).setFill()
-            NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
-            // Fill segment, sized to the fraction.
-            var fillRect = track
-            fillRect.size.width = max(0, fillRect.width * CGFloat(f))
-            if fillRect.width > 0 {
-                NSColor.systemBlue.withAlphaComponent(0.35).setFill()
-                // Clip the fill into the rounded track so the leading
-                // edge of the fill doesn't poke past the radius corners.
-                let clipPath = NSBezierPath(roundedRect: track,
-                                            xRadius: radius, yRadius: radius)
-                NSGraphicsContext.current?.saveGraphicsState()
-                clipPath.addClip()
-                NSBezierPath(rect: fillRect).fill()
-                NSGraphicsContext.current?.restoreGraphicsState()
-            }
+            bar.isHidden = false
+            bar.doubleValue = f
+        } else {
+            bar.isHidden = true
+            bar.doubleValue = 0
         }
-        super.draw(dirtyRect)
     }
 }
