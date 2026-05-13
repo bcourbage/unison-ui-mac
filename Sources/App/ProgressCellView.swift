@@ -82,8 +82,14 @@ final class ProgressCellView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
+        // .regular size (vs. .small earlier) gives a meaningfully
+        // visible bar at the slightly larger row height set in
+        // ReconcileWindowController (24pt). At .small the bar was
+        // only a few pixels tall — easy to misread, and any text
+        // sitting on top of it was unavoidably overlapping the
+        // accent-colored fill.
         bar.style = .bar
-        bar.controlSize = .small
+        bar.controlSize = .regular
         bar.isIndeterminate = false
         bar.usesThreadedAnimation = false
         bar.minValue = 0
@@ -104,9 +110,10 @@ final class ProgressCellView: NSTableCellView {
         addSubview(textOverlay)
         textField = textOverlay
 
-        // Bar fills the row almost edge-to-edge; the text label sits
-        // on top, centered. `centerYAnchor` for both so they stack
-        // visually even though they're separate subviews.
+        // Bar fills the row almost edge-to-edge; the text label
+        // occupies the same rect but only one of them is visible at
+        // a time (see `configure(progress:)`). Stacking via
+        // centerYAnchor keeps both centered vertically.
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
@@ -121,17 +128,25 @@ final class ProgressCellView: NSTableCellView {
 
     func configure(progress: String) {
         descriptor = ProgressDescriptor.parse(progress)
-        textOverlay.stringValue = descriptor.text
-        textOverlay.textColor = descriptor.isFailure ? .systemRed : .labelColor
-        textOverlay.font = descriptor.isFailure
-            ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
-            : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+        // Failure and "start" / other textual states: text only, no bar.
+        // Numeric percent rows AND "done": bar only, no text overlay.
+        // The bar's fill fraction is the indicator — overlaying text on
+        // the accent-colored fill (especially at small sizes) just made
+        // both halves harder to read. Finder, App Store, and macOS
+        // installer all use bar-only for in-flight file transfers; this
+        // matches that idiom.
         if let f = descriptor.fraction, !descriptor.isFailure {
             bar.isHidden = false
             bar.doubleValue = f
+            textOverlay.stringValue = ""
         } else {
             bar.isHidden = true
             bar.doubleValue = 0
+            textOverlay.stringValue = descriptor.text
+            textOverlay.textColor = descriptor.isFailure ? .systemRed : .labelColor
+            textOverlay.font = descriptor.isFailure
+                ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
+                : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
         }
     }
 }

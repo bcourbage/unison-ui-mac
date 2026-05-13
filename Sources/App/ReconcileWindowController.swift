@@ -128,6 +128,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
+        // Hard minimum content size. AppKit refuses to restore an
+        // autosaved frame narrower than this — so a window resized
+        // narrow under one profile won't permanently squish all future
+        // reconcile windows. 960 fits the unified toolbar comfortably;
+        // 400 keeps the outline view from collapsing past usefulness.
+        window.contentMinSize = NSSize(width: 960, height: 400)
         window.title = "Unison — \(profile)"
         window.center()
         super.init(window: window)
@@ -287,7 +293,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         outlineView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outlineView.style = .inset
         outlineView.usesAutomaticRowHeights = false
-        outlineView.rowHeight = 20
+        // 24pt rows (was 20) — gives the Progress column's
+        // NSProgressIndicator at `.regular` controlSize enough vertical
+        // room to render its bar without clipping, and keeps the rest
+        // of the row contents (Finder-style icon + name, status icons)
+        // comfortable rather than cramped. Comparable to Finder's
+        // list-view default row height.
+        outlineView.rowHeight = 24
         outlineView.indentationPerLevel = 14
         outlineView.indentationMarkerFollowsCell = true
         outlineView.autosaveName = "ReconcileOutline"
