@@ -1,7 +1,10 @@
 import Foundation
 
 /// Builds the one-line summary that appears above the reconcile
-/// outline view ("Sync-Home · 121 items · 450 MB · 121 → second" etc.).
+/// outline view ("Sync-Home · 121 items · 450 MB · 121 First → Second" etc.).
+/// Direction phrasing reads `<count> <source> → <destination>` so the
+/// summary is parseable at a glance without relying on column-header
+/// context (a bare `121 → second` was ambiguous — looked like a rate).
 ///
 /// Extracted from `ReconcileWindowController` as a pure function so
 /// the breakdown logic (which rows count toward which bucket; whether
@@ -58,8 +61,15 @@ enum ReconcileSummary {
                 fromByteCount: transferBytes, countStyle: .file))
         }
         if conflicts > 0 { parts.append("\(conflicts) conflicts") }
-        if toLeft > 0    { parts.append("\(toLeft) ← first") }
-        if toRight > 0   { parts.append("\(toRight) → second") }
+        // Direction breakdowns spell source AND destination so the
+        // summary reads unambiguously without leaning on the column
+        // headers for context. Arrow always points left-to-right in
+        // the reading direction (source on the left, destination on
+        // the right), regardless of whether the data flow is toward
+        // First or toward Second — the source word in front of the
+        // arrow tells the user which side started where.
+        if toLeft > 0    { parts.append("\(toLeft) Second → First") }
+        if toRight > 0   { parts.append("\(toRight) First → Second") }
         if other > 0     { parts.append("\(other) other") }
         let prefix = syncDone ? "Synchronized" : profile
         return "\(prefix)  ·  " + parts.joined(separator: "  ·  ")

@@ -308,7 +308,7 @@ and init2 walks both replicas to compute differences).
 ┌─────────────────────────────────────────────────────────────────────┐
 │ [Profiles] [Rescan] | [← First | → Second | Skip | Merge] | [Go] │ ← toolbar
 ├─────────────────────────────────────────────────────────────────────┤
-│ profile-name · 142 items · 3 conflicts · 12 → second · 4 ← first   │ ← summary
+│ profile-name · 142 items · 1.2 GB · 3 conflicts · 12 First → Second │ ← summary
 │ ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░  35%                              │ ← global progress
 ├─────────────────────────────────────────────────────────────────────┤
 │ Path                | First | Action | Second | Size | Progress     │ ← columns
@@ -364,7 +364,13 @@ and init2 walks both replicas to compute differences).
 Above the row list. Live-updates with status messages from OCaml during
 scanning ("Looking for changes...", "Reconciling...") and shows a count
 summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
-12 → second · 4 ← first").
+12 First → Second · 4 Second → First").
+
+Each direction breakdown reads `<count> <source> → <destination>` — the
+arrow always points left-to-right in the reading direction so the
+summary parses unambiguously at a glance. "First" and "Second" refer
+to the two replicas (the two `root = …` lines in the `.prf`), matching
+the column headers and the toolbar's `← First` / `→ Second` buttons.
 
 The size figure between the item count and the breakdown is the **total
 bytes that will move if you hit Go now**. Sum of file sizes for rows

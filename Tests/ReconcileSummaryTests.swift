@@ -54,8 +54,10 @@ final class ReconcileSummaryTests: XCTestCase {
         // check on the numeric prefix only.
         XCTAssertTrue(out.contains("3 items"))
         XCTAssertTrue(out.contains("MB"), "bytes column must appear for directional rows")
-        XCTAssertTrue(out.contains("1 ← first") || out.contains("1  ← first"))
-        XCTAssertTrue(out.contains("2 → second") || out.contains("2  → second"))
+        XCTAssertTrue(out.contains("1 Second → First"),
+                      "left-flowing rows must spell source AND destination: \(out)")
+        XCTAssertTrue(out.contains("2 First → Second"),
+                      "right-flowing rows must spell source AND destination: \(out)")
     }
 
     func test_mixedRows_bytesIncludeOnlyDirectional() {
@@ -91,7 +93,7 @@ final class ReconcileSummaryTests: XCTestCase {
         ]
         let out = ReconcileSummary.text(items: items, profile: "Sync")
         XCTAssertTrue(out.contains("2 items"))
-        XCTAssertTrue(out.contains("2 → second"))
+        XCTAssertTrue(out.contains("2 First → Second"))
         XCTAssertFalse(out.contains("byte") || out.contains("KB") || out.contains("MB"),
                        "no bytes when total is 0")
     }
@@ -140,7 +142,7 @@ final class ReconcileSummaryTests: XCTestCase {
         // before the direction breakdown.
         guard let itemsPos = out.range(of: "1 items")?.lowerBound,
               let mbPos    = out.range(of: "MB")?.lowerBound,
-              let dirPos   = out.range(of: "→ second")?.lowerBound
+              let dirPos   = out.range(of: "First → Second")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
         XCTAssertLessThan(itemsPos, mbPos)
         XCTAssertLessThan(mbPos, dirPos)
