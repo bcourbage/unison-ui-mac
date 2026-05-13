@@ -539,6 +539,62 @@ OCaml runtime setup. Subsequent launches reuse the same `.app` bundle.
 There's a one-time Gatekeeper prompt on macOS Tahoe 26 for ad-hoc-signed
 apps — accept it once and it stops.
 
+### What happens when a new version of Unison is released?
+
+Two halves of the answer — for the **local** side (the embedded Unison)
+and for the **remote** side (any `ssh://…` peer).
+
+**Local side (the embedded copy).** This app links in `unison-blob.o`,
+which is built from whichever upstream source you have checked out
+under `~/Documents/Sources/unison/` (or wherever `UNISON_SRC` points).
+The embedded version is frozen at build time — the app doesn't
+"auto-update" Unison on its own. To pull a new version:
+
+```sh
+cd ~/Documents/Sources/unison && git pull
+cd ~/Documents/Sources/unison-ui-mac && make build
+```
+
+Then relaunch the app. The About panel shows the embedded version so
+you can verify.
+
+**Remote side (`ssh://…` profiles).** Unrelated to local rebuilds. You
+update the remote Unison the way you'd update any CLI on that machine
+(`brew upgrade unison`, `apt upgrade unison`, etc.). The two Unisons
+negotiate compatibility at connection — see the upstream wiki's
+[Cross-Platform Issues / Compatibility](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex)
+section. As a rule of thumb:
+
+- Minor-version mismatches (e.g. `2.54.0` ↔ `2.54.3`) usually
+  interoperate cleanly.
+- Major-version mismatches (e.g. `2.51` ↔ `2.54`) often don't.
+  Upstream guarantees forward compatibility within a major series,
+  not across them.
+
+If you have multiple Unison versions on the remote and need to pin a
+specific one for a profile, set `servercmd = /path/to/unison-X.Y` in
+the Advanced field of the Profile Form.
+
+**Archive format compatibility.** Unison's archive files have an
+internal format version (currently `23`). When upstream bumps this in
+a future release, existing archives become unreadable and Unison
+forces a full re-scan to rebuild them. Two consequences for this app:
+
+1. Existing archives from before the version bump get orphaned. Use
+   `Reset Archives…` in the Profile Editor to clean them up after the
+   update.
+2. This app's `ArchiveHash.swift` has `archiveFormat = 23` pinned. If
+   upstream bumps it and we don't update, the `Reset Archives` button
+   will compute the wrong hash and miss the orphaned files. The fix
+   is a one-line change to `ArchiveHash.archiveFormat`; the unit
+   tests (using `md5(1)`-verified reference values) will fail loudly
+   on a stale constant.
+
+For day-to-day usage: when you run `brew upgrade unison` on a remote
+host and SSH-based syncs start failing with a version mismatch error,
+the answer is to rebuild this app against a matching upstream
+checkout.
+
 ### Profile won't sync but CLI `unison <profile>` works
 
 Check the `clientHostName` pref in your `.prf`. If you've set it

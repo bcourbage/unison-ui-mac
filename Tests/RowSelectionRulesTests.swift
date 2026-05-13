@@ -81,6 +81,92 @@ final class RowSelectionRulesTests: XCTestCase {
         )
     }
 
+    // MARK: - diffTarget
+
+    /// Helpers for building ReconcileNode fixtures with the right
+    /// shape for diffTarget tests. The function only inspects `.row`
+    /// — we don't need the full tree, just a node with the right
+    /// leaf/folder property.
+    private func leaf(_ row: Int) -> ReconcileNode {
+        ReconcileNode(name: "leaf-\(row)", row: row, fullPath: "/leaf-\(row)")
+    }
+    private func folder(_ name: String = "folder") -> ReconcileNode {
+        ReconcileNode(name: name)  // no row → folder
+    }
+
+    func test_diffTarget_rightClickedLeaf_returnsThatLeaf() {
+        // Right-clicked a leaf, with the same leaf in selection. Easy case.
+        let target = leaf(7)
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: target, selectedNodes: [target]
+        )
+        XCTAssertEqual(result, 7)
+    }
+
+    func test_diffTarget_rightClickedLeaf_overridesSelection() {
+        // Right-clicked leaf 9, but selection is leaf 3 (e.g. user
+        // right-clicked a row that wasn't part of their existing
+        // selection). The right-clicked row wins — matches Finder's
+        // behavior.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: leaf(9), selectedNodes: [leaf(3)]
+        )
+        XCTAssertEqual(result, 9)
+    }
+
+    func test_diffTarget_rightClickedFolder_returnsNil() {
+        // Folders have no row — Diff is meaningless for them.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: folder(), selectedNodes: [leaf(3)]
+        )
+        XCTAssertNil(result,
+                     "right-clicked folder must NOT fall back to selection")
+    }
+
+    func test_diffTarget_noRightClick_singleLeafSelected_returnsThatLeaf() {
+        // Action-menu invocation (no right-click context). With exactly
+        // one leaf in the selection, that's our target.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: [leaf(5)]
+        )
+        XCTAssertEqual(result, 5)
+    }
+
+    func test_diffTarget_noRightClick_folderSelected_returnsNil() {
+        // The bug the user reported: a selected folder used to slip
+        // through (controller fell back to "first leaf in selection").
+        // Now: a folder in the selection means Diff is greyed.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: [folder()]
+        )
+        XCTAssertNil(result)
+    }
+
+    func test_diffTarget_noRightClick_multipleLeavesSelected_returnsNil() {
+        // Diff is single-row by nature — multi-select greys it out
+        // rather than picking an arbitrary row.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: [leaf(1), leaf(2)]
+        )
+        XCTAssertNil(result)
+    }
+
+    func test_diffTarget_noRightClick_mixedSelection_returnsNil() {
+        // A folder plus a leaf in the selection (count != 1) → nil
+        // regardless of order.
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: [folder(), leaf(5)]
+        )
+        XCTAssertNil(result)
+    }
+
+    func test_diffTarget_noRightClick_emptySelection_returnsNil() {
+        let result = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: []
+        )
+        XCTAssertNil(result)
+    }
+
     // MARK: - clearOverrides
 
     func test_clearOverrides_removesOnlyRequestedRows() {

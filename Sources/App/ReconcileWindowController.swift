@@ -613,6 +613,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// outline view's `clickedRow` (set on right-click), falling back to
     /// the first leaf in the current selection. Returns nil when neither
     /// resolves to a leaf — caller should beep.
+    ///
+    /// Used by per-row actions that meaningfully apply to multiple leaves
+    /// (Ignore Path/Ext/Name — though they only need one path, the
+    /// pattern they install affects all matches).
     private func rowForPendingMenuAction() -> Int? {
         let clicked = outlineView.clickedRow
         if clicked >= 0,
@@ -621,6 +625,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return row
         }
         return leafRowsInSelection().first
+    }
+
+    /// Stricter row resolver for Diff (delegates to
+    /// `RowSelectionRules.diffTarget` so the rule is unit-tested).
+    /// Diff is single-leaf only — folders / multi-row / empty
+    /// selections return nil.
+    private func rowForDiff() -> Int? {
+        let clicked = outlineView.clickedRow
+        let rightClickedNode: ReconcileNode? = (clicked >= 0)
+            ? (outlineView.item(atRow: clicked) as? ReconcileNode)
+            : nil
+        return RowSelectionRules.diffTarget(
+            rightClickedNode: rightClickedNode,
+            selectedNodes: selectedNodes()
+        )
     }
 
     /// Apply one of the three Ignore actions to a specific leaf row. The
@@ -668,7 +687,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// already greyed the entry point.
     func applyDiff() {
         guard !isSyncing else { NSSound.beep(); return }
-        guard let row = rowForPendingMenuAction(),
+        guard let row = rowForDiff(),
               row >= 0, row < items.count else { NSSound.beep(); return }
         let path = items[row].path
         // Defensive re-check — the menu validation calls canDiff too,
@@ -797,10 +816,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         if menuItem.action == #selector(diffMenuAction(_:)) {
             guard !isSyncing else { return false }
-            // Diff is a single-row action — use the right-clicked row
-            // if any, falling back to the first selected leaf. Calls
-            // canDiff so binary / props-only / non-file rows grey out.
-            guard let row = rowForPendingMenuAction(),
+            // Diff is strictly single-leaf — `rowForDiff` returns nil
+            // for folder selections, multi-row selections, and
+            // right-clicks on folders. The bridge's canDiff layer
+            // then excludes one-sided files (typ=ABSENT on either
+            // replica), symlinks, problem rows, and props-only-on-
+            // both-sides changes. Both gates must pass.
+            guard let row = rowForDiff(),
                   row >= 0, row < items.count else { return false }
             return unison_bridge_can_diff(Int32(row))
         }

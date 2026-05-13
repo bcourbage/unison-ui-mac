@@ -191,6 +191,14 @@ enum MainMenu {
     private static func makeWindowMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Window")
+        // ⌘W normally lives under File → Close in document-based
+        // apps. We have no File menu (not document-based), so the
+        // shortcut migrates here. NSWindow.performClose routes
+        // through windowShouldClose so the reconcile window's
+        // mid-sync confirmation still gets a chance to intercept.
+        menu.addItem(withTitle: "Close Window",
+                     action: #selector(NSWindow.performClose(_:)),
+                     keyEquivalent: "w")
         menu.addItem(withTitle: "Minimize",
                      action: #selector(NSWindow.performMiniaturize(_:)),
                      keyEquivalent: "m")

@@ -35,6 +35,38 @@ enum RowSelectionRules {
         return out
     }
 
+    /// Resolve the target row for a single-leaf action (currently Diff).
+    /// Diff fundamentally operates on one file — folders, multi-row
+    /// selections, and clicks outside any row produce nil.
+    ///
+    /// Inputs are the same data the controller has, factored out so
+    /// the logic is testable without an outline-view harness:
+    ///   - `rightClickedNode`: the node under the right-click target,
+    ///     or nil if the menu invocation isn't from a right-click
+    ///     (e.g. it came from the Action menu).
+    ///   - `selectedNodes`: the controller's `selectedNodes()` snapshot.
+    ///
+    /// Rule:
+    ///   1. If `rightClickedNode` is non-nil, that's the target —
+    ///      regardless of selection. Returns its `.row` (nil for
+    ///      folders).
+    ///   2. Otherwise, require exactly one node in the selection AND
+    ///      that node to be a leaf. Multi-row / folder-selection /
+    ///      empty-selection all return nil.
+    ///
+    /// The caller still runs `canDiff` on the returned row to gate on
+    /// upstream's "files-different-on-both-sides" predicate.
+    static func diffTarget(
+        rightClickedNode: ReconcileNode?,
+        selectedNodes: [ReconcileNode]
+    ) -> Int? {
+        if let rc = rightClickedNode {
+            return rc.row  // nil when the right-clicked node is a folder
+        }
+        guard selectedNodes.count == 1 else { return nil }
+        return selectedNodes[0].row  // nil for folders
+    }
+
     /// Apply "Revert to Recommendation" to a set of rows. Returns the
     /// new override dict — the controller installs it after calling
     /// the bridge to reset each row's direction on the OCaml side.

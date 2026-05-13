@@ -152,7 +152,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 177 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 185 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
