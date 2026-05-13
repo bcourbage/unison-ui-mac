@@ -58,6 +58,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let detailsScroll = NSScrollView()
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
+    /// One DiffWindowController per reconcile session, reused across
+    /// multiple Diff invocations. Created lazily on the first Diff
+    /// action — most syncs never need it. Survives the reconcile
+    /// window closing: a user might still want to read the diff after
+    /// clicking back to the picker, and the window is read-only so a
+    /// stale association with the closed reconcile is harmless.
+    private var diffWindowController: DiffWindowController?
     /// True when the active profile's `.prf` declares at least one
     /// `merge = …` pattern. Drives the toolbar's Merge-button
     /// visibility AND the Edit-menu Merge item's enablement. Set at
@@ -258,6 +265,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         UnisonBridge.installProgressHandler { [weak self] percent in
             self?.updateGlobalProgress(percent)
+        }
+        // Diff handlers route Unison's displayDiff / displayDiffErr
+        // callbacks into the (lazily-created) DiffWindowController.
+        // We install on every reconcile open so the most recent
+        // window is the one that receives the result — old diff
+        // windows from prior reconciles keep their static content.
+        UnisonBridge.installDiffHandler { [weak self] title, text in
+            self?.diffWindowController?.showDiff(title: title, text: text)
+        }
+        UnisonBridge.installDiffErrHandler { [weak self] msg in
+            self?.diffWindowController?.showError(msg)
         }
     }
 
@@ -548,8 +566,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     // MARK: - Ignore actions
 
-    /// Right-click context menu for the outline view. The same three Ignore
-    /// items also live on the Edit menu — both go through `applyIgnore`.
+    /// Right-click context menu for the outline view. Contents mirror
+    /// a subset of the Action + Edit menus, picking the per-row items
+    /// that make sense in context: Diff (top — most common right-click
+    /// intent), then Ignore Path/Ext/Name. Direction overrides aren't
+    /// here because the toolbar already covers them and the user has
+    /// the row's row-tinted badge to drive direction decisions.
     private func makeRowContextMenu() -> NSMenu {
         let menu = NSMenu()
         // Validation: NSMenu doesn't auto-revalidate context menus on
@@ -557,6 +579,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // on each item's target when the menu opens (we set autoenablesItems
         // and rely on the validation method below).
         menu.autoenablesItems = true
+
+        let diff = NSMenuItem(title: "Diff",
+                              action: #selector(diffMenuAction(_:)),
+                              keyEquivalent: "")
+        diff.target = self
+        menu.addItem(diff)
+        menu.addItem(.separator())
+
         for action in IgnoreAction.all {
             let item = NSMenuItem(title: action.label,
                                   action: #selector(ignoreMenuAction(_:)),
@@ -613,13 +643,130 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     // MARK: - Direction menu actions
 
-    /// Edit-menu direction items. Tag carries which DirectionAction;
+    /// Action-menu direction items. Tag carries which DirectionAction;
     /// behavior is identical to clicking the corresponding toolbar
     /// segmented button — applies the direction to every leaf in the
     /// current selection (or the right-clicked row).
     @objc private func directionMenuAction(_ sender: NSMenuItem) {
         guard let action = DirectionAction.from(menuTag: sender.tag) else { return }
         applyDirection(action)
+    }
+
+    // MARK: - Diff
+
+    /// Open the diff window for the right-clicked / first-selected
+    /// leaf row. The diff itself runs asynchronously on the OCaml
+    /// side; the result (or an error) arrives via the diff handlers
+    /// installed in `configure`.
+    @objc private func diffMenuAction(_ sender: Any?) {
+        applyDiff()
+    }
+
+    /// Public so the context menu can call this directly. Returns
+    /// silently when the action isn't applicable (no selection, sync
+    /// in flight, can't-diff row) — `validateMenuItem` should have
+    /// already greyed the entry point.
+    func applyDiff() {
+        guard !isSyncing else { NSSound.beep(); return }
+        guard let row = rowForPendingMenuAction(),
+              row >= 0, row < items.count else { NSSound.beep(); return }
+        let path = items[row].path
+        // Defensive re-check — the menu validation calls canDiff too,
+        // but a context-menu click on a row that changed since
+        // validation could slip through. Bridge call is cheap.
+        guard unison_bridge_can_diff(Int32(row)) else {
+            TraceLog.shared.write("ReconcileWindow: canDiff=false for row \(row) (\(path))")
+            // Surface a brief alert rather than silently beeping —
+            // user clicked Diff, expects feedback.
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Can't diff “\(path)”"
+            alert.informativeText =
+                "Unison can only diff text files whose content has changed " +
+                "on both sides. This row is either a directory, a symlink, " +
+                "a binary file, or had only metadata changes."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        // Lazily create the diff window — most reconcile sessions
+        // never need one.
+        if diffWindowController == nil {
+            diffWindowController = DiffWindowController()
+        }
+        diffWindowController?.surfaceForLoading(path: path)
+        TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
+        unison_bridge_run_show_diffs(Int32(row))
+        // Result arrives via the diff handler → diffWindowController.showDiff,
+        // or via the diff-err handler → showError.
+    }
+
+    // MARK: - Select Conflicts / Revert to Recommendation
+
+    /// Select every leaf row that's an unresolved conflict — `<-?->`
+    /// from OCaml with no user override pinned. Jumps the user to
+    /// the rows that still need attention before sync. Pure
+    /// classification logic lives in `RowSelectionRules`.
+    @objc private func selectConflictsAction(_ sender: Any?) {
+        let conflictRows = Set(RowSelectionRules.unresolvedConflictRows(
+            items: items, rowOverrides: rowOverrides
+        ))
+        if conflictRows.isEmpty {
+            // Nothing to select — give an audible cue rather than
+            // wiping the existing selection.
+            NSSound.beep()
+            return
+        }
+        // Map row indices → outline-view row indices via the leaf nodes.
+        // Easier than going through the tree: we already have the rows
+        // and the outline view lets us select by item.
+        var outlineRowsToSelect = IndexSet()
+        for node in tree.allNodes where node.isLeaf {
+            guard let row = node.row, conflictRows.contains(row) else { continue }
+            let outlineRow = outlineView.row(forItem: node)
+            if outlineRow >= 0 { outlineRowsToSelect.insert(outlineRow) }
+        }
+        outlineView.selectRowIndexes(outlineRowsToSelect, byExtendingSelection: false)
+        if let first = outlineRowsToSelect.first {
+            outlineView.scrollRowToVisible(first)
+        }
+        TraceLog.shared.write(
+            "ReconcileWindow: Select Conflicts → \(conflictRows.count) row(s)"
+        )
+    }
+
+    /// Clear user overrides on every leaf row in the current
+    /// selection, returning them to OCaml's auto-recommended state.
+    /// Mirrors the legacy app's "Revert to Unison's Recommendation"
+    /// Edit-menu item. Doesn't touch OCaml — only the Swift-side
+    /// override dict — since the underlying direction strings are
+    /// what OCaml decided in the first place.
+    @objc private func revertSelectionAction(_ sender: Any?) {
+        guard !isSyncing else { NSSound.beep(); return }
+        let rows = Set(leafRowsInSelection())
+        guard !rows.isEmpty else { NSSound.beep(); return }
+        let before = rowOverrides.count
+        rowOverrides = RowSelectionRules.clearOverrides(
+            rowOverrides: rowOverrides, forRows: rows
+        )
+        // Redraw every row that lost an override + every ancestor
+        // folder so aggregates re-resolve.
+        var nodesToReload: [ObjectIdentifier: ReconcileNode] = [:]
+        for row in rows {
+            guard let leaf = leafNode(forRow: row) else { continue }
+            nodesToReload[ObjectIdentifier(leaf)] = leaf
+            var ancestor = leaf.parent
+            while let n = ancestor, !n.name.isEmpty {
+                nodesToReload[ObjectIdentifier(n)] = n
+                ancestor = n.parent
+            }
+        }
+        for node in nodesToReload.values {
+            outlineView.reloadItem(node, reloadChildren: false)
+        }
+        TraceLog.shared.write(
+            "ReconcileWindow: Revert → cleared overrides on \(before - rowOverrides.count) row(s)"
+        )
     }
 
     /// NSMenuItemValidation entry point. AppKit walks the responder chain
@@ -637,6 +784,29 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         if menuItem.action == #selector(ignoreMenuAction(_:)) {
             guard !isSyncing else { return false }
             return rowForPendingMenuAction() != nil
+        }
+        if menuItem.action == #selector(diffMenuAction(_:)) {
+            guard !isSyncing else { return false }
+            // Diff is a single-row action — use the right-clicked row
+            // if any, falling back to the first selected leaf. Calls
+            // canDiff so binary / props-only / non-file rows grey out.
+            guard let row = rowForPendingMenuAction(),
+                  row >= 0, row < items.count else { return false }
+            return unison_bridge_can_diff(Int32(row))
+        }
+        if menuItem.action == #selector(selectConflictsAction(_:)) {
+            // Allowed during sync — selection-only, doesn't mutate
+            // any row state. Useful for surveying what's left.
+            return !RowSelectionRules.unresolvedConflictRows(
+                items: items, rowOverrides: rowOverrides
+            ).isEmpty
+        }
+        if menuItem.action == #selector(revertSelectionAction(_:)) {
+            guard !isSyncing else { return false }
+            // Only useful if at least one selected row carries an
+            // override. Otherwise the action is a no-op.
+            let rows = leafRowsInSelection()
+            return rows.contains { rowOverrides[$0] != nil }
         }
         if menuItem.action == #selector(directionMenuAction(_:)) {
             guard !isSyncing else { return false }

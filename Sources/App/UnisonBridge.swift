@@ -24,6 +24,18 @@ enum UnisonBridge {
     nonisolated(unsafe) static var reloadRowHandler: ((_ row: Int, _ progress: String, _ bytes: Int64) -> Void)?
     nonisolated(unsafe) static var syncCompleteHandler: (() -> Void)?
 
+    /// Fires when OCaml's `displayDiff` callback completes. `title` is
+    /// the file's relative path; `text` is the diff output (typically
+    /// unified-diff format from `diff -u`). Invoked on the main queue
+    /// AFTER the trampoline has copied both strings off OCaml's
+    /// pointers.
+    nonisolated(unsafe) static var diffHandler: ((_ title: String, _ text: String) -> Void)?
+
+    /// Fires when OCaml's `displayDiffErr` callback fires. The handler
+    /// usually routes this into the active DiffWindow's error display.
+    /// Also mirrored to the status log via the C bridge for diagnosis.
+    nonisolated(unsafe) static var diffErrHandler: ((_ msg: String) -> Void)?
+
     /// Called on the main queue *after* the warning sheet is dismissed.
     /// `cancelled = true` means the user chose "Cancel sync" — OCaml will
     /// typically exit the process; nothing more to do. `cancelled = false`
@@ -75,6 +87,16 @@ enum UnisonBridge {
     static func installSyncCompleteHandler(_ handler: @escaping () -> Void) {
         syncCompleteHandler = handler
         unison_bridge_set_sync_complete_handler(_swiftSyncCompleteTrampoline)
+    }
+
+    static func installDiffHandler(_ handler: @escaping (String, String) -> Void) {
+        diffHandler = handler
+        unison_bridge_set_diff_handler(_swiftDiffTrampoline)
+    }
+
+    static func installDiffErrHandler(_ handler: @escaping (String) -> Void) {
+        diffErrHandler = handler
+        unison_bridge_set_diff_err_handler(_swiftDiffErrTrampoline)
     }
 
     /// Install the warning sheet handler. The OCaml thread blocks until the
@@ -162,6 +184,25 @@ private func _swiftReloadRowTrampoline(row: Int32, state: UnsafePointer<unison_r
 private func _swiftSyncCompleteTrampoline() {
     DispatchQueue.main.async {
         UnisonBridge.syncCompleteHandler?()
+    }
+}
+
+/// Fires from the OCaml worker thread with (title, text) pointers
+/// owned by OCaml's heap. We MUST copy both strings before
+/// async-dispatching — pointers become invalid once OCaml proceeds.
+private func _swiftDiffTrampoline(title: UnsafePointer<CChar>?,
+                                  text: UnsafePointer<CChar>?) {
+    let titleStr = title.map { String(cString: $0) } ?? ""
+    let textStr = text.map { String(cString: $0) } ?? ""
+    DispatchQueue.main.async {
+        UnisonBridge.diffHandler?(titleStr, textStr)
+    }
+}
+
+private func _swiftDiffErrTrampoline(msg: UnsafePointer<CChar>?) {
+    let msgStr = msg.map { String(cString: $0) } ?? "<no message>"
+    DispatchQueue.main.async {
+        UnisonBridge.diffErrHandler?(msgStr)
     }
 }
 

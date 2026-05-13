@@ -152,7 +152,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 160 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 177 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -220,10 +220,25 @@ go back / refresh / open another profile.
       `theState` in place, then re-fire the init2-complete handler so the
       reconcile window replaces items via the same code path as a rescan.
       Disabled during sync and when the menu target isn't a leaf.
-- [ ] **Diff viewer** — Diff button / context-menu action that calls
-      `runShowDiffs` for the selected row and displays the result. The OCaml
-      side calls back into `displayDiff(left, right)` (currently abort stub).
-      Needs a diff-viewer window.
+- [x] **Diff viewer** — done. New `DiffWindowController` shows the
+      result of `unison_bridge_run_show_diffs` in a monospaced
+      `NSTextView` with light per-line coloring for unified-diff
+      format (`+` green / `-` red / `@@` blue / `+++`/`---` bold,
+      no tint). One window per reconcile session, reused across
+      Diff invocations. C bridge exposes:
+      - `unison_bridge_can_diff(row) → bool` (mirrors OCaml's
+        `canDiff` predicate — only text files with content changes)
+      - `unison_bridge_run_show_diffs(row)` (async; result arrives
+        via the `displayDiff` callback, errors via `displayDiffErr`)
+      - `unison_bridge_set_diff_handler` / `_set_diff_err_handler`
+        register Swift trampolines. The old abort-stub
+        `displayDiff` is now a real callback dispatch; the
+        `displayDiffErr` stub is also wired with diff-window
+        routing in addition to the existing status-log mirror.
+      Menu wiring: `Action → Diff` plus a Diff item at the top of
+      the row context menu (so right-click → Diff is the fast
+      path). Menu validation calls `canDiff` so binary / props-only
+      / non-file rows grey out.
 - [x] **Force older / newer direction** — wired through new C bridge
       fns `unison_bridge_ri_force_older` / `_newer`, which use the
       existing `_ri_set_via` helper to invoke `unisonRiForceOlder` /
@@ -316,17 +331,26 @@ go back / refresh / open another profile.
        "Hide My Email" alias (e.g. `unison-ui-mac@hidemy.email`) wired to
        a `mailto:` link, listed in the About panel. Apple forwards mail
        without revealing your real address; revocable if abused.
-- [ ] **Mirror the legacy app's full menu structure** (App-specific items
-      only — leave macOS defaults alone). The legacy [MainMenu.xib](unison/src/uimac/English.lproj/MainMenu.xib)
-      includes at least:
-    - **File**: New profile…, Open profile…, Save profile, Synchronize all,
-      Install command-line tool, Quit
-    - **Edit**: Cut/Copy/Paste/Select All (done), plus
-      **Ignore Path / Ignore Extension / Ignore Name** (per-row from
-      selection), Select Conflicts, Revert to Unison's Recommendation
-    - **Action**: Propagate Left to Right / Right to Left / Older to Newer /
-      Newer to Older, Skip ("Leave Alone"), Merge, Diff, Go (Synchronize)
-    - **Help**: Unison Online Help, About
+- [x] **Mirror the legacy app's full menu structure** — done for
+      every reconcile-window action. Final layout (App / Edit /
+      Action / Window / Help; no File menu — see decision earlier):
+    - **Edit**: Undo/Redo/Cut/Copy/Paste/Select All (standard) +
+      Ignore Path/Extension/Name + `Profile Editor…` (⌘⇧E).
+    - **Action**: ← First / → Second / Skip / Merge / Force Older /
+      Force Newer (direction overrides, dispatch via
+      `directionMenuAction:`) → separator → `Diff` (dispatch via
+      `diffMenuAction:`) → separator → `Select Conflicts` and
+      `Revert to Unison's Recommendation` (selection helpers,
+      pure logic in `RowSelectionRules.swift`).
+    - **Help**: `<appname> Help` + `Unison File Synchronizer Help`
+      (no ellipsis on either — they open URLs immediately).
+    Items we explicitly didn't mirror: `File → Save profile` /
+    `Synchronize all` / `Install command-line tool` — Save isn't
+    needed (the Profile Editor saves on demand), Synchronize all
+    has no clear single-window semantics, and the CLI tool lives
+    in `unison-blob.o` inside the .app bundle so there's nothing
+    to install. The legacy `Quit` is wired automatically by AppKit
+    via `NSApplication.terminate(_:)`.
 - [x] **About panel content** — populated via
       `orderFrontStandardAboutPanel(options:)` with version, embedded
       Unison version (`unison_bridge_get_version`), and a GPLv3 credits

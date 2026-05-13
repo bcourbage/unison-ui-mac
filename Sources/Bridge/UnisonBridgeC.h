@@ -155,6 +155,29 @@ const char *unison_bridge_ri_force_newer(int row);
  * next call from the same thread — copy if you need to retain it. */
 const char *unison_bridge_ri_get_details(int row);
 
+/* === Per-row Diff ===
+ *
+ * `unison_bridge_can_diff` returns true if the row's two sides are both
+ * files with differing CONTENT (not just metadata). Drives Diff
+ * menu/button enabled state — Unison's own `canDiff` predicate.
+ *
+ * `unison_bridge_run_show_diffs` kicks off a diff. The result arrives
+ * asynchronously via the registered diff handler (success) or diff-err
+ * handler (failure, e.g. "Can't diff: path doesn't refer to a file in
+ * both replicas"). Both handlers fire on the OCaml worker thread; the
+ * Swift trampolines copy strings and async-dispatch to the main queue
+ * before invoking user handlers.
+ *
+ * Returns immediately; the diff itself runs through Unison's configured
+ * `diff` pref (default `diff -u`) on the OCaml side. */
+bool unison_bridge_can_diff(int row);
+void unison_bridge_run_show_diffs(int row);
+
+typedef void (*unison_diff_handler_t)(const char *title, const char *text);
+typedef void (*unison_diff_err_handler_t)(const char *msg);
+void unison_bridge_set_diff_handler(unison_diff_handler_t h);
+void unison_bridge_set_diff_err_handler(unison_diff_err_handler_t h);
+
 /* === Per-row Ignore actions ===
  *
  * Add a permanent ignore pattern derived from the given row's path:

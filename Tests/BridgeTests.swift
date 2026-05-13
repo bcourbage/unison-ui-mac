@@ -65,6 +65,14 @@ final class BridgeTests: XCTestCase {
         XCTAssertFalse(unison_bridge_ignore_ext(99999))
         XCTAssertFalse(unison_bridge_ignore_name(-1))
     }
+
+    func test_b_canDiff_returnsFalseGracefullyOnOutOfRange() {
+        // With no reconcile state loaded, every row index is out of
+        // range. canDiff must return false (not crash, not throw).
+        XCTAssertFalse(unison_bridge_can_diff(0))
+        XCTAssertFalse(unison_bridge_can_diff(99999))
+        XCTAssertFalse(unison_bridge_can_diff(-1))
+    }
 }
 
 /// Stress / perf tests. Promotion of the bring-up 1000-call benchmark

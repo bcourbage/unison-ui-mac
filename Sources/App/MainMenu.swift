@@ -23,6 +23,7 @@ enum MainMenu {
         let main = NSMenu()
         main.addItem(makeAppMenu(appName: appName))
         main.addItem(makeEditMenu())
+        main.addItem(makeActionMenu())
         main.addItem(makeWindowMenu())
         main.addItem(makeHelpMenu(appName: appName))
         return main
@@ -95,6 +96,10 @@ enum MainMenu {
         return appMenuItem
     }
 
+    /// Edit menu: standard text ops + the per-row Ignore items +
+    /// Profile Editor entry point. Direction overrides + Diff + the
+    /// selection helpers (Select Conflicts, Revert) live in the
+    /// separate Action menu to keep this one focused.
     private static func makeEditMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Edit")
@@ -107,21 +112,6 @@ enum MainMenu {
         menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        menu.addItem(.separator())
-        // Direction actions — Action-menu items in the legacy app's
-        // structure. Same responder-chain pattern as the ignore items
-        // below: target is nil, selector lives on ReconcileWindowController.
-        // Validation (greyed when no leaf selection, hidden when
-        // mergeConfigured == false for the .merge case) happens in
-        // `validateMenuItem(_:)` on the controller.
-        let directionSelector = Selector(("directionMenuAction:"))
-        for action in DirectionAction.menuActions {
-            let mi = NSMenuItem(title: action.label,
-                                action: directionSelector,
-                                keyEquivalent: "")
-            mi.tag = action.menuTag
-            menu.addItem(mi)
-        }
 
         menu.addItem(.separator())
         // Ignore actions — target is nil so they dispatch through the responder
@@ -149,6 +139,51 @@ enum MainMenu {
                                 keyEquivalent: "e")
         editor.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(editor)
+        item.submenu = menu
+        return item
+    }
+
+    /// Action menu: per-row reconcile operations grouped together.
+    /// Matches the legacy uimac app's `Action` menu structure
+    /// (Propagate, Force, Skip, Merge, Diff) plus selection helpers
+    /// (Select Conflicts, Revert to Recommendation). Every item
+    /// targets nil — the responder chain delivers them to
+    /// `ReconcileWindowController` when the reconcile window is key.
+    private static func makeActionMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Action")
+        // Direction overrides first — these are the "decide what to
+        // sync" core. Order matches the legacy app's reading order
+        // (direction → alternatives → mtime variants).
+        let directionSelector = Selector(("directionMenuAction:"))
+        for action in DirectionAction.menuActions {
+            let mi = NSMenuItem(title: action.label,
+                                action: directionSelector,
+                                keyEquivalent: "")
+            mi.tag = action.menuTag
+            menu.addItem(mi)
+        }
+
+        // Diff — pop a window with the unified diff of the selected
+        // row. No keyboard shortcut yet; ⌘D is taken by "Don't Save"
+        // in document dialogs and we don't want to compete.
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Diff",
+                     action: Selector(("diffMenuAction:")),
+                     keyEquivalent: "")
+
+        // Selection helpers — non-mutating (Select Conflicts) vs.
+        // mutating (Revert). Both look at the controller's
+        // rowOverrides + items to compute their target set; the rules
+        // live in `RowSelectionRules`.
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Select Conflicts",
+                     action: Selector(("selectConflictsAction:")),
+                     keyEquivalent: "")
+        menu.addItem(withTitle: "Revert to Unison's Recommendation",
+                     action: Selector(("revertSelectionAction:")),
+                     keyEquivalent: "")
+
         item.submenu = menu
         return item
     }

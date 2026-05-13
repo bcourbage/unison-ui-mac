@@ -114,6 +114,8 @@ static unison_init1_complete_handler_t   g_init1_complete_handler  = NULL;
 static unison_init2_complete_handler_t   g_init2_complete_handler  = NULL;
 static unison_reload_row_handler_t       g_reload_row_handler      = NULL;
 static unison_sync_complete_handler_t    g_sync_complete_handler   = NULL;
+static unison_diff_handler_t             g_diff_handler            = NULL;
+static unison_diff_err_handler_t         g_diff_err_handler        = NULL;
 
 void unison_bridge_set_status_handler(unison_status_handler_t handler) {
     g_status_handler = handler;
@@ -137,6 +139,14 @@ void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t handler) {
 
 void unison_bridge_set_sync_complete_handler(unison_sync_complete_handler_t handler) {
     g_sync_complete_handler = handler;
+}
+
+void unison_bridge_set_diff_handler(unison_diff_handler_t handler) {
+    g_diff_handler = handler;
+}
+
+void unison_bridge_set_diff_err_handler(unison_diff_err_handler_t handler) {
+    g_diff_err_handler = handler;
 }
 
 void unison_bridge_test_status(const char *msg) {
@@ -292,12 +302,18 @@ CAMLprim value fatalError(value s) {
     CAMLreturn(Val_unit);
 }
 
-/* Used when an inline diff fails — non-modal, non-blocking. Surface via
- * the status handler for now; a banner would be nicer once we have one. */
+/* Called from OCaml when a diff attempt fails (e.g. one side is binary,
+ * the row isn't a file, the external `diff` pref command errored). The
+ * Swift handler receives the raw error message; it's typically routed
+ * to whichever DiffWindow is open so the user sees the error in
+ * context. Also mirrored to the status log for posterity. */
 CAMLprim value displayDiffErr(value s) {
     CAMLparam1(s);
     const char *msg = String_val(s);
     fprintf(stderr, "unison-mac DIFF ERR: %s\n", msg);
+    if (g_diff_err_handler) {
+        g_diff_err_handler(msg);
+    }
     if (g_status_handler) {
         char buf[2048];
         snprintf(buf, sizeof(buf), "diff error: %s", msg);
@@ -472,10 +488,21 @@ CAMLprim value unisonInit2Complete(value arr) {
     CAMLreturn(Val_unit);
 }
 
-CAMLprim value displayDiff(value a, value b) {
-    (void)a; (void)b;
-    fprintf(stderr, "unison-mac: stub callback 'displayDiff' invoked\n");
-    abort();
+/* Called from OCaml when a diff completes successfully. `title` is the
+ * file's relative path (used for window titling); `text` is the diff
+ * output produced by Unison's configured `diff` pref (default
+ * `diff -u`). Both arrive as OCaml-owned strings; we hand pointers to
+ * the Swift trampoline, which copies before async-dispatching to the
+ * main queue. */
+CAMLprim value displayDiff(value title, value text) {
+    CAMLparam2(title, text);
+    if (g_diff_handler) {
+        g_diff_handler(String_val(title), String_val(text));
+    } else {
+        // Unhandled diff — log so we can spot wiring regressions in dev.
+        fprintf(stderr, "unison-mac: displayDiff fired with no handler installed\n");
+    }
+    CAMLreturn(Val_unit);
 }
 
 /* =====================================================================
@@ -771,6 +798,59 @@ const char *unison_bridge_ri_set_skip(int row)      { return _ri_set_via("unison
 const char *unison_bridge_ri_set_merge(int row)     { return _ri_set_via("unisonRiSetMerge",    row); }
 const char *unison_bridge_ri_force_older(int row)   { return _ri_set_via("unisonRiForceOlder",  row); }
 const char *unison_bridge_ri_force_newer(int row)   { return _ri_set_via("unisonRiForceNewer",  row); }
+
+/* Per-row Diff support. canDiff is a pure read (no mutation); runShowDiffs
+ * kicks off the diff and returns immediately — the result comes back via
+ * the diff/diff-err callbacks. */
+struct can_diff_io {
+    int  row;
+    bool result;
+};
+
+static void _ocaml_can_diff(void *user) {
+    struct can_diff_io *io = user;
+    io->result = false;
+    if (io->row < 0 || (size_t)io->row >= g_ri_count) return;
+    const value *fn = caml_named_value("canDiff");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: canDiff not registered\n");
+        return;
+    }
+    value r = caml_callback(*fn, g_ri_roots[io->row]);
+    io->result = (Bool_val(r) == 1);
+}
+
+bool unison_bridge_can_diff(int row) {
+    struct can_diff_io io = { .row = row };
+    run_on_ocaml_thread(_ocaml_can_diff, &io);
+    return io.result;
+}
+
+struct run_show_diffs_io {
+    int row;
+};
+
+static void _ocaml_run_show_diffs(void *user) {
+    struct run_show_diffs_io *io = user;
+    if (io->row < 0 || (size_t)io->row >= g_ri_count) {
+        fprintf(stderr, "unison-mac: run_show_diffs row %d out of range\n", io->row);
+        return;
+    }
+    const value *fn = caml_named_value("runShowDiffs");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: runShowDiffs not registered\n");
+        return;
+    }
+    // runShowDiffs signature: `ri -> int -> unit`. The int is used to tag
+    // diff output back to a specific row (Uutil.File.ofLine i); we pass
+    // the same row index so the tagging is consistent.
+    (void)caml_callback2(*fn, g_ri_roots[io->row], Val_int(io->row));
+}
+
+void unison_bridge_run_show_diffs(int row) {
+    struct run_show_diffs_io io = { .row = row };
+    run_on_ocaml_thread(_ocaml_run_show_diffs, &io);
+}
 
 /* Per-row getter. Same dispatch pattern as the ri_set_* functions but
  * doesn't mutate state — just reads `unisonRiToDetails` for the row. */
