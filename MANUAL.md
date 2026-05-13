@@ -26,10 +26,11 @@ linked to the section of the upstream docs that defines it.
 5. [The Profile Form (single-profile content editor)](#the-profile-form-single-profile-content-editor)
 6. [The Reconcile window](#the-reconcile-window)
 7. [The Diff viewer](#the-diff-viewer)
-8. [The menu bar reference](#the-menu-bar-reference)
-9. [Keyboard shortcuts](#keyboard-shortcuts)
-10. [Troubleshooting](#troubleshooting)
-11. [What this app does NOT do](#what-this-app-does-not-do)
+8. [Settings](#settings)
+9. [The menu bar reference](#the-menu-bar-reference)
+10. [Keyboard shortcuts](#keyboard-shortcuts)
+11. [Troubleshooting](#troubleshooting)
+12. [What this app does NOT do](#what-this-app-does-not-do)
 
 ---
 
@@ -109,6 +110,15 @@ Double-click also runs.
 Not on the picker — those live in the Profile Editor manager. The picker
 is intentionally minimal: list + Run.
 
+### Refresh
+
+The picker re-reads the Unison directory automatically every time its
+window becomes key — so creating a `.prf` via the CLI, copying one in
+from a backup, or editing a name in Finder is picked up the moment you
+switch back to the app. No manual refresh action on the picker; the
+Profile Editor has an explicit Refresh button (and ⌘R) for the edge case
+where you want a re-read without losing focus.
+
 ---
 
 ## The Profile Editor (manager window)
@@ -147,8 +157,17 @@ Bottom-bar buttons (left to right by profile lifecycle):
 - **Delete…** — confirmation alert, then moves the `.prf` (and its
   `.prf.bak` sidecar from a prior save, if any) to the Trash via
   `NSFileManager.trashItem`. A misclick is recoverable from Finder's
-  Trash. Unison's archive files (`ar*`, `fp*`, `lk*`) for the profile
-  are *not* touched here — use **Reset Archives…** for that.
+  Trash.
+
+  If the profile has matching archive files in the Unison directory
+  (`ar<hash>`, `fp<hash>`, `lk<hash>`, etc.), the confirmation grows a
+  checkbox: **"Also move N archive file(s) to Trash"** — *checked by
+  default*. The hash is computed from the profile's roots before the
+  `.prf` is deleted, so we still know which archives belong to it. If
+  you uncheck the box, the `.prf` goes but the archives stay; useful
+  when you plan to restore the profile from Trash and resume syncing.
+  When there are no matching archives (e.g. both roots are remote,
+  archives already cleaned up), the checkbox is hidden.
 - **Reset Archives…** — for the selected profile, compute its archive
   hash (see [archive files](https://github.com/bcpierce00/unison/wiki/FAQ#what-are-archive-files-in-unison)
   in the upstream wiki), find matching `ar<hash>`, `fp<hash>`, `lk<hash>`,
@@ -157,7 +176,14 @@ Bottom-bar buttons (left to right by profile lifecycle):
   plus the computed hash (you can cross-check against
   `unison -showArchiveName <profile>` on the CLI if you want). The next
   sync of this profile will then rebuild reconciliation state from
-  scratch — a full re-scan of both replicas.
+  scratch — a full re-scan of both replicas. Use this when you want to
+  clean archives but keep the profile itself; Delete's archive-cleanup
+  checkbox is the right tool for "I'm done with this profile entirely."
+- **Refresh** (⌘R) — re-reads the `.prf` directory. The editor also
+  auto-refreshes whenever its window becomes key, so this button is for
+  the edge case where you modify files in another tool without losing
+  focus on the editor (e.g. running a command in Terminal that's already
+  visible in a split with the editor window key).
 - **Done** — closes the manager window. ⏎ activates.
 
 Hidden profiles are still listed (dimmed) so you can unhide them.
@@ -421,14 +447,81 @@ text. Pick another row's Diff to recover.
 
 ---
 
+## Settings
+
+Opens via `Unison-UI-Mac → Settings…` (⌘,). Single window with three
+sections, each describing a category of stored state and offering a
+way to reset it. No preferences are *set* here today — everything is
+implicit (you hide a profile by clicking its eye icon, dismiss a
+version-mismatch alert via its checkbox, etc.). The Settings window is
+the place to *inspect* and *reset* that implicit state.
+
+### Profile picker layout
+
+Shows counts ("3 hidden profiles · 7 in custom order") for the keys
+`profiles.hidden` and `profiles.order`. The **Reset** button clears
+both — after a reset, every `.prf` is visible in alphabetical order in
+the picker. The `.prf` files themselves are untouched; this is purely
+UI presentation state.
+
+### SSH version-mismatch suppressions
+
+A table of `(host, this-Mac-version, remote-version)` triples that
+you've dismissed via the "Don't remind me again" checkbox on the
+[Version-mismatch warning](#version-mismatch-warning-on-profile-open).
+Each row can be selected and removed individually via **Remove
+Selected**, or wiped en masse via **Clear All** (which has a confirm
+sheet because it's a bulk destructive action; per-row removal doesn't
+prompt — one accidental removal is cheap to re-suppress next time the
+alert fires).
+
+Removing a suppression doesn't immediately do anything; the next time
+you open a profile whose SSH peer matches the triple, the version-check
+probe runs and re-prompts you with the alert.
+
+### Window & toolbar layout
+
+Counts of how many window-frame autosaves and toolbar configurations
+the app has on file. The **Reset Window Positions** button clears all
+of them; the next time each window reopens, it uses its default
+position and size. Useful when:
+
+- A window has drifted off-screen after a monitor change.
+- You want to start fresh after experimenting with the reconcile
+  toolbar layout.
+
+Currently-open windows are not moved by the reset — autosaves are
+written on close and read on open, so the effect only takes hold the
+next time each window is opened. The reset alert spells this out.
+
+### What's stored, and where
+
+Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
+accessed via the standard `UserDefaults` API. The keys this app writes:
+
+| Key | Purpose |
+|---|---|
+| `profiles.hidden` | Basenames of profiles hidden from the picker |
+| `profiles.order` | Custom picker order |
+| `versionMismatch.suppressed` | List of suppressed `host\|local\|remote` triples |
+| `NSWindow Frame <name>` | AppKit auto: window position/size per window |
+| `NSToolbar Configuration ReconcileToolbar.v4` | Reconcile toolbar customization |
+
+You can inspect them directly with `defaults read net.courbage.unison-ui-mac`,
+or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`
+— but the Settings window gives you fine-grained control by category.
+
+---
+
 ## The menu bar reference
 
 ### `Unison-UI-Mac` menu
 
-Standard macOS app menu: About, Services, Hide, Quit. The menu uses the
-app's display name (`CFBundleDisplayName = "Unison-UI-Mac"`). The About
-panel shows the embedded Unison version (queried via
-`unison_bridge_get_version`).
+Standard macOS app menu: About, Settings… (⌘,), Services, Hide, Quit.
+The menu uses the app's display name (`CFBundleDisplayName =
+"Unison-UI-Mac"`). The About panel shows the embedded Unison version
+(queried via `unison_bridge_get_version`). The Settings entry opens
+the inspect-and-reset window described in [Settings](#settings) above.
 
 ### Edit menu
 
@@ -483,6 +576,8 @@ focused window via the standard responder action.
 |---|---|
 | ⏎ (in picker) | Run selected profile |
 | ⌘⇧E | Profile Editor… |
+| ⌘R (in Profile Editor) | Refresh profile list |
+| ⌘, | Settings… |
 | ⌘? | App help |
 | ⌘W | Close focused window |
 | ⌘M | Minimize focused window |

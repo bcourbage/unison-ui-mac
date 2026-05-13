@@ -77,6 +77,14 @@ enum MainMenu {
                         keyEquivalent: "")
         appMenu.addItem(.separator())
 
+        // macOS-idiomatic Settings entry. ⌘, is the canonical shortcut;
+        // ellipsis because the action opens a window (not an instant
+        // toggle). The window owns its own UI — see SettingsWindowController.
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(AppDelegate.showSettings(_:)),
+                        keyEquivalent: ",")
+        appMenu.addItem(.separator())
+
         let services = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
         let servicesMenu = NSMenu(title: "Services")
         services.submenu = servicesMenu

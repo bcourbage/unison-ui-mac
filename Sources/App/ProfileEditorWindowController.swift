@@ -17,7 +17,7 @@ import AppKit
 /// The form editor (`ProfileFormWindowController`) is owned by this
 /// controller — open one at a time, replacing on demand.
 @MainActor
-final class ProfileEditorWindowController: NSWindowController {
+final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate {
 
     typealias ChangedHandler = @MainActor () -> Void
 
@@ -50,6 +50,11 @@ final class ProfileEditorWindowController: NSWindowController {
     /// See `ArchiveHash` for how we identify which files belong to the
     /// profile without going through OCaml.
     private let resetArchivesButton = NSButton(title: "Reset Archives…", target: nil, action: nil)
+    /// Re-reads the `.prf` list from disk. Auto-fires on `windowDidBecomeKey`
+    /// already; this button is for the rare case where the user is staring
+    /// at the manager and modifies a file in another tool without losing
+    /// focus.
+    private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
 
     private var formController: ProfileFormWindowController?
@@ -77,8 +82,19 @@ final class ProfileEditorWindowController: NSWindowController {
         window.center()
         super.init(window: window)
         windowFrameAutosaveName = "ProfileEditorWindow"
+        window.delegate = self
 
         configure()
+        reload()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    /// Refresh the profile list whenever the editor becomes key. Picks up
+    /// external changes (CLI-created .prf, manual rename in Finder, etc.)
+    /// without requiring the user to close + reopen the window. Reload is
+    /// a `contentsOfDirectory` + `reloadData` — cheap.
+    func windowDidBecomeKey(_ notification: Notification) {
         reload()
     }
 
@@ -110,7 +126,8 @@ final class ProfileEditorWindowController: NSWindowController {
         scroll.borderType = .lineBorder
 
         for button in [newButton, duplicateButton, editButton,
-                       deleteButton, resetArchivesButton, doneButton] {
+                       deleteButton, resetArchivesButton, refreshButton,
+                       doneButton] {
             button.bezelStyle = .rounded
         }
         newButton.target = self
@@ -123,6 +140,13 @@ final class ProfileEditorWindowController: NSWindowController {
         deleteButton.action = #selector(deleteAction(_:))
         resetArchivesButton.target = self
         resetArchivesButton.action = #selector(resetArchivesAction(_:))
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshAction(_:))
+        // ⌘R as the conventional macOS "refresh" shortcut. AppKit dispatches
+        // through the button's target since the window will be key whenever
+        // the editor is visible.
+        refreshButton.keyEquivalent = "r"
+        refreshButton.keyEquivalentModifierMask = [.command]
         doneButton.target = self
         doneButton.action = #selector(doneAction(_:))
         doneButton.keyEquivalent = "\r"
@@ -130,11 +154,11 @@ final class ProfileEditorWindowController: NSWindowController {
         // Bottom row reads left-to-right by lifecycle of a profile:
         // create (New, Duplicate), modify (Edit — also handles rename
         // via the name field), destroy (Delete), recover (Reset
-        // Archives), then dismiss (Done) on the far right.
+        // Archives, Refresh), then dismiss (Done) on the far right.
         let bottomRow = NSStackView(views: [
             newButton, duplicateButton,
             editButton, deleteButton,
-            resetArchivesButton,
+            resetArchivesButton, refreshButton,
             NSView(), doneButton,
         ])
         bottomRow.orientation = .horizontal
@@ -261,6 +285,14 @@ final class ProfileEditorWindowController: NSWindowController {
 
     @objc private func doneAction(_ sender: Any?) {
         window?.performClose(nil)
+    }
+
+    /// Manual refresh — re-reads the `.prf` list from disk. Mainly there
+    /// for the ⌘R shortcut + edge cases where `windowDidBecomeKey` isn't
+    /// enough (e.g. another app modified the directory while the manager
+    /// stayed key). Cheap; just hits the filesystem and reloads the table.
+    @objc private func refreshAction(_ sender: Any?) {
+        reload()
     }
 
     /// Open the single-profile form for create-or-edit. The form's
@@ -466,14 +498,38 @@ final class ProfileEditorWindowController: NSWindowController {
         guard let profile = selectedProfile() else { NSSound.beep(); return }
         let url = profileURL(profile)
 
+        // Pre-compute the profile's archive files BEFORE asking. The .prf
+        // gets trashed during this flow, so we need to know what archives
+        // it claims while the file is still around to parse. If hash
+        // compute fails (no roots, no local root, .prf already gone),
+        // archive cleanup just isn't offered — the user can still hit
+        // Reset Archives separately if needed.
+        var archiveFiles: [URL] = []
+        if case .success(let computed) = ArchiveHash.compute(
+            unisonDirectory: unisonDirectory, profile: profile) {
+            archiveFiles = ArchiveCleanup(unisonDirectory: unisonDirectory)
+                .findFiles(matching: computed.hash)
+        }
+
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete profile “\(profile)”?"
-        alert.informativeText =
-            "The .prf file at \(url.path) will be moved to the Trash. " +
-            "Unison's archive files (ar*, fp*) and any open sync state " +
-            "won't be touched. If you'd rather keep the file but hide it " +
-            "from the picker, use the eye icon next to the name instead."
+        if archiveFiles.isEmpty {
+            alert.informativeText =
+                "The .prf file at \(url.path) will be moved to the Trash. " +
+                "If you'd rather keep the file but hide it from the picker, " +
+                "use the eye icon next to the name instead."
+        } else {
+            let plural = archiveFiles.count == 1 ? "" : "s"
+            alert.informativeText =
+                "The .prf file at \(url.path) will be moved to the Trash. " +
+                "\(archiveFiles.count) archive file\(plural) for this profile " +
+                "(ar*, fp*, etc.) will also be moved if the box below is " +
+                "checked — they're useless without the profile that owns " +
+                "them. Uncheck if you plan to restore the .prf from Trash " +
+                "and resume syncing where you left off."
+        }
+
         // Order matters here. NSAlert assigns the Return key to the FIRST
         // added button — we want Cancel to be the default for safety
         // (Return = "don't delete"). The "Cancel"-titled button also
@@ -484,8 +540,23 @@ final class ProfileEditorWindowController: NSWindowController {
         let trashBtn = alert.addButton(withTitle: "Move to Trash")
         trashBtn.hasDestructiveAction = true
 
+        // Accessory checkbox: "Also delete N archive file(s)". Default-on
+        // because orphan archives serve no purpose, but easy to uncheck.
+        // Suppressed entirely when there are no archives to clean up.
+        var archiveCheckbox: NSButton? = nil
+        if !archiveFiles.isEmpty {
+            let plural = archiveFiles.count == 1 ? "" : "s"
+            let cb = NSButton(checkboxWithTitle:
+                "Also move \(archiveFiles.count) archive file\(plural) to Trash",
+                target: nil, action: nil)
+            cb.state = .on
+            alert.accessoryView = cb
+            archiveCheckbox = cb
+        }
+
         guard alert.runModal() == .alertSecondButtonReturn else { return }
 
+        let shouldCleanArchives = archiveCheckbox?.state == .on
         let fm = FileManager.default
         do {
             try fm.trashItem(at: url, resultingItemURL: nil)
@@ -495,6 +566,37 @@ final class ProfileEditorWindowController: NSWindowController {
                 try? fm.trashItem(at: bak, resultingItemURL: nil)
             }
             TraceLog.shared.write("ProfileEditor: trashed \(url.path)")
+
+            // Archive cleanup if requested. Partial failures get surfaced
+            // after the .prf delete succeeds so the user knows manual
+            // cleanup is needed for the remainder — we never let an
+            // archive-cleanup failure undo a successful profile delete.
+            if shouldCleanArchives && !archiveFiles.isEmpty {
+                let outcome = ArchiveCleanup(unisonDirectory: unisonDirectory)
+                    .trash(archiveFiles)
+                TraceLog.shared.write(
+                    "ProfileEditor: archive cleanup on delete '\(profile)' " +
+                    "trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)"
+                )
+                for (failedURL, err) in outcome.failed {
+                    TraceLog.shared.write("  failed: \(failedURL.lastPathComponent) — \(err)")
+                }
+                if !outcome.failed.isEmpty {
+                    let failedList = outcome.failed
+                        .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
+                        .joined(separator: "\n")
+                    let fail = NSAlert()
+                    fail.alertStyle = .warning
+                    fail.messageText = "Some archive files couldn't be moved to Trash"
+                    fail.informativeText =
+                        "The profile was deleted, but \(outcome.failed.count) of " +
+                        "\(archiveFiles.count) archive file\(archiveFiles.count == 1 ? " was" : "s were") " +
+                        "left in place.\nFailures:\n\(failedList)"
+                    fail.addButton(withTitle: "OK")
+                    fail.runModal()
+                }
+            }
+
             // Remove the now-deleted profile from prefs so we don't
             // accumulate stale order/hidden entries.
             prefs.forget(profile)

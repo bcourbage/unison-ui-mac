@@ -6,7 +6,7 @@ import AppKit
 /// responsible for closing the picker, opening the reconcile window, and
 /// driving init1/init2.
 @MainActor
-final class ProfileWindowController: NSWindowController {
+final class ProfileWindowController: NSWindowController, NSWindowDelegate {
 
     typealias Completion = @MainActor (_ profile: String) -> Void
 
@@ -37,7 +37,19 @@ final class ProfileWindowController: NSWindowController {
         // controller; NSWindowController will then persist+restore frame
         // under this key in NSUserDefaults.
         windowFrameAutosaveName = "ProfileWindow"
+        window.delegate = self
         configure()
+        reload()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    /// Refresh the profile list whenever the picker becomes key. Catches
+    /// the "user created/edited a profile in Finder or via the CLI" case
+    /// where we'd otherwise show a stale view until app restart. Reload
+    /// is just a `contentsOfDirectory` + `reloadData` — cheap enough to
+    /// run on every focus change.
+    func windowDidBecomeKey(_ notification: Notification) {
         reload()
     }
 

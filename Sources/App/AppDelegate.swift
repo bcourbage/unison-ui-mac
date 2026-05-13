@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reopened = brought to front. The manager owns the single-profile
     /// form internally, so AppDelegate doesn't need to track it.
     private var profileEditorWindowController: ProfileEditorWindowController?
+    /// Settings window — `<appname> → Settings…` (⌘,). One at a time;
+    /// reopening just brings the existing instance to front.
+    private var settingsWindowController: SettingsWindowController?
     private var unisonDirectory: String = ""
     /// Tracks the profile we last asked OCaml to load. Used by the fatal
     /// recovery path to re-run init1+init2 against the same profile after
@@ -470,6 +473,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Menu actions
+
+    /// `<appname> → Settings…` (⌘,) — opens the Settings window. Singleton;
+    /// reopening just brings the existing instance to front. The window
+    /// itself owns its content (see SettingsWindowController).
+    @objc func showSettings(_ sender: Any?) {
+        if let existing = settingsWindowController {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let settings = SettingsWindowController()
+        settings.showWindow(nil)
+        settings.window?.makeKeyAndOrderFront(nil)
+        settingsWindowController = settings
+    }
 
     /// Edit → Profile Editor…  — opens the multi-profile manager window
     /// with the full list of .prf files. From there the user can
