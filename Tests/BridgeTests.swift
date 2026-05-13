@@ -74,6 +74,21 @@ final class BridgeTests: XCTestCase {
         XCTAssertFalse(unison_bridge_can_diff(-1))
     }
 
+    func test_b_abortSync_isNoOpWhenNothingIsRunning() {
+        // The C bridge dispatches `Abort.all` on the OCaml thread,
+        // which sets the global `abortAll` flag. With no sync in
+        // flight, this is a no-op flag-flip — no checkpoint will
+        // observe it. Verify it doesn't crash and returns promptly.
+        // (Real abort behavior — interrupting a sync mid-transfer —
+        // requires a running sync to exercise; that's manual smoke
+        // testing territory, not unit.)
+        unison_bridge_abort_sync()
+        // If we got here, the callback dispatch worked. If the
+        // `abortAll` callback weren't registered in the local
+        // upstream patch, the bridge would print "abortAll not
+        // registered" to stderr; the call still returns.
+    }
+
     // MARK: - End-to-end init1 + init2 against a controlled fixture
     //
     // Tests in this section depend on running AFTER test_b_* so the

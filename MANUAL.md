@@ -524,13 +524,44 @@ preference. Add a `merge = …` line to the profile's Advanced field
 (see [Profile Form > Advanced](#advanced-other-prefs)) and re-open the
 profile.
 
-### "Cancel" / Stop doesn't actually stop the sync
+### Stop button: how abort works
 
-Correct — Unison's OCaml core doesn't expose a mid-sync abort callback
-that we can wire to. The Stop button closes the reconcile window;
-Unison's worker continues until the current batch of file transfers
-finishes naturally. See TODO P3 "Real mid-sync abort" for the upstream
-patch we'd need to enable a true cancel.
+Clicking **Stop** in the toolbar (or invoking it through the menu/
+context menu) calls into a local patch in our fork of Unison that
+sets the `Abort.abortAll` flag on the OCaml side. The in-flight sync
+worker observes the flag at its next `Abort.check` checkpoint —
+typically between file transfers — and unwinds by raising the
+internal `Aborted by user request` transient.
+
+**What you'll see**:
+- One or two more rows may complete naturally before the abort
+  takes effect (any file already in mid-transfer at the moment Stop
+  was clicked).
+- Queued rows that haven't started yet show **FAILED** in the
+  Progress column.
+- The reconcile window **stays open** so you can inspect the FAILED
+  rows. The progress bar disappears; the summary line shows that
+  the sync was aborted.
+- Clicking Stop again is a no-op (the abort flag is already set).
+- You can then rescan to see the post-abort state of both replicas,
+  or close the window manually.
+
+**What it does NOT do**:
+- Doesn't roll back partial transfers. If a file was mid-write when
+  the abort propagated, it's in whatever state OCaml's transfer
+  layer left it (typically the destination has a partial copy plus
+  Unison's `.unison.tmp` sidecar). Unison's next reconcile will see
+  the difference and let you decide how to fix it.
+- Doesn't kill the OCaml worker. It just sets a flag; the worker
+  exits its current task cooperatively, then idles in
+  `bridgeThreadWait` ready for the next bridge call.
+
+If you close the reconcile window mid-sync via ⌘W (or the red close
+button), you get a three-option prompt: **Keep Syncing** /
+**Abort & Close** / **Close (let it run)**. The third option closes
+the window but lets the sync continue in the background until natural
+completion — useful when you want to reclaim screen space but not
+interrupt the transfer.
 
 ### The app starts slowly / OCaml takes time to spin up
 

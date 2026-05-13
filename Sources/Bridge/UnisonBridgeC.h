@@ -224,6 +224,23 @@ void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t h);
 void unison_bridge_set_sync_complete_handler(unison_sync_complete_handler_t h);
 void unison_bridge_synchronize(void);
 
+/* Real mid-sync abort. Sets OCaml's `Abort.abortAll` flag; the
+ * in-flight sync worker raises `Util.Transient "Aborted by user
+ * request"` the next time it hits an `Abort.check` checkpoint —
+ * typically between files, sometimes mid-file at network boundaries.
+ * Already-in-progress operations may complete naturally before the
+ * abort propagates.
+ *
+ * In-progress rows surface as FAILED via the existing per-row reload
+ * callback; eventually `sync_complete_handler` fires once the worker
+ * has unwound. Safe to call multiple times — idempotent on the
+ * OCaml side (just re-assigns the flag).
+ *
+ * Depends on the `abortAll` callback being registered in
+ * `uimacbridge.ml` (local fork only — not in upstream Unison's
+ * vanilla bridge). */
+void unison_bridge_abort_sync(void);
+
 #ifdef __cplusplus
 }
 #endif

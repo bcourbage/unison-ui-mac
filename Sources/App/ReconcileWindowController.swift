@@ -119,21 +119,53 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     /// Confirmation when the user tries to close the window mid-sync.
-    /// OCaml's sync runs in `doInOtherThread` — we have no way to abort
-    /// it (see TODO: real cancel), so "stop and close" really means
-    /// "close the window and let the transfer continue in the background
-    /// until it finishes". Spelling that out in the alert prevents the
-    /// user from thinking they actually stopped the sync.
+    /// Three choices:
+    ///   - **Keep Syncing**: don't close; sync continues; user can
+    ///     hit Stop or wait for completion.
+    ///   - **Abort & Close**: invoke the real abort (Abort.all in
+    ///     OCaml), then close the window. In-flight transfers may
+    ///     complete naturally before the abort propagates; subsequent
+    ///     rows fail. User loses visibility into FAILED rows.
+    ///   - **Close (let it run)**: close the window without aborting.
+    ///     OCaml worker keeps syncing in the background until natural
+    ///     completion. Useful when the user wants to keep the transfer
+    ///     going but reclaim screen space.
     nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
         MainActor.assumeIsolated {
             guard isSyncing else { return true }
             let alert = NSAlert()
             alert.messageText = "Synchronization is still running"
-            alert.informativeText = "Closing this window won't stop the transfer — OCaml will keep running in the background until the current files finish. Close anyway?"
+            alert.informativeText =
+                "Choose how to close this window:\n\n" +
+                "• Abort & Close — stop the sync and close. Already-in-progress " +
+                "transfers may complete before the abort takes effect; queued " +
+                "rows will fail.\n" +
+                "• Close (let it run) — close the window but let the sync " +
+                "continue in the background until it finishes naturally.\n" +
+                "• Keep Syncing — don't close. You can hit Stop in the toolbar " +
+                "to abort with the window staying open."
             alert.addButton(withTitle: "Keep Syncing")
-            alert.addButton(withTitle: "Close Window")
+            let abortClose = alert.addButton(withTitle: "Abort & Close")
+            abortClose.hasDestructiveAction = true
+            alert.addButton(withTitle: "Close (let it run)")
             alert.alertStyle = .warning
-            return alert.runModal() == .alertSecondButtonReturn
+            let response = alert.runModal()
+            switch response {
+            case .alertFirstButtonReturn:
+                // Keep Syncing
+                return false
+            case .alertSecondButtonReturn:
+                // Abort & Close
+                Log.reconcile.notice("user closed mid-sync with Abort & Close")
+                unison_bridge_abort_sync()
+                return true
+            case .alertThirdButtonReturn:
+                // Close (let it run)
+                Log.reconcile.notice("user closed mid-sync without aborting")
+                return true
+            default:
+                return false
+            }
         }
     }
 
@@ -328,13 +360,28 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         window?.performClose(nil)
     }
 
-    /// Toolbar Stop action — closes the window (returns to picker).
-    /// OCaml worker continues until it finishes naturally; real mid-sync
-    /// abort would need upstream-registered Abort.all (see TODO).
+    /// Toolbar Stop action — abort the running sync. Calls
+    /// `unison_bridge_abort_sync()`, which sets OCaml's `Abort.abortAll`
+    /// flag; the sync worker observes it at the next
+    /// `Abort.check` checkpoint (typically between files) and unwinds
+    /// by raising `Util.Transient "Aborted by user request"`. Already-
+    /// in-progress operations may complete naturally before the abort
+    /// propagates, so the user may see one or two more rows complete
+    /// before the rest fail.
+    ///
+    /// Doesn't close the window — keeping it open lets the user
+    /// inspect FAILED rows in the Progress column after the abort
+    /// unwinds. `syncDidComplete` fires once OCaml has fully wound
+    /// down and resets the UI to "done" state.
     func cancelSync() {
         guard isSyncing else { NSSound.beep(); return }
-        TraceLog.shared.write("ReconcileWindow: user requested Stop — closing window (OCaml sync continues)")
-        window?.performClose(nil)
+        Log.reconcile.notice("user requested Stop — sending abort signal to OCaml")
+        TraceLog.shared.write("ReconcileWindow: user requested Stop — aborting in-flight sync")
+        setSummary("Aborting sync… in-progress transfers may finish before the abort takes effect")
+        unison_bridge_abort_sync()
+        // Don't close the window. syncDidComplete will fire once the
+        // OCaml side has fully unwound, at which point the user can
+        // close manually OR rescan.
     }
 
     // MARK: - Scanning (initial or rescan)

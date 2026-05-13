@@ -155,7 +155,7 @@ collapsed on GitHub's web view. Expand for the historical detail.*
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [x] **Test suite** — 203 tests passing in ~0.8s via `make test`,
+- [x] **Test suite** — 204 tests passing in ~0.6s via `make test`,
       plus ad-hoc `make leaks` for `leaks(1)`-based release checks.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
@@ -475,15 +475,31 @@ collapsed on GitHub's web view. Expand for the historical detail.*
       runs only when the manifest's mtime actually moves. Verified:
       `touch Sources/App/_Test.swift && make build` regenerates;
       idempotent builds in between don't.
-- [ ] **Remove test artifacts** — `~/Library/Application Support/Unison/test-tiny.prf`
-      and `/tmp/unison-test-{a,b}` left from bring-up testing.
-- [ ] **Real mid-sync abort** — the current Stop button matches the legacy
-      app's behavior (close window, OCaml keeps running). Truly aborting an
-      in-flight transfer would require patching `src/uimacbridge.ml`
-      upstream to add `Callback.register "abortAll" Abort.all`, then a new
-      `unison_bridge_abort_sync()` C entry that calls it. Patching upstream
-      is the only way; from our `unison-blob.o` we can only invoke what
-      upstream registered.
+- [x] **Remove test artifacts** — `test-tiny.prf` moved to Trash;
+      `/tmp/unison-test-{a,b}` already cleaned up by macOS tmp
+      sweeps. The integration test infrastructure has migrated to
+      `IntegrationFixture` (in `Tests/BridgeTests.swift`), which
+      builds its own per-test fixtures under
+      `/tmp/unison-ui-mac-itest/<uuid>/` and cleans them up in
+      `deinit`. No persistent bring-up fixtures remain. Memory note
+      updated to remove the "leave them" guidance.
+- [x] **Real mid-sync abort** — done. Local patch to
+      `unison/src/uimacbridge.ml` adds `Callback.register "abortAll"
+      unisonAbortAll` (wrapping `Abort.all`). New
+      `unison_bridge_abort_sync()` C function dispatches the callback
+      via the existing OCaml-thread queue. Swift's `cancelSync()`
+      now invokes the real abort: OCaml's `Abort.abortAll := true`
+      causes the in-flight sync worker to raise
+      `Util.Transient "Aborted by user request"` at its next
+      checkpoint. In-progress transfers may complete naturally before
+      the abort propagates; queued rows fail. `syncDidComplete` fires
+      once OCaml has fully wound down. The reconcile window now
+      STAYS OPEN after Stop so the user can inspect FAILED rows in
+      the Progress column. The `windowShouldClose` mid-sync prompt
+      grew a third option: "Abort & Close" (invoke abort then close)
+      alongside the existing "Keep Syncing" / "Close (let it run)".
+      Upstream patch stays in our local fork — not proposed back to
+      bcpierce00/unison per the project's LLM-usage stance.
 - [ ] **Add `CONTRIBUTING.md`** — restate upstream Unison's stance that
       LLM-generated code is not welcome in their repository (see
       [unison/CONTRIBUTING.md](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md),

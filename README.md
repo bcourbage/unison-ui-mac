@@ -82,6 +82,17 @@ The first build is slow because it builds the entire Unison OCaml core
 (`make macui` in the upstream tree, producing the embeddable
 `unison-blob.o`). Subsequent builds only recompile changed Swift/C.
 
+### Local fork patches
+
+This project applies a small set of patches to the upstream Unison
+source under `$UNISON_SRC` — currently just one, registering an
+`abortAll` callback so the GUI's Stop button can do a real mid-sync
+abort. Patch files live in `patches/`; `make apply-patches` runs
+automatically as a prereq of `make blob` and is idempotent (grep
+detects "already applied" and skips). Patches stay LOCAL — never
+proposed back to bcpierce00/unison, per this project's LLM-usage
+posture (see [NOTICE.md](NOTICE.md)).
+
 ## How it works (architecture sketch)
 
 ```

@@ -996,3 +996,27 @@ static void _ocaml_synchronize(void *user) {
 void unison_bridge_synchronize(void) {
     run_on_ocaml_thread(_ocaml_synchronize, NULL);
 }
+
+/* Abort the in-flight sync. The actual sync is running on an OCaml
+ * worker that's spinning through Lwt-managed file transfers; we just
+ * need to flip `Abort.abortAll` to true and let the worker observe
+ * the flag at its next checkpoint.
+ *
+ * The Lwt-managed transfer releases the OCaml runtime lock during
+ * blocking IO, so our dispatched _ocaml_abort_all runs on whichever
+ * of the 3 worker threads picks it up. The actual `Abort.all` call
+ * is just `abortAll := true` — fast, no chance of deadlock against
+ * the sync worker. */
+static void _ocaml_abort_all(void *user) {
+    (void)user;
+    const value *fn = caml_named_value("abortAll");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: abortAll not registered (uimacbridge.ml patch missing?)\n");
+        return;
+    }
+    (void)caml_callback(*fn, Val_unit);
+}
+
+void unison_bridge_abort_sync(void) {
+    run_on_ocaml_thread(_ocaml_abort_all, NULL);
+}

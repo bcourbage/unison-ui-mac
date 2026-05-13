@@ -21,11 +21,32 @@ BUILT_BIN := $(BUILT_APP)/Contents/MacOS/unison-ui-mac
 .PHONY: all
 all: build
 
+# ----- Local fork patches applied to upstream Unison checkout -----
+#
+# This project maintains a small set of local patches on top of vanilla
+# Unison — they add Callback registrations to `src/uimacbridge.ml` for
+# entry points that the upstream uimac UI doesn't expose. The patches
+# live in `patches/` here; we apply them idempotently before each blob
+# build. Detected by grepping the source for the registered name — if
+# the callback is missing, apply; otherwise skip.
+#
+# Patches stay LOCAL — never proposed back to bcpierce00/unison, per
+# this project's LLM-usage stance (Unison's CONTRIBUTING.md bans
+# LLM-generated contributions).
+.PHONY: apply-patches
+apply-patches:
+	@if ! grep -q 'Callback.register "abortAll"' $(UNISON_SRC)/uimacbridge.ml; then \
+		echo "Applying patch: 0001-uimacbridge-register-abortAll.patch"; \
+		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0001-uimacbridge-register-abortAll.patch; \
+	else \
+		echo "Local fork patches already applied to $(UNISON_SRC)/uimacbridge.ml"; \
+	fi
+
 # ----- OCaml blob (built once by the upstream Unison Makefile) -----
 .PHONY: blob
 blob: $(BLOB)
 
-$(BLOB):
+$(BLOB): apply-patches
 	$(MAKE) -C $(UNISON_SRC)/.. macui
 
 # ----- Stripped libasmrun -----
