@@ -25,6 +25,25 @@ final class ReconcileNode {
     }
 
     var isLeaf: Bool { row != nil }
+
+    /// Reconstruct the full path of this node. Leaves return the stored
+    /// `fullPath` set at construction time (the original Unison path).
+    /// Folders walk up the ancestor chain, joining names with `/`. The
+    /// synthetic root (empty name) contributes nothing. Used for
+    /// truncation tooltips and the details footer.
+    ///
+    /// Side note: this is O(depth) per call, which is fine — folders
+    /// are at most a few dozen deep in any realistic profile.
+    var pathFromRoot: String {
+        if let stored = fullPath { return stored }
+        var parts: [String] = []
+        var cursor: ReconcileNode? = self
+        while let n = cursor, !n.name.isEmpty {
+            parts.insert(n.name, at: 0)
+            cursor = n.parent
+        }
+        return parts.joined(separator: "/")
+    }
 }
 
 /// Folder-level summary of every leaf reachable from a `ReconcileNode`.

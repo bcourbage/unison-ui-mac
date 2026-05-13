@@ -30,6 +30,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onRescanRequested: RescanRequest
     private let outlineView = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
+    /// Visible only when the most-recent status message has more than
+    /// one line — OCaml's `displayStatus` frequently includes multi-line
+    /// SSH error dumps, which we'd otherwise truncate to the first line.
+    /// Clicking the button opens an NSAlert with the full text. The
+    /// summary label also picks up the full text as a `toolTip` so the
+    /// detail is one hover away.
+    private let statusDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    /// Cached full text for the Details button. Reset on every status
+    /// update so we never show stale messages.
+    private var lastMultiLineStatus: String?
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
@@ -106,7 +116,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         userSkipped.removeAll()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
-        summaryLabel.stringValue = summaryText(profile: profile)
+        setSummary(summaryText(profile: profile))
         refreshDirectionToolbarEnabled()
     }
 
@@ -115,7 +125,27 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
         summaryLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.stringValue = summaryText(profile: profile)
+        // Initial config — setSummary keeps the multi-line state in
+        // sync even though there's nothing stale at startup. Cheaper to
+        // keep one code path than to duplicate the assignment.
+        setSummary(summaryText(profile: profile))
+        // byTruncatingTail (the default for label-style text fields) is
+        // wrong for our case — when long SSH error output lands in the
+        // summary slot, byTruncatingMiddle keeps the start AND end
+        // visible, which is more useful at a glance.
+        summaryLabel.lineBreakMode = .byTruncatingMiddle
+        summaryLabel.cell?.usesSingleLineMode = true
+
+        // Details button: hidden by default, shown only when the most
+        // recent status message has more than one line. SSH connect
+        // failures dump multi-line stderr through `displayStatus`, which
+        // we'd otherwise truncate to the first line.
+        statusDetailsButton.target = self
+        statusDetailsButton.action = #selector(showStatusDetails(_:))
+        statusDetailsButton.bezelStyle = .inline
+        statusDetailsButton.controlSize = .small
+        statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        statusDetailsButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
         // Column titles use the upstream manual's terminology: the two
@@ -165,7 +195,18 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
         configureDetailsPanel()
 
-        let stack = NSStackView(views: [summaryLabel, progressBar, scroll, detailsScroll])
+        // Summary row: label takes the available width; button hugs to
+        // the trailing edge and only appears when there's multi-line
+        // status to disclose.
+        let summaryRow = NSStackView(views: [summaryLabel, statusDetailsButton])
+        summaryRow.orientation = .horizontal
+        summaryRow.spacing = 6
+        summaryRow.alignment = .firstBaseline
+        summaryRow.distribution = .fill
+        summaryLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [summaryRow, progressBar, scroll, detailsScroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -180,7 +221,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
-            summaryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
+            summaryRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
             progressBar.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
             detailsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
             detailsScroll.heightAnchor.constraint(equalToConstant: 90),
@@ -236,7 +277,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = true
         progressBar.doubleValue = 0
         progressBar.isHidden = false
-        summaryLabel.stringValue = "Synchronizing \(profile)…"
+        setSummary("Synchronizing \(profile)…")
         TraceLog.shared.write("ReconcileWindow: starting sync")
         unison_bridge_synchronize()
     }
@@ -266,7 +307,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         progressBar.isHidden = false
         progressBar.isIndeterminate = true
         progressBar.startAnimation(nil)
-        summaryLabel.stringValue = message
+        setSummary(message)
     }
 
     func beginInitialScan() {
@@ -318,29 +359,82 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         } else {
             // Folder — show its path + how many descendants are affected.
             let leafCount = leafRows(under: node).count
-            detailsTextView.string = "\(folderFullPath(node))/\n\(leafCount) item\(leafCount == 1 ? "" : "s") in this folder"
+            detailsTextView.string = "\(node.pathFromRoot)/\n\(leafCount) item\(leafCount == 1 ? "" : "s") in this folder"
         }
         detailsTextView.textColor = .labelColor
     }
 
-    /// Walk a folder node's ancestors to reconstruct the full path. Used
-    /// by the details panel — leaves know their `fullPath` already.
-    private func folderFullPath(_ node: ReconcileNode) -> String {
-        var parts: [String] = []
-        var cursor: ReconcileNode? = node
-        while let n = cursor, !n.name.isEmpty {
-            parts.insert(n.name, at: 0)
-            cursor = n.parent
+    func updateScanStatus(_ msg: String) {
+        let (firstLine, fullText, hasMore) = Self.splitStatus(msg)
+        guard !firstLine.isEmpty else { return }
+        summaryLabel.stringValue = firstLine
+        if hasMore {
+            // Cache the full text and expose it two ways: via tooltip
+            // (one-hover access) and via a Details button that opens a
+            // larger scrolling sheet (selectable, copyable).
+            lastMultiLineStatus = fullText
+            summaryLabel.toolTip = fullText
+            statusDetailsButton.isHidden = false
+        } else {
+            lastMultiLineStatus = nil
+            summaryLabel.toolTip = nil
+            statusDetailsButton.isHidden = true
         }
-        return parts.joined(separator: "/")
     }
 
-    func updateScanStatus(_ msg: String) {
-        let firstLine = msg.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? msg
-        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty {
-            summaryLabel.stringValue = trimmed
-        }
+    /// Split a status message into (firstLine, fullText, hasMore).
+    /// `fullText` is the trimmed input; `firstLine` is just the first
+    /// trimmed line; `hasMore` is true iff there's at least one
+    /// non-empty additional line. Pure function — `nonisolated` so it
+    /// can be exercised directly from XCTest (which runs on whatever
+    /// thread XCTest picks, not necessarily MainActor).
+    nonisolated static func splitStatus(_ msg: String) -> (firstLine: String,
+                                                            fullText: String,
+                                                            hasMore: Bool) {
+        let lines = msg.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let nonEmpty = lines.filter { !$0.isEmpty }
+        let firstLine = nonEmpty.first ?? ""
+        let hasMore = nonEmpty.count > 1
+        let fullText = lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (firstLine, fullText, hasMore)
+    }
+
+    /// Set the summary label to a non-status string (e.g. the post-scan
+    /// summary "default · 5 items · 2 conflicts") and clear any stale
+    /// multi-line-status disclosure. Use this instead of writing
+    /// directly to `summaryLabel.stringValue` so the Details button
+    /// doesn't linger past the message that produced it.
+    private func setSummary(_ text: String) {
+        summaryLabel.stringValue = text
+        summaryLabel.toolTip = nil
+        lastMultiLineStatus = nil
+        statusDetailsButton.isHidden = true
+    }
+
+    @objc private func showStatusDetails(_ sender: Any?) {
+        guard let text = lastMultiLineStatus, !text.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Status details"
+        // NSAlert truncates `informativeText` aggressively for long
+        // strings — use an accessoryView with a scrolling text view so
+        // multi-screen SSH error dumps stay readable + selectable.
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .lineBorder
+        let textView = NSTextView(frame: scroll.bounds)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.string = text
+        textView.autoresizingMask = [.width, .height]
+        scroll.documentView = textView
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func updateGlobalProgress(_ percent: Double) {
@@ -372,7 +466,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = false
         progressBar.doubleValue = 100
         progressBar.isHidden = true
-        summaryLabel.stringValue = summaryText(profile: profile, syncDone: true)
+        setSummary(summaryText(profile: profile, syncDone: true))
         TraceLog.shared.write("ReconcileWindow: sync complete")
     }
 
@@ -421,7 +515,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             outlineView.reloadItem(node, reloadChildren: false)
         }
         if !changedRows.isEmpty {
-            summaryLabel.stringValue = summaryText(profile: profile)
+            setSummary(summaryText(profile: profile))
         }
     }
 
@@ -731,17 +825,22 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         if col == .path {
             return makePathCell(in: outlineView, node: node)
         }
+        // Progress column: custom-drawn bar + percent text via
+        // ProgressCellView. Folder rows show nothing (no per-row
+        // progress for folder summaries — covered by the global bar).
+        if col == .progress {
+            return makeProgressCell(in: outlineView, node: node)
+        }
 
-        // Remaining text-only columns: Size, Progress, Type. Folders
-        // leave them blank — folder aggregate stats are out of scope
-        // for v1 of this column.
+        // Remaining text-only columns: Size, Type. Folders leave them
+        // blank — folder aggregate stats are out of scope for v1.
         let value: String
         if let row = node.row, row < items.count {
             let stateItem = items[row]
             switch col {
             case .size:      value = formatSize(stateItem.sizeBytes, type: stateItem.fileType)
-            case .progress:  value = stateItem.progress.trimmingCharacters(in: .whitespaces)
             case .type:      value = stateItem.fileType
+            case .progress:  value = ""  // handled above
             case .path, .left, .right, .direction: value = ""  // handled above
             }
         } else {
@@ -750,9 +849,32 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
     }
 
+    /// Builds (or recycles) the Progress-column cell. Leaf rows get a
+    /// ProgressCellView (bar + text); folder rows get an empty
+    /// `NSTableCellView` (folders don't accumulate per-row progress —
+    /// the global bar at the top of the window covers that case).
+    private func makeProgressCell(in outlineView: NSOutlineView,
+                                   node: ReconcileNode) -> NSView {
+        let id = NSUserInterfaceItemIdentifier("ProgressCell")
+        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? ProgressCellView ?? {
+            let v = ProgressCellView()
+            v.identifier = id
+            return v
+        }()
+        if let row = node.row, row < items.count {
+            cell.configure(progress: items[row].progress)
+        } else {
+            cell.configure(progress: "")
+        }
+        return cell
+    }
+
     /// Builds (or recycles) the Path-column cell with Finder-style icon
     /// + name. Folder icons are tinted per the folder's aggregate
-    /// direction; files get a neutral doc icon.
+    /// direction; files get a neutral doc icon. The full reconstructed
+    /// path goes into the cell as a hover tooltip so users can still
+    /// read the whole path even when the column is too narrow to show
+    /// it (column truncates with `byTruncatingMiddle`).
     private func makePathCell(in outlineView: NSOutlineView, node: ReconcileNode) -> NSView {
         let id = NSUserInterfaceItemIdentifier("PathCell")
         let cell = outlineView.makeView(withIdentifier: id, owner: self) as? PathCellView ?? {
@@ -760,10 +882,11 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             v.identifier = id
             return v
         }()
+        let fullPath = node.pathFromRoot
         if node.isLeaf {
-            cell.configureAsFile(name: node.name)
+            cell.configureAsFile(name: node.name, fullPath: fullPath)
         } else {
-            cell.configureAsFolder(name: node.name)
+            cell.configureAsFolder(name: node.name, fullPath: fullPath)
         }
         return cell
     }
@@ -841,18 +964,12 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         }()
         view.textField?.stringValue = text
         view.textField?.alignment = (column == .size) ? .right :
-                                    (column == .progress) ? .right :
                                     (column == .direction) ? .center : .left
         view.textField?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
-        // FAILED in the Progress column is loud red bold — most users
-        // notice a sync failure only by scrolling to the row otherwise.
-        let isFailure = (column == .progress) && text.uppercased().contains("FAIL")
-        if isFailure {
-            view.textField?.textColor = .systemRed
-            view.textField?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
-        } else {
-            view.textField?.textColor = .labelColor
-        }
+        view.textField?.textColor = .labelColor
+        // The Progress column used to land here with a FAIL-red branch;
+        // both progress text and the FAIL state now live in
+        // ProgressCellView (`isFailure` switches the overlay to bold red).
         _ = isFolder  // folder-vs-leaf distinction handled by PathCellView now
         return view
     }

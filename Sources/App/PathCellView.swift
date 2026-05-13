@@ -41,24 +41,40 @@ final class PathCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
-    func configureAsFile(name: String) {
+    func configureAsFile(name: String, fullPath: String? = nil) {
         nameField.stringValue = name
         let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
             .applying(NSImage.SymbolConfiguration(paletteColors: [.tertiaryLabelColor]))
         iconView.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)?
             .withSymbolConfiguration(config)
-        toolTip = nil
+        applyTooltip(fullPath: fullPath, displayedName: name)
     }
 
     /// Folder icon is always the native Finder blue, regardless of any
     /// aggregate state. The aggregate is conveyed by the Action column,
     /// not by recoloring the folder itself — folders read as folders.
-    func configureAsFolder(name: String) {
+    func configureAsFolder(name: String, fullPath: String? = nil) {
         nameField.stringValue = name
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
             .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
         iconView.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "Folder")?
             .withSymbolConfiguration(config)
-        toolTip = nil
+        applyTooltip(fullPath: fullPath, displayedName: name)
+    }
+
+    /// Set a hover tooltip showing the full path when:
+    ///  - the full path is provided AND
+    ///  - it differs from the displayed name (otherwise the tooltip would
+    ///    duplicate what the user is already looking at).
+    /// The Path column truncates with `byTruncatingMiddle`, so the most
+    /// common reason to want a tooltip is "the column is narrower than
+    /// the name". A nil tooltip is cleared so a recycled cell doesn't
+    /// retain a stale value from its previous binding.
+    private func applyTooltip(fullPath: String?, displayedName: String) {
+        if let fullPath, fullPath != displayedName {
+            toolTip = fullPath
+        } else {
+            toolTip = nil
+        }
     }
 }

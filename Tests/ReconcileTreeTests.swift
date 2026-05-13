@@ -104,6 +104,37 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.allNodes.filter(\.isLeaf).count, 3)
     }
 
+    // MARK: - pathFromRoot
+
+    func test_pathFromRoot_forLeaf_returnsStoredFullPath() {
+        let tree = ReconcileTree(items: [item("Documents/Photos/img.jpg")])
+        let leaf = tree.allNodes.first(where: { $0.isLeaf })!
+        XCTAssertEqual(leaf.pathFromRoot, "Documents/Photos/img.jpg")
+    }
+
+    func test_pathFromRoot_forFolder_walksAncestors() {
+        let tree = ReconcileTree(items: [item("Documents/Photos/2024/img.jpg")])
+        // Drill down to the Photos folder.
+        let documents = tree.root.children[0]
+        let photos = documents.children[0]
+        let year = photos.children[0]
+        XCTAssertEqual(documents.pathFromRoot, "Documents")
+        XCTAssertEqual(photos.pathFromRoot, "Documents/Photos")
+        XCTAssertEqual(year.pathFromRoot, "Documents/Photos/2024")
+    }
+
+    func test_pathFromRoot_forSyntheticRoot_isEmpty() {
+        // The synthetic root has an empty name; its path is "".
+        let tree = ReconcileTree(items: [item("a")])
+        XCTAssertEqual(tree.root.pathFromRoot, "")
+    }
+
+    func test_pathFromRoot_forTopLevelFolder_isJustItsName() {
+        let tree = ReconcileTree(items: [item("Documents/a.txt")])
+        let documents = tree.root.children[0]
+        XCTAssertEqual(documents.pathFromRoot, "Documents")
+    }
+
     // MARK: - FolderAggregate
 
     private func item(_ path: String, direction: String) -> StateItem {

@@ -46,20 +46,34 @@ go back / refresh / open another profile.
       mid-sync abort support — see real-cancel TODO).
 - [x] **Highlight FAILED rows** — Progress column renders bold systemRed
       when the text matches "FAIL" (covers "FAILED", "Failed", etc.).
-- [ ] **Per-row progress for slow transfers** — current OCaml throttling
-      (>1% change) collapses small files to a single `100%` event. For
-      network sync we'll see intermediate ticks; verify the column updates
-      live and consider a tiny per-row progress bar.
+- [x] **Per-row progress for slow transfers** — Progress column is now
+      a custom-drawn bar + overlaid percent text (`ProgressCellView`).
+      Bar fill comes from `ProgressDescriptor.parse(_:)` — a pure
+      function with 12 test cases that pin every Unison progress
+      shape: empty/whitespace → idle; `"  N%"` → bar fill N/100;
+      `"done"` → bar at 1.0 with "done" label; `"FAILED"` (any case,
+      any substring) → bold red text, no bar; unknown labels like
+      `"start"` or `"queued"` → text only.
 - [x] **Disable direction-override toolbar items when nothing is selected**
       — `outlineViewSelectionDidChange` walks the toolbar's segmented
       direction group and toggles isEnabled on each subitem based on
       whether any leaf rows are reachable from the selection.
-- [ ] **Tooltip on truncated paths** — the Path column uses byTruncatingMiddle;
-      a tooltip with the full path would help.
-- [ ] **Status messages with newlines** — currently we take only the first
-      line in the picker status label. Worth surfacing the full text via
-      tooltip or a "Show details" disclosure, especially for SSH error
-      output during connect.
+- [x] **Tooltip on truncated paths** — Path-column cells set
+      `toolTip = node.pathFromRoot` whenever the full path differs
+      from the displayed leaf name. `ReconcileNode.pathFromRoot`
+      handles leaves (returns the stored `fullPath`) and folders
+      (walks ancestors) uniformly, replacing the earlier private
+      `folderFullPath` helper.
+- [x] **Status messages with newlines** — multi-line `displayStatus`
+      output (typically SSH connect failures dumping multi-line stderr)
+      now surfaces both as a `toolTip` on the summary label *and* via
+      a "Details…" inline button that opens an NSAlert with a
+      scrolling text view (selectable, copyable). The decision rule
+      lives in `ReconcileWindowController.splitStatus(_:)` — a pure
+      function (`nonisolated static`) with 8 test cases covering
+      empty / single-line / multi-line / whitespace-only / blank-lines-
+      between-content. `setSummary(_:)` is the single chokepoint for
+      non-status summary text and clears the disclosure state.
 - [x] **Finder-style path column** — folder icon (`folder.fill` in
       systemBlue) + folder name in system body font + labelColor. Files
       get a neutral `doc` icon so names align vertically with folder
@@ -118,7 +132,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 101 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 125 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -134,7 +148,11 @@ go back / refresh / open another profile.
           including unknown-key preservation and trailing-newline
           normalization (14), ProfilePreferences apply (filter+sort),
           toggleHidden, forget, rename, drag-reorder index math, and
-          UserDefaults persistence round-trip (27).
+          UserDefaults persistence round-trip (27),
+          ReconcileNode.pathFromRoot for leaves + folders + synthetic
+          root (4), ReconcileWindowController.splitStatus single/multi-
+          line detection (8), ProgressDescriptor.parse for every
+          Unison progress shape including FAIL substring matching (12).
     - [x] **Bridge integration tests** (4) — `unison_bridge_get_version`
           returns a non-empty version string mentioning OCaml,
           `unison_bridge_unison_directory` returns an existing absolute
