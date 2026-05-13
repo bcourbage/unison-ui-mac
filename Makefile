@@ -1,6 +1,10 @@
 UNISON_SRC ?= $(HOME)/Documents/Sources/unison/src
 OCAMLLIBDIR ?= $(shell ocamlc -where)
-CONFIG ?= Debug
+# Release by default — `make build`, `make run`, `make app`, `make install`
+# all produce the user-facing binary. Override with `CONFIG=Debug` for an
+# unoptimized build with assertions. `make test` ignores this and always
+# uses Debug (test config is hardcoded in the test recipe).
+CONFIG ?= Release
 
 export UNISON_SRC
 export OCAMLLIBDIR
@@ -113,12 +117,17 @@ build: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 run: build
 	$(BUILT_BIN) $(RUNARGS)
 
+# Tests always run against the Debug configuration. Debug builds carry
+# `assert()` / preconditions that catch bugs which Release would optimize
+# away, and they build faster on iteration. The user-facing CONFIG knob
+# doesn't apply here — `make test` and `make test CONFIG=Release` behave
+# identically.
 .PHONY: test
 test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
-		-configuration $(CONFIG) \
+		-configuration Debug \
 		-derivedDataPath $(DERIVED) \
 		-destination 'platform=macOS' \
 		OCAMLLIBDIR=$(OCAMLLIBDIR) \
@@ -129,6 +138,21 @@ test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 .PHONY: app
 app: build
 	open $(BUILT_APP) $(if $(RUNARGS),--args $(RUNARGS),)
+
+# `make install` — the end-to-end installation flow. Builds Release
+# (the default CONFIG now) and hands off to install.sh, which ad-hoc-
+# signs the bundle, copies it to /Applications, clears the quarantine
+# attribute, and opens the installed copy. This is the supported user
+# path; the manual two-line equivalent in INSTALL.md does the same
+# thing piece by piece.
+#
+# Pass INSTALL_ARGS=--no-launch (or any other install.sh flag) to
+# override the default behavior, e.g.:
+#     make install INSTALL_ARGS=--no-launch
+#     make install INSTALL_ARGS="--dest $$HOME/Applications"
+.PHONY: install
+install: build
+	./install.sh $(INSTALL_ARGS)
 
 # Ad-hoc leak check via `leaks(1)`. Launches the app, waits a few
 # seconds for AppDelegate to spin up + show the picker, runs the
