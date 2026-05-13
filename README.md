@@ -1,4 +1,4 @@
-# unison-ui-mac
+# Unison-UI-Mac
 
 A native macOS GUI for the [Unison File Synchronizer](https://github.com/bcpierce00/unison),
 written in Swift + AppKit. Personal project; deliberately not for upstream
@@ -6,6 +6,7 @@ contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
 trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
 on this fork).
 
+> 📦 **To install:** see [INSTALL.md](INSTALL.md).
 > 📖 **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
 
 ## What this is
@@ -18,9 +19,36 @@ project, no `.xib` files. **It embeds Unison's compiled OCaml core**
 (`unison-blob.o`) into the app bundle, so installing the `unison` CLI on
 this machine is *not* required for the app to run.
 
-(For SSH-based profiles, the *remote* machine still needs Unison installed
-because `ssh://` profiles spawn `unison -server` on the far side. Pure
-local-to-local profiles have no external dependency.)
+### Unison version
+
+This project embeds upstream Unison at **v2.54.0** (commit `745dccd`,
+which is 11 commits past the `v2.54.0` tag on `master`). The
+`MAJORVERSION=2.54` value is significant: an SSH peer running a different
+major version will be flagged by the in-app version-mismatch check
+(`VersionCheck.swift`) on profile open. The Unison wire protocol
+guarantees compatibility within a major version only.
+
+When upstream cuts a new release, bump by `git pull`ing in
+`../unison/`, rerunning `make build`, and re-running the test suite; no
+changes are typically needed on this project's side unless the upstream
+`uimacbridge.ml` callback surface changes.
+
+### Remote-side requirement (SSH profiles)
+
+For `ssh://` profiles, the *remote* machine still needs the `unison` CLI
+installed because `ssh://` profiles spawn `unison -server` on the far
+side. Pure local-to-local profiles (two local directories) have no
+external dependency.
+
+The remote `unison` must be the **same major version** (2.54.x) as this
+app's embedded copy. Common ways to install it on the remote:
+
+- **macOS**: `brew install unison`
+- **Debian/Ubuntu**: `sudo apt install unison`
+- **Other**: upstream install instructions at
+  <https://github.com/bcpierce00/unison/wiki/Downloading-Unison>
+
+Source / source-build: <https://github.com/bcpierce00/unison>.
 
 ## Status
 
@@ -46,26 +74,21 @@ beyond what the legacy uimac app offered in several places. Highlights:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **177 unit tests** in ~0.6 s via `make test`.
+- **215 unit tests** in ~0.6 s via `make test`. Pure-logic modules
+  (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
+  `ProfilePreferences`, `RowSelectionRules`, etc.) carry exhaustive
+  coverage; AppKit view-controllers are verified by interactive testing
+  rather than XCTest.
 
 See [TODO.md](TODO.md) for the full prioritized status and what's still
 open (mostly P3 hygiene items at this point).
 
-## Build prerequisites
+## Build and install
 
-- macOS 15 or later (developed on macOS Tahoe 26)
-- Xcode 26 (older versions may work; not tested)
-- Homebrew with:
-  - `ocaml` (5.x — tested against 5.4.1)
-  - `xcodegen`
-- A local clone of the upstream Unison source at `../unison/`
-  (or set `UNISON_SRC` in the environment to point elsewhere)
+For end-to-end install steps (Xcode/Homebrew prereqs, building, ad-hoc
+signing, copying to `/Applications`), see **[INSTALL.md](INSTALL.md)**.
 
-```sh
-brew install ocaml xcodegen
-```
-
-## Build
+For day-to-day development, the Makefile targets are:
 
 ```sh
 make build      # builds unison-blob.o (via upstream Unison make), strips
@@ -79,8 +102,9 @@ make distclean  # also removes the generated xcodeproj
 make print-config  # show resolved paths
 ```
 
-The first build is slow because it builds the entire Unison OCaml core
-(`make macui` in the upstream tree, producing the embeddable
+Set `UNISON_SRC` if the upstream Unison checkout isn't at `../unison/src/`.
+The first build is slow (5–10 min) because it builds the entire Unison
+OCaml core (`make macui` in the upstream tree, producing the embeddable
 `unison-blob.o`). Subsequent builds only recompile changed Swift/C.
 
 ### Local fork patches
@@ -132,7 +156,9 @@ for the full OCaml-side protocol.
 unison-ui-mac/
 ├── project.yml                          XcodeGen project definition
 ├── Makefile                             Build orchestration
-├── README.md                            This file (orientation + build)
+├── README.md                            This file (orientation + dev build)
+├── INSTALL.md                           End-user install guide
+├── install.sh                           One-shot installer (sign + /Applications + de-quarantine)
 ├── MANUAL.md                            Full user manual (feature guide)
 ├── NOTICE.md                            Attribution and license details
 ├── CONTRIBUTING.md                      Contribution policy + LLM-usage disclosure
@@ -164,11 +190,11 @@ unison-ui-mac/
 │   │   ├── PasswordSheet.swift          SSH credential prompts
 │   │   ├── StateItem.swift              Swift mirror of OCaml's stateItem
 │   │   ├── UnisonBridge.swift           Handler registry + Swift trampolines
-│   │   └── TraceLog.swift               Dev file logger (/tmp/unison-ui-mac.log)
+│   │   └── TraceLog.swift               os.Logger wrapper (subsystem net.courbage.unison-ui-mac)
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (177 tests, ~0.6 s)
+├── Tests/                               XCTest bundle (215 tests, ~0.6 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

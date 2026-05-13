@@ -28,6 +28,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleIconFile: AppIcon
+        CFBundleName: Unison-UI-Mac
+        CFBundleDisplayName: Unison-UI-Mac
         LSApplicationCategoryType: public.app-category.utilities
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""

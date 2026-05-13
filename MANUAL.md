@@ -1,7 +1,8 @@
-# unison-ui-mac — User Manual
+# Unison-UI-Mac — User Manual
 
-A feature-by-feature guide to the macOS app. For build instructions and
-architecture overview, see [README.md](README.md). For the underlying
+A feature-by-feature guide to the macOS app. For install steps see
+[INSTALL.md](INSTALL.md); for architecture overview and a build
+cheatsheet see [README.md](README.md). For the underlying
 file-synchronization concepts (profiles, roots, paths, ignore patterns,
 conflict resolution, the `merge` preference, archive files), the
 authoritative reference is the **upstream Unison documentation**:
@@ -52,13 +53,24 @@ the next scan can tell what's changed.
 ### 1. Install Unison on remote machines (SSH profiles only)
 
 The app embeds Unison's OCaml runtime, so the local machine doesn't need a
-separate `unison` install. But profiles whose second root is `ssh://…`
-spawn `unison -server` on the remote host — that remote needs Unison
-installed and reachable in `$PATH` (or via `servercmd = …` in the profile).
+separate `unison` install. But profiles whose root is `ssh://…` spawn
+`unison -server` on the remote host — that remote needs Unison installed
+and reachable in `$PATH` (or via `servercmd = …` in the profile).
 
-The simplest install on the remote: `brew install unison` on macOS,
-`apt install unison` on Debian/Ubuntu, etc. Version match between local
-and remote helps; Unison checks compatibility at handshake.
+Install instructions for the remote side:
+
+- **macOS**: `brew install unison`
+- **Debian/Ubuntu**: `sudo apt install unison`
+- **Other**: see upstream's [Downloading Unison](https://github.com/bcpierce00/unison/wiki/Downloading-Unison)
+  page or build from source at <https://github.com/bcpierce00/unison>.
+
+This project's embedded Unison is **v2.54.0** (see README's "Unison
+version" section for the exact upstream commit). The remote Unison must
+be the same major version — `2.54.x` works, `2.51.x` does not. The app
+runs a one-shot `ssh ... unison -version` probe on profile open and
+surfaces a suppressible alert on mismatch (see
+[Version-mismatch warning](#version-mismatch-warning-on-profile-open)
+below).
 
 ### 2. Launch the app
 
@@ -411,10 +423,11 @@ text. Pick another row's Diff to recover.
 
 ## The menu bar reference
 
-### `<appname>` menu
+### `Unison-UI-Mac` menu
 
-Standard macOS app menu: About, Services, Hide, Quit. The About panel
-shows the embedded Unison version (queried via
+Standard macOS app menu: About, Services, Hide, Quit. The menu uses the
+app's display name (`CFBundleDisplayName = "Unison-UI-Mac"`). The About
+panel shows the embedded Unison version (queried via
 `unison_bridge_get_version`).
 
 ### Edit menu
@@ -456,7 +469,7 @@ Standard: Minimize, Zoom, Bring All to Front.
 
 ### Help menu
 
-- `<appname> Help` (⌘?) — opens this repo's README in the browser.
+- `Unison-UI-Mac Help` (⌘?) — opens this repo's README in the browser.
 - `Unison File Synchronizer Help` — opens the upstream Unison wiki.
 
 No File menu — this isn't a document-based app. ⌘W still closes the
@@ -745,7 +758,10 @@ upstream `Uicommon.initPrefs` runs it unconditionally (per the
 - **Edit `.prf` syntax it doesn't understand.** Unknown keys round-trip
   through the Advanced field unchanged, but the form doesn't validate
   them. Garbage-in, garbage-Unison-error-out.
-- **Truly abort a running sync.** See troubleshooting above.
+- **Roll back partial transfers.** The Stop button aborts cooperatively
+  (see [Stop button](#stop-button-how-abort-works) in troubleshooting):
+  a file mid-write at abort time stays partial. Unison's next reconcile
+  will surface the difference for you to resolve.
 - **Replace the upstream Unison CLI for scripting.** The CLI is still the
   right tool for `crontab` / `launchd` automation. This GUI is for
   interactive use.

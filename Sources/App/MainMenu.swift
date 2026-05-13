@@ -10,7 +10,15 @@ import AppKit
 enum MainMenu {
 
     static func build() -> NSMenu {
-        let appName = ProcessInfo.processInfo.processName
+        // Prefer CFBundleDisplayName / CFBundleName so the user-visible
+        // app name (e.g. "Unison-UI-Mac") is what appears in the App
+        // menu's "About / Hide / Quit" items and the Help menu —
+        // rather than ProcessInfo.processName, which returns the
+        // executable file name (lowercase `unison-ui-mac`).
+        let info = Bundle.main.infoDictionary
+        let appName = (info?["CFBundleDisplayName"] as? String)
+            ?? (info?["CFBundleName"] as? String)
+            ?? ProcessInfo.processInfo.processName
 
         // No File menu: this isn't a document-based app. We had one with
         // a single "Show Profiles" item, but closing the reconcile window
