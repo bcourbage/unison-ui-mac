@@ -16,6 +16,8 @@
 	<string>Unison-UI-Mac</string>
 	<key>CFBundleDisplayName</key>
 	<string>Unison-UI-Mac</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Bruno Courbage. Distributed under GPLv3. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors.</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
