@@ -17,14 +17,27 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
-    /// Row indices the user explicitly chose Skip on. We track these
-    /// separately because OCaml's `unisonRiToDirection` returns the same
-    /// "<-?->" for both auto-detected conflicts (`Conflict "files
-    /// differed"`) and user-requested skips (`Conflict "skip requested"`)
-    /// — but the user experience is opposite: auto-conflict needs
-    /// attention, user-skip is decided. Cleared on every rescan since
-    /// OCaml rebuilds reconcile state from scratch.
-    private var userSkipped: Set<Int> = []
+    /// Per-row user-pinned decisions that override the rendered badge.
+    /// Three cases, all mutually exclusive (the dict can hold at most
+    /// one entry per row):
+    ///
+    ///   - `.skip`        → user chose Skip. Distinguishes from auto-
+    ///     detected conflicts: OCaml's `unisonRiToDirection` returns
+    ///     `"<-?->"` for BOTH `Conflict "files differed"` and `Conflict
+    ///     "skip requested"`, so we need Swift-side state to tell the
+    ///     two apart visually.
+    ///   - `.forceOlder` / `.forceNewer` → user chose Force Older /
+    ///     Force Newer. The resulting OCaml direction is `"---->"` or
+    ///     `"<----"` based on mtime; the override flag exists so the
+    ///     badge shows the user's *decision* rather than the mtime-
+    ///     derived arrow. Without this the user couldn't tell whether
+    ///     a row's "→ Second" arrow was a deliberate left/right pick
+    ///     or just where the newer mtime happened to land.
+    ///
+    /// Cleared on every rescan — OCaml rebuilds the row set from
+    /// scratch, so any persisted overrides would risk pointing at
+    /// rows that no longer exist or have shifted indices.
+    private var rowOverrides: [Int: RowOverride] = [:]
     private let profile: String
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
@@ -123,7 +136,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     func replaceItems(_ newItems: [StateItem]) {
         items = newItems
         tree = ReconcileTree(items: newItems)
-        userSkipped.removeAll()
+        rowOverrides.removeAll()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
         setSummary(summaryText(profile: profile))
@@ -497,13 +510,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                 continue
             }
             items[row] = items[row].with(direction: str)
-            // Track which rows the user explicitly chose Skip on, so we
-            // can visually distinguish them from auto-detected conflicts
-            // (both come back as "<-?->" from OCaml).
-            if action == .skip {
-                userSkipped.insert(row)
-            } else {
-                userSkipped.remove(row)
+            // Update the row's pinned override based on the action. Skip
+            // / Force Older / Force Newer are mutually exclusive — each
+            // overwrites whichever flag was there before. Plain direction
+            // overrides (toFirst, toSecond) and Merge clear any override
+            // since they're auto-direction wins, not user-intent flags.
+            switch action {
+            case .skip:        rowOverrides[row] = .skip
+            case .forceOlder:  rowOverrides[row] = .forceOlder
+            case .forceNewer:  rowOverrides[row] = .forceNewer
+            case .toFirst, .toSecond, .merge:
+                rowOverrides.removeValue(forKey: row)
             }
             changedRows.append(row)
         }
@@ -591,7 +608,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         // No explicit reload needed: the bridge invokes the init2-complete
         // handler synchronously, which calls `endRescan` / `replaceItems` and
-        // resets userSkipped + redraws the outline.
+        // clears rowOverrides + redraws the outline.
     }
 
     // MARK: - Direction menu actions
@@ -756,19 +773,40 @@ final class DirectionCellView: NSTableCellView {
     }
 }
 
-/// Direction-column tints. Two of the values vary by *who* set the
-/// direction: OCaml's `<-?->` covers both auto-detected conflicts AND
-/// user-requested skips, but we want them to look different — the former
-/// demands attention, the latter is settled. Hence the row parameter.
+/// Direction-column tints + glyphs. A row's badge is the function of
+/// two inputs: the OCaml-resolved `direction` string (`"---->"`,
+/// `"<----"`, `"<-?->"`, `"<-M->"`), and an optional `RowOverride`
+/// recording what the user pinned for that row. The override wins —
+/// the whole point is to make "I chose this" legible at a glance
+/// rather than conflating it with the auto-resolved arrow.
+///
+/// Override mapping:
+///   - `.skip`       → gray ⊖ (settled — "I told it not to sync")
+///   - `.forceOlder` → brown ↺ (mtime decision: older wins)
+///   - `.forceNewer` → teal  ↻ (mtime decision: newer wins)
+///
 /// Internal (not `private`) so the unit tests can pin the glyph/tint
 /// mapping without going through view introspection.
 enum DirectionVisual {
-    static func tint(for direction: String, isUserSkipped: Bool) -> NSColor {
-        if direction == "<-?->" && isUserSkipped {
-            // Settled — neutral gray badge so the user can still see the
-            // row was acted on, but it doesn't compete with real conflicts
-            // for attention.
-            return NSColor.systemGray.withAlphaComponent(0.45)
+
+    /// Older-wins force badge: brown (matches DirectionAction.forceOlder
+    /// accent on the toolbar SF Symbol) with reduced alpha to read as
+    /// a "decided" state rather than competing with conflict-orange.
+    private static let forcedOlderTint = NSColor.systemBrown.withAlphaComponent(0.65)
+    /// Newer-wins force badge: teal (matches DirectionAction.forceNewer).
+    private static let forcedNewerTint = NSColor.systemTeal.withAlphaComponent(0.55)
+    /// Skip badge: neutral gray.
+    private static let skipTint = NSColor.systemGray.withAlphaComponent(0.45)
+
+    static func tint(for direction: String, override: RowOverride?) -> NSColor {
+        // Override wins over the underlying direction — the visual
+        // signals user intent, not the resolved arrow.
+        if let override {
+            switch override {
+            case .skip:        return skipTint
+            case .forceOlder:  return forcedOlderTint
+            case .forceNewer:  return forcedNewerTint
+            }
         }
         switch direction {
         case "---->": return NSColor(red: 0x97/255.0, green: 0xBB/255.0, blue: 0x68/255.0, alpha: 1.0)
@@ -779,12 +817,21 @@ enum DirectionVisual {
         }
     }
 
-    static func glyph(for direction: String, isUserSkipped: Bool) -> String {
-        if direction == "<-?->" && isUserSkipped {
-            // Circled-minus matches the toolbar Skip button's minus.circle
-            // SF Symbol, so the cell glyph and the button that produced
-            // it visually agree.
-            return "⊖"
+    static func glyph(for direction: String, override: RowOverride?) -> String {
+        // Override-driven glyphs hide the directional arrow on purpose:
+        // for force older/newer the resulting arrow is just an mtime
+        // artifact, not the user's decision. Showing the arrow would
+        // make it ambiguous whether the user clicked → Second or Force
+        // Newer (where mtime happened to be on First's side).
+        if let override {
+            switch override {
+            // ⊖ matches the toolbar Skip button's minus.circle SF Symbol.
+            case .skip:        return "⊖"
+            // ↺ (counterclockwise) reads as "turn back time" — older.
+            case .forceOlder:  return "↺"
+            // ↻ (clockwise) reads as "advance time" — newer.
+            case .forceNewer:  return "↻"
+            }
         }
         switch direction {
         case "---->": return "→"
@@ -795,21 +842,27 @@ enum DirectionVisual {
         }
     }
 
-    /// Aggregate variants for folder rows. Uniform direction → the same
-    /// glyph + tint as a leaf with that direction. All-user-skipped → the
-    /// settled gray-⊖ pair. Mixed → no badge (empty cell, clear tint).
+    /// Aggregate variants for folder rows. Uniform direction (no
+    /// overrides) → the same glyph + tint as a leaf with that direction.
+    /// All-same-override → that override's badge (the underlying
+    /// direction is hidden, same as the per-row rule). Mixed → no
+    /// badge (empty cell, clear tint).
     static func tint(for aggregate: FolderAggregate) -> NSColor {
         switch aggregate {
-        case .uniform(let dir):  return tint(for: dir, isUserSkipped: false)
-        case .allUserSkipped:    return NSColor.systemGray.withAlphaComponent(0.45)
+        case .uniform(let dir):  return tint(for: dir, override: nil)
+        case .allUserSkipped:    return skipTint
+        case .allForcedOlder:    return forcedOlderTint
+        case .allForcedNewer:    return forcedNewerTint
         case .mixed:             return .clear
         }
     }
 
     static func glyph(for aggregate: FolderAggregate) -> String {
         switch aggregate {
-        case .uniform(let dir):  return glyph(for: dir, isUserSkipped: false)
+        case .uniform(let dir):  return glyph(for: dir, override: nil)
         case .allUserSkipped:    return "⊖"
+        case .allForcedOlder:    return "↺"
+        case .allForcedNewer:    return "↻"
         case .mixed:             return ""
         }
     }
@@ -961,17 +1014,18 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             return v
         }()
         if let row = node.row, row < items.count {
-            // Leaf: direction is the file's own state.
+            // Leaf: direction is the file's own state, possibly tweaked
+            // by a user-pinned override (skip / forceOlder / forceNewer).
             let item = items[row]
-            let skipped = userSkipped.contains(row)
-            cell.textField?.stringValue = DirectionVisual.glyph(for: item.direction, isUserSkipped: skipped)
-            cell.tint = DirectionVisual.tint(for: item.direction, isUserSkipped: skipped)
+            let override = rowOverrides[row]
+            cell.textField?.stringValue = DirectionVisual.glyph(for: item.direction, override: override)
+            cell.tint = DirectionVisual.tint(for: item.direction, override: override)
         } else {
             // Folder: badge reflects the aggregate of its descendants.
-            // Uniform → same glyph/tint as a leaf with that direction.
-            // Mixed → empty cell so the user can tell the folder isn't
-            //         a one-click target.
-            let agg = node.aggregate(items: items, userSkipped: userSkipped)
+            // Uniform direction → same glyph/tint as a leaf. All-same-
+            // override → that override's badge (hides the underlying
+            // direction, matching per-row semantics). Mixed → empty.
+            let agg = node.aggregate(items: items, rowOverrides: rowOverrides)
             cell.textField?.stringValue = DirectionVisual.glyph(for: agg)
             cell.tint = DirectionVisual.tint(for: agg)
         }

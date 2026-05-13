@@ -46,20 +46,49 @@ final class ReconcileNode {
     }
 }
 
+/// A user-pinned decision on a reconcile row that overrides how the
+/// row's direction is *rendered*. OCaml still resolves the actual
+/// direction (e.g. `unisonRiForceNewer` produces `"---->"` or `"<----"`
+/// based on mtime), but the GUI wants to show the user's intent —
+/// "I picked Force Newer" — rather than the resulting arrow.
+///
+/// Tracked Swift-side on `ReconcileWindowController.rowOverrides`,
+/// cleared on every rescan (OCaml rebuilds the row set from scratch,
+/// so persisting overrides across rescans would risk stale entries).
+enum RowOverride: Equatable {
+    /// User clicked Skip. Overlays OCaml's `"<-?->"` (which the OCaml
+    /// side uses for both auto-detected conflicts and explicit skips).
+    case skip
+    /// User clicked Force Older. The resulting direction depends on
+    /// mtime; the badge instead shows the "older wins" decision.
+    case forceOlder
+    /// User clicked Force Newer. Same idea, opposite direction.
+    case forceNewer
+}
+
 /// Folder-level summary of every leaf reachable from a `ReconcileNode`.
 /// Computed by walking the subtree; used to tint folder icons in the
 /// outline view so a uniform folder reads at a glance.
+///
+/// Override states (skip / forceOlder / forceNewer) participate in the
+/// aggregate too: a folder whose leaves are ALL the same override
+/// renders that override's badge, hiding the underlying direction —
+/// same intent-over-result rule that applies to individual rows.
 enum FolderAggregate: Equatable {
     /// Every leaf has the same direction string (e.g. "---->") AND no
-    /// leaf is user-skipped.
+    /// leaf carries a user override.
     case uniform(String)
     /// Every leaf was explicitly skipped by the user. Distinct from
     /// uniform("<-?->") because the user-decided state should look
     /// "settled" rather than "needs attention".
     case allUserSkipped
-    /// Anything else — descendants disagree, OR a mix of user-skipped
-    /// and other directions, OR there are no leaves (e.g. a folder that
-    /// has lost all its children due to filtering — shouldn't happen).
+    /// Every leaf was set to Force Older.
+    case allForcedOlder
+    /// Every leaf was set to Force Newer.
+    case allForcedNewer
+    /// Anything else — descendants disagree, OR a mix of override
+    /// states + plain directions, OR there are no leaves (e.g. a
+    /// folder that has lost all its children due to filtering).
     case mixed
 }
 
@@ -67,15 +96,28 @@ extension ReconcileNode {
     /// Walk the subtree and classify it. O(leaves under this node).
     /// Folders call this lazily on each render; the controller caches
     /// the result when convenient.
-    func aggregate(items: [StateItem], userSkipped: Set<Int>) -> FolderAggregate {
+    ///
+    /// Override rules:
+    ///   - All leaves carry the same override          → that override's aggregate
+    ///     (e.g. all .forceNewer ⇒ .allForcedNewer).
+    ///   - No leaf carries any override AND all leaves share one
+    ///     OCaml direction string                       → .uniform(direction).
+    ///   - Mix of overrides, or mix of directions       → .mixed.
+    ///
+    /// The "all same override" rule deliberately *overrides* a uniform
+    /// underlying direction so a folder whose every leaf is "Force
+    /// Newer" reads as forced rather than as the resulting arrow —
+    /// matching the per-row decision-over-result semantics.
+    func aggregate(items: [StateItem],
+                   rowOverrides: [Int: RowOverride]) -> FolderAggregate {
         var directions = Set<String>()
-        var skippedCount = 0
+        var overrides: [RowOverride?] = []
         var leafCount = 0
 
         func walk(_ node: ReconcileNode) {
             if let row = node.row, row < items.count {
                 directions.insert(items[row].direction)
-                if userSkipped.contains(row) { skippedCount += 1 }
+                overrides.append(rowOverrides[row])
                 leafCount += 1
             } else {
                 for c in node.children { walk(c) }
@@ -84,13 +126,35 @@ extension ReconcileNode {
         walk(self)
 
         if leafCount == 0 { return .mixed }
-        if skippedCount == leafCount { return .allUserSkipped }
-        if directions.count == 1, let only = directions.first {
-            // Special case: every leaf is "<-?->" but a mix of skipped
-            // and not — the unskipped ones still need attention, so the
-            // folder should read as conflict-orange rather than gray.
+
+        // All leaves share one override? Folder picks up that override's
+        // aggregate, hiding the underlying direction.
+        if let first = overrides.first, let firstOverride = first,
+           overrides.allSatisfy({ $0 == firstOverride }) {
+            switch firstOverride {
+            case .skip:        return .allUserSkipped
+            case .forceOlder:  return .allForcedOlder
+            case .forceNewer:  return .allForcedNewer
+            }
+        }
+
+        // No leaf has an override AND all directions agree?
+        // (Plain auto-resolution case — fallthrough from the override
+        // checks above.)
+        if overrides.allSatisfy({ $0 == nil }),
+           directions.count == 1, let only = directions.first {
             return .uniform(only)
         }
+
+        // Mixed-skipped-with-conflict special case: every leaf is
+        // "<-?->" but only some are skipped — the unskipped ones still
+        // need attention, so render the folder as conflict-orange rather
+        // than mixed. Preserved from the pre-override design.
+        if directions == ["<-?->"],
+           overrides.allSatisfy({ $0 == nil || $0 == .skip }) {
+            return .uniform("<-?->")
+        }
+
         return .mixed
     }
 }

@@ -152,7 +152,7 @@ final class ReconcileTreeTests: XCTestCase {
         ]
         let tree = ReconcileTree(items: items)
         let folder = tree.root.children[0]
-        XCTAssertEqual(folder.aggregate(items: items, userSkipped: []),
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: [:]),
                        .uniform("---->"))
     }
 
@@ -163,7 +163,7 @@ final class ReconcileTreeTests: XCTestCase {
         ]
         let tree = ReconcileTree(items: items)
         let folder = tree.root.children[0]
-        XCTAssertEqual(folder.aggregate(items: items, userSkipped: []),
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: [:]),
                        .mixed)
     }
 
@@ -178,7 +178,8 @@ final class ReconcileTreeTests: XCTestCase {
         ]
         let tree = ReconcileTree(items: items)
         let folder = tree.root.children[0]
-        XCTAssertEqual(folder.aggregate(items: items, userSkipped: [0, 1]),
+        let overrides: [Int: RowOverride] = [0: .skip, 1: .skip]
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: overrides),
                        .allUserSkipped)
     }
 
@@ -191,7 +192,7 @@ final class ReconcileTreeTests: XCTestCase {
         ]
         let tree = ReconcileTree(items: items)
         let folder = tree.root.children[0]
-        XCTAssertEqual(folder.aggregate(items: items, userSkipped: [0]),
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: [0: .skip]),
                        .uniform("<-?->"))
     }
 
@@ -207,7 +208,65 @@ final class ReconcileTreeTests: XCTestCase {
         let tree = ReconcileTree(items: items)
         let topA = tree.root.children[0]
         XCTAssertEqual(topA.name, "a")
-        XCTAssertEqual(topA.aggregate(items: items, userSkipped: []),
+        XCTAssertEqual(topA.aggregate(items: items, rowOverrides: [:]),
                        .uniform("---->"))
+    }
+
+    // MARK: - Force-older / force-newer aggregates
+
+    func test_aggregate_allForcedOlder_overridesUnderlyingDirections() {
+        // Every leaf is set to Force Older. The OCaml directions may
+        // differ leaf-to-leaf (mtime resolution lands on either side),
+        // but the folder should still report .allForcedOlder so the
+        // user sees the *decision* uniformity, not the mtime artifact.
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "<----"),  // different direction, same decision
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        let overrides: [Int: RowOverride] = [0: .forceOlder, 1: .forceOlder]
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: overrides),
+                       .allForcedOlder)
+    }
+
+    func test_aggregate_allForcedNewer_overridesUnderlyingDirections() {
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "<----"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        let overrides: [Int: RowOverride] = [0: .forceNewer, 1: .forceNewer]
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: overrides),
+                       .allForcedNewer)
+    }
+
+    func test_aggregate_mixedOverrides_yieldsMixed() {
+        // Different decisions across leaves → no single badge can
+        // represent the folder's state. Mixed sends the user to drill in.
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "---->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        let overrides: [Int: RowOverride] = [0: .forceOlder, 1: .forceNewer]
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: overrides),
+                       .mixed)
+    }
+
+    func test_aggregate_someForcedSomeAuto_yieldsMixed() {
+        // A leaf with no override and a leaf with .forceNewer disagree
+        // about "what's the user's stance" → mixed, even if their
+        // underlying OCaml directions happen to agree.
+        let items = [
+            item("a/x", direction: "---->"),
+            item("a/y", direction: "---->"),
+        ]
+        let tree = ReconcileTree(items: items)
+        let folder = tree.root.children[0]
+        XCTAssertEqual(folder.aggregate(items: items, rowOverrides: [1: .forceNewer]),
+                       .mixed)
     }
 }

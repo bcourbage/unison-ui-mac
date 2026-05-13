@@ -148,7 +148,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 132 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 145 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -228,7 +228,18 @@ go back / refresh / open another profile.
       toolbar real estate). DirectionAction enum extended with
       `.forceOlder` / `.forceNewer` cases; menu order matches the
       legacy app's Action menu (direction → alternatives → mtime
-      variants).
+      variants). **Visual override**: a row pinned to Force Older/Newer
+      renders the user's *decision* (brown ↺ or teal ↻) instead of the
+      mtime-resolved arrow — same pattern as the existing skip-vs-
+      auto-conflict distinction. Implemented via a `RowOverride` enum
+      (`.skip` / `.forceOlder` / `.forceNewer`), a
+      `rowOverrides: [Int: RowOverride]` dict on the controller,
+      extended `DirectionVisual.glyph/tint(for:override:)` signatures,
+      and new `FolderAggregate` cases `.allForcedOlder` /
+      `.allForcedNewer` so folder rows propagate the decision-over-
+      direction rule. Tests: 13 new cases pinning glyph/tint distinctness
+      and the override-hides-direction behavior at both leaf and folder
+      level.
 - [x] **Details pane** — done as a footer (`NSTextView` at the bottom of
       the reconcile window). Shows `unisonRiToDetails` on leaf selection,
       and "<folder>/\n N items" on folder selection.
