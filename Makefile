@@ -76,6 +76,32 @@ test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 app: build
 	open $(BUILT_APP) $(if $(RUNARGS),--args $(RUNARGS),)
 
+# Ad-hoc leak check via `leaks(1)`. Launches the app, waits a few
+# seconds for AppDelegate to spin up + show the picker, runs the
+# system leaks tool against the live PID, and prints its summary.
+# Intended for hand-running before a release — not part of `make test`.
+#
+# Caveats:
+# - macOS may suppress non-debug leaks unless the app is signed with
+#   `get-task-allow` entitlements (already true for our Debug build).
+# - Some leaks reported here are inside OCaml's runtime (unison-blob.o)
+#   or in linked Apple frameworks; not all are actionable on our side.
+# - The app is left running after the check — close it manually or
+#   pass STOP_AFTER_LEAKS=1 to kill it.
+.PHONY: leaks
+leaks: build
+	@echo "Launching unison-ui-mac for leak check…"
+	@open $(BUILT_APP)
+	@sleep 3
+	@pid="$$(pgrep -fn 'unison-ui-mac.app/Contents/MacOS/unison-ui-mac' || pgrep -fn unison-ui-mac)"; \
+		if [ -z "$$pid" ]; then \
+			echo "ERROR: no unison-ui-mac process found"; exit 1; \
+		fi; \
+		echo "PID: $$pid"; \
+		leaks $$pid; rc=$$?; \
+		if [ "$$STOP_AFTER_LEAKS" = "1" ]; then kill $$pid; fi; \
+		exit $$rc
+
 .PHONY: open
 open: $(XCODEPROJ)
 	open $(XCODEPROJ)

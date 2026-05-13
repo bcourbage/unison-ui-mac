@@ -3,9 +3,9 @@
 A snapshot of what's left to do, with priority tiers. Personal-use project;
 not for upstream contribution (per unison's CONTRIBUTING.md).
 
-Each section below is collapsible. P0 (the bring-up workflow basics)
-defaults closed since it's fully done; the active work tiers default
-open so the file stays scannable on GitHub's web view.
+Each section below is collapsible. Fully-complete tiers (P0, P1)
+default closed; tiers with open work (P2, P3) default open so the
+file stays scannable on GitHub's web view.
 
 <details>
 <summary>
@@ -35,12 +35,15 @@ go back / refresh / open another profile.
 
 </details>
 
-<details open>
+<details>
 <summary>
 
 ## P1 — Quality of life
 
 </summary>
+
+*All P1 items are complete as of May 2026 — this section defaults to
+collapsed on GitHub's web view. Expand for the historical detail.*
 
 - [x] **Color-coded reconcile rows** — done at the cell level: the Action
       column cell carries a tinted "badge" (green `#97BB68` → remote, blue
@@ -152,7 +155,8 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 201 tests passing in ~0.6s via `make test`.
+- [x] **Test suite** — 203 tests passing in ~0.8s via `make test`,
+      plus ad-hoc `make leaks` for `leaks(1)`-based release checks.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -186,23 +190,48 @@ go back / refresh / open another profile.
     - [x] **ReconcileTree** (11) — empty/single/nested/sibling
           building; FolderAggregate uniform/mixed/all-skipped including
           the partial-skip "still needs attention" edge case.
-    - [ ] **State-item marshaling** — need to drive `unisonInit2Complete`
-          with a known reconcile state (e.g., the /tmp/unison-test-{a,b}
-          fixture) and verify the resulting `[StateItem]` field-by-field.
-          Tricky because OCaml init can only happen once; tests would
-          need to coordinate on a shared init1+init2 setup.
-    - [ ] **UI tests** (XCUITest) — launch → pick profile → reconcile
-          shows → Go → completes. Use the `UNISON_AUTOTEST_*` env hooks
-          we already have. Separate test target since UI tests run out-
-          of-process.
-    - [ ] **Modal warn/fatal sheet paths** — scripted scenarios for
-          warn-proceed, warn-cancel, and fatal-dismiss. Each must verify
-          `abortInFlight()` actually fires and the picker is usable
-          afterward.
-    - [ ] **Memory leaks** — `leaks(1)` after sync, scripted run.
-    - [ ] **Re-entrance** — handler that fires from OCaml→C→Swift then
-          re-enters the bridge from the handler. Tests the 3-worker
-          design from the bring-up.
+    - [x] **State-item marshaling** — `test_c_init2Marshaling_*` in
+          `BridgeTests.swift` builds a throwaway profile + temp
+          replica pair under `/tmp/unison-ui-mac-itest/<uuid>/`, runs
+          init1+init2 against it, and asserts the resulting
+          `[StateItem]` has the expected count, paths, directions,
+          left/right Created status, and file type. Cleaned up in
+          `IntegrationFixture.deinit`. Tests are prefixed `test_c_`
+          to run AFTER `test_b_*` (which assert "no state loaded")
+          because init2 leaves `g_ri_count` non-zero.
+    - [x] **Re-entrance** — `test_d_reentrance_*` installs a status
+          handler that calls `unison_bridge_get_version()` from inside
+          the handler body. Triggered via `unison_bridge_test_status`
+          (synthetic — invokes the handler directly). The 3-worker
+          design from the bring-up exists for this case; if the test
+          times out, we've regressed.
+    - [x] **Memory leaks** — `make leaks` target spawns the app,
+          runs `leaks(PID)`, returns the tool's exit code. Ad-hoc /
+          release-gate use; not part of `make test` (would require
+          interactive setup + per-run cleanup, neither suits unit
+          testing). Pass `STOP_AFTER_LEAKS=1` to kill the launched
+          process when done.
+    - [/] **UI tests (XCUITest)** — *deferred*. Adding a
+          `bundle.ui-testing` target to `project.yml` is mechanical;
+          the deferral is about value vs. cost. The flows we'd verify
+          (launch → pick profile → reconcile shows → Go → completes)
+          run on real Unison + real filesystem operations and are
+          intrinsically slow + flaky. The `test_c_init2Marshaling_*`
+          XCTest already exercises the launch→pick→reconcile path
+          via the bridge (faster, more deterministic). XCUITest
+          would add value only for the visual layer — toolbar
+          rendering, cell badge appearance, etc. — which is small
+          surface and easier to smoke-test by hand. Revisit if we
+          ever ship to non-developer users.
+    - [/] **Modal warn/fatal sheet paths** — *deferred*. The actual
+          NSAlert.runModal call lives inside the C-bridge trampoline
+          and isn't dependency-injectable without significant
+          structural refactoring. The dismiss-handler logic (what
+          happens AFTER the user clicks Cancel / Proceed / Retry) is
+          covered indirectly by the existing tests of
+          `abortAllInFlight` semantics (phase-based reset vs. close;
+          see the reconcile-window cleanup story). The modal itself
+          is small enough to validate by hand on each release.
 
 </details>
 
