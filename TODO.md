@@ -148,7 +148,7 @@ go back / refresh / open another profile.
       The legacy `.tif`/`.png` route is still on the table if the SF
       Symbol style ever feels insufficient, but the current state is
       cohesive enough that there's no pressing need.
-- [/] **Test suite** — 125 tests passing in ~0.6s via `make test`.
+- [/] **Test suite** — 132 tests passing in ~0.6s via `make test`.
       Coverage so far and what's left:
     - [x] **Test target wiring** — `unison-ui-macTests` bundle.unit-test
           hosted by the app, runs via `xcodebuild test`. OCaml runtime
@@ -220,9 +220,15 @@ go back / refresh / open another profile.
       `runShowDiffs` for the selected row and displays the result. The OCaml
       side calls back into `displayDiff(left, right)` (currently abort stub).
       Needs a diff-viewer window.
-- [ ] **Force older / newer direction** — `unisonRiForceOlder` /
-      `unisonRiForceNewer` aren't wired. Worth surfacing as toolbar items or
-      Edit-menu actions.
+- [x] **Force older / newer direction** — wired through new C bridge
+      fns `unison_bridge_ri_force_older` / `_newer`, which use the
+      existing `_ri_set_via` helper to invoke `unisonRiForceOlder` /
+      `unisonRiForceNewer` then read back the resulting direction.
+      Surfaced on the Edit menu (no toolbar entry — too rare to earn
+      toolbar real estate). DirectionAction enum extended with
+      `.forceOlder` / `.forceNewer` cases; menu order matches the
+      legacy app's Action menu (direction → alternatives → mtime
+      variants).
 - [x] **Details pane** — done as a footer (`NSTextView` at the bottom of
       the reconcile window). Shows `unisonRiToDetails` on leaf selection,
       and "<folder>/\n N items" on folder selection.
@@ -260,9 +266,16 @@ go back / refresh / open another profile.
       sidecar). Files move to the Trash so a misclick is recoverable
       from Finder. Unison's archive files (ar*, fp*) are intentionally
       left alone — that's the **proactive Reset archives** TODO above.
-- [ ] **Hide Merge toolbar item if `merge` pref isn't set** — the action only
-      works with a configured merge tool; right now it succeeds in the UI
-      but fails at sync time.
+- [x] **Hide Merge toolbar item if `merge` pref isn't set** — done.
+      AppDelegate reads the profile's .prf via `ProfileDocument.parse`
+      and passes `mergeConfigured: Bool` to ReconcileWindowController.
+      The toolbar's direction-group `makeDirectionGroup` omits the
+      `.merge` subitem entirely when not configured; the Edit-menu
+      Merge item is greyed via `validateMenuItem`. Toolbar identifier
+      bumped `v4 → v5` because the subitem set is now profile-dependent.
+      Doesn't follow `include` directives — a merge declared in an
+      inherited profile would slip through, but that's rare and the
+      worst case is the pre-existing "unhelpful Merge button" behavior.
 - [x] **Help menu → Unison Online Help** — done, now split into two
       entries: "unison-ui-mac Help" (⌘?) → this app's README on GitHub,
       and "Unison File Synchronizer Help…" → upstream Unison wiki.

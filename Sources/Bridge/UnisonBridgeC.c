@@ -769,6 +769,8 @@ const char *unison_bridge_ri_set_to_remote(int row) { return _ri_set_via("unison
 const char *unison_bridge_ri_set_to_local(int row)  { return _ri_set_via("unisonRiSetLeft",     row); }
 const char *unison_bridge_ri_set_skip(int row)      { return _ri_set_via("unisonRiSetConflict", row); }
 const char *unison_bridge_ri_set_merge(int row)     { return _ri_set_via("unisonRiSetMerge",    row); }
+const char *unison_bridge_ri_force_older(int row)   { return _ri_set_via("unisonRiForceOlder",  row); }
+const char *unison_bridge_ri_force_newer(int row)   { return _ri_set_via("unisonRiForceNewer",  row); }
 
 /* Per-row getter. Same dispatch pattern as the ri_set_* functions but
  * doesn't mutate state — just reads `unisonRiToDetails` for the row. */

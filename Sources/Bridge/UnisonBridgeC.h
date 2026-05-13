@@ -136,10 +136,18 @@ void unison_bridge_init2(void);
  * same thread — copy it if you need to retain it.
  *
  * Returns NULL if the row is out of range or the OCaml call fails. */
-const char *unison_bridge_ri_set_to_remote(int row);  /* unisonRiSetRight: local wins */
-const char *unison_bridge_ri_set_to_local(int row);   /* unisonRiSetLeft:  remote wins */
+const char *unison_bridge_ri_set_to_remote(int row);  /* unisonRiSetRight: first wins */
+const char *unison_bridge_ri_set_to_local(int row);   /* unisonRiSetLeft:  second wins */
 const char *unison_bridge_ri_set_skip(int row);       /* unisonRiSetConflict */
 const char *unison_bridge_ri_set_merge(int row);      /* unisonRiSetMerge */
+/* Force-older / force-newer pick a direction based on mtime — the side
+ * with the older (resp. newer) mtime wins. Calls `unisonRiForceOlder` /
+ * `unisonRiForceNewer` and then reads back the resulting direction
+ * via `unisonRiToDirection`, same as the ri_set_* functions. Useful
+ * for "propagate the version I edited most recently" / "restore from
+ * the older copy" without having to inspect the row first. */
+const char *unison_bridge_ri_force_older(int row);
+const char *unison_bridge_ri_force_newer(int row);
 
 /* Calls OCaml's unisonRiToDetails for the given row and returns the
  * multi-line details string (path, both sides' size/mtime, conflict

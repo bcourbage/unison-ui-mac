@@ -108,6 +108,22 @@ enum MainMenu {
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         menu.addItem(.separator())
+        // Direction actions — Action-menu items in the legacy app's
+        // structure. Same responder-chain pattern as the ignore items
+        // below: target is nil, selector lives on ReconcileWindowController.
+        // Validation (greyed when no leaf selection, hidden when
+        // mergeConfigured == false for the .merge case) happens in
+        // `validateMenuItem(_:)` on the controller.
+        let directionSelector = Selector(("directionMenuAction:"))
+        for action in DirectionAction.menuActions {
+            let mi = NSMenuItem(title: action.label,
+                                action: directionSelector,
+                                keyEquivalent: "")
+            mi.tag = action.menuTag
+            menu.addItem(mi)
+        }
+
+        menu.addItem(.separator())
         // Ignore actions — target is nil so they dispatch through the responder
         // chain and land on ReconcileWindowController when the reconcile window
         // is key. AppKit's automatic menu-item validation greys them out when

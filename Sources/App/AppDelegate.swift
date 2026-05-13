@@ -138,8 +138,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.reconcileWindowController?.updateScanStatus(msg)
         }
 
+        // Inspect the .prf for a `merge` pref so the reconcile window
+        // knows whether to surface the Merge toolbar item / menu entry.
+        // The `merge` pref is a Pred (list of pathspec→cmd rules) — we
+        // treat the presence of any `merge = …` line as "configured".
+        // We don't follow `include` directives; a merge declared in an
+        // inherited profile would slip through, but that's rare and the
+        // worst case is just an unhelpful Merge button (existing
+        // behavior).
+        let mergeConfigured = Self.readMergeConfigured(
+            unisonDirectory: unisonDirectory, profile: profile
+        )
+        log.write("profile '\(profile)' mergeConfigured=\(mergeConfigured)")
+
         let reconcile = ReconcileWindowController(
             profile: profile,
+            mergeConfigured: mergeConfigured,
             onClose: { [weak self] in
                 guard let self else { return }
                 self.log.write("reconcile window closed — returning to picker")
@@ -245,18 +259,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func runRiOpsAutotest(items: [StateItem]) {
         guard items.indices.contains(0) else { return }
-        // Cycle all 4 actions on row 0 to verify each transition reaches OCaml
-        // and the direction reads back correctly.
+        // Cycle every action on row 0 to verify each transition reaches
+        // OCaml and the direction reads back correctly. Uses
+        // `DirectionAction.invoke` so the autotest exercises the same
+        // bridge path as the toolbar/menu actions — no duplicate switch
+        // here that would drift from the enum.
         var current = items[0].direction
-        for action in [DirectionAction.toSecond, .toFirst, .skip, .merge, .toSecond] {
-            let raw: String? = {
-                switch action {
-                case .toSecond: return unison_bridge_ri_set_to_remote(0).flatMap { String(cString: $0) }
-                case .toFirst:  return unison_bridge_ri_set_to_local(0).flatMap { String(cString: $0) }
-                case .skip:     return unison_bridge_ri_set_skip(0).flatMap { String(cString: $0) }
-                case .merge:    return unison_bridge_ri_set_merge(0).flatMap { String(cString: $0) }
-                }
-            }()
+        let cycle: [DirectionAction] = [
+            .toSecond, .toFirst, .skip, .merge, .forceOlder, .forceNewer, .toSecond,
+        ]
+        for action in cycle {
+            let raw = action.invoke(row: 0).flatMap { String(cString: $0) }
             log.write("  row 0 (\(items[0].path)): \(current) --[\(action.label)]--> \(raw ?? "<nil>")")
             current = raw ?? current
         }
@@ -279,6 +292,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reconcile.close()
             // onClose handler will reopen the picker.
         }
+    }
+
+    /// Returns true if the profile's `.prf` contains at least one
+    /// `merge = …` line. Reads + parses the .prf file directly rather
+    /// than going through OCaml — there's no upstream callback for
+    /// querying a Pred's contents and patching `uimacbridge.ml` is
+    /// off-limits for this project.
+    ///
+    /// Failures (missing file, parse error) return `false` — better to
+    /// hide a useful button than show a non-functional one. The
+    /// reconcile window's existing fatal-error path will surface any
+    /// real "profile won't load" condition.
+    private static func readMergeConfigured(unisonDirectory: String,
+                                            profile: String) -> Bool {
+        let url = URL(fileURLWithPath: unisonDirectory)
+            .appendingPathComponent("\(profile).prf")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return false
+        }
+        let doc = ProfileDocument.parse(text)
+        return !doc.values(forKey: "merge").isEmpty
     }
 
     // MARK: - Diagnostics

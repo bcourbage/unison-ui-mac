@@ -45,6 +45,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let detailsScroll = NSScrollView()
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
+    /// True when the active profile's `.prf` declares at least one
+    /// `merge = …` pattern. Drives the toolbar's Merge-button
+    /// visibility AND the Edit-menu Merge item's enablement. Set at
+    /// init time by the AppDelegate based on a `ProfileDocument.parse`
+    /// of the .prf — we don't query OCaml for this because there's no
+    /// upstream-registered callback for it and patching uimacbridge.ml
+    /// is off-limits for this app (LLM-built, won't be proposed upstream).
+    let mergeConfigured: Bool
 
     enum Col: String {
         case path, left, direction, right, size, progress, type
@@ -58,10 +66,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// before invoking the bridge and `replaceItems(_:)` when results
     /// arrive. The empty state is shown until then.
     init(profile: String,
+         mergeConfigured: Bool,
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest) {
         self.profile = profile
         self.items = []
+        self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         let window = NSWindow(
@@ -255,13 +265,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // Identifier suffix bump after each schema change forces the
         // autosaved layout to reset — otherwise users keep the old buttons
         // and miss new ones. Bump when item identifiers or grouping change.
-        // v4 bump: DirectionAction subitem identifiers changed from
-        // dir.toLocal / dir.toRemote → dir.toFirst / dir.toSecond as
-        // part of the Local/Remote → First/Second terminology pass.
-        // Without the bump, autosaved layouts would keep the old subitem
-        // IDs and the segmented control would appear empty for users
-        // whose preferences were saved on v3.
-        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v4")
+        // v5 bump: the direction group's subitem set is now profile-
+        // dependent (Merge subitem omitted when the .prf has no `merge`
+        // pref). Bumping the identifier resets any autosaved layout so
+        // users coming from v4 don't carry a Merge button into profiles
+        // that don't support it. v4 was the Local/Remote → First/Second
+        // terminology pass.
+        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v5")
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -584,20 +594,47 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // resets userSkipped + redraws the outline.
     }
 
+    // MARK: - Direction menu actions
+
+    /// Edit-menu direction items. Tag carries which DirectionAction;
+    /// behavior is identical to clicking the corresponding toolbar
+    /// segmented button — applies the direction to every leaf in the
+    /// current selection (or the right-clicked row).
+    @objc private func directionMenuAction(_ sender: NSMenuItem) {
+        guard let action = DirectionAction.from(menuTag: sender.tag) else { return }
+        applyDirection(action)
+    }
+
     /// NSMenuItemValidation entry point. AppKit walks the responder chain
-    /// looking for whoever implements the menu item's action; for the
-    /// `ignoreMenuAction(_:)` items that's this controller, so we get the
-    /// validation call here for both context-menu and Edit-menu items.
-    /// Disabled during sync (state mutation while sync is in flight is
-    /// unsafe) and when no leaf row is the target.
+    /// looking for whoever implements the menu item's action; the
+    /// reconcile controller claims the ignore and direction selectors,
+    /// so AppKit calls us back here for both. We grey items out when
+    /// sync is in flight (state mutation is unsafe) or when no leaf row
+    /// is selectable. The .merge case is additionally hidden when the
+    /// active profile's .prf has no `merge` pref.
     ///
-    /// AppKit only calls this on the main thread (menu validation runs as
-    /// the menu is about to open). The class is `@MainActor` so we let the
-    /// Swift-6 isolation match the runtime guarantee.
+    /// AppKit only calls this on the main thread (menu validation runs
+    /// as the menu is about to open). The class is `@MainActor` so we
+    /// let the Swift-6 isolation match the runtime guarantee.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        guard menuItem.action == #selector(ignoreMenuAction(_:)) else { return true }
-        guard !isSyncing else { return false }
-        return rowForPendingMenuAction() != nil
+        if menuItem.action == #selector(ignoreMenuAction(_:)) {
+            guard !isSyncing else { return false }
+            return rowForPendingMenuAction() != nil
+        }
+        if menuItem.action == #selector(directionMenuAction(_:)) {
+            guard !isSyncing else { return false }
+            // Merge item hidden (returning false) when the profile has
+            // no `merge` pref. We could also hide it via `isHidden`,
+            // but validateMenuItem fires on every menu open and
+            // returning false gives consistent disabled-grey styling.
+            if let action = DirectionAction.from(menuTag: menuItem.tag),
+               action == .merge,
+               !mergeConfigured {
+                return false
+            }
+            return !leafRowsInSelection().isEmpty
+        }
+        return true
     }
 
     // MARK: - Selection helpers
