@@ -209,7 +209,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (215 tests, ~0.6 s)
+├── Tests/                               XCTest bundle (263 tests, ~1 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

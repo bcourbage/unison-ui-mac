@@ -338,18 +338,22 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **215 tests, ~0.6s** via `make test`, plus ad-hoc `make leaks`
-      for `leaks(1)`-based release checks. Coverage:
-      - Pure-Swift units across StateItem (3), DirectionAction (4),
-        StatusIconDescriptor (6), DirectionVisual (18 incl.
-        forced-decision variants), ArchiveRecovery (5), IgnoreAction
-        (6), ProfileDocument parse/serialize (14),
-        ProfilePreferences apply/forget/rename/reorder/persist (27),
-        ReconcileNode.pathFromRoot (4), `splitStatus` (8),
-        `ProgressDescriptor.parse` (12), RowSelectionRules / diff
-        target (14), DiffWindowController unified-diff line
-        classifier (8), ArchiveHash canonicalization + MD5 (12),
-        VersionCheck URL/version parsing + suppression (18).
+- [x] **263 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
+      for `leaks(1)`-based release checks. Coverage (illustrative —
+      counts are at-last-tally and grow with each pure-logic
+      extraction):
+      - Pure-Swift units across StateItem, DirectionAction,
+        StatusIconDescriptor, DirectionVisual (incl. forced-decision
+        variants), ArchiveRecovery, IgnoreAction, ProfileDocument
+        parse/serialize, ProfilePreferences
+        apply/forget/rename/reorder/persist, ReconcileNode.pathFromRoot,
+        `splitStatus`, `ProgressDescriptor.parse`, RowSelectionRules /
+        diff target, DiffWindowController unified-diff line classifier,
+        ArchiveHash canonicalization + MD5, VersionCheck URL/version
+        parsing + suppression, SettingsModel reset semantics +
+        suppression-token round-trip, ReconcileSummary count + bytes
+        + prefix logic, ArchiveCleanup file find + trash semantics,
+        PathCellView tooltip rule.
       - Bridge integration tests: `get_version`, `unison_directory`,
         graceful-failure of ri-set / ignore / canDiff / abort_sync
         when no state is loaded.
