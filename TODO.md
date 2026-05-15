@@ -68,7 +68,9 @@ section at the bottom so this list stays scannable.
          beyond it. Today's behavior is "unlimited" via
          `outlineView.expandItem(nil, expandChildren: true)` in
          `replaceItems` — that call becomes
-         `expandToDepth(_:)` parameterized by the setting.
+         `expandToDepth(_:)` parameterized by the setting. After
+         syncrhonization, if a failure occurred, there should be a
+         setting to expand all levels.
 
       Implementation sketch: extend `SettingsModel` with two new
       `UserDefaults` keys (e.g.
