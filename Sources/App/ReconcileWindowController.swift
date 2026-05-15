@@ -74,6 +74,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let detailsScroll = NSScrollView()
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
+
+    /// Reconcile-window lifecycle phase. Single source of truth for
+    /// what stage the window is in:
+    ///   - `.ready`   — post-init2 (or freshly opened), pre-Go;
+    ///                  items may be empty (up-to-date) or populated
+    ///   - `.syncing` — post-Go, pre-completion
+    ///   - `.done`    — sync finished (cleanly or with failures); the
+    ///                  user must rescan to start a new cycle
+    ///
+    /// Drives both the summary text (via `summaryText()`) AND the
+    /// gating of action buttons + menu items (via `isActionable`).
+    /// Keeping these in lockstep means "what the user reads in the
+    /// summary" and "what the user can click" can't get out of sync.
+    private var phase: ReconcileSummary.Phase = .ready
     /// One DiffWindowController per reconcile session, reused across
     /// multiple Diff invocations. Created lazily on the first Diff
     /// action — most syncs never need it. Survives the reconcile
@@ -217,8 +231,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         refreshErrorBanner()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
+        // Fresh row set ⇒ back to the ready phase; the previous
+        // sync (if any) is no longer in scope.
+        phase = .ready
         setSummary(summaryText())
-        refreshDirectionToolbarEnabled()
+        refreshToolbarEnabled()
     }
 
     private func configure(profile: String) {
@@ -433,7 +450,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // visible throughout the transfer. updateScanStatus(_:)
         // suppresses its own writes while isSyncing is true so
         // OCaml's rotating per-file status doesn't overwrite this.
-        setSummary(summaryText(phase: .syncing))
+        phase = .syncing
+        setSummary(summaryText())
+        refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: starting sync")
         unison_bridge_synchronize()
     }
@@ -499,7 +518,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         progressBar.isIndeterminate = true
         progressBar.startAnimation(nil)
         setSummary(message)
-        refreshDirectionToolbarEnabled()
+        refreshToolbarEnabled()
     }
 
     func beginInitialScan() {
@@ -781,8 +800,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = false
         progressBar.doubleValue = 100
         progressBar.isHidden = true
-        setSummary(summaryText(phase: .done(failures: 0)))
-        TraceLog.shared.write("ReconcileWindow: sync complete")
+        // Count rows whose progress ended FAILED. Latches into the
+        // phase so both the summary ("Synchronization completed with
+        // N error(s)") AND the action-gating logic see the same
+        // terminal state.
+        let failures = items
+            .filter { ProgressDescriptor.parse($0.progress).isFailure }
+            .count
+        phase = .done(failures: failures)
+        setSummary(summaryText())
+        refreshToolbarEnabled()
+        TraceLog.shared.write("ReconcileWindow: sync complete (failures: \(failures))")
     }
 
     /// Reset transient sync-UI state without closing the window. Called
@@ -791,22 +819,29 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///
     /// Keeping the window open after a sync fatal lets the user inspect
     /// which rows succeeded (Progress = "done") vs which failed
-    /// (Progress = bold red "FAILED") before deciding to rescan or
-    /// return to the picker. Closing the window — what we used to do
-    /// — discarded that information.
+    /// (Progress = bold red "⚠ FAILED") before deciding to rescan or
+    /// return to the picker.
     ///
-    /// The reconcile data itself stays valid; OCaml's reconcile state
-    /// is per-row and the row directions don't unwind on fatal. The
-    /// only thing the user can't do until they rescan is run another
-    /// sync — but the toolbar Go button stays available, and clicking
-    /// it kicks off a new sync over the (possibly post-error) state.
+    /// We transition `phase` to `.done(failures: ...)` here so the
+    /// post-abort UI behaves the same as any other completed sync:
+    /// Go is disabled (running it again on a half-aborted state is
+    /// dicey — the user should rescan first), Stop is disabled
+    /// (nothing to abort), Rescan is enabled (the obvious next
+    /// step). The summary message is overridden with the explicit
+    /// "Sync interrupted — <reason>" string, since that's more
+    /// informative than a generic "Synchronization completed".
     func resetSyncUIAfterAbort(reason: String) {
         isSyncing = false
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
         progressBar.doubleValue = 0
         progressBar.isHidden = true
+        let failures = items
+            .filter { ProgressDescriptor.parse($0.progress).isFailure }
+            .count
+        phase = .done(failures: failures)
         setSummary("Sync interrupted — \(reason)")
+        refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: resetSyncUIAfterAbort (\(reason))")
     }
 
@@ -1099,22 +1134,27 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     /// NSMenuItemValidation entry point. AppKit walks the responder chain
     /// looking for whoever implements the menu item's action; the
-    /// reconcile controller claims the ignore and direction selectors,
-    /// so AppKit calls us back here for both. We grey items out when
-    /// sync is in flight (state mutation is unsafe) or when no leaf row
-    /// is selectable. The .merge case is additionally hidden when the
-    /// active profile's .prf has no `merge` pref.
+    /// reconcile controller claims those selectors, so AppKit calls
+    /// us back here for each.
+    ///
+    /// State-changing actions (direction overrides, Go, Diff, Revert,
+    /// Ignore) gate on `isActionable` — true only in the `.ready`
+    /// phase with at least one item. That disables them after sync
+    /// completes (you must rescan to act again), during sync (the
+    /// OCaml worker is busy), and when there's nothing to act on
+    /// (empty / up-to-date). Read-only actions (Select Conflicts)
+    /// bypass the gate and validate on their own data.
     ///
     /// AppKit only calls this on the main thread (menu validation runs
     /// as the menu is about to open). The class is `@MainActor` so we
     /// let the Swift-6 isolation match the runtime guarantee.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(ignoreMenuAction(_:)) {
-            guard !isSyncing else { return false }
+            guard isActionable else { return false }
             return rowForPendingMenuAction() != nil
         }
         if menuItem.action == #selector(diffMenuAction(_:)) {
-            guard !isSyncing else { return false }
+            guard isActionable else { return false }
             // Diff is strictly single-leaf — `rowForDiff` returns nil
             // for folder selections, multi-row selections, and
             // right-clicks on folders. The bridge's canDiff layer
@@ -1126,21 +1166,23 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return unison_bridge_can_diff(Int32(row))
         }
         if menuItem.action == #selector(selectConflictsAction(_:)) {
-            // Allowed during sync — selection-only, doesn't mutate
-            // any row state. Useful for surveying what's left.
+            // Read-only selection helper — allowed in any phase
+            // (including .syncing and .done) as long as there are
+            // unresolved conflicts present. Useful for surveying
+            // remaining conflicts after a partial sync.
             return !RowSelectionRules.unresolvedConflictRows(
                 items: items, rowOverrides: rowOverrides
             ).isEmpty
         }
         if menuItem.action == #selector(revertSelectionAction(_:)) {
-            guard !isSyncing else { return false }
+            guard isActionable else { return false }
             // Only useful if at least one selected row carries an
             // override. Otherwise the action is a no-op.
             let rows = leafRowsInSelection()
             return rows.contains { rowOverrides[$0] != nil }
         }
         if menuItem.action == #selector(directionMenuAction(_:)) {
-            guard !isSyncing else { return false }
+            guard isActionable else { return false }
             // Merge item hidden (returning false) when the profile has
             // no `merge` pref. We could also hide it via `isHidden`,
             // but validateMenuItem fires on every menu open and
@@ -1153,24 +1195,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return !leafRowsInSelection().isEmpty
         }
         if menuItem.action == #selector(goMenuAction(_:)) {
-            // Go is the "run sync" primary. Disabled while a sync is
-            // already running (Stop is the way out) AND when the
-            // reconcile pass hasn't populated any items yet (nothing
-            // to propagate). Same gate as the toolbar's Go button.
-            return !isSyncing && !items.isEmpty
+            // Go is the "run sync" primary — same gate as
+            // direction-change actions: must be in .ready with items.
+            return isActionable
         }
         if menuItem.action == #selector(stopMenuAction(_:)) {
-            // Stop only meaningful mid-sync. cancelSync itself NSBeeps
-            // on a no-op call, so greying it out here keeps the menu
-            // honest.
-            return isSyncing
+            // Stop only meaningful mid-sync.
+            if case .syncing = phase { return true }
+            return false
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
-            // Same as toolbar Rescan — re-runs init2 against the same
-            // profile. Disabled mid-sync because the OCaml runtime
-            // is occupied; rescan there would stall until the sync
-            // finishes anyway.
-            return !isSyncing
+            // Rescan is the way out of .done back to .ready — we
+            // explicitly want it enabled post-sync. Only blocked
+            // during an active sync (OCaml runtime is occupied).
+            if case .syncing = phase { return false }
+            return true
         }
         return true
     }
@@ -1209,17 +1248,47 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// subitem based on whether the current selection contains any leaf
     /// rows. Folder-only selections with no descendant leaves (e.g., a
     /// totally empty folder, shouldn't happen but be safe) also disable.
-    private func refreshDirectionToolbarEnabled() {
+    /// Refresh the enabled-state of every gated toolbar item based on
+    /// the current `phase`, `items`, and outline-view selection.
+    ///
+    /// Toolbar items don't auto-validate against `validateMenuItem`
+    /// the way menu items do — they go through their own target/action
+    /// dispatch — so we explicitly walk the toolbar and set each
+    /// item's `isEnabled` on every state transition. The set of gates
+    /// here must mirror what `validateMenuItem` returns for the
+    /// equivalent selectors; the two paths share the `isActionable`
+    /// helper so they can't drift.
+    private func refreshToolbarEnabled() {
         guard let toolbar = window?.toolbar else { return }
         let hasLeaves = !leafRowsInSelection().isEmpty
+        let actionable = isActionable
+        let syncing: Bool = { if case .syncing = phase { return true }; return false }()
         for item in toolbar.items {
-            // Direction group: enable/disable each subitem so the
-            // segmented control gives per-button feedback.
-            if let group = item as? NSToolbarItemGroup,
-               group.itemIdentifier == DirectionAction.directionGroupIdentifier {
-                for sub in group.subitems {
-                    sub.isEnabled = hasLeaves
+            switch item.itemIdentifier {
+            case DirectionAction.directionGroupIdentifier:
+                // Per-row direction overrides — gated by isActionable
+                // AND by whether the selection contains leaf rows.
+                if let group = item as? NSToolbarItemGroup {
+                    for sub in group.subitems {
+                        sub.isEnabled = actionable && hasLeaves
+                    }
                 }
+            case DirectionAction.goIdentifier:
+                // Go is the canonical "act on the current row set"
+                // primary — enabled exactly when isActionable is true.
+                item.isEnabled = actionable
+            case DirectionAction.stopIdentifier:
+                // Stop is only meaningful while a sync is in flight.
+                item.isEnabled = syncing
+            case DirectionAction.rescanIdentifier:
+                // Rescan is the way out of the .done state, and a
+                // useful re-check while .ready. Disabled only during
+                // an active sync (OCaml runtime is occupied).
+                item.isEnabled = !syncing
+            default:
+                // Profiles + space items + anything not listed above
+                // is left at its default (typically always enabled).
+                break
             }
         }
     }
@@ -1252,25 +1321,33 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return out
     }
 
-    private func summaryText(phase: ReconcileSummary.Phase = .ready) -> String {
-        // For the `.done(failures: …)` phase the caller can pass an
-        // explicit failures count; here we recompute it from the row
-        // set when none was specified inline, so the typical caller
-        // doesn't have to thread the count manually. Count rows whose
-        // progress string was marked FAILED by upstream (matches the
-        // per-row ⚠ FAILED marker in the Progress column).
-        let effectivePhase: ReconcileSummary.Phase
+    private func summaryText() -> String {
+        ReconcileSummary.text(items: items, phase: phase)
+    }
+
+    /// Computed gate for "state-changing actions" — the controller's
+    /// answer to "is there anything the user can usefully do to the
+    /// rows right now?"
+    ///
+    /// Returns `true` only when:
+    ///  - we have rows to act on (items isn't empty), AND
+    ///  - the phase is `.ready` (post-init2, pre-Go, fresh state).
+    ///
+    /// Specifically `false` when:
+    ///  - phase is `.syncing` (mutations would race the OCaml worker),
+    ///  - phase is `.done(…)` (the row set is post-sync — fixed state;
+    ///    direction overrides, Go, Diff, Revert all need a rescan to
+    ///    be useful again),
+    ///  - items is empty ("Everything is up to date" — nothing to act on).
+    ///
+    /// Read-only actions (Select Conflicts, navigation) bypass this
+    /// gate and validate on their own data.
+    private var isActionable: Bool {
+        guard !items.isEmpty else { return false }
         switch phase {
-        case .done(failures: 0):
-            // Caller asked for "done" without specifying — recompute.
-            let failed = items
-                .filter { ProgressDescriptor.parse($0.progress).isFailure }
-                .count
-            effectivePhase = .done(failures: failed)
-        default:
-            effectivePhase = phase
+        case .ready:           return true
+        case .syncing, .done:  return false
         }
-        return ReconcileSummary.text(items: items, phase: effectivePhase)
     }
 }
 
@@ -1439,7 +1516,7 @@ extension ReconcileWindowController: NSOutlineViewDataSource {
 extension ReconcileWindowController: NSOutlineViewDelegate {
     func outlineViewSelectionDidChange(_ notification: Notification) {
         updateDetailsForSelection()
-        refreshDirectionToolbarEnabled()
+        refreshToolbarEnabled()
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
