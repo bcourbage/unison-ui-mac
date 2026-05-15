@@ -638,7 +638,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         let markers: [String] = [
             "FAIL",            // "FAILED", "Failed", "scan failed", etc.
             "error",           // catches "Error", "ERROR:", "syntax error"
+            "aborted",         // "Transfer aborted", "Aborted by user request"
             "could not",       // typical Unix-error prefix
+            "couldn't",        // "couldn't open file: ..."
             "permission denied",
             "no such file",
             "connection refused",
@@ -800,7 +802,27 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = false
         progressBar.doubleValue = 100
         progressBar.isHidden = true
-        // Count rows whose progress ended FAILED. Latches into the
+
+        // Some Unison failure paths only update the row's
+        // *details* field (`unison_bridge_ri_get_details`), not its
+        // *progress* field. The screenshot example: a transfer
+        // aborted because the source file changed mid-sync — Unison
+        // stores "Transfer aborted" in the row's details but leaves
+        // progress stuck at whatever percent it reached before the
+        // abort. The Progress column would draw a partial blue bar
+        // (looks successful-ish), the row wouldn't carry the ⚠ FAILED
+        // marker, and the summary's failure count would miss it.
+        //
+        // Walk every row at sync-complete: for any row whose progress
+        // isn't already FAILED, check its details string for a
+        // failure marker and synthesize "FAILED: <reason>" into the
+        // progress field if found. ProgressDescriptor.parse + the
+        // ProgressCellView then take over as if Unison had emitted
+        // FAILED itself.
+        attributeRowFailuresFromDetails()
+
+        // Count rows whose progress ended FAILED (now including the
+        // synthesized ones from the pass above). Latches into the
         // phase so both the summary ("Synchronization completed with
         // N error(s)") AND the action-gating logic see the same
         // terminal state.
@@ -811,6 +833,86 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         setSummary(summaryText())
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: sync complete (failures: \(failures))")
+    }
+
+    /// Walk every row whose progress field doesn't already indicate
+    /// failure. Query its per-row details from OCaml; if the details
+    /// contain a failure marker (Transfer aborted / Failed: /
+    /// permission denied / …), synthesize a FAILED progress string
+    /// for that row and reload it in the outline view. Catches the
+    /// failure modes Unison signals via per-row details without
+    /// touching the per-row progress field.
+    ///
+    /// Cost: ~one bridge round-trip per non-failed row, only at
+    /// sync-complete time. For typical sync sizes that's tens or
+    /// hundreds of round-trips synchronously on main — fast enough
+    /// (each call is a single mutex-handoff to the OCaml worker that
+    /// reads a stored string).
+    private func attributeRowFailuresFromDetails() {
+        for row in items.indices {
+            if ProgressDescriptor.parse(items[row].progress).isFailure {
+                continue
+            }
+            guard let cstr = unison_bridge_ri_get_details(Int32(row)) else {
+                continue
+            }
+            let details = String(cString: cstr)
+            guard Self.detailsIndicateFailure(details) else { continue }
+            let reason = Self.failureReason(from: details)
+            items[row] = items[row].with(
+                progress: "FAILED: \(reason)",
+                bytesTransferred: items[row].bytesTransferred)
+            if let node = leafNode(forRow: row) {
+                outlineView.reloadItem(node, reloadChildren: false)
+            }
+            TraceLog.shared.write(
+                "ReconcileWindow: synthesized FAILED for row[\(row)] " +
+                "(\(items[row].path)) — reason: \(reason)")
+        }
+    }
+
+    /// Pure classification: does a per-row details string indicate a
+    /// transfer failure that the row's progress field missed?
+    /// Conservative — only triggers on markers unlikely to appear in
+    /// success messages. "skipped" is deliberately NOT a marker
+    /// because Unison uses it for user-initiated skips.
+    nonisolated static func detailsIndicateFailure(_ details: String) -> Bool {
+        let lowered = details.lowercased()
+        let markers = [
+            "transfer aborted",
+            "transfer failed",
+            "failed:",
+            "permission denied",
+            "could not open",
+            "couldn't open",
+            "no such file",
+        ]
+        return markers.contains(where: { lowered.contains($0) })
+    }
+
+    /// Extract a short user-facing reason from a per-row details
+    /// string. Used to populate the synthesized FAILED progress
+    /// message; gets truncated by the Progress column's lineBreakMode
+    /// when displayed but is fully available in the details panel.
+    nonisolated static func failureReason(from details: String) -> String {
+        let markers = [
+            "transfer aborted", "transfer failed", "failed:",
+            "permission denied", "could not open", "couldn't open",
+            "no such file",
+        ]
+        let lines = details.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        // First line that contains a marker wins — that's the line
+        // most directly describing the failure.
+        for line in lines {
+            let lower = line.lowercased()
+            if markers.contains(where: { lower.contains($0) }) {
+                return line
+            }
+        }
+        // Fallback: last non-empty line.
+        return lines.last ?? "transfer error"
     }
 
     /// Reset transient sync-UI state without closing the window. Called

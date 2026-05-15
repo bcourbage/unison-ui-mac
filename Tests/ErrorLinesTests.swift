@@ -120,4 +120,106 @@ final class ErrorLinesTests: XCTestCase {
         let errors = ReconcileWindowController.errorLines(in: text)
         XCTAssertEqual(errors, ["FAILED: x"])
     }
+
+    func test_abortedKeyword_isCaught() {
+        // Unison's "Transfer aborted" message (e.g. source file
+        // modified during sync) needs to count toward the error
+        // banner. This is the user-reported failure mode that
+        // initially wasn't being captured because "aborted" wasn't
+        // on the keyword list.
+        let cases = [
+            "The source file foo has been modified during synchronization.  Transfer aborted.",
+            "Aborted by user request",
+        ]
+        for line in cases {
+            XCTAssertEqual(
+                ReconcileWindowController.errorLines(in: line).count,
+                1,
+                "expected 'aborted' to match in: \(line)"
+            )
+        }
+    }
+
+    func test_couldntKeyword_isCaught() {
+        // "couldn't open file" is a common Unison wording for
+        // permission/race errors. The list catches both the formal
+        // "could not" and the contraction "couldn't".
+        XCTAssertFalse(
+            ReconcileWindowController.errorLines(in: "couldn't open file /tmp/x").isEmpty
+        )
+    }
+
+    // MARK: - detailsIndicateFailure / failureReason
+
+    func test_detailsIndicateFailure_recognizesTransferAborted() {
+        let details = """
+            Photos Library.photoslibrary/database/Photos.sqlite-shm
+            The source file ... has been modified during synchronization.  Transfer aborted.
+            """
+        XCTAssertTrue(ReconcileWindowController.detailsIndicateFailure(details))
+    }
+
+    func test_detailsIndicateFailure_recognizesFailedColon() {
+        XCTAssertTrue(ReconcileWindowController.detailsIndicateFailure(
+            "Failed: connection reset"))
+    }
+
+    func test_detailsIndicateFailure_recognizesPermissionDenied() {
+        XCTAssertTrue(ReconcileWindowController.detailsIndicateFailure(
+            "open(/etc/shadow): Permission denied"))
+    }
+
+    func test_detailsIndicateFailure_rejectsNormalSuccessDetails() {
+        // Per-row details on a successful sync look like file
+        // metadata — sizes, mtimes, no failure phrasing. Must NOT
+        // trip the classifier.
+        let normal = """
+            path/to/file.txt
+            Type: file
+            Modified: 2026-05-13 09:30:00
+            Size: 1.2 MB
+            """
+        XCTAssertFalse(ReconcileWindowController.detailsIndicateFailure(normal))
+    }
+
+    func test_detailsIndicateFailure_doesNotMatchUserSkipped() {
+        // "Skipped" is used for user-initiated direction skips —
+        // those aren't failures. Important false-negative case:
+        // don't synthesize FAILED on rows the user deliberately
+        // skipped before Go.
+        let userSkipped = """
+            path/to/file.txt
+            Status: skipped by user
+            """
+        XCTAssertFalse(ReconcileWindowController.detailsIndicateFailure(userSkipped))
+    }
+
+    func test_failureReason_extractsTheLineContainingTheMarker() {
+        let details = """
+            Photos Library.photoslibrary/database/Photos.sqlite-shm
+            The source file ... has been modified during synchronization.  Transfer aborted.
+            """
+        let reason = ReconcileWindowController.failureReason(from: details)
+        XCTAssertTrue(reason.contains("Transfer aborted"),
+                      "expected reason to be the marker-bearing line: \(reason)")
+        XCTAssertFalse(reason.contains("\n"),
+                       "reason should be a single line")
+    }
+
+    func test_failureReason_fallsBackToLastLineWhenNoMarker() {
+        // If somehow a multi-line string has no failure marker
+        // (shouldn't normally reach this function — detailsIndicateFailure
+        // gates it — but defensive), return something rather than
+        // crash. The last non-empty line is the natural fallback.
+        let details = "line one\nline two\nline three"
+        XCTAssertEqual(
+            ReconcileWindowController.failureReason(from: details),
+            "line three"
+        )
+    }
+
+    func test_failureReason_emptyInput_returnsPlaceholder() {
+        let reason = ReconcileWindowController.failureReason(from: "")
+        XCTAssertEqual(reason, "transfer error")
+    }
 }
