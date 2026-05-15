@@ -396,9 +396,13 @@ During an active sync, the summary line stays pinned to the
 total bytes, direction split) remain visible throughout the
 transfer. The dynamic state — *which* file is currently moving and
 how far along — is conveyed by the global progress bar above the
-file list and by the per-row Progress column inside it. Any errors
-or warnings emitted by Unison mid-sync are routed to the red
-`⚠ N issues — View…` pill on the right of the summary row.
+file list and by the per-row Progress column inside it. Mid-sync
+errors that attach to a row surface as the per-row `⚠` marker
+(hover for reason); the post-sync summary's
+`Synchronization completed with N error(s)` covers the aggregate
+count. The full raw diagnostic stream (every `displayStatus`
+message Unison emits) is also logged to Console.app under subsystem
+`net.courbage.unison-ui-mac` for deeper debugging if needed.
 
 The profile name is **not** included in the summary — the window
 title carries it (`Unison — <profile>`), so repeating it just costs
@@ -409,11 +413,12 @@ flows toward. "First" and "Second" refer to the two replicas (the
 two `root = …` lines in the `.prf`), matching the column headers
 and the toolbar's `← First` / `→ Second` buttons.
 
-When one or more rows failed during sync, a separate red
-**`⚠ N issues — View…`** pill appears at the right end of the
-summary row — click it to read the accumulated error messages.
-Failed rows also carry a red `⚠` marker in their Progress column
-(hover the marker for the per-row failure reason).
+When one or more rows failed during sync, the summary prefix
+switches to `Synchronization completed with N error(s)` and each
+failed row gets a red `⚠` marker in its Progress column. Hover the
+marker to read the per-row failure reason; the same text is also
+shown in the details panel at the bottom of the window when the
+failed row is selected.
 
 The size figure between the item count and the breakdown is the **total
 bytes that will move if you hit Go now**. Sum of file sizes for rows

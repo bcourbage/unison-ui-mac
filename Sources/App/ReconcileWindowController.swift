@@ -54,21 +54,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// update so we never show stale messages.
     private var lastMultiLineStatus: String?
 
-    /// Red banner button that surfaces a count of error-looking status
-    /// messages accumulated since the last rescan. Click → NSAlert
-    /// with the full list. Hidden when `errorMessages` is empty.
-    ///
-    /// We surface a separate banner (rather than just dropping errors
-    /// into the existing single-line status display) because OCaml's
-    /// `displayStatus` rotates rapidly during scan/sync — an error
-    /// emitted at 3% scan would be overwritten by the next status
-    /// message in seconds, leaving the user with no visible signal
-    /// that anything went wrong. The banner persists until rescan.
-    private let errorBannerButton = NSButton(title: "", target: nil, action: nil)
-    /// Accumulated error-looking status messages (in arrival order,
-    /// deduplicated against immediate-prior duplicates so a status
-    /// looping the same message doesn't spam the count).
-    private var errorMessages: [String] = []
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
@@ -225,10 +210,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         items = newItems
         tree = ReconcileTree(items: newItems)
         rowOverrides.removeAll()
-        // Reset the error banner on rescan — errors from a previous
-        // scan are no longer relevant to the fresh row set.
-        errorMessages.removeAll()
-        refreshErrorBanner()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
         // Fresh row set ⇒ back to the ready phase; the previous
@@ -264,24 +245,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusDetailsButton.controlSize = .small
         statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusDetailsButton.isHidden = true
-
-        // Error banner: red filled pill that sits to the trailing side
-        // of the summary line. Shown only when one or more
-        // error-looking status messages have accumulated since the
-        // last rescan. Title gets re-rendered ("⚠ N issue(s) — View…")
-        // when the count changes.
-        //
-        // Visual treatment: `.rounded` bezel + `.systemRed` bezelColor
-        // makes it a filled red pill that draws the eye. The previous
-        // `.inline` + `.small` + red-tint styling read as a quiet
-        // link — easy to miss against the rest of the toolbar.
-        errorBannerButton.target = self
-        errorBannerButton.action = #selector(showErrorMessages(_:))
-        errorBannerButton.bezelStyle = .rounded
-        errorBannerButton.controlSize = .regular
-        errorBannerButton.bezelColor = .systemRed
-        errorBannerButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-        errorBannerButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
         // Column titles use the upstream manual's terminology: the two
@@ -341,7 +304,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // the trailing edge and only appears when there's multi-line
         // status to disclose. Error banner sits next to it, also
         // hugging trailing edge, also only visible when relevant.
-        let summaryRow = NSStackView(views: [summaryLabel, errorBannerButton, statusDetailsButton])
+        let summaryRow = NSStackView(views: [summaryLabel, statusDetailsButton])
         summaryRow.orientation = .horizontal
         summaryRow.spacing = 6
         summaryRow.alignment = .firstBaseline
@@ -360,7 +323,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // .resizable styleMask) and silently widened it.
         summaryLabel.setContentCompressionResistancePriority(
             .defaultLow, for: .horizontal)
-        errorBannerButton.setContentHuggingPriority(.required, for: .horizontal)
         statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: [summaryRow, progressBar, scroll, detailsScroll])
@@ -500,17 +462,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // rows in place with just a "Rescanning…" summary line on
         // top — which read as "scan complete, here are the results"
         // until init2 actually returned. Clearing items, the tree,
-        // and the per-row dicts (rowOverrides + errorMessages) drops
-        // the outline view to empty for the duration of the scan;
-        // `replaceItems(_:)` repopulates it when init2 completes.
-        // For the initial-scan path (`beginInitialScan`) this is a
-        // no-op visually — the window was just opened and the dicts
-        // were already empty.
+        // and rowOverrides drops the outline view to empty for the
+        // duration of the scan; `replaceItems(_:)` repopulates it
+        // when init2 completes. For the initial-scan path
+        // (`beginInitialScan`) this is a no-op visually — the window
+        // was just opened and the row set was already empty.
         items = []
         tree = ReconcileTree(items: [])
         rowOverrides.removeAll()
-        errorMessages.removeAll()
-        refreshErrorBanner()
         outlineView.reloadData()
         detailsTextView.string = "Select a row to see details."
 
@@ -585,9 +544,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // would otherwise overwrite that line by line, losing the
         // user's at-a-glance totals during a long transfer. The
         // global progress bar + per-row Progress cells carry the
-        // dynamic state. Errors are still surfaced via the
-        // errorLines extraction below, so important messages don't
-        // get lost — only the redundant chatter is silenced.
+        // dynamic state.
+        //
+        // For diagnostics, every status message — including ones
+        // that look like errors — is logged to TraceLog (via the
+        // AppDelegate-side handler that calls into this method).
+        // Per-row failures get attributed at sync-complete via
+        // `attributeRowFailuresFromDetails`, which scans each row's
+        // OCaml-side details string for failure markers. The
+        // combination of those two paths (TraceLog for the
+        // diagnostic stream, per-row ⚠ + tooltip for user-visible
+        // outcomes) replaced an earlier red banner pill that
+        // accumulated keyword-matched status lines — that surface
+        // proved redundant once per-row attribution landed, and was
+        // prone to false positives on path-containing keywords.
         if !isSyncing {
             summaryLabel.stringValue = firstLine
             if hasMore {
@@ -603,148 +573,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                 summaryLabel.toolTip = nil
                 statusDetailsButton.isHidden = true
             }
-        }
-
-        // Accumulate any error-looking content into the persistent
-        // error log (separate from the transient status line, which
-        // rotates rapidly during scan/sync). Whichever lines of the
-        // status look like errors get appended; the banner button
-        // shows a count. ALWAYS runs, including during sync — that's
-        // how mid-sync warnings get from OCaml into the user's view
-        // via the red banner.
-        let errorLines = Self.errorLines(in: fullText)
-        if !errorLines.isEmpty {
-            for line in errorLines {
-                // Skip immediate-prior dups so a status loop reporting
-                // the same message many times doesn't inflate the count.
-                if errorMessages.last != line {
-                    errorMessages.append(line)
-                }
-            }
-            refreshErrorBanner()
-        }
-    }
-
-    /// Pure classification: which lines of a status message look like
-    /// errors? Case-insensitive substring match against a small set of
-    /// keywords Unison uses for error / failure conditions. Designed
-    /// to be testable in isolation and conservatively false-positive
-    /// — better to surface a benign "...not modified" line than miss
-    /// an actual "permission denied".
-    nonisolated static func errorLines(in text: String) -> [String] {
-        // Markers split into two groups by matching strategy:
-        //
-        // **Word-bounded patterns** — case-insensitive regex with
-        // `\b` on each side. Operating on the lowercased line, so
-        // each pattern is itself lowercase. The patterns enumerate
-        // the inflection forms we actually want to catch (e.g.
-        // `failed` / `failures?` / `errors?`) rather than a
-        // generic prefix like `\bfail` — that's the difference
-        // between matching "FAILED" / "transfer failed:" (which we
-        // want) and "failsafe" / "ErrorLinesTests" (which we don't).
-        //
-        // Why not just `\bfail\b`? Because `fail` followed by `e`
-        // in "failed" isn't a word boundary — there's no edge to
-        // anchor against. Enumerating the actual word forms we see
-        // from Unison is more robust than trying to catch a single
-        // "root" with regex tricks.
-        //
-        // **Multi-word markers** — kept as plain substring match.
-        // They contain whitespace and don't show up as substrings
-        // of other tokens, so the substring check is sufficient and
-        // skips the regex cost.
-        let wordBoundedPatterns = [
-            "\\bfailed\\b",       // FAILED / Failed / scan failed
-            "\\bfailures?\\b",    // failure / failures
-            "\\berrors?\\b",      // Error: / ERROR / errors but NOT ErrorLines
-            "\\baborted\\b",      // Transfer aborted / Aborted by user request
-            "\\bcouldn't\\b",     // couldn't open file
-        ]
-        let multiWordMarkers = [
-            "could not",
-            "permission denied",
-            "no such file",
-            "connection refused",
-            "host unreachable",
-            "host key verification",  // SSH known_hosts mismatch
-            "operation timed out",
-            "util.fatal",      // OCaml fatal that leaked through Trace
-        ]
-
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-
-        return lines.filter { line in
-            let lower = line.lowercased()
-            if multiWordMarkers.contains(where: { lower.contains($0) }) {
-                return true
-            }
-            for pattern in wordBoundedPatterns {
-                if lower.range(of: pattern, options: .regularExpression) != nil {
-                    return true
-                }
-            }
-            return false
-        }
-    }
-
-    /// Refresh the error banner's title + visibility from
-    /// `errorMessages`. Hidden when empty.
-    private func refreshErrorBanner() {
-        let n = errorMessages.count
-        if n == 0 {
-            errorBannerButton.isHidden = true
-            errorBannerButton.attributedTitle = NSAttributedString(string: "")
-        } else {
-            errorBannerButton.isHidden = false
-            // Attributed title with white text for legible contrast
-            // against the red bezelColor. Setting `.title` alone would
-            // pick up the system default text color (typically near-
-            // black), which reads poorly on a red fill.
-            let title = "⚠ \(n) issue\(n == 1 ? "" : "s") — View…"
-            errorBannerButton.attributedTitle = NSAttributedString(
-                string: title,
-                attributes: [
-                    .foregroundColor: NSColor.white,
-                    .font: NSFont.systemFont(
-                        ofSize: NSFont.systemFontSize, weight: .bold),
-                ]
-            )
-        }
-    }
-
-    @objc private func showErrorMessages(_ sender: Any?) {
-        guard !errorMessages.isEmpty else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Errors and warnings during scan/sync"
-        alert.informativeText =
-            "\(errorMessages.count) error-looking message" +
-            "\(errorMessages.count == 1 ? "" : "s") accumulated since " +
-            "the last rescan. The list clears the next time you Rescan."
-        // Scrollable text view for the full log — `informativeText` is
-        // truncated on long content.
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .lineBorder
-        let textView = NSTextView(frame: scroll.bounds)
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.string = errorMessages.enumerated()
-            .map { "\($0.offset + 1). \($0.element)" }
-            .joined(separator: "\n\n")
-        textView.autoresizingMask = [.width, .height]
-        scroll.documentView = textView
-        alert.accessoryView = scroll
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Clear")
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            errorMessages.removeAll()
-            refreshErrorBanner()
         }
     }
 
