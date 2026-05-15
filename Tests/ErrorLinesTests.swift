@@ -72,6 +72,13 @@ final class ErrorLinesTests: XCTestCase {
             """
         let errors = ReconcileWindowController.errorLines(in: text)
         XCTAssertEqual(errors.count, 2)
+        // Guard so a count-mismatch surfaces as a clean
+        // XCTAssertEqual failure rather than degrading into a SIGTRAP
+        // on the subsequent `errors[0]` subscript when the array is
+        // empty. (Hit this for real once after a buggy regex
+        // refactor — the bounds-check crash buried the actual
+        // assertion under a confusing crash report.)
+        guard errors.count == 2 else { return }
         XCTAssertTrue(errors[0].contains("FAILED"))
         XCTAssertTrue(errors[1].contains("failed"))
         // Critically: "Looking for changes" / "Reconciling" / "Done"
