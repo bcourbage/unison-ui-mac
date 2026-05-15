@@ -39,6 +39,47 @@ section at the bottom so this list stays scannable.
       viable — we embed GPLv3 code and the App Store license terms
       aren't GPL-compatible.
 
+- [ ] **Reconcile view: tree vs. flat list (with auto-expand depth)** —
+      currently the reconcile outline view always renders rows as a
+      hierarchical folder tree, default-expanded to every level
+      (introduced in commit
+      [`6446fe4`](https://github.com/bcourbage/unison-ui-mac/commit/6446fe42f6de4f48477fa4b793fd65673a5425f4);
+      before that, rows were a flat list of every affected path).
+      The tree is great for scanning structure but can dominate the
+      view when the diff is deep (e.g. a Photos library or an Xcode
+      DerivedData tree where you really only want to see leaves).
+      Add two settings in **Settings → Reconcile display**:
+
+      1. **Layout style** — `Folder tree` (default) | `Flat list`.
+         Flat-list mode renders one row per leaf path (no folder
+         aggregation, no disclosure chevrons), recovering the
+         pre-`6446fe4` behavior. Folder aggregates (`FolderAggregate`
+         logic, direction tinting on folder rows) and the
+         folder-icon column treatment become inert in flat mode.
+
+      2. **Default expand depth** (folder-tree mode only) — integer
+         with sentinel for unlimited; suggest a default of **2**
+         (top-level + one nested level expanded; deeper folders stay
+         collapsed). Options the picker should offer:
+         `Top level only (1)` / `2 levels (default)` / `3 levels` /
+         `All levels (unlimited)`. The depth applies on first
+         populate of a fresh row set (post-init2 and post-rescan);
+         the user can still expand individual folders manually
+         beyond it. Today's behavior is "unlimited" via
+         `outlineView.expandItem(nil, expandChildren: true)` in
+         `replaceItems` — that call becomes
+         `expandToDepth(_:)` parameterized by the setting.
+
+      Implementation sketch: extend `SettingsModel` with two new
+      `UserDefaults` keys (e.g.
+      `reconcile.layoutStyle` ∈ {tree, flat},
+      `reconcile.defaultExpandDepth` ∈ {1, 2, 3, 0=unlimited}).
+      `ReconcileTree` already separates the data model from the
+      outline rendering; flat mode probably means a different
+      `numberOfChildrenOfItem` / `child(_:ofItem:)` path that
+      returns leaves at the root level. Tests pin the depth + flat
+      rendering rules.
+
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
