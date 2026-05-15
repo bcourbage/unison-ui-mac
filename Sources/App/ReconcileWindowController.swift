@@ -1248,48 +1248,69 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// subitem based on whether the current selection contains any leaf
     /// rows. Folder-only selections with no descendant leaves (e.g., a
     /// totally empty folder, shouldn't happen but be safe) also disable.
-    /// Refresh the enabled-state of every gated toolbar item based on
-    /// the current `phase`, `items`, and outline-view selection.
+    /// Trigger an immediate revalidation of every visible toolbar
+    /// item. The actual gating logic lives in
+    /// `canPerformToolbarAction(_:)` and is invoked via the toolbar's
+    /// `NSToolbarItemValidation` path
+    /// (`ReconcileToolbarDelegate.validateToolbarItem`).
     ///
-    /// Toolbar items don't auto-validate against `validateMenuItem`
-    /// the way menu items do — they go through their own target/action
-    /// dispatch — so we explicitly walk the toolbar and set each
-    /// item's `isEnabled` on every state transition. The set of gates
-    /// here must mirror what `validateMenuItem` returns for the
-    /// equivalent selectors; the two paths share the `isActionable`
-    /// helper so they can't drift.
+    /// Why this exists: NSToolbar's auto-validation loop only fires
+    /// periodically (and on window-key changes). On a phase
+    /// transition we want the visual state to update *now*, not on
+    /// the next tick — so we explicitly ask the toolbar to
+    /// revalidate. The validation call ends up at
+    /// `canPerformToolbarAction` for each item, which reads `phase`
+    /// + selection state and returns the correct `isEnabled` value.
     private func refreshToolbarEnabled() {
-        guard let toolbar = window?.toolbar else { return }
-        let hasLeaves = !leafRowsInSelection().isEmpty
-        let actionable = isActionable
-        let syncing: Bool = { if case .syncing = phase { return true }; return false }()
-        for item in toolbar.items {
-            switch item.itemIdentifier {
-            case DirectionAction.directionGroupIdentifier:
-                // Per-row direction overrides — gated by isActionable
-                // AND by whether the selection contains leaf rows.
-                if let group = item as? NSToolbarItemGroup {
-                    for sub in group.subitems {
-                        sub.isEnabled = actionable && hasLeaves
-                    }
-                }
-            case DirectionAction.goIdentifier:
-                // Go is the canonical "act on the current row set"
-                // primary — enabled exactly when isActionable is true.
-                item.isEnabled = actionable
-            case DirectionAction.stopIdentifier:
-                // Stop is only meaningful while a sync is in flight.
-                item.isEnabled = syncing
-            case DirectionAction.rescanIdentifier:
-                // Rescan is the way out of the .done state, and a
-                // useful re-check while .ready. Disabled only during
-                // an active sync (OCaml runtime is occupied).
-                item.isEnabled = !syncing
-            default:
-                // Profiles + space items + anything not listed above
-                // is left at its default (typically always enabled).
-                break
+        window?.toolbar?.validateVisibleItems()
+    }
+
+    /// Single source of truth for whether a given toolbar item should
+    /// be enabled. Called by `ReconcileToolbarDelegate.validateToolbarItem`
+    /// during AppKit's auto-validation cycle. The same lifecycle
+    /// gates as `validateMenuItem(_:)`; both paths share the
+    /// `isActionable` helper so they can't drift.
+    func canPerformToolbarAction(_ identifier: NSToolbarItem.Identifier) -> Bool {
+        let syncing: Bool = {
+            if case .syncing = phase { return true }
+            return false
+        }()
+        switch identifier {
+        case DirectionAction.goIdentifier:
+            // Go: same gate as direction overrides. Disabled during
+            // sync, after sync completes, and when items is empty.
+            return isActionable
+        case DirectionAction.stopIdentifier:
+            // Stop only meaningful while a sync is in flight.
+            return syncing
+        case DirectionAction.rescanIdentifier:
+            // Rescan is the way out of `.done` back to `.ready` —
+            // explicitly available after completion. Only blocked
+            // while OCaml is actively running a sync.
+            return !syncing
+        case DirectionAction.profilesIdentifier:
+            // Always navigable back to the picker.
+            return true
+        case DirectionAction.directionGroupIdentifier:
+            // The group container is enabled if any subitem would be
+            // enabled — but AppKit also validates each subitem
+            // individually, so this is mostly cosmetic. Match the
+            // subitem rule for consistency.
+            return isActionable && !leafRowsInSelection().isEmpty
+        default:
+            // Direction subitems (← First, → Second, Skip, Merge)
+            // all use identifiers from DirectionAction.toolbarActions.
+            // Gated like the group container: must be actionable AND
+            // have leaf rows in the selection.
+            if DirectionAction.toolbarActions
+                .contains(where: { $0.toolbarIdentifier == identifier })
+            {
+                return isActionable && !leafRowsInSelection().isEmpty
             }
+            // Unknown identifier (e.g. .flexibleSpace, .space) —
+            // default to enabled; AppKit handles non-actionable
+            // items naturally.
+            return true
         }
     }
 

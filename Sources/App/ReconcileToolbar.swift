@@ -287,6 +287,29 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     @objc private func profilesAction(_ sender: NSToolbarItem) {
         controller?.returnToPicker()
     }
+
+    // MARK: - Validation
+    //
+    // `NSToolbarItem.autovalidates` defaults to true. AppKit runs a
+    // validation loop that calls `validateToolbarItem(_:)` on the
+    // target (this delegate) for each visible item — periodically,
+    // on window key changes, on `validateVisibleItems()` calls. The
+    // return value drives `isEnabled`. Without an implementation
+    // here, AppKit's fallback rule ("enabled if target responds to
+    // action") meant Go/Stop/direction stayed enabled regardless of
+    // lifecycle phase, even though the controller was *trying* to
+    // disable them explicitly. Pushing the gate into the validation
+    // path is the macOS-idiomatic fix.
+    //
+    // The actual phase + selection logic lives on the controller via
+    // `canPerformToolbarAction(_:)` so menu validation
+    // (`validateMenuItem`) and toolbar validation can share the same
+    // single source of truth.
+
+    @MainActor
+    @objc func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        controller?.canPerformToolbarAction(item.itemIdentifier) ?? false
+    }
 }
 
 // (Previously: directionActionTag / directionActionFromTag — both
