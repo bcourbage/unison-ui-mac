@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Window management
 
-    private func showProfilePicker() {
+    private func showProfilePicker(select: String? = nil) {
         // If a reconcile window is up, close it first — the workflow is
         // single-window: picker OR reconcile, not both.
         if let reconcile = reconcileWindowController {
@@ -141,6 +141,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        // Apply explicit selection AFTER showing/keying — the
+        // `windowDidBecomeKey` auto-reload would otherwise overwrite
+        // our preference. `reloadProfiles(select:)` runs through
+        // `reload(preferredSelection:)` which honors the request.
+        if let select {
+            controller.reloadProfiles(select: select)
+        }
         profileWindowController = controller
     }
 
@@ -180,7 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.log.write("reconcile window closed — returning to picker")
                 self.reconcileWindowController = nil
-                self.showProfilePicker()
+                // Preserve which profile the user just worked with so
+                // it's the highlighted row when they return to the
+                // picker — saves a click if they want to re-run, or
+                // simply makes the context continuous.
+                self.showProfilePicker(select: profile)
             },
             onRescanRequested: { [weak self] in
                 self?.rescanCurrentProfile(profile)

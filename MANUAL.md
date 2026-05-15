@@ -105,6 +105,17 @@ Double-click also runs.
 > "Open" was the old label but was misleading: nothing here opens a
 > document for editing.
 
+**Initial selection**:
+
+- First launch (or any time the picker opens with no prior context):
+  the profile named `default` if you have one, otherwise the top row.
+- Returning from the reconcile window: the profile you just had open
+  stays highlighted, so re-running it (or moving on to a different
+  one) is a single click away.
+- After a manual click + a `windowDidBecomeKey` reload (e.g. you
+  switched apps and came back): your last manual selection is
+  preserved if the profile is still on disk.
+
 ### Profile creation, editing, deletion, etc.
 
 Not on the picker — those live in the Profile Editor manager. The picker
@@ -355,8 +366,11 @@ and init2 walks both replicas to compute differences).
 - **Progress** — populated during sync. Shows a standard macOS
   `NSProgressIndicator` bar (follows your **System Settings →
   Appearance → Accent color**) for in-flight rows, full bar when
-  finished, and a bold red **`⚠ FAILED`** marker on rows whose
-  transfer didn't complete. Empty when idle.
+  finished, and a bold red **`⚠`** marker on rows whose transfer
+  didn't complete. Hover the ⚠ to see the full failure reason in a
+  tooltip; the same text is also shown in the details panel at the
+  bottom of the window when the failed row is selected. Empty when
+  idle.
 - **Type** — `FILE`, `DIR`, `SYMLINK`, etc., as Unison reports.
 
 ### Summary line
@@ -398,8 +412,8 @@ and the toolbar's `← First` / `→ Second` buttons.
 When one or more rows failed during sync, a separate red
 **`⚠ N issues — View…`** pill appears at the right end of the
 summary row — click it to read the accumulated error messages.
-Failed rows also carry a `⚠ FAILED` marker in their Progress
-column.
+Failed rows also carry a red `⚠` marker in their Progress column
+(hover the marker for the per-row failure reason).
 
 The size figure between the item count and the breakdown is the **total
 bytes that will move if you hit Go now**. Sum of file sizes for rows

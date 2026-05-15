@@ -122,7 +122,20 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         ])
     }
 
-    private func reload() {
+    /// Reload the profile list from disk and re-apply the selection.
+    ///
+    /// Selection priority:
+    ///   1. Explicit `preferredSelection` if provided AND present in
+    ///      the resulting list (used by AppDelegate when returning
+    ///      from the reconcile window — the just-run profile gets
+    ///      pre-selected so the user can re-run it with one click).
+    ///   2. Whatever was previously selected if it's still present
+    ///      (so a `windowDidBecomeKey`-triggered reload doesn't
+    ///      wipe the user's manual click).
+    ///   3. The "default" profile by name if it exists.
+    ///   4. Row 0 as the final fallback.
+    private func reload(preferredSelection: String? = nil) {
+        let priorSelection = currentlySelectedProfile()
         let url = URL(fileURLWithPath: unisonDirectory)
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
         let available = contents
@@ -135,19 +148,37 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         let prefs = ProfilePreferences.load()
         profiles = prefs.apply(to: available, includeHidden: false)
         tableView.reloadData()
-        if let defaultIdx = profiles.firstIndex(of: "default") ?? (profiles.isEmpty ? nil : 0) {
-            tableView.selectRowIndexes(IndexSet(integer: defaultIdx), byExtendingSelection: false)
+
+        let targetIdx: Int? = {
+            if let preferred = preferredSelection,
+               let idx = profiles.firstIndex(of: preferred) {
+                return idx
+            }
+            if let prior = priorSelection,
+               let idx = profiles.firstIndex(of: prior) {
+                return idx
+            }
+            if let idx = profiles.firstIndex(of: "default") {
+                return idx
+            }
+            return profiles.isEmpty ? nil : 0
+        }()
+        if let idx = targetIdx {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         }
         TraceLog.shared.write("ProfileWindow: \(profiles.count) profiles (of \(available.count) on disk) in \(unisonDirectory)")
     }
 
-    /// Reload the profile list (e.g. after the editor saved a new file).
-    /// If `select` is non-nil and matches an entry, select it; otherwise
-    /// fall back to the same default-selection rule as the initial reload.
+    /// Reload the profile list (e.g. after the editor saved a new file,
+    /// or after returning from the reconcile window). If `select` is
+    /// non-nil and matches an entry, that entry takes priority over
+    /// the prior-selection / default-name fallbacks in `reload`.
     func reloadProfiles(select: String? = nil) {
-        reload()
+        reload(preferredSelection: select)
+        // Scroll the explicit selection into view if it's far down a
+        // long list. The reload itself sets the selection; this is
+        // purely about visibility.
         if let target = select, let idx = profiles.firstIndex(of: target) {
-            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
             tableView.scrollRowToVisible(idx)
         }
     }

@@ -128,32 +128,42 @@ final class ProgressCellView: NSTableCellView {
 
     func configure(progress: String) {
         descriptor = ProgressDescriptor.parse(progress)
-        // Failure and "start" / other textual states: text only, no bar.
-        // Numeric percent rows AND "done": bar only, no text overlay.
-        // The bar's fill fraction is the indicator — overlaying text on
-        // the accent-colored fill (especially at small sizes) just made
-        // both halves harder to read. Finder, App Store, and macOS
-        // installer all use bar-only for in-flight file transfers; this
-        // matches that idiom.
         if let f = descriptor.fraction, !descriptor.isFailure {
+            // Numeric percent rows AND "done": bar only, no text overlay,
+            // no tooltip. The bar's fill fraction is the indicator —
+            // matches Finder / App Store / macOS installer idiom for
+            // in-flight file transfers.
             bar.isHidden = false
             bar.doubleValue = f
             textOverlay.stringValue = ""
-        } else {
+            toolTip = nil
+        } else if descriptor.isFailure {
+            // Failure rows: just the ⚠ glyph, full failure message on
+            // hover. The Progress column is typically narrow, so the
+            // previous "⚠ FAILED: Transfer aborted…" almost always
+            // got truncated mid-reason and was uselessly cropped.
+            // Icon-plus-tooltip is the macOS-standard "more info on
+            // hover" idiom (Finder uses it for truncated filenames).
+            // The full text is also available in the details panel
+            // below when the row is selected.
             bar.isHidden = true
             bar.doubleValue = 0
-            // Failure rows get a ⚠ glyph prefix so the cell reads as
-            // "obviously bad" at a glance, not just "some text in this
-            // column". Matches the ⚠ used in the summary's error
-            // banner button for visual consistency. Bold red text is
-            // also kept (font + color below).
-            textOverlay.stringValue = descriptor.isFailure
-                ? "⚠ \(descriptor.text)"
-                : descriptor.text
-            textOverlay.textColor = descriptor.isFailure ? .systemRed : .labelColor
-            textOverlay.font = descriptor.isFailure
-                ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)
-                : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+            textOverlay.stringValue = "⚠"
+            textOverlay.textColor = .systemRed
+            textOverlay.font = .systemFont(
+                ofSize: NSFont.systemFontSize, weight: .bold)
+            toolTip = descriptor.text
+        } else {
+            // Other textual states ("start", any non-numeric label):
+            // show the text. These are short ("start") and rarely
+            // exceed the column width, so no tooltip needed.
+            bar.isHidden = true
+            bar.doubleValue = 0
+            textOverlay.stringValue = descriptor.text
+            textOverlay.textColor = .labelColor
+            textOverlay.font = .monospacedDigitSystemFont(
+                ofSize: NSFont.systemFontSize - 1, weight: .regular)
+            toolTip = nil
         }
     }
 }
