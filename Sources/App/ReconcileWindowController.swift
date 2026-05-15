@@ -217,7 +217,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         refreshErrorBanner()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
-        setSummary(summaryText(profile: profile))
+        setSummary(summaryText())
         refreshDirectionToolbarEnabled()
     }
 
@@ -229,7 +229,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // Initial config — setSummary keeps the multi-line state in
         // sync even though there's nothing stale at startup. Cheaper to
         // keep one code path than to duplicate the assignment.
-        setSummary(summaryText(profile: profile))
+        setSummary(summaryText())
         // byTruncatingTail (the default for label-style text fields) is
         // wrong for our case — when long SSH error output lands in the
         // summary slot, byTruncatingMiddle keeps the start AND end
@@ -248,16 +248,22 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusDetailsButton.isHidden = true
 
-        // Error banner: red, sits next to the Details button. Shown
-        // only when one or more error-looking status messages have
-        // accumulated since the last rescan. Title gets re-rendered
-        // ("⚠ N issue(s) — View…") when the count changes.
+        // Error banner: red filled pill that sits to the trailing side
+        // of the summary line. Shown only when one or more
+        // error-looking status messages have accumulated since the
+        // last rescan. Title gets re-rendered ("⚠ N issue(s) — View…")
+        // when the count changes.
+        //
+        // Visual treatment: `.rounded` bezel + `.systemRed` bezelColor
+        // makes it a filled red pill that draws the eye. The previous
+        // `.inline` + `.small` + red-tint styling read as a quiet
+        // link — easy to miss against the rest of the toolbar.
         errorBannerButton.target = self
         errorBannerButton.action = #selector(showErrorMessages(_:))
-        errorBannerButton.bezelStyle = .inline
-        errorBannerButton.controlSize = .small
-        errorBannerButton.contentTintColor = .systemRed
-        errorBannerButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        errorBannerButton.bezelStyle = .rounded
+        errorBannerButton.controlSize = .regular
+        errorBannerButton.bezelColor = .systemRed
+        errorBannerButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .bold)
         errorBannerButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
@@ -618,10 +624,22 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         let n = errorMessages.count
         if n == 0 {
             errorBannerButton.isHidden = true
-            errorBannerButton.title = ""
+            errorBannerButton.attributedTitle = NSAttributedString(string: "")
         } else {
             errorBannerButton.isHidden = false
-            errorBannerButton.title = "⚠ \(n) issue\(n == 1 ? "" : "s") — View…"
+            // Attributed title with white text for legible contrast
+            // against the red bezelColor. Setting `.title` alone would
+            // pick up the system default text color (typically near-
+            // black), which reads poorly on a red fill.
+            let title = "⚠ \(n) issue\(n == 1 ? "" : "s") — View…"
+            errorBannerButton.attributedTitle = NSAttributedString(
+                string: title,
+                attributes: [
+                    .foregroundColor: NSColor.white,
+                    .font: NSFont.systemFont(
+                        ofSize: NSFont.systemFontSize, weight: .bold),
+                ]
+            )
         }
     }
 
@@ -743,7 +761,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = false
         progressBar.doubleValue = 100
         progressBar.isHidden = true
-        setSummary(summaryText(profile: profile, syncDone: true))
+        setSummary(summaryText(syncDone: true))
         TraceLog.shared.write("ReconcileWindow: sync complete")
     }
 
@@ -821,7 +839,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             outlineView.reloadItem(node, reloadChildren: false)
         }
         if !changedRows.isEmpty {
-            setSummary(summaryText(profile: profile))
+            setSummary(summaryText())
         }
     }
 
@@ -1214,8 +1232,19 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return out
     }
 
-    private func summaryText(profile: String, syncDone: Bool = false) -> String {
-        ReconcileSummary.text(items: items, profile: profile, syncDone: syncDone)
+    private func summaryText(syncDone: Bool = false) -> String {
+        // failedRows is only meaningful post-sync, but it's safe to
+        // compute either way — the summary builder ignores it when
+        // `syncDone == false`. Count rows whose progress string was
+        // marked FAILED by upstream (via ProgressDescriptor.parse's
+        // `isFailure` rule); these are the rows whose transfers didn't
+        // complete. Matches the per-row marker the user sees in the
+        // Progress column.
+        let failedRows = items
+            .filter { ProgressDescriptor.parse($0.progress).isFailure }
+            .count
+        return ReconcileSummary.text(
+            items: items, syncDone: syncDone, failedRows: failedRows)
     }
 }
 

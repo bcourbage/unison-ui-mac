@@ -2,8 +2,9 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Tests for the reconcile-window's one-line summary. Pure logic
-/// extracted from `ReconcileWindowController` so the count breakdown
-/// + bytes total can be pinned without standing up AppKit.
+/// extracted from `ReconcileWindowController` so the count breakdown,
+/// bytes total, status-leads ordering, and partial-success phrasing
+/// can all be pinned without standing up AppKit.
 final class ReconcileSummaryTests: XCTestCase {
 
     // MARK: - Builders
@@ -20,39 +21,88 @@ final class ReconcileSummaryTests: XCTestCase {
     private let toSecond = ReconcileSummary.directionToSecond  // "---->"
     private let conflict = ReconcileSummary.directionConflict  // "<-?->"
 
-    // MARK: - Basic counts
+    // MARK: - Empty cases
 
-    func test_empty_showsUpToDateMessage() {
-        // No items found → explicit positive phrasing rather than
-        // a sterile "0 items". User feedback was that the empty
-        // post-scan state needed to clearly state nothing-to-do.
-        let out = ReconcileSummary.text(items: [], profile: "Sync")
-        XCTAssertTrue(out.contains("Sync"), out)
-        XCTAssertTrue(out.contains("Everything is up to date"), out)
-        XCTAssertFalse(out.contains("0 items"),
-                       "the empty case should NOT render as '0 items'")
-        XCTAssertFalse(out.contains("KB"), "no bytes line for empty")
-        XCTAssertFalse(out.contains("MB"), "no bytes line for empty")
+    func test_empty_preSync_showsUpToDateMessage() {
+        // No items → explicit positive phrasing. No status prefix
+        // appears separately; the trailing phrase IS the message.
+        let out = ReconcileSummary.text(items: [])
+        XCTAssertEqual(out, "Everything is up to date")
     }
 
-    func test_emptyPostSync_showsNothingToTransfer() {
-        // Edge case: sync somehow finished with 0 items (e.g. all
-        // rows got user-skipped before Go, then "Go" produced no
-        // actual transfers). Use the past-tense prefix + a quiet
-        // trailing clause.
-        let out = ReconcileSummary.text(items: [], profile: "Sync", syncDone: true)
+    func test_empty_postSync_showsNothingToTransfer() {
+        // Edge case: sync somehow finished with 0 items.
+        let out = ReconcileSummary.text(items: [], syncDone: true)
         XCTAssertTrue(out.hasPrefix("Synchronization complete"), out)
         XCTAssertTrue(out.contains("nothing to transfer"), out)
     }
 
+    // MARK: - Profile is NOT included in the summary
+
+    func test_summary_doesNotIncludeProfileName() {
+        // Profile lives in the window title. The summary line is
+        // pure state + counts; no redundant profile prefix.
+        let items = [item(direction: toSecond, size: 1)]
+        let outPre  = ReconcileSummary.text(items: items)
+        let outPost = ReconcileSummary.text(items: items, syncDone: true)
+        // (Construction proves the function takes no `profile` arg.)
+        XCTAssertFalse(outPre.contains("profile"),
+                       "summary must not echo a profile name in pre-sync")
+        XCTAssertFalse(outPost.contains("profile"),
+                       "summary must not echo a profile name in post-sync")
+    }
+
+    // MARK: - Status-first ordering
+
+    func test_preSync_withItems_leadsWithCounts_noStatusPrefix() {
+        // Ready state has no status word — count is the lede.
+        let items = [item(direction: toSecond, size: 1_000_000)]
+        let out = ReconcileSummary.text(items: items)
+        XCTAssertTrue(out.hasPrefix("1 items"), out)
+    }
+
+    func test_postSync_clean_leadsWithStatusPrefix() {
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(items: items, syncDone: true)
+        XCTAssertTrue(out.hasPrefix("Synchronization complete  ·  "), out)
+    }
+
+    func test_postSync_withFailures_leadsWithErrorCountPhrase() {
+        // The partial-success path needs to read as such in the
+        // summary itself, not only via the side error banner.
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(
+            items: items, syncDone: true, failedRows: 5)
+        XCTAssertTrue(out.hasPrefix("Synchronization completed with 5 errors"), out)
+    }
+
+    func test_postSync_singleFailure_usesSingularNoun() {
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(
+            items: items, syncDone: true, failedRows: 1)
+        XCTAssertTrue(out.contains("1 error"), out)
+        XCTAssertFalse(out.contains("1 errors"), "must use singular")
+    }
+
+    func test_failedRows_ignoredWhenSyncIsNotDone() {
+        // Pre-sync `failedRows` is meaningless (nothing has run yet);
+        // builder ignores it. The summary still reads as a fresh
+        // ready-state line.
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(
+            items: items, syncDone: false, failedRows: 99)
+        XCTAssertFalse(out.contains("error"))
+        XCTAssertFalse(out.contains("Synchroniz"))
+    }
+
+    // MARK: - Existing breakdown + bytes behavior preserved
+
     func test_onlyConflicts_noTransferBytesShown() {
-        // Conflicts don't transfer until resolved. Even with non-zero
-        // sizeBytes on the conflict rows, the bytes total stays out.
         let items = [
             item(direction: conflict, size: 5_000_000),
             item(direction: conflict, size: 1_000_000),
         ]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
+        let out = ReconcileSummary.text(items: items)
         XCTAssertTrue(out.contains("2 items"))
         XCTAssertTrue(out.contains("2 conflicts"))
         XCTAssertFalse(out.contains("MB"), "conflicts must not contribute bytes")
@@ -60,54 +110,39 @@ final class ReconcileSummaryTests: XCTestCase {
 
     func test_directionalRows_contributeBytesToTotal() {
         let items = [
-            item(direction: toSecond, size: 1_000_000),  // 1 MB
-            item(direction: toSecond, size: 2_000_000),  // 2 MB
-            item(direction: toFirst,  size: 3_000_000),  // 3 MB
+            item(direction: toSecond, size: 1_000_000),
+            item(direction: toSecond, size: 2_000_000),
+            item(direction: toFirst,  size: 3_000_000),
         ]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
-        // ByteCountFormatter with .file style gives MB, but exact
-        // string varies by locale ("6 MB" vs "6,0 MB"). Substring
-        // check on the numeric prefix only.
+        let out = ReconcileSummary.text(items: items)
         XCTAssertTrue(out.contains("3 items"))
-        XCTAssertTrue(out.contains("MB"), "bytes column must appear for directional rows")
-        XCTAssertTrue(out.contains("1 Second → First"),
-                      "left-flowing rows must spell source AND destination: \(out)")
-        XCTAssertTrue(out.contains("2 First → Second"),
-                      "right-flowing rows must spell source AND destination: \(out)")
+        XCTAssertTrue(out.contains("MB"))
+        XCTAssertTrue(out.contains("1 Second → First"), out)
+        XCTAssertTrue(out.contains("2 First → Second"), out)
     }
 
     func test_mixedRows_bytesIncludeOnlyDirectional() {
-        // Two rows transfer (1 MB + 2 MB = 3 MB), one conflict
-        // ignored, one unknown direction also ignored.
         let items = [
             item(direction: toSecond, size: 1_000_000),
             item(direction: toFirst,  size: 2_000_000),
             item(direction: conflict, size: 9_999_999),
             item(direction: "XXXXX",  size: 9_999_999),
         ]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
+        let out = ReconcileSummary.text(items: items)
         XCTAssertTrue(out.contains("4 items"))
         XCTAssertTrue(out.contains("1 conflicts"))
         XCTAssertTrue(out.contains("1 other"))
-        // The 3 MB total must show, but the conflict's 10 MB must
-        // NOT inflate the total. The ByteCountFormatter for 3 MB
-        // produces "3 MB" exactly (or "3,0 MB" in some locales) —
-        // not 12.99 MB.
         XCTAssertTrue(out.contains("3 MB") || out.contains("3,0 MB"))
         XCTAssertFalse(out.contains("13 MB"))
         XCTAssertFalse(out.contains("12 MB"))
     }
 
     func test_zeroByteRows_areCountedButTotalStaysHidden() {
-        // Directory rows (sizeBytes = 0) still get counted in items
-        // and direction bucket, but contribute nothing to the bytes
-        // total. If every directional row has size 0, the bytes part
-        // is suppressed entirely (transferBytes > 0 gate).
         let items = [
             item(direction: toSecond, size: 0, type: "DIR"),
             item(direction: toSecond, size: 0, type: "DIR"),
         ]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
+        let out = ReconcileSummary.text(items: items)
         XCTAssertTrue(out.contains("2 items"))
         XCTAssertTrue(out.contains("2 First → Second"))
         XCTAssertFalse(out.contains("byte") || out.contains("KB") || out.contains("MB"),
@@ -115,52 +150,38 @@ final class ReconcileSummaryTests: XCTestCase {
     }
 
     func test_negativeBytes_areClampedToZero() {
-        // Defensive: if upstream Unison ever reports a negative size
-        // (shouldn't happen but let's not crash or produce a nonsense
-        // negative total), it doesn't subtract from the running total.
         let items = [
             item(direction: toSecond, size: -1_000_000),
             item(direction: toSecond, size:  2_000_000),
         ]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
-        // The 2 MB row contributes; the negative row contributes 0.
+        let out = ReconcileSummary.text(items: items)
         XCTAssertTrue(out.contains("2 MB") || out.contains("2,0 MB"))
         XCTAssertFalse(out.contains("-"))
-        XCTAssertFalse(out.contains("1 MB"))
-    }
-
-    // MARK: - Prefix
-
-    func test_prefixUsesProfileNameByDefault() {
-        let out = ReconcileSummary.text(
-            items: [item(direction: toSecond, size: 1)],
-            profile: "My-Profile")
-        XCTAssertTrue(out.hasPrefix("My-Profile"))
-    }
-
-    func test_prefixUsesSynchronizationCompleteAfterSyncCompletes() {
-        let out = ReconcileSummary.text(
-            items: [item(direction: toSecond, size: 1)],
-            profile: "My-Profile",
-            syncDone: true)
-        XCTAssertTrue(out.hasPrefix("Synchronization complete"))
-        XCTAssertFalse(out.contains("My-Profile"),
-                       "post-sync summary doesn't repeat the profile name")
     }
 
     // MARK: - Field ordering
 
-    func test_bytesAppearAfterItemsAndBeforeDirectionBreakdown() {
+    func test_postSync_clean_statusComesBeforeCountsBeforeDirection() {
         let items = [item(direction: toSecond, size: 1_500_000)]
-        let out = ReconcileSummary.text(items: items, profile: "Sync")
-        // Order matters for the at-a-glance read: count → size →
-        // breakdown. Verify item-count appears before "MB" appears
-        // before the direction breakdown.
-        guard let itemsPos = out.range(of: "1 items")?.lowerBound,
-              let mbPos    = out.range(of: "MB")?.lowerBound,
-              let dirPos   = out.range(of: "First → Second")?.lowerBound
+        let out = ReconcileSummary.text(items: items, syncDone: true)
+        guard let statusPos = out.range(of: "Synchronization complete")?.lowerBound,
+              let itemsPos  = out.range(of: "1 items")?.lowerBound,
+              let mbPos     = out.range(of: "MB")?.lowerBound,
+              let dirPos    = out.range(of: "First → Second")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
+        XCTAssertLessThan(statusPos, itemsPos)
         XCTAssertLessThan(itemsPos, mbPos)
         XCTAssertLessThan(mbPos, dirPos)
+    }
+
+    func test_postSync_errors_errorPhraseComesBeforeCounts() {
+        let items = [item(direction: toSecond, size: 1_500_000)]
+        let out = ReconcileSummary.text(
+            items: items, syncDone: true, failedRows: 3)
+        guard let errPos   = out.range(of: "3 errors")?.lowerBound,
+              let itemsPos = out.range(of: "1 items")?.lowerBound
+        else { XCTFail("expected substrings missing: \(out)"); return }
+        XCTAssertLessThan(errPos, itemsPos,
+                          "the error count belongs in the lede, not buried")
     }
 }

@@ -142,7 +142,14 @@ final class ProgressCellView: NSTableCellView {
         } else {
             bar.isHidden = true
             bar.doubleValue = 0
-            textOverlay.stringValue = descriptor.text
+            // Failure rows get a ⚠ glyph prefix so the cell reads as
+            // "obviously bad" at a glance, not just "some text in this
+            // column". Matches the ⚠ used in the summary's error
+            // banner button for visual consistency. Bold red text is
+            // also kept (font + color below).
+            textOverlay.stringValue = descriptor.isFailure
+                ? "⚠ \(descriptor.text)"
+                : descriptor.text
             textOverlay.textColor = descriptor.isFailure ? .systemRed : .labelColor
             textOverlay.font = descriptor.isFailure
                 ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .bold)

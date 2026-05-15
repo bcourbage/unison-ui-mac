@@ -1,24 +1,32 @@
 import Foundation
 
 /// Builds the one-line summary that appears above the reconcile
-/// outline view ("Sync-Home · 121 items · 450 MB · 121 First → Second" etc.).
-/// Direction phrasing reads `<count> <source> → <destination>` so the
-/// summary is parseable at a glance without relying on column-header
-/// context (a bare `121 → second` was ambiguous — looked like a rate).
+/// outline view. Status word (when there is one) always leads; the
+/// profile name is intentionally NOT included here — the window
+/// title carries it, so repeating it just costs pixels. Direction
+/// phrasing reads `<count> <source> → <destination>` so a bare
+/// `121 → second` can't be misread as a rate.
 ///
 /// Extracted from `ReconcileWindowController` as a pure function so
-/// the breakdown logic (which rows count toward which bucket; whether
-/// the bytes total appears; the post-sync "Synchronized" prefix) is
-/// testable without standing up AppKit.
+/// the breakdown logic — which rows count toward which bucket;
+/// whether the bytes total appears; how partial-success summaries
+/// are phrased — is testable without standing up AppKit.
+///
+/// **Output forms**:
+///
+/// | State | Example |
+/// | --- | --- |
+/// | Ready, items to sync | `121 items · 1.2 GB · 121 First → Second` |
+/// | Ready, empty (nothing to do) | `Everything is up to date` |
+/// | Sync done, all clean | `Synchronization complete · 121 items · 1.2 GB · 121 First → Second` |
+/// | Sync done, partial failure | `Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second` |
+/// | Sync done, zero items | `Synchronization complete · nothing to transfer` |
 ///
 /// **Override-awareness**: this function intentionally keys off
 /// `items[].direction` only, not any user-applied row override. That
 /// matches what every other count in the reconcile UI does — once a
 /// user overrides a row, the summary still reads from the raw Unison
-/// state until the next rescan. Consistency over precision; an
-/// override-aware summary would need to share `rowOverrides` and
-/// re-derive the effective direction, and the bookkeeping isn't
-/// worth the marginal accuracy gain.
+/// state until the next rescan. Consistency over precision.
 enum ReconcileSummary {
 
     /// Direction strings as Unison emits them via `unisonRiToDirection`.
@@ -29,27 +37,48 @@ enum ReconcileSummary {
     static let directionToSecond = "---->"
     static let directionConflict = "<-?->"
 
-    /// Build the displayed summary. `syncDone == true` swaps the
-    /// leading "<profile>" for "Synchronization complete" — same
-    /// single source of truth used both during reconcile and after
-    /// sync completion.
+    /// Build the displayed summary.
     ///
-    /// Special case: when there are no items to report, the breakdown
-    /// (which would otherwise read "0 items" with no follow-up) is
-    /// replaced by a single explicit phrase — "Everything is up to
-    /// date" after a clean scan, or "nothing to transfer" if a sync
-    /// somehow finished with zero items. Both make the no-work-needed
-    /// state read as a positive outcome rather than an empty data row.
+    /// - Parameters:
+    ///   - items: the current row set (after init2 or after sync).
+    ///   - syncDone: `true` after `Util.syncComplete` fires; controls
+    ///     prefix wording.
+    ///   - failedRows: how many rows ended the sync in a FAILED state.
+    ///     Only meaningful when `syncDone == true`; ignored otherwise.
+    ///     When > 0 the prefix shifts from "Synchronization complete"
+    ///     to "Synchronization completed with N error(s)" so the
+    ///     partial-success outcome is visible in the summary itself,
+    ///     not only in the separate error-banner button.
     static func text(items: [StateItem],
-                     profile: String,
-                     syncDone: Bool = false) -> String {
-        let prefix = syncDone ? "Synchronization complete" : profile
+                     syncDone: Bool = false,
+                     failedRows: Int = 0) -> String {
+        // Build the leading status word (if any). Done-with-errors
+        // uses past-tense "completed" because it flows naturally with
+        // the "with N errors" clause; the clean-done case uses
+        // adjectival "complete" because it reads better as a label.
+        // Different forms in different states is deliberate.
+        let statusPrefix: String?
+        if syncDone {
+            if failedRows > 0 {
+                let noun = failedRows == 1 ? "error" : "errors"
+                statusPrefix = "Synchronization completed with \(failedRows) \(noun)"
+            } else {
+                statusPrefix = "Synchronization complete"
+            }
+        } else {
+            statusPrefix = nil
+        }
 
+        // Empty-items special case: skip the count breakdown entirely
+        // and substitute a single explicit phrase. "Everything is up
+        // to date" reads as a positive outcome after a clean scan;
+        // "nothing to transfer" covers the rare post-sync-with-zero-
+        // items case (every row got skipped before Go, etc.).
         if items.isEmpty {
-            let trailing = syncDone
-                ? "nothing to transfer"
-                : "Everything is up to date"
-            return "\(prefix)  ·  \(trailing)"
+            if syncDone {
+                return "\(statusPrefix ?? "")  ·  nothing to transfer"
+            }
+            return "Everything is up to date"
         }
 
         let total = items.count
@@ -72,7 +101,9 @@ enum ReconcileSummary {
                    || $0.direction == directionToSecond }
             .reduce(Int64(0)) { $0 + max(0, $1.sizeBytes) }
 
-        var parts = ["\(total) items"]
+        var parts: [String] = []
+        if let statusPrefix { parts.append(statusPrefix) }
+        parts.append("\(total) items")
         if transferBytes > 0 {
             parts.append(ByteCountFormatter.string(
                 fromByteCount: transferBytes, countStyle: .file))
@@ -88,6 +119,6 @@ enum ReconcileSummary {
         if toLeft > 0    { parts.append("\(toLeft) Second → First") }
         if toRight > 0   { parts.append("\(toRight) First → Second") }
         if other > 0     { parts.append("\(other) other") }
-        return "\(prefix)  ·  " + parts.joined(separator: "  ·  ")
+        return parts.joined(separator: "  ·  ")
     }
 }

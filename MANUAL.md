@@ -308,7 +308,7 @@ and init2 walks both replicas to compute differences).
 ┌─────────────────────────────────────────────────────────────────────┐
 │ [Profiles] [Rescan] | [← First | → Second | Skip | Merge] | [Go] │ ← toolbar
 ├─────────────────────────────────────────────────────────────────────┤
-│ profile-name · 142 items · 1.2 GB · 3 conflicts · 12 First → Second │ ← summary
+│ 142 items · 1.2 GB · 3 conflicts · 12 First → Second              │ ← summary
 │ ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░  35%                              │ ← global progress
 ├─────────────────────────────────────────────────────────────────────┤
 │ Path                | First | Action | Second | Size | Progress     │ ← columns
@@ -354,9 +354,9 @@ and init2 walks both replicas to compute differences).
 - **Size** — file size, formatted by `ByteCountFormatter`.
 - **Progress** — populated during sync. Shows a standard macOS
   `NSProgressIndicator` bar (follows your **System Settings →
-  Appearance → Accent color**) with overlaid percent text for
-  in-flight rows (`5%`, `35%`, `100%`), `done` when finished, bold red
-  `FAILED` on errors. Empty when idle.
+  Appearance → Accent color**) for in-flight rows, full bar when
+  finished, and a bold red **`⚠ FAILED`** marker on rows whose
+  transfer didn't complete. Empty when idle.
 - **Type** — `FILE`, `DIR`, `SYMLINK`, etc., as Unison reports.
 
 ### Summary line
@@ -366,11 +366,30 @@ scanning ("Looking for changes...", "Reconciling...") and shows a count
 summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
 12 First → Second · 4 Second → First").
 
-Each direction breakdown reads `<count> <source> → <destination>` — the
-arrow always points left-to-right in the reading direction so the
-summary parses unambiguously at a glance. "First" and "Second" refer
-to the two replicas (the two `root = …` lines in the `.prf`), matching
-the column headers and the toolbar's `← First` / `→ Second` buttons.
+The status word — when there is one — always leads. Five forms:
+
+| State | Example |
+| --- | --- |
+| Ready, items to sync | `121 items · 1.2 GB · 121 First → Second` |
+| Ready, nothing to do | `Everything is up to date` |
+| Sync complete, all clean | `Synchronization complete · 121 items · 1.2 GB · 121 First → Second` |
+| Sync complete, partial failure | `Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second` |
+| Sync complete, zero items synced | `Synchronization complete · nothing to transfer` |
+
+The profile name is **not** included in the summary — the window
+title carries it (`Unison — <profile>`), so repeating it just costs
+pixels. Each direction breakdown reads
+`<count> <source> → <destination>` so the arrow always points
+left-to-right in reading order, regardless of which side data
+flows toward. "First" and "Second" refer to the two replicas (the
+two `root = …` lines in the `.prf`), matching the column headers
+and the toolbar's `← First` / `→ Second` buttons.
+
+When one or more rows failed during sync, a separate red
+**`⚠ N issues — View…`** pill appears at the right end of the
+summary row — click it to read the accumulated error messages.
+Failed rows also carry a `⚠ FAILED` marker in their Progress
+column.
 
 The size figure between the item count and the breakdown is the **total
 bytes that will move if you hit Go now**. Sum of file sizes for rows
