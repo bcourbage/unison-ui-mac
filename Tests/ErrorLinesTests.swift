@@ -92,14 +92,57 @@ final class ErrorLinesTests: XCTestCase {
     }
 
     func test_substringMatch_isCaseInsensitive() {
-        XCTAssertFalse(
+        // Single-word markers ("error", "fail", etc.) are matched
+        // with word boundaries (\b) so they don't false-positive on
+        // identifiers. "errorfree" is one word — "error" is a
+        // prefix, no boundary between it and "free" — so no match.
+        // Bare "Error:" / "ERROR " / etc. still match (the boundary
+        // is the `:` or space after).
+        XCTAssertTrue(
             ReconcileWindowController.errorLines(in: "errorfree path").isEmpty,
-            "substring match: 'error' inside 'errorfree' still matches; conservative by design"
+            "single-word markers use word boundaries: 'errorfree' must NOT match"
         )
-        // Documented false-positive: the classifier is intentionally
-        // permissive. If this ever becomes annoying we can switch to
-        // word-boundary matching, but until then the cost of a
-        // spurious surfacing is small.
+        XCTAssertFalse(
+            ReconcileWindowController.errorLines(in: "Error: bad").isEmpty,
+            "'Error:' is a word-boundary match"
+        )
+    }
+
+    func test_pathContainingErrorWord_doesNotFalsePositive() {
+        // User-reported case: status messages of the form
+        // "Propagating changes  <path>" got falsely classified as
+        // errors when the path contained "Error" in a filename
+        // (e.g. ErrorLinesTests.swift in this very repo). Word-
+        // boundary matching prevents that.
+        let lines = [
+            "Propagating changes  Documents/Sources/unison-ui-mac/Tests/ErrorLinesTests.swift",
+            "Propagating changes  build/Debug/ErrorLinesTests.o",
+            "Propagating changes  build/Debug/ErrorLinesTests.swiftdeps",
+            "Propagating changes  build/Index.noindex/DataStore/v5/records/JY/ErrorLinesTests.swift-1TO02C067SEJY",
+            "Propagating changes  build/Index.noindex/DataStore/v5/units/ErrorLinesTests.o-WIDNWSC5B6H3",
+        ]
+        for line in lines {
+            XCTAssertTrue(
+                ReconcileWindowController.errorLines(in: line).isEmpty,
+                "expected NO false-positive on path-with-Error-substring: \(line)"
+            )
+        }
+    }
+
+    func test_failSubstring_doesNotFalsePositiveInsideIdentifier() {
+        // Same pattern as the "error" case — "fail" embedded in a
+        // word shouldn't trigger.
+        XCTAssertTrue(
+            ReconcileWindowController.errorLines(in: "default_log_path").isEmpty,
+            "'default' contains 'fail' as substring but not as a word"
+        )
+        // …but bare "FAIL" / "Failed:" must still match.
+        XCTAssertFalse(
+            ReconcileWindowController.errorLines(in: "scan FAILED").isEmpty
+        )
+        XCTAssertFalse(
+            ReconcileWindowController.errorLines(in: "Failed: nope").isEmpty
+        )
     }
 
     func test_utilFatal_isCaught() {

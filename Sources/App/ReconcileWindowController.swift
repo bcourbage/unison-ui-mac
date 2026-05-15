@@ -632,30 +632,60 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// — better to surface a benign "...not modified" line than miss
     /// an actual "permission denied".
     nonisolated static func errorLines(in text: String) -> [String] {
-        // Markers in priority order (the substring match is union, so
-        // ordering doesn't affect matching — kept ordered for clarity
-        // when scanning the list).
-        let markers: [String] = [
-            "FAIL",            // "FAILED", "Failed", "scan failed", etc.
-            "error",           // catches "Error", "ERROR:", "syntax error"
-            "aborted",         // "Transfer aborted", "Aborted by user request"
-            "could not",       // typical Unix-error prefix
-            "couldn't",        // "couldn't open file: ..."
+        // Markers split into two groups by matching strategy:
+        //
+        // **Word-bounded patterns** — case-insensitive regex with
+        // `\b` on each side. Operating on the lowercased line, so
+        // each pattern is itself lowercase. The patterns enumerate
+        // the inflection forms we actually want to catch (e.g.
+        // `failed` / `failures?` / `errors?`) rather than a
+        // generic prefix like `\bfail` — that's the difference
+        // between matching "FAILED" / "transfer failed:" (which we
+        // want) and "failsafe" / "ErrorLinesTests" (which we don't).
+        //
+        // Why not just `\bfail\b`? Because `fail` followed by `e`
+        // in "failed" isn't a word boundary — there's no edge to
+        // anchor against. Enumerating the actual word forms we see
+        // from Unison is more robust than trying to catch a single
+        // "root" with regex tricks.
+        //
+        // **Multi-word markers** — kept as plain substring match.
+        // They contain whitespace and don't show up as substrings
+        // of other tokens, so the substring check is sufficient and
+        // skips the regex cost.
+        let wordBoundedPatterns = [
+            "\\bfailed\\b",       // FAILED / Failed / scan failed
+            "\\bfailures?\\b",    // failure / failures
+            "\\berrors?\\b",      // Error: / ERROR / errors but NOT ErrorLines
+            "\\baborted\\b",      // Transfer aborted / Aborted by user request
+            "\\bcouldn't\\b",     // couldn't open file
+        ]
+        let multiWordMarkers = [
+            "could not",
             "permission denied",
             "no such file",
             "connection refused",
             "host unreachable",
             "host key verification",  // SSH known_hosts mismatch
-            "Operation timed out",
-            "Util.Fatal",      // OCaml fatal that leaked through Trace
+            "operation timed out",
+            "util.fatal",      // OCaml fatal that leaked through Trace
         ]
-        let lowered = markers.map { $0.lowercased() }
+
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+
         return lines.filter { line in
             let lower = line.lowercased()
-            return lowered.contains { lower.contains($0) }
+            if multiWordMarkers.contains(where: { lower.contains($0) }) {
+                return true
+            }
+            for pattern in wordBoundedPatterns {
+                if lower.range(of: pattern, options: .regularExpression) != nil {
+                    return true
+                }
+            }
+            return false
         }
     }
 
