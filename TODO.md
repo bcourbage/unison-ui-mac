@@ -176,6 +176,15 @@ landed across the bring-up and follow-on sessions.*
       or until the user clicks Clear in the disclosure sheet — so
       transient errors emitted at 3% scan don't get steamrolled by
       the next status message at 4%.
+      **Subsequently removed** (commit `b5b75c6`): once per-row
+      failure attribution landed (the ⚠ + tooltip Progress-column
+      marker, fed by `attributeRowFailuresFromDetails` reading each
+      row's OCaml-side details at sync-complete), the banner had
+      no information left to surface — its content was either
+      duplicative of the summary's count prefix or false-positive
+      noise (paths containing "Error" / status messages containing
+      "failure"). Diagnostic stream still goes to TraceLog →
+      Console.app under subsystem `net.courbage.unison-ui-mac`.
 
 ### Per-row actions
 
@@ -338,7 +347,7 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **263 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
+- [x] **259 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
       for `leaks(1)`-based release checks. Coverage (illustrative —
       counts are at-last-tally and grow with each pure-logic
       extraction):

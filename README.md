@@ -77,11 +77,12 @@ beyond what the legacy uimac app offered in several places. Highlights:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **215 unit tests** in ~0.6 s via `make test`. Pure-logic modules
+- **259 unit tests** in ~1 s via `make test`. Pure-logic modules
   (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
-  `ProfilePreferences`, `RowSelectionRules`, etc.) carry exhaustive
-  coverage; AppKit view-controllers are verified by interactive testing
-  rather than XCTest.
+  `ProfilePreferences`, `RowSelectionRules`, `ReconcileSummary`,
+  `SettingsModel`, `ArchiveCleanup`, etc.) carry exhaustive coverage;
+  AppKit view-controllers are verified by interactive testing rather
+  than XCTest.
 
 See [TODO.md](TODO.md) for the full prioritized status and what's still
 open (mostly P3 hygiene items at this point).
@@ -209,7 +210,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (263 tests, ~1 s)
+├── Tests/                               XCTest bundle (259 tests, ~1 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac
