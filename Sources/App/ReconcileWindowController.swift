@@ -464,10 +464,31 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     func beginScanning(_ message: String) {
+        // Clear the displayed state of the previous scan up front so
+        // the user can't mistake stale results for in-progress ones.
+        // Without this, a rescan visually left the prior reconcile's
+        // rows in place with just a "Rescanning…" summary line on
+        // top — which read as "scan complete, here are the results"
+        // until init2 actually returned. Clearing items, the tree,
+        // and the per-row dicts (rowOverrides + errorMessages) drops
+        // the outline view to empty for the duration of the scan;
+        // `replaceItems(_:)` repopulates it when init2 completes.
+        // For the initial-scan path (`beginInitialScan`) this is a
+        // no-op visually — the window was just opened and the dicts
+        // were already empty.
+        items = []
+        tree = ReconcileTree(items: [])
+        rowOverrides.removeAll()
+        errorMessages.removeAll()
+        refreshErrorBanner()
+        outlineView.reloadData()
+        detailsTextView.string = "Select a row to see details."
+
         progressBar.isHidden = false
         progressBar.isIndeterminate = true
         progressBar.startAnimation(nil)
         setSummary(message)
+        refreshDirectionToolbarEnabled()
     }
 
     func beginInitialScan() {
