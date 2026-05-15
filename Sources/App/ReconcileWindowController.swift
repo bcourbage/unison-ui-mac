@@ -428,7 +428,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = true
         progressBar.doubleValue = 0
         progressBar.isHidden = false
-        setSummary("Synchronizing \(profile)…")
+        // Compose the breakdown into the summary so the user keeps
+        // the at-a-glance totals (item count + bytes + direction)
+        // visible throughout the transfer. updateScanStatus(_:)
+        // suppresses its own writes while isSyncing is true so
+        // OCaml's rotating per-file status doesn't overwrite this.
+        setSummary(summaryText(phase: .syncing))
         TraceLog.shared.write("ReconcileWindow: starting sync")
         unison_bridge_synchronize()
     }
@@ -554,25 +559,40 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     func updateScanStatus(_ msg: String) {
         let (firstLine, fullText, hasMore) = Self.splitStatus(msg)
         guard !firstLine.isEmpty else { return }
-        summaryLabel.stringValue = firstLine
-        if hasMore {
-            // Cache the full text and expose it two ways: via tooltip
-            // (one-hover access) and via a Details button that opens a
-            // larger scrolling sheet (selectable, copyable).
-            lastMultiLineStatus = fullText
-            summaryLabel.toolTip = fullText
-            statusDetailsButton.isHidden = false
-        } else {
-            lastMultiLineStatus = nil
-            summaryLabel.toolTip = nil
-            statusDetailsButton.isHidden = true
+
+        // During an active sync, the summary line holds the static
+        // breakdown ("Synchronizing · 121 items · 1.2 GB · …") set
+        // by startSync(). OCaml's rotating per-file status narration
+        // would otherwise overwrite that line by line, losing the
+        // user's at-a-glance totals during a long transfer. The
+        // global progress bar + per-row Progress cells carry the
+        // dynamic state. Errors are still surfaced via the
+        // errorLines extraction below, so important messages don't
+        // get lost — only the redundant chatter is silenced.
+        if !isSyncing {
+            summaryLabel.stringValue = firstLine
+            if hasMore {
+                // Cache the full text and expose it two ways: via
+                // tooltip (one-hover access) and via a Details button
+                // that opens a larger scrolling sheet (selectable,
+                // copyable).
+                lastMultiLineStatus = fullText
+                summaryLabel.toolTip = fullText
+                statusDetailsButton.isHidden = false
+            } else {
+                lastMultiLineStatus = nil
+                summaryLabel.toolTip = nil
+                statusDetailsButton.isHidden = true
+            }
         }
 
         // Accumulate any error-looking content into the persistent
         // error log (separate from the transient status line, which
         // rotates rapidly during scan/sync). Whichever lines of the
         // status look like errors get appended; the banner button
-        // shows a count.
+        // shows a count. ALWAYS runs, including during sync — that's
+        // how mid-sync warnings get from OCaml into the user's view
+        // via the red banner.
         let errorLines = Self.errorLines(in: fullText)
         if !errorLines.isEmpty {
             for line in errorLines {
@@ -761,7 +781,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         isSyncing = false
         progressBar.doubleValue = 100
         progressBar.isHidden = true
-        setSummary(summaryText(syncDone: true))
+        setSummary(summaryText(phase: .done(failures: 0)))
         TraceLog.shared.write("ReconcileWindow: sync complete")
     }
 
@@ -1232,19 +1252,25 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return out
     }
 
-    private func summaryText(syncDone: Bool = false) -> String {
-        // failedRows is only meaningful post-sync, but it's safe to
-        // compute either way — the summary builder ignores it when
-        // `syncDone == false`. Count rows whose progress string was
-        // marked FAILED by upstream (via ProgressDescriptor.parse's
-        // `isFailure` rule); these are the rows whose transfers didn't
-        // complete. Matches the per-row marker the user sees in the
-        // Progress column.
-        let failedRows = items
-            .filter { ProgressDescriptor.parse($0.progress).isFailure }
-            .count
-        return ReconcileSummary.text(
-            items: items, syncDone: syncDone, failedRows: failedRows)
+    private func summaryText(phase: ReconcileSummary.Phase = .ready) -> String {
+        // For the `.done(failures: …)` phase the caller can pass an
+        // explicit failures count; here we recompute it from the row
+        // set when none was specified inline, so the typical caller
+        // doesn't have to thread the count manually. Count rows whose
+        // progress string was marked FAILED by upstream (matches the
+        // per-row ⚠ FAILED marker in the Progress column).
+        let effectivePhase: ReconcileSummary.Phase
+        switch phase {
+        case .done(failures: 0):
+            // Caller asked for "done" without specifying — recompute.
+            let failed = items
+                .filter { ProgressDescriptor.parse($0.progress).isFailure }
+                .count
+            effectivePhase = .done(failures: failed)
+        default:
+            effectivePhase = phase
+        }
+        return ReconcileSummary.text(items: items, phase: effectivePhase)
     }
 }
 

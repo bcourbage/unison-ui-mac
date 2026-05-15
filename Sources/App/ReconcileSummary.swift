@@ -12,15 +12,20 @@ import Foundation
 /// whether the bytes total appears; how partial-success summaries
 /// are phrased — is testable without standing up AppKit.
 ///
-/// **Output forms**:
+/// **Output forms** (one row per `Phase` × interesting items state):
 ///
-/// | State | Example |
+/// | Phase | Example |
 /// | --- | --- |
-/// | Ready, items to sync | `121 items · 1.2 GB · 121 First → Second` |
-/// | Ready, empty (nothing to do) | `Everything is up to date` |
-/// | Sync done, all clean | `Synchronization complete · 121 items · 1.2 GB · 121 First → Second` |
-/// | Sync done, partial failure | `Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second` |
-/// | Sync done, zero items | `Synchronization complete · nothing to transfer` |
+/// | `.ready`, items to sync | `121 items · 1.2 GB · 121 First → Second` |
+/// | `.ready`, empty | `Everything is up to date` |
+/// | `.syncing`, items | `Synchronizing · 121 items · 1.2 GB · 121 First → Second` |
+/// | `.done(failures: 0)`, items | `Synchronization complete · 121 items · 1.2 GB · 121 First → Second` |
+/// | `.done(failures: 5)`, items | `Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second` |
+/// | `.done(failures: 0)`, empty | `Synchronization complete · nothing to transfer` |
+///
+/// The `.syncing` line stays visible the whole transfer — keeps the
+/// at-a-glance totals in front of the user while the global progress
+/// bar + per-row Progress cells carry the dynamic state.
 ///
 /// **Override-awareness**: this function intentionally keys off
 /// `items[].direction` only, not any user-applied row override. That
@@ -37,48 +42,60 @@ enum ReconcileSummary {
     static let directionToSecond = "---->"
     static let directionConflict = "<-?->"
 
-    /// Build the displayed summary.
-    ///
-    /// - Parameters:
-    ///   - items: the current row set (after init2 or after sync).
-    ///   - syncDone: `true` after `Util.syncComplete` fires; controls
-    ///     prefix wording.
-    ///   - failedRows: how many rows ended the sync in a FAILED state.
-    ///     Only meaningful when `syncDone == true`; ignored otherwise.
-    ///     When > 0 the prefix shifts from "Synchronization complete"
-    ///     to "Synchronization completed with N error(s)" so the
-    ///     partial-success outcome is visible in the summary itself,
-    ///     not only in the separate error-banner button.
-    static func text(items: [StateItem],
-                     syncDone: Bool = false,
-                     failedRows: Int = 0) -> String {
+    /// Lifecycle phase the reconcile window is in when the summary
+    /// is built. Mutually exclusive — three states cover everything.
+    enum Phase: Equatable {
+        /// Post-init2, pre-Go: rows displayed, ready for user action.
+        /// Summary has no status word; the count is the lede.
+        case ready
+        /// Post-Go, pre-completion: sync in flight.
+        /// Summary prefixes "Synchronizing" so the user still sees
+        /// the breakdown while the transfer runs.
+        case syncing
+        /// Post-completion: terminal state for the current sync.
+        /// `failures` is the count of rows whose progress ended as
+        /// FAILED. Zero → "Synchronization complete"; non-zero →
+        /// "Synchronization completed with N error(s)".
+        case done(failures: Int)
+    }
+
+    /// Build the displayed summary for the given items and phase.
+    static func text(items: [StateItem], phase: Phase = .ready) -> String {
         // Build the leading status word (if any). Done-with-errors
         // uses past-tense "completed" because it flows naturally with
         // the "with N errors" clause; the clean-done case uses
         // adjectival "complete" because it reads better as a label.
         // Different forms in different states is deliberate.
         let statusPrefix: String?
-        if syncDone {
-            if failedRows > 0 {
-                let noun = failedRows == 1 ? "error" : "errors"
-                statusPrefix = "Synchronization completed with \(failedRows) \(noun)"
+        switch phase {
+        case .ready:
+            statusPrefix = nil
+        case .syncing:
+            statusPrefix = "Synchronizing"
+        case .done(let failures):
+            if failures > 0 {
+                let noun = failures == 1 ? "error" : "errors"
+                statusPrefix = "Synchronization completed with \(failures) \(noun)"
             } else {
                 statusPrefix = "Synchronization complete"
             }
-        } else {
-            statusPrefix = nil
         }
 
         // Empty-items special case: skip the count breakdown entirely
         // and substitute a single explicit phrase. "Everything is up
         // to date" reads as a positive outcome after a clean scan;
         // "nothing to transfer" covers the rare post-sync-with-zero-
-        // items case (every row got skipped before Go, etc.).
+        // items case. Mid-sync with zero items is a weird state we
+        // shouldn't normally hit (the user wouldn't have clicked Go
+        // on an empty list) — fall through to the same nothing-to-
+        // transfer phrasing for safety.
         if items.isEmpty {
-            if syncDone {
+            switch phase {
+            case .ready:
+                return "Everything is up to date"
+            case .syncing, .done:
                 return "\(statusPrefix ?? "")  ·  nothing to transfer"
             }
-            return "Everything is up to date"
         }
 
         let total = items.count

@@ -366,15 +366,25 @@ scanning ("Looking for changes...", "Reconciling...") and shows a count
 summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
 12 First → Second · 4 Second → First").
 
-The status word — when there is one — always leads. Five forms:
+The status word — when there is one — always leads. Six forms:
 
 | State | Example |
 | --- | --- |
 | Ready, items to sync | `121 items · 1.2 GB · 121 First → Second` |
 | Ready, nothing to do | `Everything is up to date` |
+| **Sync in progress** | `Synchronizing · 121 items · 1.2 GB · 121 First → Second` |
 | Sync complete, all clean | `Synchronization complete · 121 items · 1.2 GB · 121 First → Second` |
 | Sync complete, partial failure | `Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second` |
 | Sync complete, zero items synced | `Synchronization complete · nothing to transfer` |
+
+During an active sync, the summary line stays pinned to the
+`Synchronizing · …` form so the at-a-glance totals (item count,
+total bytes, direction split) remain visible throughout the
+transfer. The dynamic state — *which* file is currently moving and
+how far along — is conveyed by the global progress bar above the
+file list and by the per-row Progress column inside it. Any errors
+or warnings emitted by Unison mid-sync are routed to the red
+`⚠ N issues — View…` pill on the right of the summary row.
 
 The profile name is **not** included in the summary — the window
 title carries it (`Unison — <profile>`), so repeating it just costs
