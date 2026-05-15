@@ -222,8 +222,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private func configure(profile: String) {
         guard let contentView = window?.contentView else { return }
 
-        summaryLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        summaryLabel.textColor = .secondaryLabelColor
+        // Primary status line — uses the system's primary label
+        // color (near-black in light mode, near-white in dark mode)
+        // rather than `.secondaryLabelColor`. The summary carries
+        // load-bearing information (current phase, item count, total
+        // bytes, direction breakdown, error count) and deserves the
+        // primary text-color hierarchy slot, not the secondary one.
+        // Bumped to `.medium` weight for a touch more presence
+        // without going to bold.
+        summaryLabel.font = .systemFont(
+            ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        summaryLabel.textColor = .labelColor
         // Initial config — setSummary keeps the multi-line state in
         // sync even though there's nothing stale at startup. Cheaper to
         // keep one code path than to duplicate the assignment.
