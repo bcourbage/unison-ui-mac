@@ -559,6 +559,44 @@ Currently-open windows are not moved by the reset — autosaves are
 written on close and read on open, so the effect only takes hold the
 next time each window is opened. The reset alert spells this out.
 
+### Reconcile display
+
+Two pickers that control how the reconcile window renders the list of
+differences. Mirrors upstream Unison's "Switch table nesting"
+segmented control (the three-segment icon in the legacy uimac
+toolbar) plus a smart-expand option that upstream calls
+`expandConflictedParent`.
+
+**Layout**:
+
+- **Nested (collapsed)** *(default)* — folder tree by path components,
+  with any folder whose only child is another folder merged into a
+  combined-name row (`a/b/c/leaf.txt` instead of four separate folder
+  rows). Compact for deep paths through otherwise-uninteresting
+  directories.
+- **Nested (full)** — every folder level is its own row. Most
+  hierarchical, busiest visually. Earlier app default.
+- **Flat list** — every leaf is a top-level row. Sorted list of full
+  paths, no folder nodes, no chevrons. Useful when the user wants
+  to scan "did file X get touched?" without navigating a tree.
+
+**Expand on open** (applies on every fresh populate — initial scan
+or rescan; user-driven expand/collapse during a session is untouched):
+
+- **Smart (only branches with conflicts)** *(default)* — only folders
+  whose subtree contains a row needing the user's attention
+  (unresolved conflict) are pre-expanded. Other folders stay
+  collapsed. The user lands on what needs doing.
+- **All branches** — every folder is pre-expanded. The original
+  Finder-style "outline fully open" behavior.
+- **Top level only** — nothing pre-expanded; only top-level entries
+  visible. Useful for very large diffs where the user wants to
+  navigate by clicking in.
+
+Both settings take effect on the **next reconcile populate** (rescan
+or profile open). Already-open reconcile windows aren't re-laid out
+live — the section description in Settings spells this out.
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -569,8 +607,10 @@ accessed via the standard `UserDefaults` API. The keys this app writes:
 | `profiles.hidden` | Basenames of profiles hidden from the picker |
 | `profiles.order` | Custom picker order |
 | `versionMismatch.suppressed` | List of suppressed `host\|local\|remote` triples |
+| `reconcile.layoutMode` | `flat` / `nestedCollapsed` / `nestedFull` |
+| `reconcile.expandPolicy` | `smart` / `all` / `rootOnly` |
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
-| `NSToolbar Configuration ReconcileToolbar.v4` | Reconcile toolbar customization |
+| `NSToolbar Configuration ReconcileToolbar.v5` | Reconcile toolbar customization |
 
 You can inspect them directly with `defaults read net.courbage.unison-ui-mac`,
 or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`

@@ -147,4 +147,65 @@ enum SettingsModel {
             defaults.removeObject(forKey: key)
         }
     }
+
+    // MARK: - Reconcile display (layout mode + expand policy)
+
+    /// UserDefaults key for the reconcile-window layout mode (Flat /
+    /// Nested collapsed / Nested full). String-valued: stores the
+    /// `ReconcileTree.LayoutMode.rawValue` (`"flat"`, `"nestedCollapsed"`,
+    /// `"nestedFull"`).
+    static let reconcileLayoutModeKey = "reconcile.layoutMode"
+
+    /// UserDefaults key for the reconcile-window expand policy (Smart
+    /// / All / Root only). String-valued, stores
+    /// `ReconcileTree.ExpandPolicy.rawValue`.
+    static let reconcileExpandPolicyKey = "reconcile.expandPolicy"
+
+    /// Read the configured reconcile layout mode. Defaults to
+    /// `.nestedCollapsed` when the key is absent or holds a value
+    /// no longer in the enum (e.g. someone hand-edited the plist to
+    /// a stale string after a code change).
+    static func reconcileLayoutMode(
+        in defaults: UserDefaults = .standard
+    ) -> ReconcileTree.LayoutMode {
+        guard let raw = defaults.string(forKey: reconcileLayoutModeKey),
+              let mode = ReconcileTree.LayoutMode(rawValue: raw)
+        else { return .nestedCollapsed }
+        return mode
+    }
+
+    /// Persist the user's layout-mode pick. Used by SettingsWindowController.
+    static func setReconcileLayoutMode(
+        _ mode: ReconcileTree.LayoutMode,
+        in defaults: UserDefaults = .standard
+    ) {
+        defaults.set(mode.rawValue, forKey: reconcileLayoutModeKey)
+    }
+
+    /// Read the configured expand policy. Defaults to `.smart`.
+    static func reconcileExpandPolicy(
+        in defaults: UserDefaults = .standard
+    ) -> ReconcileTree.ExpandPolicy {
+        guard let raw = defaults.string(forKey: reconcileExpandPolicyKey),
+              let policy = ReconcileTree.ExpandPolicy(rawValue: raw)
+        else { return .smart }
+        return policy
+    }
+
+    /// Persist the user's expand-policy pick.
+    static func setReconcileExpandPolicy(
+        _ policy: ReconcileTree.ExpandPolicy,
+        in defaults: UserDefaults = .standard
+    ) {
+        defaults.set(policy.rawValue, forKey: reconcileExpandPolicyKey)
+    }
+
+    /// Drop both reconcile-display keys back to defaults. Used by the
+    /// Settings window's "Reset profile picker layout" cousin if/when
+    /// we extend the reset surface; for now it's exposed as the
+    /// counterpart to the picker-layout reset for symmetry.
+    static func resetReconcileDisplay(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: reconcileLayoutModeKey)
+        defaults.removeObject(forKey: reconcileExpandPolicyKey)
+    }
 }

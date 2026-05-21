@@ -204,19 +204,39 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     /// Replace the displayed items (e.g. after a rescan completes). Must
-    /// be called on the main thread. Rebuilds the tree and expands every
-    /// folder by default — matches Finder's "outline open" feel.
+    /// be called on the main thread. Rebuilds the tree per the user's
+    /// `SettingsModel.reconcileLayoutMode` (default `.nestedCollapsed`,
+    /// mirroring upstream Unison's "Layout" segmented control) and
+    /// expands folders per `SettingsModel.reconcileExpandPolicy`
+    /// (default `.smart` — only branches with unresolved conflicts).
+    /// Both settings are re-read on every populate, so a change in
+    /// the Settings window takes effect on the next rescan.
     func replaceItems(_ newItems: [StateItem]) {
         items = newItems
-        tree = ReconcileTree(items: newItems)
+        let layout = SettingsModel.reconcileLayoutMode()
+        let policy = SettingsModel.reconcileExpandPolicy()
+        tree = ReconcileTree(items: newItems, layout: layout)
         rowOverrides.removeAll()
         outlineView.reloadData()
-        outlineView.expandItem(nil, expandChildren: true)
+        applyExpandPolicy(policy)
         // Fresh row set ⇒ back to the ready phase; the previous
         // sync (if any) is no longer in scope.
         phase = .ready
         setSummary(summaryText())
         refreshToolbarEnabled()
+    }
+
+    /// Walk the new tree and ask the outline view to expand the nodes
+    /// the policy selects. `rowOverrides` is empty at this point
+    /// (cleared in replaceItems) — the policy still consults it so
+    /// the same helper is reusable from any future "re-apply policy
+    /// without rebuilding the tree" path.
+    private func applyExpandPolicy(_ policy: ReconcileTree.ExpandPolicy) {
+        let toExpand = tree.nodesToExpand(
+            policy: policy, items: items, rowOverrides: rowOverrides)
+        for node in toExpand {
+            outlineView.expandItem(node, expandChildren: false)
+        }
     }
 
     private func configure(profile: String) {

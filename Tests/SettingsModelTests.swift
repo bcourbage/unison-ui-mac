@@ -244,4 +244,69 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(SettingsModel.windowFrameKey("FooWindow"),
                        "NSWindow Frame FooWindow")
     }
+
+    // MARK: - Reconcile display (layoutMode + expandPolicy)
+
+    func test_reconcileLayoutMode_defaultIsNestedCollapsed() {
+        // Key absent from defaults → default to nestedCollapsed
+        // (matches upstream Unison's default for the equivalent
+        // segmented control).
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults),
+                       .nestedCollapsed)
+    }
+
+    func test_reconcileLayoutMode_roundTrip() {
+        SettingsModel.setReconcileLayoutMode(.flat, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults), .flat)
+        SettingsModel.setReconcileLayoutMode(.nestedFull, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults), .nestedFull)
+        SettingsModel.setReconcileLayoutMode(.nestedCollapsed, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults), .nestedCollapsed)
+    }
+
+    func test_reconcileLayoutMode_garbageValue_fallsBackToDefault() {
+        // Hand-edited plist with a stale enum value shouldn't crash —
+        // fall back to the default.
+        defaults.set("legacy-mode-name", forKey: SettingsModel.reconcileLayoutModeKey)
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults),
+                       .nestedCollapsed)
+    }
+
+    func test_reconcileExpandPolicy_defaultIsSmart() {
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
+    }
+
+    func test_reconcileExpandPolicy_roundTrip() {
+        SettingsModel.setReconcileExpandPolicy(.all, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .all)
+        SettingsModel.setReconcileExpandPolicy(.rootOnly, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .rootOnly)
+        SettingsModel.setReconcileExpandPolicy(.smart, in: defaults)
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
+    }
+
+    func test_reconcileExpandPolicy_garbageValue_fallsBackToDefault() {
+        defaults.set("aggressive", forKey: SettingsModel.reconcileExpandPolicyKey)
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
+    }
+
+    func test_resetReconcileDisplay_clearsBothKeys() {
+        SettingsModel.setReconcileLayoutMode(.flat, in: defaults)
+        SettingsModel.setReconcileExpandPolicy(.all, in: defaults)
+        SettingsModel.resetReconcileDisplay(in: defaults)
+        // Back to defaults after reset.
+        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults),
+                       .nestedCollapsed)
+        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
+    }
+
+    func test_resetReconcileDisplay_leavesOtherSettingsAlone() {
+        SettingsModel.setReconcileLayoutMode(.flat, in: defaults)
+        ProfilePreferences(hidden: ["x"], order: ["a"]).save(to: defaults)
+        SettingsModel.resetReconcileDisplay(in: defaults)
+        let (hidden, ordered) = SettingsModel.profilePickerCounts(in: defaults)
+        XCTAssertEqual(hidden, 1,
+                       "reconcile reset must not touch picker layout")
+        XCTAssertEqual(ordered, 1)
+    }
 }

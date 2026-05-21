@@ -39,49 +39,23 @@ section at the bottom so this list stays scannable.
       viable — we embed GPLv3 code and the App Store license terms
       aren't GPL-compatible.
 
-- [ ] **Reconcile view: tree vs. flat list (with auto-expand depth)** —
-      currently the reconcile outline view always renders rows as a
-      hierarchical folder tree, default-expanded to every level
-      (introduced in commit
-      [`6446fe4`](https://github.com/bcourbage/unison-ui-mac/commit/6446fe42f6de4f48477fa4b793fd65673a5425f4);
-      before that, rows were a flat list of every affected path).
-      The tree is great for scanning structure but can dominate the
-      view when the diff is deep (e.g. a Photos library or an Xcode
-      DerivedData tree where you really only want to see leaves).
-      Add two settings in **Settings → Reconcile display**:
-
-      1. **Layout style** — `Folder tree` (default) | `Flat list`.
-         Flat-list mode renders one row per leaf path (no folder
-         aggregation, no disclosure chevrons), recovering the
-         pre-`6446fe4` behavior. Folder aggregates (`FolderAggregate`
-         logic, direction tinting on folder rows) and the
-         folder-icon column treatment become inert in flat mode.
-
-      2. **Default expand depth** (folder-tree mode only) — integer
-         with sentinel for unlimited; suggest a default of **2**
-         (top-level + one nested level expanded; deeper folders stay
-         collapsed). Options the picker should offer:
-         `Top level only (1)` / `2 levels (default)` / `3 levels` /
-         `All levels (unlimited)`. The depth applies on first
-         populate of a fresh row set (post-init2 and post-rescan);
-         the user can still expand individual folders manually
-         beyond it. Today's behavior is "unlimited" via
-         `outlineView.expandItem(nil, expandChildren: true)` in
-         `replaceItems` — that call becomes
-         `expandToDepth(_:)` parameterized by the setting. After
-         syncrhonization, if a failure occurred, there should be a
-         setting to expand all levels.
-
-      Implementation sketch: extend `SettingsModel` with two new
-      `UserDefaults` keys (e.g.
-      `reconcile.layoutStyle` ∈ {tree, flat},
-      `reconcile.defaultExpandDepth` ∈ {1, 2, 3, 0=unlimited}).
-      `ReconcileTree` already separates the data model from the
-      outline rendering; flat mode probably means a different
-      `numberOfChildrenOfItem` / `child(_:ofItem:)` path that
-      returns leaves at the root level. Tests pin the depth + flat
-      rendering rules.
-
+- [ ] **Auto-expand failed branches after a sync with failures** —
+      follow-up to the Reconcile display settings landed in
+      [`44eece5`](https://github.com/bcourbage/unison-ui-mac/commit/44eece5).
+      Today the expand policy chosen in Settings (`smart` / `all` /
+      `rootOnly`) applies uniformly on every reconcile populate, even
+      post-sync. If a sync finishes with failures, the user often
+      wants to *see* every ⚠ FAILED row without manually drilling in
+      — especially if their preferred policy is `smart` or
+      `rootOnly`. Proposal: in `syncDidComplete`, after
+      `attributeRowFailuresFromDetails` runs, if the failure count
+      is > 0, re-walk the tree and expand the ancestor chain of
+      every failed row (treat them like the smart-policy treats
+      unresolved conflicts). This would NOT change the user's
+      configured policy — it's a one-shot post-sync widening that
+      reverts on the next rescan. A new `ReconcileTree.nodesToExpand`
+      variant (or an `additionalConditions:` parameter) keeps the
+      logic in the same pure surface that's already unit-tested.
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
@@ -141,6 +115,23 @@ landed across the bring-up and follow-on sessions.*
       bcpierce00/unison per the project's LLM-usage posture.
 
 ### Reconcile window: visuals + interaction
+
+- [x] **Reconcile layout + expand policy settings** — two pickers in
+      Settings → Reconcile display, mirroring upstream Unison's
+      "Switch table nesting" three-segment control plus a
+      smart-expand option. **Layout**: `Flat list` / `Nested
+      (collapsed)` *(default)* / `Nested (full)`. **Expand on
+      open**: `Smart` *(default)* / `All branches` / `Top level only`.
+      Stored under `reconcile.layoutMode` and `reconcile.expandPolicy`
+      in UserDefaults. The collapse algorithm (merge any folder
+      with exactly one child into the child by concatenating names)
+      matches upstream's `ReconItem.collapseParentsWithSingleChildren`;
+      the smart-expand walk matches upstream's
+      `expandConflictedParent` (expand only branches with
+      conflicts the user hasn't already resolved via override).
+      Both settings re-read on every reconcile populate, so a change
+      in Settings takes effect on the next rescan or profile open;
+      already-displayed rows aren't re-laid out live.
 
 - [x] **Color-coded reconcile rows** — Action column carries a tinted
       badge (green `#97BB68` → second, blue `#5A96DE` ← first, orange

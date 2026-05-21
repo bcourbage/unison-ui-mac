@@ -269,4 +269,205 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(folder.aggregate(items: items, rowOverrides: [1: .forceNewer]),
                        .mixed)
     }
+
+    // MARK: - LayoutMode
+
+    private func itemWithDirection(_ path: String, _ direction: String) -> StateItem {
+        StateItem(
+            path: path, left: "", right: "", direction: direction,
+            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0
+        )
+    }
+
+    func test_flatLayout_everyLeafIsTopLevel() {
+        // Flat mode: every leaf goes directly under root, named with
+        // the full path. No intermediate folder nodes are created
+        // even when paths share prefixes.
+        let tree = ReconcileTree(
+            items: [
+                item("Documents/Photos/img.jpg"),
+                item("Documents/Photos/img2.jpg"),
+                item("Documents/notes.txt"),
+            ],
+            layout: .flat
+        )
+        XCTAssertEqual(tree.layoutMode, .flat)
+        XCTAssertEqual(tree.root.children.count, 3,
+                       "flat: every leaf is a direct child of root")
+        for child in tree.root.children {
+            XCTAssertTrue(child.isLeaf,
+                          "flat: no intermediate folder nodes")
+        }
+        // Names are the full paths, in original order.
+        XCTAssertEqual(tree.root.children.map { $0.name }, [
+            "Documents/Photos/img.jpg",
+            "Documents/Photos/img2.jpg",
+            "Documents/notes.txt",
+        ])
+        // fullPath survives so pathFromRoot still returns the original
+        // path (used for tooltips + details lookups).
+        XCTAssertEqual(tree.root.children[0].fullPath,
+                       "Documents/Photos/img.jpg")
+    }
+
+    func test_nestedFullLayout_isTheOldFinderStyleBehavior() {
+        let tree = ReconcileTree(
+            items: [item("Documents/Photos/img.jpg")],
+            layout: .nestedFull
+        )
+        XCTAssertEqual(tree.layoutMode, .nestedFull)
+        // Documents / Photos / img.jpg — three nested nodes.
+        XCTAssertEqual(tree.root.children.count, 1)
+        let docs = tree.root.children[0]
+        XCTAssertEqual(docs.name, "Documents")
+        XCTAssertFalse(docs.isLeaf)
+        let photos = docs.children[0]
+        XCTAssertEqual(photos.name, "Photos")
+        XCTAssertFalse(photos.isLeaf)
+        XCTAssertEqual(photos.children[0].name, "img.jpg")
+        XCTAssertTrue(photos.children[0].isLeaf)
+    }
+
+    func test_nestedCollapsed_singleChildChainBecomesOneNode() {
+        // Deep chain where every level has exactly one child should
+        // collapse to a single combined-name leaf at root.
+        let tree = ReconcileTree(
+            items: [item("a/b/c/d/file.txt")],
+            layout: .nestedCollapsed
+        )
+        XCTAssertEqual(tree.layoutMode, .nestedCollapsed)
+        XCTAssertEqual(tree.root.children.count, 1)
+        let node = tree.root.children[0]
+        XCTAssertEqual(node.name, "a/b/c/d/file.txt")
+        XCTAssertTrue(node.isLeaf, "leaf at the end of the collapsed chain")
+        XCTAssertEqual(node.fullPath, "a/b/c/d/file.txt",
+                       "fullPath preserved through collapse")
+    }
+
+    func test_nestedCollapsed_branchingFolderStaysExpanded() {
+        // a/b has two children (file1.txt and file2.txt) → can't
+        // collapse. But the chain `top/a/b` collapses to "top/a/b"
+        // because top→a→b each have only one child.
+        let tree = ReconcileTree(
+            items: [
+                item("top/a/b/file1.txt"),
+                item("top/a/b/file2.txt"),
+            ],
+            layout: .nestedCollapsed
+        )
+        // Root has one child: the collapsed folder "top/a/b".
+        XCTAssertEqual(tree.root.children.count, 1)
+        let collapsed = tree.root.children[0]
+        XCTAssertEqual(collapsed.name, "top/a/b")
+        XCTAssertFalse(collapsed.isLeaf,
+                       "folder with multiple leaf children stays a folder")
+        XCTAssertEqual(collapsed.children.count, 2)
+        XCTAssertEqual(collapsed.children.map { $0.name },
+                       ["file1.txt", "file2.txt"])
+    }
+
+    func test_nestedCollapsed_mixedDepthsPreserveFolderBoundaries() {
+        // Mix of paths where SOME levels collapse and others don't.
+        // a/b has two paths: a/b/c/leaf1 and a/b/leaf2. The "c"
+        // chain in a/b/c/leaf1 collapses (c has one child). The
+        // a/b folder doesn't collapse (two children).
+        let tree = ReconcileTree(
+            items: [
+                item("a/b/c/leaf1.txt"),
+                item("a/b/leaf2.txt"),
+            ],
+            layout: .nestedCollapsed
+        )
+        // Root → one node: "a/b" (top-down collapse: a has 1 child,
+        // collapses with b; b has 2 children so the chain stops).
+        XCTAssertEqual(tree.root.children.count, 1)
+        let ab = tree.root.children[0]
+        XCTAssertEqual(ab.name, "a/b")
+        XCTAssertEqual(ab.children.count, 2)
+        // The "c/leaf1.txt" chain inside a/b is a single collapsed leaf;
+        // "leaf2.txt" is a normal leaf.
+        let names = Set(ab.children.map { $0.name })
+        XCTAssertTrue(names.contains("c/leaf1.txt"),
+                      "c/leaf chain collapsed into one node: \(names)")
+        XCTAssertTrue(names.contains("leaf2.txt"))
+    }
+
+    func test_nestedFull_defaultLayout_isUnchanged() {
+        // The default initializer (no `layout:`) should still build
+        // a full nested tree — preserves existing test expectations
+        // around the original API.
+        let tree = ReconcileTree(items: [item("a/b/c.txt")])
+        XCTAssertEqual(tree.layoutMode, .nestedFull)
+        XCTAssertEqual(tree.root.children[0].name, "a")
+    }
+
+    // MARK: - ExpandPolicy
+
+    func test_expandPolicy_rootOnly_returnsEmpty() {
+        let items = [
+            itemWithDirection("a/b/conflict.txt", "<-?->"),
+            itemWithDirection("a/b/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToExpand(
+            policy: .rootOnly, items: items, rowOverrides: [:])
+        XCTAssertEqual(nodes.count, 0,
+                       "rootOnly: no folders pre-expanded regardless of content")
+    }
+
+    func test_expandPolicy_all_expandsEveryFolder() {
+        let items = [
+            itemWithDirection("a/b/conflict.txt", "<-?->"),
+            itemWithDirection("c/d/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToExpand(
+            policy: .all, items: items, rowOverrides: [:])
+        // Expect every folder node: a, a/b, c, c/d → 4 folders.
+        // (Leaves are excluded; only folders are returned.)
+        XCTAssertEqual(nodes.count, 4)
+        XCTAssertTrue(nodes.allSatisfy { !$0.isLeaf })
+    }
+
+    func test_expandPolicy_smart_expandsOnlyConflictBranches() {
+        // a/b/conflict.txt is a conflict; c/d/ok.txt isn't.
+        // Smart should expand a and a/b but NOT c or c/d.
+        let items = [
+            itemWithDirection("a/b/conflict.txt", "<-?->"),
+            itemWithDirection("c/d/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToExpand(
+            policy: .smart, items: items, rowOverrides: [:])
+        let names = Set(nodes.map { $0.name })
+        XCTAssertEqual(names, ["a", "b"],
+                       "smart expand: a + a/b (conflict branch); c/d stays collapsed. Got \(names)")
+    }
+
+    func test_expandPolicy_smart_ignoresOverriddenConflicts() {
+        // A conflict that's already been overridden (Skip / Force…)
+        // no longer needs the user's attention — smart shouldn't
+        // expand its ancestor chain on its account.
+        let items = [
+            itemWithDirection("a/b/conflict.txt", "<-?->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let resolved: [Int: RowOverride] = [0: .skip]
+        let nodes = tree.nodesToExpand(
+            policy: .smart, items: items, rowOverrides: resolved)
+        XCTAssertTrue(nodes.isEmpty,
+                      "smart: overridden conflict doesn't trigger expansion")
+    }
+
+    func test_expandPolicy_smart_flatLayoutHasNoFoldersToExpand() {
+        // Flat layout has no folder nodes at all → smart returns []
+        // regardless of conflict presence.
+        let items = [
+            itemWithDirection("a/b/conflict.txt", "<-?->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .flat)
+        let nodes = tree.nodesToExpand(
+            policy: .smart, items: items, rowOverrides: [:])
+        XCTAssertEqual(nodes.count, 0)
+    }
 }

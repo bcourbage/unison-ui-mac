@@ -12,7 +12,13 @@ import Foundation
 /// items and compares them with `===`; the tree is rebuilt on each
 /// `replaceItems(_:)` so cached references don't outlive a reconcile.
 final class ReconcileNode {
-    let name: String
+    /// Displayed name in the Path column. Effectively immutable except
+    /// during build-time tree transformations — specifically
+    /// `ReconcileTree.collapseSingleChildChains(in:)`, which mutates
+    /// folder names to be a `/`-joined path of the absorbed chain
+    /// (`a/b/c` instead of three separate folder rows). No other code
+    /// path writes `name` after construction.
+    var name: String
     let row: Int?
     let fullPath: String?
     fileprivate(set) var children: [ReconcileNode] = []
@@ -159,18 +165,66 @@ extension ReconcileNode {
     }
 }
 
-/// Builds a path-segment tree from a flat `[StateItem]` so an NSOutlineView
-/// can render the reconcile as Finder-style indented folders.
+/// Builds a tree from a flat `[StateItem]` for the reconcile outline
+/// view. Three layout modes, mirroring upstream Unison's "Switch table
+/// nesting" segmented control:
+///
+/// - **`.flat`** — every leaf is a direct child of the synthetic root;
+///   no intermediate folder nodes. The Path column shows the full
+///   path per row. Useful when the user wants a flat alphabetical
+///   list of every affected file regardless of where it sits in the
+///   directory tree.
+/// - **`.nestedCollapsed`** — full path-segment tree, then any folder
+///   with exactly one child is merged with that child by concatenating
+///   names (`a/b/c/leaf.txt` instead of four separate rows). Compact
+///   for deep paths through otherwise-uninteresting directories.
+///   Mirrors upstream's `collapseParentsWithSingleChildren`.
+/// - **`.nestedFull`** — full path-segment tree, no collapsing. Every
+///   directory level is its own row. Most hierarchical, busiest
+///   visually.
 ///
 /// Path semantics follow Unison's convention: forward-slash separated,
 /// no leading slash (the path is relative to each replica's root).
 struct ReconcileTree {
+
+    /// Which structural mode the tree was built with. Three modes that
+    /// match the user-facing "Layout" setting one-to-one. Stored on the
+    /// tree so consumers (e.g. expand-policy logic, the outline view
+    /// data source) can adapt without re-reading user defaults.
+    enum LayoutMode: String, CaseIterable {
+        /// Every leaf is a top-level row; no folder nodes.
+        case flat
+        /// Path-segment tree with single-child chains merged. Default.
+        case nestedCollapsed
+        /// Path-segment tree with every folder level as its own row.
+        case nestedFull
+    }
+
+    /// How aggressively folders are pre-expanded on first populate.
+    /// Independent of `LayoutMode` — applies to both nested layouts;
+    /// flat layout has no folders so the policy is irrelevant there
+    /// (`nodesToExpand` returns an empty set).
+    enum ExpandPolicy: String, CaseIterable {
+        /// Expand only folders whose subtree contains a row that
+        /// needs the user's attention (conflict without an override).
+        /// Default. Matches upstream Unison's `expandConflictedParent`.
+        case smart
+        /// Expand every folder. Fully revealed Finder-style outline.
+        /// Today's behavior before this setting existed.
+        case all
+        /// Expand nothing — show only top-level entries; user drills
+        /// in by clicking. Useful for very large diffs.
+        case rootOnly
+    }
 
     /// Synthetic root. Its `children` are the top-level entries.
     let root: ReconcileNode
 
     /// Total leaves in the tree. Equals the input `items.count`.
     let leafCount: Int
+
+    /// Mode used to construct this tree.
+    let layoutMode: LayoutMode
 
     /// Flatten visit (folders + leaves in tree order). Useful for tests.
     var allNodes: [ReconcileNode] {
@@ -185,10 +239,27 @@ struct ReconcileTree {
         return out
     }
 
-    init(items: [StateItem]) {
+    init(items: [StateItem], layout: LayoutMode = .nestedFull) {
         let root = ReconcileNode(name: "")
-        for (index, item) in items.enumerated() {
-            ReconcileTree.insert(path: item.path, row: index, into: root)
+        self.layoutMode = layout
+        switch layout {
+        case .flat:
+            // Every leaf becomes a direct child of root. Name = full
+            // path (so the Path column shows it verbatim). No
+            // intermediate folder nodes are created.
+            for (index, item) in items.enumerated() {
+                let node = ReconcileNode(
+                    name: item.path, row: index, fullPath: item.path)
+                node.parent = root
+                root.children.append(node)
+            }
+        case .nestedFull, .nestedCollapsed:
+            for (index, item) in items.enumerated() {
+                ReconcileTree.insert(path: item.path, row: index, into: root)
+            }
+            if layout == .nestedCollapsed {
+                ReconcileTree.collapseSingleChildChains(in: root)
+            }
         }
         self.root = root
         self.leafCount = items.count
@@ -219,5 +290,121 @@ struct ReconcileTree {
             cursor.children.append(node)
             cursor = node
         }
+    }
+
+    /// Compute which folder nodes should be expanded on first
+    /// populate, given a policy + the underlying items. Pure: returns
+    /// a set the caller (`ReconcileWindowController.replaceItems`)
+    /// then iterates to call `outlineView.expandItem(_:)`.
+    ///
+    /// - `.all` — every folder node in the tree (today's default
+    ///   behavior — fully revealed Finder-style outline).
+    /// - `.smart` — only folders whose subtree contains a row that
+    ///   needs the user's attention (conflict `<-?->` without an
+    ///   override). Other folders stay collapsed; the user drills in
+    ///   manually. Mirrors upstream Unison's `expandConflictedParent`
+    ///   pass. Default — usually fewer rows are visible, which makes
+    ///   the rows that matter easier to spot.
+    /// - `.rootOnly` — none of the folders are expanded; the outline
+    ///   shows only top-level entries. Useful for very large diffs
+    ///   where the user wants to navigate by clicking in.
+    ///
+    /// `rowOverrides` is consulted so a conflict that's already
+    /// overridden (Skip / Force Older / Force Newer) no longer counts
+    /// as "needs attention" under `.smart` — the user has already
+    /// decided on that row.
+    func nodesToExpand(
+        policy: ExpandPolicy,
+        items: [StateItem],
+        rowOverrides: [Int: RowOverride]
+    ) -> [ReconcileNode] {
+        switch policy {
+        case .rootOnly:
+            return []
+        case .all:
+            // Every folder (non-leaf), excluding the synthetic root
+            // itself (the outline view's caller will handle showing
+            // top-level items unconditionally).
+            return allNodes.filter { !$0.isLeaf }
+        case .smart:
+            return smartNodesToExpand(items: items, rowOverrides: rowOverrides)
+        }
+    }
+
+    /// "Expand only what needs attention" — return every folder node
+    /// whose subtree contains at least one unresolved conflict row.
+    /// Walked recursively, so a single deeply-buried conflict expands
+    /// the whole ancestor chain.
+    private func smartNodesToExpand(
+        items: [StateItem],
+        rowOverrides: [Int: RowOverride]
+    ) -> [ReconcileNode] {
+        var result: [ReconcileNode] = []
+        // Returns true if THIS subtree contains an unresolved conflict.
+        @discardableResult
+        func walk(_ node: ReconcileNode) -> Bool {
+            if let row = node.row {
+                // Leaf — does this row need attention? Conflict
+                // direction AND no user override.
+                guard row < items.count else { return false }
+                let isConflict = items[row].direction
+                    == ReconcileSummary.directionConflict
+                let hasOverride = rowOverrides[row] != nil
+                return isConflict && !hasOverride
+            }
+            var subtreeHasConflict = false
+            for child in node.children {
+                if walk(child) { subtreeHasConflict = true }
+            }
+            // Don't add the synthetic root to the expand list — the
+            // outline view always shows top-level items.
+            if subtreeHasConflict, !node.name.isEmpty {
+                result.append(node)
+            }
+            return subtreeHasConflict
+        }
+        walk(root)
+        return result
+    }
+
+    /// Walk the tree bottom-up and merge any non-root node that has
+    /// exactly one child into that child. The child's `name` becomes
+    /// the joined path of the absorbed chain (`a/b/c/file.txt` instead
+    /// of four separate rows). Mirrors upstream Unison's
+    /// `ReconItem.collapseParentsWithSingleChildren:` in
+    /// `src/uimac/ReconItem.m`.
+    ///
+    /// Leaves stay leaves (row + fullPath survive); folders that
+    /// absorb a single-folder child become combined-name folders that
+    /// still hold the child's grandchildren.
+    static func collapseSingleChildChains(in root: ReconcileNode) {
+        // Internal recursive collapse — returns the node that should
+        // appear at the caller's position. May be `node` itself
+        // (collapse didn't apply or this is root) or the absorbed
+        // child (collapse happened — caller should substitute).
+        func collapse(_ node: ReconcileNode, isRoot: Bool) -> ReconcileNode {
+            // Collapse children first (bottom-up).
+            for i in 0..<node.children.count {
+                let collapsed = collapse(node.children[i], isRoot: false)
+                if collapsed !== node.children[i] {
+                    collapsed.parent = node
+                    node.children[i] = collapsed
+                }
+            }
+            // Now decide if THIS node collapses into its single child.
+            // Root is never collapsed (would lose the synthetic anchor).
+            // A node with multiple children stays put. A leaf has no
+            // children to absorb into; the `children.count == 1` gate
+            // already excludes it.
+            if !isRoot, node.children.count == 1 {
+                let child = node.children[0]
+                child.name = "\(node.name)/\(child.name)"
+                // child.parent will be re-pointed to node.parent by the
+                // caller's substitution.
+                return child
+            }
+            return node
+        }
+        _ = collapse(root, isRoot: true)
     }
 }

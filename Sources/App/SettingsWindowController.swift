@@ -32,11 +32,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let layoutResetButton =
         NSButton(title: "Reset Window Positions", target: nil, action: nil)
 
+    // MARK: - Section 4: Reconcile display
+
+    private let reconcileLayoutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let reconcileExpandPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    /// Order pinned in code so the popup item indices line up with
+    /// these arrays for the selectItem/selectedIndex round-trip.
+    private let layoutModes: [ReconcileTree.LayoutMode] =
+        [.flat, .nestedCollapsed, .nestedFull]
+    private let expandPolicies: [ReconcileTree.ExpandPolicy] =
+        [.smart, .all, .rootOnly]
+
+    private static func displayName(for mode: ReconcileTree.LayoutMode) -> String {
+        switch mode {
+        case .flat:            return "Flat list"
+        case .nestedCollapsed: return "Nested (collapsed)"
+        case .nestedFull:      return "Nested (full)"
+        }
+    }
+
+    private static func displayName(for policy: ReconcileTree.ExpandPolicy) -> String {
+        switch policy {
+        case .smart:    return "Smart (only branches with conflicts)"
+        case .all:      return "All branches"
+        case .rootOnly: return "Top level only"
+        }
+    }
+
     // MARK: - Init
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
@@ -127,10 +155,42 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         section3Row.orientation = .horizontal
         section3Row.spacing = 8
 
+        // Section 4: Reconcile display (layout + expand policy)
+        let section4Title = sectionHeader("Reconcile Display")
+        let section4Desc = sectionDescription(
+            "How the reconcile window renders the list of differences. " +
+            "Mirrors upstream Unison's \"Switch table nesting\" control " +
+            "plus a smart-expand option. Changes take effect on the next " +
+            "rescan or profile open."
+        )
+        for mode in layoutModes {
+            reconcileLayoutPopup.addItem(withTitle: Self.displayName(for: mode))
+        }
+        reconcileLayoutPopup.target = self
+        reconcileLayoutPopup.action = #selector(reconcileLayoutChanged(_:))
+        for policy in expandPolicies {
+            reconcileExpandPopup.addItem(withTitle: Self.displayName(for: policy))
+        }
+        reconcileExpandPopup.target = self
+        reconcileExpandPopup.action = #selector(reconcileExpandChanged(_:))
+        let layoutRow = NSStackView(views: [
+            NSTextField(labelWithString: "Layout:"),
+            reconcileLayoutPopup, NSView(),
+        ])
+        layoutRow.orientation = .horizontal
+        layoutRow.spacing = 8
+        let expandRow = NSStackView(views: [
+            NSTextField(labelWithString: "Expand on open:"),
+            reconcileExpandPopup, NSView(),
+        ])
+        expandRow.orientation = .horizontal
+        expandRow.spacing = 8
+
         let stack = NSStackView(views: [
             section1Title, section1Desc, section1Row, divider(),
             section2Title, section2Desc, suppressionsScroll, section2Row, divider(),
-            section3Title, section3Desc, section3Row,
+            section3Title, section3Desc, section3Row, divider(),
+            section4Title, section4Desc, layoutRow, expandRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -152,6 +212,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             section2Row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
             section3Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
             section3Row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            section4Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            layoutRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            expandRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
         ])
     }
 
@@ -214,6 +277,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let (frames, toolbars) = SettingsModel.windowAndToolbarCounts()
         layoutCountsLabel.stringValue = layoutLabelText(frames: frames, toolbars: toolbars)
         layoutResetButton.isEnabled = (frames + toolbars) > 0
+
+        // Reflect current reconcile-display picks in the popups.
+        // `firstIndex` is safe — every enum case is in the arrays.
+        if let idx = layoutModes.firstIndex(of: SettingsModel.reconcileLayoutMode()) {
+            reconcileLayoutPopup.selectItem(at: idx)
+        }
+        if let idx = expandPolicies.firstIndex(of: SettingsModel.reconcileExpandPolicy()) {
+            reconcileExpandPopup.selectItem(at: idx)
+        }
     }
 
     private func labelText(hidden: Int, ordered: Int) -> String {
@@ -304,6 +376,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             "the next time you reopen each window, it uses the default frame."
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    @objc private func reconcileLayoutChanged(_ sender: Any?) {
+        let idx = reconcileLayoutPopup.indexOfSelectedItem
+        guard idx >= 0, idx < layoutModes.count else { return }
+        SettingsModel.setReconcileLayoutMode(layoutModes[idx])
+        // No live re-render of an open reconcile window — the change
+        // takes effect on the next rescan or profile open, matching
+        // the section description in the UI.
+    }
+
+    @objc private func reconcileExpandChanged(_ sender: Any?) {
+        let idx = reconcileExpandPopup.indexOfSelectedItem
+        guard idx >= 0, idx < expandPolicies.count else { return }
+        SettingsModel.setReconcileExpandPolicy(expandPolicies[idx])
     }
 }
 
