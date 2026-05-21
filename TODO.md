@@ -381,7 +381,7 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **259 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
+- [x] **278 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
       for `leaks(1)`-based release checks. Coverage (illustrative —
       counts are at-last-tally and grow with each pure-logic
       extraction):

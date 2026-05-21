@@ -105,9 +105,9 @@ Code PRs are accepted with a few caveats:
 2. **No expectation of acceptance.** This is a personal-use project.
    The maintainer reviews on availability and may reject contributions
    that don't fit the project's direction without much explanation.
-3. **CI hygiene**: `make test` must pass (200+ tests, ~0.6s on M-series
-   Macs). New behavior should add tests where the existing patterns
-   (pure-function helpers + XCTest pinning) apply.
+3. **CI hygiene**: `make test` must pass (278 tests at last count,
+   ~1 s on M-series Macs). New behavior should add tests where the
+   existing patterns (pure-function helpers + XCTest pinning) apply.
 4. **GPLv3 inbound = outbound**: by submitting a PR you certify the
    code is your own work (or compatibly licensed) and you license it
    under GPLv3 to this project. Don't submit anything you can't

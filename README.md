@@ -63,11 +63,14 @@ beyond what the legacy uimac app offered in several places. Highlights:
   duplicate, delete-to-Trash, and a form editor that surfaces `ignore` and
   `ignorenot` as first-class fields (the legacy app only had a raw `.prf`
   text view).
-- **Reconcile UI**: Finder-style outline view, default-expanded folders,
-  color-coded Action column with the user's decision visible (forced /
-  skipped / merged badges that hide the underlying arrow), status icons
-  in First and Second columns (Created / Modified / Deleted / PropsChanged),
-  folder aggregates, details footer, FAILED highlighting, tooltips on
+- **Reconcile UI**: Finder-style outline view with three configurable
+  layout modes (flat / nested-collapsed / nested-full, mirroring
+  upstream Unison's "Switch table nesting") + three expand policies
+  (smart / all / root-only), color-coded Action column with the user's
+  decision visible (forced / skipped / merged badges that hide the
+  underlying arrow), status icons in First and Second columns
+  (Created / Modified / Deleted / PropsChanged), folder aggregates,
+  details footer, ⚠ failure markers with hover-for-reason, tooltips on
   truncated paths, multi-line status disclosure for SSH errors.
 - **Per-row actions**: direction overrides (→ Second / ← First / Skip /
   Merge), force older / force newer (mtime-based), ignore-pattern shortcuts
@@ -77,7 +80,7 @@ beyond what the legacy uimac app offered in several places. Highlights:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **259 unit tests** in ~1 s via `make test`. Pure-logic modules
+- **278 unit tests** in ~1 s via `make test`. Pure-logic modules
   (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
   `ProfilePreferences`, `RowSelectionRules`, `ReconcileSummary`,
   `SettingsModel`, `ArchiveCleanup`, etc.) carry exhaustive coverage;
@@ -210,7 +213,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (259 tests, ~1 s)
+├── Tests/                               XCTest bundle (278 tests, ~1 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac
