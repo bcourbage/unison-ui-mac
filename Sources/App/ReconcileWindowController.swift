@@ -1200,16 +1200,27 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             if case .syncing = phase { return false }
             return true
         }
+        if menuItem.action == #selector(showProfilePickerMenuAction(_:)) {
+            // Allowed in any phase except .syncing — closing the
+            // window mid-sync goes through the existing
+            // windowShouldClose three-way prompt (Keep Syncing /
+            // Abort & Close / Close-let-it-run); we don't want the
+            // menu shortcut to bypass that, so just grey it out and
+            // let the user use Stop or the close button instead.
+            if case .syncing = phase { return false }
+            return true
+        }
         return true
     }
 
-    // MARK: - Workflow menu dispatch (Go / Stop / Rescan)
+    // MARK: - Workflow menu dispatch (Go / Stop / Rescan / Show Profile Picker)
     //
     // These are the responder-chain targets for the Action menu's
-    // top-of-menu workflow items. They just forward to the existing
+    // top-of-menu workflow items. They forward to the existing
     // toolbar-action methods so the menu and toolbar paths share
     // behavior. The toolbar items (in ReconcileToolbarDelegate) call
-    // the same `startSync` / `cancelSync` / `rescan` methods directly.
+    // the same `startSync` / `cancelSync` / `rescan` /
+    // `returnToPicker` methods directly.
 
     @objc func goMenuAction(_ sender: Any?) {
         startSync()
@@ -1221,6 +1232,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     @objc func rescanMenuAction(_ sender: Any?) {
         rescan()
+    }
+
+    @objc func showProfilePickerMenuAction(_ sender: Any?) {
+        returnToPicker()
     }
 
     // MARK: - Selection helpers

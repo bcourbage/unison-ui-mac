@@ -193,6 +193,18 @@ enum MainMenu {
         rescanItem.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(rescanItem)
 
+        // Navigate back to the launch view (closes the reconcile
+        // window; the AppDelegate onClose handler reopens the picker
+        // with the just-run profile pre-selected). ⌘⇧P parallels the
+        // ⌘⇧E shortcut for "Profile Editor" — both are profile-
+        // navigation primary actions with a Shift+letter mnemonic.
+        let pickerItem = NSMenuItem(
+            title: "Show Profile Picker",
+            action: Selector(("showProfilePickerMenuAction:")),
+            keyEquivalent: "p")
+        pickerItem.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(pickerItem)
+
         menu.addItem(.separator())
 
         // Direction overrides — the "decide what to sync" core. Order

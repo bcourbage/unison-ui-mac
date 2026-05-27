@@ -650,6 +650,7 @@ otherwise they're greyed.
 | Go | ⌘⏎ | Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows. |
 | Stop | ⌘. | Abort a running sync. Disabled when no sync is running. (See [Stop button](#stop-button-how-abort-works) for the abort semantics.) |
 | Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
+| Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync — use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
 | → Second | — | Propagate first → second for selected leaves |
 | ← First | — | Propagate second → first |
 | Skip | — | Mark selected leaves as user-skipped |
@@ -695,6 +696,7 @@ focused window via the standard responder action.
 | ⌘⏎ (in reconcile window) | Go (start sync) |
 | ⌘. (in reconcile window) | Stop (abort sync) |
 | ⌘⇧R (in reconcile window) | Rescan |
+| ⌘⇧P (in reconcile window) | Show Profile Picker |
 | ⌘? | App help |
 | ⌘W | Close focused window |
 | ⌘M | Minimize focused window |
