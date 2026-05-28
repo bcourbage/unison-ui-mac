@@ -96,9 +96,13 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
   blob — drop one next to the arm64 file and the Makefile's
   `ARCH := $(shell uname -m)` selector picks it up automatically.
 - macOS 15 (Sequoia) minimum deployment target.
-- Ad-hoc code-signed only — distributed .app builds will trigger
-  Gatekeeper warnings on first open. Right-click → Open the first
-  time, or remove via `xattr -dr com.apple.quarantine`.
+- Ad-hoc code-signed only — distributed .app builds will be blocked
+  by macOS 15's Gatekeeper on first open. The right-click → Open
+  trick that worked in older macOS releases no longer applies. Strip
+  the quarantine attribute with
+  `xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app`,
+  or use System Settings → Privacy & Security → Open Anyway. See
+  [INSTALL.md § First launch & Gatekeeper](INSTALL.md#first-launch--gatekeeper).
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 

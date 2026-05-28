@@ -72,14 +72,20 @@ The easiest path if a release has been cut for your needs:
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
    download the `.app.zip` attached to the most recent release.
 2. Unzip and drag `unison-ui-mac.app` to `/Applications`.
-3. On first launch, see [First launch & Gatekeeper](#first-launch--gatekeeper)
-   below — you'll need to right-click → Open (not double-click) the
-   first time.
+3. **Clear the quarantine attribute, then launch.** macOS 15
+   (Sequoia) blocks downloaded unsigned apps on first launch with
+   *"Apple could not verify ... is free of malware"* and offers
+   only "Move to Trash" / "Done" — the old right-click → Open
+   trick no longer applies. See
+   [First launch & Gatekeeper](#first-launch--gatekeeper) for the
+   two workarounds.
 
-If you'd prefer a one-line shell install:
+The fastest path is the one-line shell install — strips the
+quarantine attribute up front so the first launch is a clean
+double-click:
 
 ```sh
-unzip ~/Downloads/unison-ui-mac.app.zip -d /Applications
+unzip ~/Downloads/unison-ui-mac-0.1.0.app.zip -d /Applications
 xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
 ```
@@ -92,23 +98,42 @@ build the binary yourself, see
 
 The released `.app` is **ad-hoc code-signed but not Apple-notarized**
 (see [Why this isn't a notarized download](#why-this-isnt-a-notarized-download)).
-On first launch macOS will show one of two messages:
+On macOS 15 (Sequoia) the first launch from `/Applications` will be
+blocked with:
 
-- *"can't be opened because the developer cannot be verified"* — if
-  the bundle still has its quarantine attribute. Right-click the .app
-  in Finder, choose **Open** (not double-click), then click **Open**
-  in the dialog. This adds the app to your "approved" list; future
-  launches don't prompt.
-- *"can't be opened because Apple cannot check it for malicious
-  software"* — same fix. Or remove the quarantine attribute via the
-  command line:
+> *"Apple could not verify 'Unison-UI-Mac.app' is free of malware
+> that may harm your Mac or compromise your privacy."*
 
-  ```sh
-  sudo xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
-  ```
+with only **Move to Trash** and **Done** buttons. (Earlier macOS
+releases let you bypass this by right-clicking the app and picking
+"Open"; Sequoia removed that escape hatch for downloaded apps.) Two
+ways to unblock:
 
-After the first successful launch the app behaves like any other
-.app — double-click works, Launchpad finds it, no further prompts.
+### Option 1 — command line (fastest)
+
+```sh
+xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
+open /Applications/unison-ui-mac.app
+```
+
+This strips the `com.apple.quarantine` extended attribute macOS
+adds to anything downloaded from the internet. Once the attribute
+is gone, Gatekeeper stops checking the bundle and double-click
+works normally from then on.
+
+### Option 2 — System Settings (GUI)
+
+1. Click **Done** on the blocking dialog (don't move it to Trash).
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down to the Security section. You'll see:
+   > *"Unison-UI-Mac.app" was blocked to protect your Mac.*
+4. Click **Open Anyway**, authenticate with Touch ID or your
+   password.
+5. Try opening the app again — you'll get one more confirmation
+   dialog, click **Open Anyway**.
+
+After either path, the app launches normally and macOS adds it to
+its approved list; future launches don't prompt.
 
 ## Install from source
 
