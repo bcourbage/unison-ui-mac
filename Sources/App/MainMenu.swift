@@ -7,6 +7,13 @@ import AppKit
 /// The App menu's `Quit` is wired by AppKit automatically once we attach
 /// the menu to `NSApp.mainMenu`; the rest of the items target `AppDelegate`
 /// (or AppKit's first-responder action chain for the standard ones).
+///
+/// `@MainActor` because every method here touches main-actor-isolated AppKit
+/// state (`NSApp.helpMenu`, `NSApp.servicesMenu`, `NSApp.windowsMenu`) and
+/// is only ever called from `main.swift`'s entry point. Annotating the enum
+/// makes that contract explicit — required for Swift 6 strict concurrency
+/// on Xcode 16.x (CI), tolerated implicitly by newer Xcode locally.
+@MainActor
 enum MainMenu {
 
     static func build() -> NSMenu {
