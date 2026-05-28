@@ -405,6 +405,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch outcome {
         case .match(let v):
             Log.versionCheck.info("version match: \(v, privacy: .public) on both sides")
+        case .compatibleMismatch(let local, let remote):
+            // Different versions but both on the same side of the
+            // 2.52 wire-protocol boundary — feature negotiation
+            // handles it. No alert, just a log line for diagnosis
+            // if the user later reports something odd.
+            Log.versionCheck.info(
+                "compatible-mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) — new wire protocol negotiates, no alert"
+            )
         case .noRemoteRoot:
             Log.versionCheck.info("no remote root in profile '\(profile, privacy: .public)' — skipping")
         case .probeFailed(let reason):
@@ -427,13 +435,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showVersionMismatchAlert(local: String, remote: String, host: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Unison version mismatch"
+        alert.messageText = "Unison wire-protocol incompatibility"
         alert.informativeText =
             "This Mac has Unison \(local). The remote (\(host)) is running \(remote). " +
-            "Minor-version differences usually interoperate, but major-version " +
-            "differences can fail with cryptic RPC handshake errors. " +
-            "If sync fails or behaves strangely, see the upstream wiki's " +
-            "compatibility notes:\n\nhttps://github.com/bcpierce00/unison/wiki/FAQ"
+            "Unison changed its wire protocol at version 2.52.0, and the two sides " +
+            "here are on opposite sides of that change — they cannot connect to " +
+            "each other. Update the older side to a release >= 2.52.0.\n\n" +
+            "Upstream FAQ: https://github.com/bcpierce00/unison/wiki/FAQ"
         // NSAlert.showsSuppressionButton is purpose-built for this —
         // adds a checkbox the user toggles, no need for a custom
         // accessoryView.

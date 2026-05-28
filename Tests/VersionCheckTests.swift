@@ -167,6 +167,230 @@ final class VersionCheckTests: XCTestCase {
         XCTAssertEqual(t, "example.com|2.54.0|2.54.3")
     }
 
+    // MARK: - parseSemver
+
+    func test_parseSemver_threeComponent() {
+        let s = VersionCheck.parseSemver("2.54.0")
+        XCTAssertEqual(s?.major, 2)
+        XCTAssertEqual(s?.minor, 54)
+        XCTAssertEqual(s?.patch, 0)
+    }
+
+    func test_parseSemver_twoComponentDefaultsPatchZero() {
+        let s = VersionCheck.parseSemver("2.51")
+        XCTAssertEqual(s?.major, 2)
+        XCTAssertEqual(s?.minor, 51)
+        XCTAssertEqual(s?.patch, 0)
+    }
+
+    func test_parseSemver_largePatchAndMinor() {
+        let s = VersionCheck.parseSemver("2.40.102")
+        XCTAssertEqual(s?.major, 2)
+        XCTAssertEqual(s?.minor, 40)
+        XCTAssertEqual(s?.patch, 102)
+    }
+
+    func test_parseSemver_rejectsSingleComponent() {
+        XCTAssertNil(VersionCheck.parseSemver("2"))
+    }
+
+    func test_parseSemver_rejectsNonNumeric() {
+        XCTAssertNil(VersionCheck.parseSemver("foo.bar"))
+        XCTAssertNil(VersionCheck.parseSemver(""))
+        XCTAssertNil(VersionCheck.parseSemver("2.x"))
+    }
+
+    func test_parseSemver_extraComponentIgnored() {
+        // We only care about major.minor.patch. Anything trailing
+        // (rare in Unison's versioning, but defensively handled) is
+        // dropped silently. Don't claim this in the docstring as a
+        // feature — it's the natural fall-out of split(by: ".")
+        // followed by indexed access.
+        let s = VersionCheck.parseSemver("2.54.0.1")
+        XCTAssertEqual(s?.major, 2)
+        XCTAssertEqual(s?.minor, 54)
+        XCTAssertEqual(s?.patch, 0)
+    }
+
+    // MARK: - isPre252 boundary
+
+    func test_isPre252_trueForOldProtocolReleases() {
+        // Concrete historical releases that used the old wire
+        // protocol. Pulled from upstream's tag history.
+        XCTAssertTrue(VersionCheck.isPre252("2.40.102"))
+        XCTAssertTrue(VersionCheck.isPre252("2.48.4"))
+        XCTAssertTrue(VersionCheck.isPre252("2.51.0"))
+        XCTAssertTrue(VersionCheck.isPre252("2.51.5"))
+        // Two-component variants seen in older `-version` output.
+        XCTAssertTrue(VersionCheck.isPre252("2.51"))
+    }
+
+    func test_isPre252_falseAtBoundary() {
+        // 2.52.0 is the first new-protocol release — NOT pre-2.52.
+        XCTAssertFalse(VersionCheck.isPre252("2.52.0"))
+        XCTAssertFalse(VersionCheck.isPre252("2.52"))
+    }
+
+    func test_isPre252_falseForNewProtocolReleases() {
+        XCTAssertFalse(VersionCheck.isPre252("2.52.1"))
+        XCTAssertFalse(VersionCheck.isPre252("2.53.0"))
+        XCTAssertFalse(VersionCheck.isPre252("2.53.8"))
+        XCTAssertFalse(VersionCheck.isPre252("2.54.0"))
+    }
+
+    func test_isPre252_defensiveOnUnparseable() {
+        // Garbage input: we err on the side of "new protocol" so
+        // we don't false-positive an incompatibility alert.
+        XCTAssertFalse(VersionCheck.isPre252(""))
+        XCTAssertFalse(VersionCheck.isPre252("not a version"))
+        XCTAssertFalse(VersionCheck.isPre252("foo"))
+    }
+
+    func test_isPre252_majorVersionsBeyondTwo() {
+        // Pre-1.0 hypothetical: definitely pre-2.52.
+        XCTAssertTrue(VersionCheck.isPre252("0.9.0"))
+        XCTAssertTrue(VersionCheck.isPre252("1.0.0"))
+        // Hypothetical future 3.x: not pre-2.52.
+        XCTAssertFalse(VersionCheck.isPre252("3.0.0"))
+        XCTAssertFalse(VersionCheck.isPre252("10.0.0"))
+    }
+
+    // MARK: - Compatibility classification — known versions
+    //
+    // These tests pin the practical behavior end-users will see. The
+    // version pairs come from realistic deployment scenarios:
+    //   - The bridge always reports 2.54.0 (what we vendor at v0.1.x).
+    //   - Remote sides are whatever the user happens to have on the
+    //     remote (varies — Homebrew, distro packages, hand-built).
+    //
+    // **Greg Troxel (2026-05, unison-users discussion)**: anything
+    // >=2.52.0 ↔ anything >=2.52.0 negotiates fine. Anything
+    // straddling the 2.52 boundary fails. Same-side-of-boundary
+    // mismatches are NOT a user-visible warning anymore.
+
+    func test_classify_exactMatch_currentRelease() {
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.54.0"),
+            .exactMatch
+        )
+    }
+
+    // --- Known-compatible (no user alert) ---
+
+    func test_classify_compatible_2_53_8_to_2_54_0() {
+        // Greg's exact scenario from the email thread: he was
+        // running 2.53.0 and 2.53.8, asked whether updating to
+        // 2.54.0 would break things — answer was no.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.53.8"),
+            .compatibleNewProtocol(local: "2.54.0", remote: "2.53.8")
+        )
+    }
+
+    func test_classify_compatible_minorAhead() {
+        // Hypothetical 2.55.0 upstream (after we ship); the new
+        // wire protocol should still negotiate features.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.55.0"),
+            .compatibleNewProtocol(local: "2.54.0", remote: "2.55.0")
+        )
+    }
+
+    func test_classify_compatible_2_52_0_to_2_54_0() {
+        // 2.52.0 — first new-protocol release. Bare minimum to
+        // talk to a 2.54.0 client.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.52.0"),
+            .compatibleNewProtocol(local: "2.54.0", remote: "2.52.0")
+        )
+    }
+
+    func test_classify_compatible_patchVersionDiff() {
+        // 2.54.0 ↔ 2.54.1 — patch-level diff within the same
+        // minor. Trivially negotiates.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.54.1"),
+            .compatibleNewProtocol(local: "2.54.0", remote: "2.54.1")
+        )
+    }
+
+    func test_classify_compatible_bothOldProtocol() {
+        // 2.51.0 ↔ 2.51.5 — both pre-2.52, both speak the old
+        // wire protocol. Rare scenario (this UI ships an embedded
+        // 2.54.0, so local will always be new-protocol), but the
+        // classifier handles it correctly: same-side-of-boundary
+        // counts as compatible.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.51.0", remote: "2.51.5"),
+            .compatibleOldProtocol(local: "2.51.0", remote: "2.51.5")
+        )
+    }
+
+    // --- Known-incompatible (user alert fires) ---
+
+    func test_classify_incompatible_2_51_to_2_52() {
+        // The precise wire-protocol boundary: last old-protocol
+        // release vs. first new-protocol release. Two integers
+        // apart on the minor; an ocean apart on the protocol.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.52.0", remote: "2.51.5"),
+            .incompatibleAcrossBoundary(local: "2.52.0", remote: "2.51.5")
+        )
+    }
+
+    func test_classify_incompatible_2_40_to_2_54() {
+        // Long-tail remote (some users still running ancient
+        // distro packages) vs. our vendored 2.54.0.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.40.102"),
+            .incompatibleAcrossBoundary(local: "2.54.0", remote: "2.40.102")
+        )
+    }
+
+    func test_classify_incompatible_2_51_to_2_54() {
+        // Last release before the boundary vs. current vendored.
+        // Common scenario for users who haven't touched their
+        // remote in a while.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "2.51.0"),
+            .incompatibleAcrossBoundary(local: "2.54.0", remote: "2.51.0")
+        )
+    }
+
+    func test_classify_incompatible_directionSymmetric() {
+        // Whichever side is the older one, we still flag it.
+        // (The alert text will say "the older one needs to be
+        // upgraded" regardless of which is local vs. remote.)
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.51.0", remote: "2.54.0"),
+            .incompatibleAcrossBoundary(local: "2.51.0", remote: "2.54.0")
+        )
+    }
+
+    // --- Boundary edge case ---
+
+    func test_classify_boundaryExactPair() {
+        // 2.51.0 ↔ 2.52.0 — minor-version diff of 1, but it's
+        // the protocol boundary. Specifically the case that
+        // motivated splitting the predicate at 2.52.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.51.0", remote: "2.52.0"),
+            .incompatibleAcrossBoundary(local: "2.51.0", remote: "2.52.0")
+        )
+    }
+
+    func test_classify_unparseable_defaultsToCompatible() {
+        // If a remote returns garbage, isPre252 defensively reports
+        // false (new-protocol), so the classifier treats it as
+        // compatibleNewProtocol against any new-protocol local.
+        // Better to skip a possibly-spurious alert than to alarm
+        // the user on noise.
+        XCTAssertEqual(
+            VersionCheck.classify(local: "2.54.0", remote: "garbage"),
+            .compatibleNewProtocol(local: "2.54.0", remote: "garbage")
+        )
+    }
+
     // MARK: - runSync — end-to-end without subprocess
 
     func test_runSync_localOnlyProfile_returnsNoRemoteRoot() throws {

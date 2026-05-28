@@ -11,6 +11,63 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-28
+
+Maintenance release: tightens the SSH version-mismatch warning per
+upstream feedback, fixes a version-string regression that surfaced
+after v0.1.0, gets CI green on the GitHub-hosted Xcode toolchain.
+No user-facing functionality changed.
+
+### Fixed
+
+- **SSH version-mismatch alert no longer fires on compatible
+  version differences.** Upstream maintainer Greg Troxel (unison-users,
+  2026-05) clarified that since Unison 2.52.0 introduced the new wire
+  protocol with feature negotiation, any pair of versions >= 2.52.0
+  interoperates without intervention. The previous alert fired on any
+  non-byte-equal mismatch — too strict, and a noisy first impression
+  for users whose remote happened to be one minor version off.
+  Current behavior: alert only when the two sides straddle the 2.52.0
+  wire-protocol boundary (i.e., one side pre-2.52, the other
+  >= 2.52). Same-side-of-boundary mismatches log to TraceLog but
+  don't surface an NSAlert. Implementation: new
+  `VersionCheck.classify(local:remote:)` classifier + 23 new tests
+  pinning known-compatible and known-incompatible pairs.
+- **About panel + Get Info now show the correct version** (`0.1.0` /
+  `0.1.1`, not the stale `1.0`). Root cause: `xcodegen generate`
+  regenerates `Resources/Info.plist` from `project.yml`'s
+  `info.properties` block on every build, falling back to default
+  `1.0` / `1` values for any version keys absent from that block.
+  v0.1.0 shipped with the regenerated defaults. Fix: anchor the
+  substitution variables in `project.yml`'s `info.properties` so
+  they survive regen.
+- **CI is now green** under the `macos-15` runner's Xcode 16.4
+  (vs. our development Xcode 26). Two `@MainActor` annotations
+  needed: `MainMenu` enum (touches `NSApp.helpMenu` /
+  `.servicesMenu` / `.windowsMenu`) and `PathCellViewTests`
+  (constructs NSView, reads main-actor properties). Both
+  annotations are semantically correct, not workarounds.
+
+### Documentation
+
+- **README** now leads with a prominent bug-reports notice pointing
+  at this repo's issues, not upstream Unison's. Per Greg Troxel:
+  "Many won't read [CONTRIBUTING.md]."
+- **README** gains six shields.io badges (CI, release, license,
+  platform, arch, embedded Unison version).
+- **MANUAL.md § Version-mismatch warning** updated to reflect the
+  new 2.52-boundary classifier; quotes Greg's exact reasoning.
+- **GitHub topics** applied to the repo (unison, file-sync,
+  file-synchronization, macos, macos-app, swift, appkit, gui,
+  ocaml, apple-silicon, gplv3, rsync-alternative) for organic
+  discovery via GitHub's topic search.
+
+### Tests
+
+- 286 → 309 tests, all passing in <1s. New: 23 tests covering the
+  `VersionCheck` classifier, `parseSemver`, `isPre252`, and the
+  wire-protocol boundary at 2.52.0.
+
 ## [0.1.0] — 2026-05-27
 
 Initial public release. Embeds Unison File Synchronizer **2.54.0** (upstream

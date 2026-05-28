@@ -854,14 +854,20 @@ reboots without the disk-hygiene problem of a stray /tmp file.
 When you open a profile that has an `ssh://…` root, the app spawns a
 one-shot `ssh -o BatchMode=yes host servercmd -version` in the
 background and compares the result with the locally-embedded Unison
-version. If they differ, you get a warning alert:
+version. **You only see a warning when the two sides straddle Unison's
+2.52.0 wire-protocol boundary** — i.e., the local side is >= 2.52.0
+and the remote is < 2.52.0, or vice versa. Same-side-of-boundary
+differences (e.g., `2.54.0` ↔ `2.53.8`) negotiate features through
+the new wire protocol and don't warn.
 
-> **Unison version mismatch**  
+The alert looks like:
+
+> **Unison wire-protocol incompatibility**  
 > This Mac has Unison 2.54.0. The remote (server.example.com) is
-> running 2.54.3. Minor-version differences usually interoperate,
-> but major-version differences can fail with cryptic RPC handshake
-> errors. If sync fails or behaves strangely, see the upstream wiki's
-> compatibility notes.
+> running 2.51.5. Unison changed its wire protocol at version 2.52.0,
+> and the two sides here are on opposite sides of that change — they
+> cannot connect to each other. Update the older side to a release
+> >= 2.52.0.
 >
 > ☐ Don't remind me again for this host (until either version changes)
 
@@ -869,6 +875,13 @@ The checkbox persists per `(host, localVersion, remoteVersion)` triple.
 Once you suppress it, you won't see it again for that exact combination
 — but as soon as you upgrade either side, the triple changes and you'll
 see the alert again so you can re-confirm.
+
+**Rationale for the 2.52 boundary**: upstream maintainer Greg Troxel
+(unison-users, 2026-05): "since we changed to 'new wire protocol',
+there is feature negotiation and compatibility […] requiring 2.54 on
+the remote is more restrictive than necessary." Older versions of this
+UI alerted on any version difference; current builds only alert when
+the wire protocol itself is incompatible.
 
 **The probe is silent in normal operation**:
 - Uses `BatchMode=yes` — won't prompt for a password. If the remote
@@ -918,11 +931,15 @@ negotiate compatibility at connection — see the upstream wiki's
 [Cross-Platform Issues / Compatibility](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex)
 section. As a rule of thumb:
 
-- Minor-version mismatches (e.g. `2.54.0` ↔ `2.54.3`) usually
-  interoperate cleanly.
-- Major-version mismatches (e.g. `2.51` ↔ `2.54`) often don't.
-  Upstream guarantees forward compatibility within a major series,
-  not across them.
+- Versions on the same side of the 2.52.0 wire-protocol boundary
+  (e.g., `2.52.0` ↔ `2.54.0`, or `2.54.0` ↔ `2.54.3`) interoperate
+  via feature negotiation in the new wire protocol.
+- Versions straddling 2.52.0 (e.g., `2.51` ↔ `2.54`) do NOT
+  interoperate — Unison 2.54.0 removed the old wire protocol
+  entirely. The UI surfaces a warning for this case; older versions
+  of this UI also warned on minor-version diffs within the
+  new-protocol generation, but current builds only warn on the
+  actual incompatibility.
 
 If you have multiple Unison versions on the remote and need to pin a
 specific one for a profile, set `servercmd = /path/to/unison-X.Y` in

@@ -22,6 +22,12 @@ on this fork).
 > 📖 **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
 > 📝 **Release history:** [CHANGELOG.md](CHANGELOG.md).
 
+> 🐛 **Bug reports for this UI go [here](https://github.com/bcourbage/unison-ui-mac/issues),
+> NOT to [upstream Unison](https://github.com/bcpierce00/unison/issues).**
+> This is an independent project — upstream maintainers cannot help with UI
+> issues, and reports filed there are out-of-scope for them. (The Help menu's
+> "Report an Issue" command pre-fills a form pointing at the right place.)
+
 ## What this is
 
 Upstream Unison ships a Cocoa UI under `src/uimac/` that predates ARC,

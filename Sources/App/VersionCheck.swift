@@ -32,10 +32,26 @@ enum VersionCheck {
 
     /// Outcome of a version comparison. Returned to AppDelegate, which
     /// decides whether to show the alert.
+    ///
+    /// **Why mismatch is split into two cases (2026-05).** Greg Troxel
+    /// (upstream maintainer) noted that since Unison 2.52.0 introduced
+    /// the "new wire protocol" with feature negotiation, minor-version
+    /// differences within the new-protocol generation interoperate
+    /// fine. We used to fire `.mismatch` on any non-equal pair —
+    /// over-strict, and noisy for the common case of a remote one
+    /// minor version behind/ahead. The split lets the UI stay quiet
+    /// for the compatible-but-different case while still alerting on
+    /// the real wire-protocol break (cross-2.52).
     enum Outcome: Equatable {
-        /// Versions match exactly. Nothing to surface.
+        /// Versions are byte-equal. Nothing to surface.
         case match(version: String)
-        /// Versions differ. AppDelegate surfaces the alert (unless
+        /// Versions differ but are on the same side of the 2.52.0
+        /// wire-protocol boundary, so they negotiate and interoperate.
+        /// AppDelegate logs but doesn't alert.
+        case compatibleMismatch(local: String, remote: String)
+        /// Versions straddle the 2.52.0 boundary. The two wire
+        /// protocols don't interoperate; sync will fail with cryptic
+        /// RPC errors. AppDelegate surfaces the alert (unless
         /// `Suppression.isSuppressed(...)` returns true for this triple).
         case mismatch(local: String, remote: String, host: String)
         /// Profile had no SSH-remote root, so there's nothing to check.
@@ -47,6 +63,84 @@ enum VersionCheck {
         /// own connection error will speak to that if there's a real
         /// problem.
         case probeFailed(reason: String)
+    }
+
+    // MARK: - Compatibility classification
+
+    /// Wire-protocol compatibility verdict for a pair of dotted
+    /// version strings (e.g. `"2.54.0"` and `"2.53.8"`). Internal
+    /// stage between `parseVersionString` and `Outcome`; tested
+    /// directly so the boundary cases are nailed down.
+    enum Compatibility: Equatable {
+        /// Identical strings — the easy case.
+        case exactMatch
+        /// Both versions are >= 2.52.0; new wire protocol with
+        /// feature negotiation handles the diff.
+        case compatibleNewProtocol(local: String, remote: String)
+        /// Both versions are < 2.52.0; old wire protocol on both
+        /// sides. Rare path (anyone still on 2.51.x running this
+        /// UI?) but defensible to treat as compatible since the old
+        /// protocol negotiates within its own generation.
+        case compatibleOldProtocol(local: String, remote: String)
+        /// One side is pre-2.52.0 and the other is >= 2.52.0. The
+        /// real wire-protocol break — sync cannot succeed without
+        /// updating the older side.
+        case incompatibleAcrossBoundary(local: String, remote: String)
+    }
+
+    /// Classify a (local, remote) pair into one of the four buckets
+    /// above. Used by `runSync` to pick between `.match`,
+    /// `.compatibleMismatch`, and `.mismatch` outcomes.
+    ///
+    /// Defensive on parse failure: if either version can't be parsed
+    /// into a semver triple, treat it as "new protocol" — better to
+    /// suppress a possibly-spurious alert than to alarm the user.
+    /// The path to a parse failure here is already a "shouldn't
+    /// happen" case (both strings come from `parseVersionString`
+    /// which only returns matches against a strict regex).
+    static func classify(local: String, remote: String) -> Compatibility {
+        if local == remote {
+            return .exactMatch
+        }
+        let localPre = isPre252(local)
+        let remotePre = isPre252(remote)
+        if localPre == remotePre {
+            return localPre
+                ? .compatibleOldProtocol(local: local, remote: remote)
+                : .compatibleNewProtocol(local: local, remote: remote)
+        }
+        return .incompatibleAcrossBoundary(local: local, remote: remote)
+    }
+
+    /// True if `version` is strictly less than 2.52.0. Returns false
+    /// for unparseable input (defensive: an unknown version is
+    /// optimistically treated as new-protocol so we don't false-
+    /// positive an incompatibility warning on garbage data).
+    static func isPre252(_ version: String) -> Bool {
+        guard let s = parseSemver(version) else { return false }
+        if s.major < 2 { return true }
+        if s.major > 2 { return false }
+        return s.minor < 52
+    }
+
+    /// Parse a dotted-numeric version string into (major, minor, patch).
+    /// Two-component forms like `"2.51"` get patch = 0; trailing junk
+    /// after the third component is ignored. Returns nil if fewer
+    /// than two components or if any component isn't a non-negative
+    /// integer.
+    static func parseSemver(_ version: String) -> (major: Int, minor: Int, patch: Int)? {
+        let parts = version.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        guard let major = Int(parts[0]), major >= 0,
+              let minor = Int(parts[1]), minor >= 0
+        else { return nil }
+        let patch: Int
+        if parts.count >= 3 {
+            patch = Int(parts[2]) ?? 0
+        } else {
+            patch = 0
+        }
+        return (major, minor, patch)
     }
 
     // MARK: - Public entry point
@@ -106,10 +200,14 @@ enum VersionCheck {
             return .probeFailed(reason: "ssh probe of \(sshRoot.host) returned no parseable version")
         }
 
-        if localVersion == remoteVersion {
+        switch classify(local: localVersion, remote: remoteVersion) {
+        case .exactMatch:
             return .match(version: localVersion)
-        } else {
-            return .mismatch(local: localVersion, remote: remoteVersion, host: sshRoot.host)
+        case .compatibleNewProtocol(let l, let r),
+             .compatibleOldProtocol(let l, let r):
+            return .compatibleMismatch(local: l, remote: r)
+        case .incompatibleAcrossBoundary(let l, let r):
+            return .mismatch(local: l, remote: r, host: sshRoot.host)
         }
     }
 
