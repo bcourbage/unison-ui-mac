@@ -5,19 +5,26 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Verify the first CI run lands green** — `.github/workflows/ci.yml`
-      shipped untested against actual GitHub-hosted runners as part
-      of v0.1.0 (the public flip + first PR/push is what fires it).
-      First-run failures most commonly trace to OCaml version drift
-      between the runner's Homebrew install and the local 5.4.1 we
-      build against. If the linker errors with missing symbols in
-      libasmrun/libunixnat, pin the OCaml version explicitly in the
-      `brew install ocaml` step (e.g. `brew install ocaml@5.4`).
-      Other likely sticky points: xcodegen install (separate
-      `brew install xcodegen` step is in the workflow), and Xcode's
-      validation pass complaining about the ad-hoc identity (we
-      already disable network reachability checks in the build —
-      shouldn't trip).
+- [ ] **Discoverability — Homebrew tap** — set up
+      `github.com/bcourbage/homebrew-tap` with a
+      `Casks/unison-ui-mac.rb` formula pointing at the v0.1.0
+      `.app.zip` URL + SHA-256. Users would then do
+      `brew tap bcourbage/tap && brew install --cask unison-ui-mac`.
+      Cask installs handle the quarantine-attribute strip
+      automatically, so first launch is clean. Bumping versions on
+      future releases is a one-line SHA-256 + URL update in the
+      formula. Upstream `homebrew-cask` submission is a later move
+      once there's traction.
+
+- [ ] **Discoverability — unison-users announcement** — pending
+      response from Greg Troxel (privately emailed 2026-05-27 as a
+      courtesy heads-up before posting on the public list, given
+      upstream's stated anti-LLM policy). Three outcomes to handle:
+      (a) green light → post the plain-text version drafted in
+      session; (b) defer → keep promotion off the list, repo stays
+      public and discoverable via topics + Homebrew tap; (c) no reply
+      after 7–10 days → proceed with the original post, courtesy was
+      extended. Draft preserved in session transcript.
 
 - [ ] **Release-build automation** — current process for cutting a
       release is manual: `make build CONFIG=Release` →
@@ -418,6 +425,33 @@ landed across the bring-up and follow-on sessions.*
       main, PRs, and manual workflow_dispatch. Caches the Homebrew
       OCaml install (~3 min savings per run after first hit).
       Uploads xcresult bundle on failure with 7-day retention.
+- [x] **First CI run verified green** (commit `87f69c0`, run
+      `26548904263`). Actual sticky point was **not** what the
+      original TODO predicted (OCaml drift, xcodegen install) — it
+      was **Xcode-toolchain skew**: local builds on Xcode 26, but
+      `macos-15` runner ships Xcode 16.4. Older Xcode is stricter
+      about Swift 6 actor isolation on AppKit APIs that newer Xcode
+      lets pass implicitly. Two `@MainActor` annotations needed:
+      `MainMenu` enum (touches `NSApp.helpMenu` / `.servicesMenu` /
+      `.windowsMenu`) and `PathCellViewTests` (constructs NSView
+      and reads `textField` / `imageView` / `toolTip`). Both are
+      semantically correct, not workarounds. Side discovery during
+      the same fix: xcodegen **regenerates** `Resources/Info.plist`
+      on every build, overwriting any keys not listed in
+      `project.yml`'s `info.properties` — which had silently
+      reverted the version-substitution fix and was the actual root
+      cause of the original "Get Info shows 1.0 not 0.1.0" report.
+      Now anchored in `project.yml`. Lesson for future deployment-
+      target or Swift-version bumps: run them through CI before
+      assuming "local passes → CI passes."
+- [x] **Repo discoverability — GitHub topics + README badges**
+      (commits `add-topics`, `066d6fe`). Twelve topic tags applied
+      via `gh repo edit --add-topic …` (unison, file-sync,
+      file-synchronization, macos, macos-app, swift, appkit, gui,
+      ocaml, apple-silicon, gplv3, rsync-alternative); six
+      shields.io badges added at the top of the README (CI,
+      release, license, platform, arch, embedded Unison version).
+      Improves organic discovery via GitHub topic search.
 - [x] **v0.1.0 — first public release (2026-05-28)** — repo flipped
       public; tag `v0.1.0` annotated at commit `5195c78`; GitHub
       Release published at
