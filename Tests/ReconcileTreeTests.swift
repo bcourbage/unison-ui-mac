@@ -470,4 +470,110 @@ final class ReconcileTreeTests: XCTestCase {
             policy: .smart, items: items, rowOverrides: [:])
         XCTAssertEqual(nodes.count, 0)
     }
+
+    // MARK: - nodesToRevealFailedRows (post-sync failure expansion)
+
+    func test_revealFailedRows_empty_setReturnsEmpty() {
+        // No failures → nothing to reveal. Mirrors the "successful
+        // sync" path where the policy-driven expansion stays unchanged.
+        let items = [
+            itemWithDirection("a/b/file.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        XCTAssertTrue(tree.nodesToRevealFailedRows([]).isEmpty)
+    }
+
+    func test_revealFailedRows_expandsAncestorChainOfFailedLeaf() {
+        // Row 0 (a/b/c/fail.txt) is the only failure. Reveal should
+        // return every folder on the path: a, a/b, a/b/c.
+        let items = [
+            itemWithDirection("a/b/c/fail.txt", "---->"),
+            itemWithDirection("a/b/c/ok.txt", "---->"),
+            itemWithDirection("x/y/elsewhere.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToRevealFailedRows([0])
+        let names = Set(nodes.map { $0.name })
+        XCTAssertEqual(names, ["a", "b", "c"],
+                       "should expand the full ancestor chain. Got \(names)")
+    }
+
+    func test_revealFailedRows_doesNotExpandSiblingBranches() {
+        // Failure in a/ should not pull c/ into the expand set.
+        let items = [
+            itemWithDirection("a/fail.txt", "---->"),
+            itemWithDirection("c/d/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToRevealFailedRows([0])
+        let names = Set(nodes.map { $0.name })
+        XCTAssertEqual(names, ["a"], "only the failed row's branch. Got \(names)")
+    }
+
+    func test_revealFailedRows_multipleFailuresUnionTheirAncestors() {
+        // Two unrelated failures (a/fail.txt + c/d/fail.txt) — reveal
+        // should union both ancestor chains: a, c, c/d.
+        let items = [
+            itemWithDirection("a/fail.txt", "---->"),
+            itemWithDirection("c/d/fail.txt", "---->"),
+            itemWithDirection("x/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let nodes = tree.nodesToRevealFailedRows([0, 1])
+        let names = Set(nodes.map { $0.name })
+        XCTAssertEqual(names, ["a", "c", "d"],
+                       "union of both ancestor chains. Got \(names)")
+    }
+
+    func test_revealFailedRows_flatLayoutHasNoFoldersToReveal() {
+        // Flat layout has no folder nodes — the FAILED leaves are
+        // already top-level and always visible. Reveal returns [].
+        let items = [
+            itemWithDirection("a/b/fail.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .flat)
+        XCTAssertTrue(tree.nodesToRevealFailedRows([0]).isEmpty)
+    }
+
+    func test_revealFailedRows_pureSingleChildChainHasNoFoldersToReveal() {
+        // nestedCollapsed merges a single-child chain "a/b/c/fail.txt"
+        // into a single leaf node at the top level (name becomes the
+        // joined path). No folder ancestors survive the collapse —
+        // there's nothing to expand, just like the flat layout.
+        let items = [
+            itemWithDirection("a/b/c/fail.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedCollapsed)
+        XCTAssertTrue(tree.nodesToRevealFailedRows([0]).isEmpty,
+                      "single-child chain collapses away; no folders remain")
+    }
+
+    func test_revealFailedRows_collapsedBranchingFolderStillReveals() {
+        // Branching folder doesn't collapse away — it has two
+        // children, so it survives as a folder node. A failure under
+        // one branch should reveal that folder. Tree shape:
+        //   a/
+        //     fail.txt   ← row 0 (the failure)
+        //     ok.txt
+        let items = [
+            itemWithDirection("a/fail.txt", "---->"),
+            itemWithDirection("a/ok.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedCollapsed)
+        let nodes = tree.nodesToRevealFailedRows([0])
+        XCTAssertEqual(nodes.count, 1,
+                       "branching folder survives collapse → one ancestor")
+        XCTAssertEqual(nodes[0].name, "a",
+                       "ancestor is the un-collapsed folder")
+    }
+
+    func test_revealFailedRows_unknownRowIndexIsIgnored() {
+        // Defensive: caller passes a row index that doesn't exist in
+        // the tree. Should not crash, should not return phantom nodes.
+        let items = [
+            itemWithDirection("a/file.txt", "---->"),
+        ]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        XCTAssertTrue(tree.nodesToRevealFailedRows([999]).isEmpty)
+    }
 }

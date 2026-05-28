@@ -1,9 +1,16 @@
 # Installing Unison-UI-Mac
 
-This page walks through getting Unison-UI-Mac built and running on your Mac.
-There is no signed release binary — you build from source, then run an
-installer script that ad-hoc-signs the bundle, copies it to `/Applications`,
-and clears the macOS quarantine attribute so Gatekeeper lets it launch.
+This page walks through getting Unison-UI-Mac running on your Mac. Two
+paths:
+
+1. **Prebuilt `.app` from the [Releases page](https://github.com/bcourbage/unison-ui-mac/releases)** —
+   easiest if a release has been cut for the version you want. The
+   binary is ad-hoc-signed (not Apple-notarized), so you'll need to
+   handle a one-time Gatekeeper prompt; see
+   [First launch & Gatekeeper](#first-launch--gatekeeper) below.
+2. **Build from source** — required for development, or if no release
+   is available, or if you'd rather verify the binary yourself. See
+   [Install from source](#install-from-source) below.
 
 > Already familiar with macOS dev tooling? The 60-second version is at the
 > bottom under [TL;DR](#tldr).
@@ -58,7 +65,52 @@ git clone https://github.com/bcpierce00/unison.git ../unison
 make build BLOB=$(pwd)/../unison/src/unison-blob.o
 ```
 
-## Install (recommended path)
+## Quick install — prebuilt release
+
+The easiest path if a release has been cut for your needs:
+
+1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
+   download the `.app.zip` attached to the most recent release.
+2. Unzip and drag `unison-ui-mac.app` to `/Applications`.
+3. On first launch, see [First launch & Gatekeeper](#first-launch--gatekeeper)
+   below — you'll need to right-click → Open (not double-click) the
+   first time.
+
+If you'd prefer a one-line shell install:
+
+```sh
+unzip ~/Downloads/unison-ui-mac.app.zip -d /Applications
+xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
+open /Applications/unison-ui-mac.app
+```
+
+If no release is available for the version you want, or you'd rather
+build the binary yourself, see
+[Build from source](#install-from-source) below.
+
+## First launch & Gatekeeper
+
+The released `.app` is **ad-hoc code-signed but not Apple-notarized**
+(see [Why this isn't a notarized download](#why-this-isnt-a-notarized-download)).
+On first launch macOS will show one of two messages:
+
+- *"can't be opened because the developer cannot be verified"* — if
+  the bundle still has its quarantine attribute. Right-click the .app
+  in Finder, choose **Open** (not double-click), then click **Open**
+  in the dialog. This adds the app to your "approved" list; future
+  launches don't prompt.
+- *"can't be opened because Apple cannot check it for malicious
+  software"* — same fix. Or remove the quarantine attribute via the
+  command line:
+
+  ```sh
+  sudo xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
+  ```
+
+After the first successful launch the app behaves like any other
+.app — double-click works, Launchpad finds it, no further prompts.
+
+## Install from source
 
 ```sh
 # 1. Get build prerequisites (one time)

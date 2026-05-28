@@ -30,6 +30,25 @@ targets:
       - path: Sources/App
       - path: Sources/Bridge
       - path: Resources/AppIcon.icns
+      # The rendered Unison reference manual. Lives in vendor/ rather
+      # than Resources/ because it's a generated artifact (hevea →
+      # `make vendor-manual`) versioned alongside the OCaml blob. Xcode
+      # copies it into the .app bundle's Resources at build time;
+      # AppDelegate.openUnisonProjectHelp(_:) opens it via NSWorkspace.
+      - path: vendor/unison-manual-2.54.0.html
+        buildPhase: resources
+      # GPLv3 §5 obligation: a conveyed copy must "give all recipients
+      # a copy of this License along with the Program." When the .app
+      # is distributed standalone (zipped on GitHub Releases, for
+      # example), the LICENSE + NOTICE files inside the repo aren't
+      # along for the ride — they have to live inside the bundle. We
+      # copy both into Resources/ so anyone Show-Package-Contents-ing
+      # the .app finds them at Contents/Resources/LICENSE and
+      # Contents/Resources/NOTICE.md.
+      - path: LICENSE
+        buildPhase: resources
+      - path: NOTICE.md
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:

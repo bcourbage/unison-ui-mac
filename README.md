@@ -6,8 +6,14 @@ contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
 trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
 on this fork).
 
-> 📦 **To install:** see [INSTALL.md](INSTALL.md).
+> 📦 **To install:** see [INSTALL.md](INSTALL.md). Prebuilt `.app`
+> downloads (when available) are on the
+> [Releases page](https://github.com/bcourbage/unison-ui-mac/releases);
+> first-run Gatekeeper notes are in
+> [INSTALL.md § Gatekeeper](INSTALL.md#first-launch--gatekeeper).
+>
 > 📖 **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
+> 📝 **Release history:** [CHANGELOG.md](CHANGELOG.md).
 
 ## What this is
 
@@ -80,7 +86,7 @@ beyond what the legacy uimac app offered in several places. Highlights:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **278 unit tests** in ~1 s via `make test`. Pure-logic modules
+- **286 unit tests** in ~1 s via `make test`. Pure-logic modules
   (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
   `ProfilePreferences`, `RowSelectionRules`, `ReconcileSummary`,
   `SettingsModel`, `ArchiveCleanup`, etc.) carry exhaustive coverage;
@@ -213,7 +219,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (278 tests, ~1 s)
+├── Tests/                               XCTest bundle (286 tests, ~1 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

@@ -30,6 +30,13 @@ purposes** and is distributed under the same license. See [LICENSE](LICENSE).
 
 - The application icon (`Resources/AppIcon.icns`) is copied verbatim from
   [src/uimac/Unison.icns](https://github.com/bcpierce00/unison/blob/master/src/uimac/Unison.icns).
+- The bundled reference manual (`vendor/unison-manual-<version>.html`,
+  shipped inside the `.app` as Help → "Unison File Synchronizer Manual")
+  is the hevea-rendered output of upstream's
+  [doc/unison-manual.tex](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex),
+  copyright Benjamin C. Pierce, distributed under GPLv3. See
+  [vendor/README.md](vendor/README.md) for the rendering recipe and
+  the upstream commit it was generated from.
 - The full set of OCaml callback names and semantics
   (`unisonGetVersion`, `unisonInit0/1/2`, `unisonRiSet*`, etc.) are part of
   the public interface of Unison's `uimacbridge` module and used as

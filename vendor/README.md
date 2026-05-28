@@ -1,16 +1,25 @@
-# Vendored OCaml blob
+# Vendored upstream artifacts
 
-This directory holds the prebuilt OCaml object file that the Swift app
-links against. Building it from upstream source takes 5–10 minutes and
-requires a sibling checkout of `bcpierce00/unison`; committing the
-artifact here means everyday `make build` (and end-user `make install`)
-just compile Swift + link, which is a few seconds instead of minutes.
+This directory holds two prebuilt artifacts from the upstream Unison
+project, both committed so that everyday `make build` (and end-user
+`make install`) skip slow / TeX-dependent generation steps:
 
-The current vendored file is named after the upstream Unison version
-and the build host's CPU architecture:
+1. **`unison-blob-<version>-<arch>.o`** — the compiled OCaml core the
+   Swift app links against. Building from source takes 5–10 minutes
+   and requires a sibling checkout of `bcpierce00/unison` plus
+   `brew install ocaml`. Regenerated via `make vendor-blob`.
+2. **`unison-manual-<version>.html`** — the Unison reference manual
+   rendered to HTML, shipped inside the `.app` bundle as
+   Help → "Unison File Synchronizer Manual". Generated from
+   upstream's `doc/unison-manual.tex` via hevea (the same TeX→HTML
+   tool upstream's own `doc/Makefile` uses). Regenerated via
+   `make vendor-manual`.
+
+Current files:
 
 ```
 vendor/unison-blob-2.54.0-arm64.o
+vendor/unison-manual-2.54.0.html
 ```
 
 If the file for your architecture isn't here, you have two options:
@@ -34,12 +43,28 @@ If the file for your architecture isn't here, you have two options:
 | Mach-O kind | `Mach-O 64-bit object arm64` |
 | Size | 5.1 MB |
 
+## Provenance — what the current vendored manual is
+
+| Field | Value |
+| --- | --- |
+| Upstream source | [`doc/unison-manual.tex`](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex) |
+| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (same as the blob) |
+| Renderer | hevea 2.38 (`brew install hevea`) — upstream's own TeX→HTML tool, see their `doc/Makefile` |
+| Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`) |
+| Output | self-contained single-file HTML, UTF-8, inlined CSS, no companion assets |
+| Size | ~197 KB |
+| Copyright | "Copyright 1998-2023, Benjamin C. Pierce" (preserved inline as required by GPLv3 §4) |
+
 ## License
 
 Upstream Unison is **GNU GPL v3 or later** (see [LICENSE](../LICENSE)
-in this repo and `bcpierce00/unison`'s LICENSE). This object file is
-a compiled form of that source plus the patches under `patches/`. As
-required by GPLv3 §6 ("Conveying Non-Source Forms"), the complete
+in this repo and `bcpierce00/unison`'s LICENSE). Both vendored
+artifacts here are derivative forms of upstream sources at the
+commit hash listed above, distributed under the same license.
+
+### `unison-blob-*.o` (compiled binary)
+
+As required by GPLv3 §6 ("Conveying Non-Source Forms"), the complete
 corresponding source for this binary is:
 
 - Upstream Unison at the commit hash above, available at the upstream
@@ -55,31 +80,46 @@ upstream property and not something we introduce). No portion of the
 blob is original work of this project; the patches are minimal
 Callback registrations that don't carry significant authorship.
 
-## Rebuilding the vendored blob
+### `unison-manual-*.html` (rendered manual)
+
+A faithful mechanical rendering of upstream's `doc/unison-manual.tex`
+at the commit above. The "Copyright 1998-2023, Benjamin C. Pierce"
+notice the TeX source carries is preserved verbatim in the HTML
+output (§4 "keep intact all notices"). No portion of the rendered
+manual is original work of this project; no edits or annotations
+are applied between hevea's output and what we commit. The
+corresponding source for §6 purposes is the upstream `.tex` file at
+the listed commit plus a hevea installation (`brew install hevea`).
+
+## Rebuilding the vendored artifacts
 
 When upstream Unison bumps version, when our patches change, or when
-we add a new architecture, the maintainer regenerates the blob:
+we add a new architecture, the maintainer regenerates both artifacts
+in lockstep so the embedded engine and the bundled manual match:
 
 ```sh
 # Prerequisites (one-time):
 #   - Apple Silicon or Intel Mac
-#   - brew install ocaml
+#   - brew install ocaml hevea
 #   - A sibling clone of upstream:
 git clone https://github.com/bcpierce00/unison.git ../unison
 cd ../unison && git checkout <commit>   # or a tag
 cd ../unison-ui-mac
 
 # Rebuild + restage:
-make vendor-blob
+make vendor-blob       # compiled OCaml core (5–10 min)
+make vendor-manual     # rendered HTML manual (~1 s)
 ```
 
-After `make vendor-blob`:
+After regenerating:
 
-1. Update the table above with the new commit hash + checksum
+1. Update the tables above with the new commit hash + checksum
    (`shasum -a 256 vendor/unison-blob-*.o`).
 2. Note any patches added or removed under `patches/`.
 3. If this is a Unison major-version bump, update README's
-   "Unison version" section too.
+   "Unison version" section too. Also rename the new manual file
+   under `vendor/` and update the `path:` entry in `project.yml`
+   so XcodeGen picks up the new filename.
 4. `git add vendor/ && git commit`
 
 ## Why not a git submodule of upstream?

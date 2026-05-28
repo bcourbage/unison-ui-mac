@@ -29,6 +29,14 @@ ARCH := $(shell uname -m)
 VENDORED_BLOB := $(CURDIR)/vendor/unison-blob-$(UNISON_VERSION)-$(ARCH).o
 UPSTREAM_BLOB := $(UNISON_SRC)/unison-blob.o
 
+# The rendered Unison reference manual that ships in the .app bundle as
+# Help → "Unison File Synchronizer Manual". Generated from upstream's
+# `doc/unison-manual.tex` via hevea (the same TeX→HTML converter
+# upstream uses). See `make vendor-manual` and `vendor/README.md`.
+# Self-contained single-file HTML with inlined CSS — no companion assets.
+VENDORED_MANUAL := $(CURDIR)/vendor/unison-manual-$(UNISON_VERSION).html
+UPSTREAM_MANUAL_TEX := $(UNISON_SRC)/../doc/unison-manual.tex
+
 # `BLOB ?=` lets a developer override on the command line:
 #   make build BLOB=$(UNISON_SRC)/unison-blob.o
 # …to rebuild from source instead of using the vendored copy.
@@ -115,6 +123,40 @@ vendor-blob:
 	@echo "Upstream commit: $$(cd $(UNISON_SRC)/.. && git rev-parse HEAD)"
 	@echo "Don't forget to:"
 	@echo "  - update vendor/README.md with the new commit hash + checksum"
+	@echo "  - re-run \`make vendor-manual\` if upstream's doc/ changed"
+	@echo "  - git add vendor/ && git commit"
+
+# Maintainer target: render upstream's TeX manual to HTML via hevea and
+# stage it for commit. Run this alongside `vendor-blob` whenever the
+# upstream version bumps so the bundled manual matches the embedded
+# Unison engine. Hevea is upstream's own TeX→HTML toolchain (see their
+# doc/Makefile's HEVEA_FOUND check), so this produces the same output
+# upstream would. Self-contained single-file HTML with inlined CSS.
+#
+# Hevea emits a cosmetic warning about a missing .htoc file (which
+# would give a clickable TOC); the body content is complete without it,
+# so we don't bother running pdflatex first to generate one.
+.PHONY: vendor-manual
+vendor-manual:
+	@if [ ! -f "$(UPSTREAM_MANUAL_TEX)" ]; then \
+		echo "ERROR: upstream manual not found at $(UPSTREAM_MANUAL_TEX)" >&2; \
+		echo "Clone upstream Unison first (see vendor-blob)." >&2; \
+		exit 1; \
+	fi
+	@if ! command -v hevea >/dev/null 2>&1; then \
+		echo "ERROR: hevea not installed. Install with:" >&2; \
+		echo "  brew install hevea" >&2; \
+		exit 1; \
+	fi
+	@mkdir -p $(dir $(VENDORED_MANUAL))
+	cd $(dir $(UPSTREAM_MANUAL_TEX)) && hevea -fix unison-manual.tex
+	cp $(dir $(UPSTREAM_MANUAL_TEX))unison-manual.html $(VENDORED_MANUAL)
+	@echo ""
+	@echo "Vendored: $(VENDORED_MANUAL) ($$(wc -c < $(VENDORED_MANUAL)) bytes)"
+	@echo "Upstream commit: $$(cd $(UNISON_SRC)/.. && git rev-parse HEAD)"
+	@echo "Hevea version:   $$(hevea -version 2>&1 | head -1)"
+	@echo "Don't forget to:"
+	@echo "  - update vendor/README.md with the new commit hash"
 	@echo "  - git add vendor/ && git commit"
 
 # ----- Stripped libasmrun -----

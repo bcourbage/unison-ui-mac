@@ -12,14 +12,6 @@ section at the bottom so this list stays scannable.
       Apple Help bundle inside the `.app`. Blocks the Report-an-Issue
       item below.
 
-- [ ] **Help menu → Report an Issue** — wires
-      `https://github.com/bcourbage/unison-ui-mac/issues/new` with a
-      pre-filled body templated from app version + OS version. Needs
-      the repo to be **public** for non-collaborators to file issues,
-      plus a `.github/ISSUE_TEMPLATE/bug_report.md` for structure. As a
-      fallback for users without GitHub accounts, consider an iCloud
-      "Hide My Email" alias wired via `mailto:` in the About panel.
-
 - [ ] **App signing for distribution** — current state is ad-hoc
       (`codesign --force --deep --sign -`), packaged for users via
       `install.sh`, which also clears `com.apple.quarantine` on the
@@ -39,23 +31,6 @@ section at the bottom so this list stays scannable.
       viable — we embed GPLv3 code and the App Store license terms
       aren't GPL-compatible.
 
-- [ ] **Auto-expand failed branches after a sync with failures** —
-      follow-up to the Reconcile display settings landed in
-      [`44eece5`](https://github.com/bcourbage/unison-ui-mac/commit/44eece5).
-      Today the expand policy chosen in Settings (`smart` / `all` /
-      `rootOnly`) applies uniformly on every reconcile populate, even
-      post-sync. If a sync finishes with failures, the user often
-      wants to *see* every ⚠ FAILED row without manually drilling in
-      — especially if their preferred policy is `smart` or
-      `rootOnly`. Proposal: in `syncDidComplete`, after
-      `attributeRowFailuresFromDetails` runs, if the failure count
-      is > 0, re-walk the tree and expand the ancestor chain of
-      every failed row (treat them like the smart-policy treats
-      unresolved conflicts). This would NOT change the user's
-      configured policy — it's a one-shot post-sync widening that
-      reverts on the next rescan. A new `ReconcileTree.nodesToExpand`
-      variant (or an `additionalConditions:` parameter) keeps the
-      logic in the same pure surface that's already unit-tested.
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
@@ -132,6 +107,16 @@ landed across the bring-up and follow-on sessions.*
       Both settings re-read on every reconcile populate, so a change
       in Settings takes effect on the next rescan or profile open;
       already-displayed rows aren't re-laid out live.
+- [x] **Auto-expand failed branches after a sync with failures** —
+      `ReconcileTree.nodesToRevealFailedRows(_:)` walks the tree and
+      returns the ancestor chain of every row whose progress ended
+      `FAILED` (including the synthesized FAILED rows from
+      `attributeRowFailuresFromDetails`). `syncDidComplete` invokes
+      this after the failure count is known and expands every
+      returned folder. Additive — leaves the user's configured
+      `ExpandPolicy` untouched, and the next rescan rebuilds the
+      tree, so the widening is one-shot per sync result. 8 new
+      XCTest cases cover the new pure surface.
 
 - [x] **Color-coded reconcile rows** — Action column carries a tinted
       badge (green `#97BB68` → second, blue `#5A96DE` ← first, orange
@@ -308,13 +293,22 @@ landed across the bring-up and follow-on sessions.*
       Settings). Edit: standard text ops + Ignore items + Profile
       Editor. Action: direction overrides + Diff + Select Conflicts /
       Revert. Window: Close (⌘W) + Minimize + Zoom. Help: `<appname>
-      Help` (⌘?) + `Unison File Synchronizer Help`.
+      Help` (⌘?) + `Unison File Synchronizer Manual` (bundled HTML).
 - [x] **About panel** — version + embedded Unison version (via
       `unison_bridge_get_version`) + GPLv3 attribution paragraph via
       `NSAttributedString` (no Credits.rtf needed).
 - [x] **Help menu split** — two entries: app help vs. upstream Unison
       help. No ellipsis on either (HIG: immediate-action items don't
       get one).
+- [x] **Help menu → Report an Issue** — opens
+      `https://github.com/bcourbage/unison-ui-mac/issues/new` with
+      `?body=` pre-filled (app version, embedded Unison version,
+      macOS version, architecture). GitHub's URL API can't combine
+      `?template=` with `?body=`, so the menu path drives the body
+      and `.github/ISSUE_TEMPLATE/bug_report.md` provides structure
+      for users who hit New Issue directly via the GitHub UI.
+      `AppDelegate.makeIssueReportBody()` is internal so future
+      tests can pin its shape against the template.
 
 ### Terminology + correctness pass
 
@@ -381,7 +375,7 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **278 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
+- [x] **286 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
       for `leaks(1)`-based release checks. Coverage (illustrative —
       counts are at-last-tally and grow with each pure-logic
       extraction):

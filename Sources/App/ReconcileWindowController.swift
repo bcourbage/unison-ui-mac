@@ -713,12 +713,36 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // phase so both the summary ("Synchronization completed with
         // N error(s)") AND the action-gating logic see the same
         // terminal state.
-        let failures = items
-            .filter { ProgressDescriptor.parse($0.progress).isFailure }
-            .count
+        let failedRowSet: Set<Int> = Set(items.indices.filter {
+            ProgressDescriptor.parse(items[$0].progress).isFailure
+        })
+        let failures = failedRowSet.count
         phase = .done(failures: failures)
         setSummary(summaryText())
         refreshToolbarEnabled()
+
+        // If anything failed, force-expand the ancestor chain of every
+        // FAILED row — even when the user's configured ExpandPolicy is
+        // `.smart` or `.rootOnly` and those rows would otherwise be
+        // buried under collapsed folders. The user picked their policy
+        // to focus pre-sync triage; post-sync triage is a different
+        // task with different visibility needs. This is additive on
+        // top of whatever the policy already expanded — the user's
+        // setting isn't mutated, and the next rescan rebuilds the
+        // tree (so the widening doesn't persist beyond this
+        // sync-complete view).
+        if !failedRowSet.isEmpty {
+            let toReveal = tree.nodesToRevealFailedRows(failedRowSet)
+            for node in toReveal {
+                outlineView.expandItem(node, expandChildren: false)
+            }
+            if !toReveal.isEmpty {
+                TraceLog.shared.write(
+                    "ReconcileWindow: revealed \(toReveal.count) folder(s) " +
+                    "containing FAILED row(s)")
+            }
+        }
+
         TraceLog.shared.write("ReconcileWindow: sync complete (failures: \(failures))")
     }
 

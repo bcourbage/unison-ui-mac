@@ -52,10 +52,27 @@ enum MainMenu {
         menu.addItem(withTitle: "\(appName) Help",
                      action: #selector(AppDelegate.openUiMacHelp(_:)),
                      keyEquivalent: "?")
-        // Help for the upstream synchronizer — the file-format reference,
-        // the preference list, the conflict-resolution semantics live there.
-        menu.addItem(withTitle: "Unison File Synchronizer Help",
+        // The full Unison reference manual — file-format details, the
+        // preference list, conflict-resolution semantics. Bundled with
+        // the app as a rendered HTML copy of upstream's
+        // `doc/unison-manual.tex` (see `make vendor-manual`), so it
+        // works offline; the handler falls back to the upstream wiki
+        // if the bundled resource is missing.
+        menu.addItem(withTitle: "Unison File Synchronizer Manual",
                      action: #selector(AppDelegate.openUnisonProjectHelp(_:)),
+                     keyEquivalent: "")
+
+        // Report-an-Issue — separator above because this is a different
+        // category of action (file feedback) than the two help docs
+        // above (read docs). Ellipsis is debatable: per HIG, "performs
+        // its action immediately" gets no ellipsis, and this just
+        // opens a URL — but the URL leads to a form the user fills
+        // out, which is closer to the "prompts for more input"
+        // ellipsis criterion. We side with no-ellipsis to match the
+        // other URL-opening Help items above.
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Report an Issue",
+                     action: #selector(AppDelegate.reportIssue(_:)),
                      keyEquivalent: "")
 
         // Wire as the official Help menu so the system's "Help search"

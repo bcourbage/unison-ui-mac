@@ -597,6 +597,14 @@ Both settings take effect on the **next reconcile populate** (rescan
 or profile open). Already-open reconcile windows aren't re-laid out
 live — the section description in Settings spells this out.
 
+**Post-sync failure reveal.** When a sync finishes with one or more
+failures, the app expands the ancestor chain of every ⚠ FAILED row,
+even when the user's configured policy is `Smart` or `Top level
+only` and those rows would otherwise stay collapsed out of view. The
+user's setting isn't mutated; this is a one-shot widening for the
+current sync result, reverted on the next rescan. The configured
+policy still governs the pre-sync (just-rescanned) view.
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -678,7 +686,17 @@ Standard: Minimize, Zoom, Bring All to Front.
 ### Help menu
 
 - `Unison-UI-Mac Help` (⌘?) — opens this repo's README in the browser.
-- `Unison File Synchronizer Help` — opens the upstream Unison wiki.
+- `Unison File Synchronizer Manual` — opens the full upstream Unison
+  reference manual, rendered to HTML and bundled with the app (works
+  offline). The HTML is the hevea-rendered output of upstream's
+  `doc/unison-manual.tex` at the Unison version this app embeds; see
+  the About panel for the exact version. Falls back to the upstream
+  wiki if the bundled resource is missing.
+- `Report an Issue` — opens GitHub's new-issue form for this repo
+  with an Environment block pre-filled (app version, embedded Unison
+  version, macOS version, architecture). The repo's bug-report
+  template provides the rest of the structure. You'll need a GitHub
+  account to file the issue itself.
 
 No File menu — this isn't a document-based app. ⌘W still closes the
 focused window via the standard responder action.

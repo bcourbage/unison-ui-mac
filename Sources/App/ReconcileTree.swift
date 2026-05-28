@@ -331,6 +331,49 @@ struct ReconcileTree {
         }
     }
 
+    /// "Reveal failed rows" — return every folder node whose subtree
+    /// contains at least one row in `failedRows`. Used by
+    /// `ReconcileWindowController` after a sync completes with
+    /// failures, to ensure ⚠ FAILED rows are visible regardless of
+    /// the user's configured `ExpandPolicy` (which was chosen for
+    /// the pre-sync diff, not for post-sync triage). Additive — the
+    /// caller invokes this on top of the existing expand state, and
+    /// the next rescan rebuilds the tree, so this widening is
+    /// effectively one-shot.
+    ///
+    /// Pure: returns a set the caller iterates to call
+    /// `outlineView.expandItem(_:)`. The configured policy is not
+    /// mutated.
+    ///
+    /// Symmetric with `smartNodesToExpand` but keyed on a different
+    /// "needs attention" predicate (post-sync failure vs. pre-sync
+    /// unresolved conflict). Kept as a separate method rather than a
+    /// shared predicate-taking helper to avoid the abstraction cost
+    /// for two callers — extract if a third predicate arrives.
+    func nodesToRevealFailedRows(_ failedRows: Set<Int>) -> [ReconcileNode] {
+        var result: [ReconcileNode] = []
+        @discardableResult
+        func walk(_ node: ReconcileNode) -> Bool {
+            if let row = node.row {
+                return failedRows.contains(row)
+            }
+            var subtreeHasFailure = false
+            for child in node.children {
+                if walk(child) { subtreeHasFailure = true }
+            }
+            // Skip the synthetic root for the same reason
+            // smartNodesToExpand does — outline view always shows
+            // top-level items, the synthetic root is never an
+            // outline node.
+            if subtreeHasFailure, !node.name.isEmpty {
+                result.append(node)
+            }
+            return subtreeHasFailure
+        }
+        walk(root)
+        return result
+    }
+
     /// "Expand only what needs attention" — return every folder node
     /// whose subtree contains at least one unresolved conflict row.
     /// Walked recursively, so a single deeply-buried conflict expands

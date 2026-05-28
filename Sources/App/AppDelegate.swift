@@ -1,4 +1,5 @@
 import AppKit
+import Darwin   // utsname / uname for arch detection in reportIssue body
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -477,9 +478,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for k in keys {
             log.write("env \(k)=\(env[k] ?? "<unset>")")
         }
+        // Log SSH-key reachability — useful diagnostic when remote
+        // connections fail with "Permission denied (publickey)". We
+        // enumerate ~/.ssh dynamically (rather than checking specific
+        // filenames) so the log is portable across users and key
+        // layouts. Log only filenames + readability — never key
+        // contents. Missing directory is fine (no SSH configured).
         let fm = FileManager.default
-        for path in ["/Users/bcourbage/.ssh", "/Users/bcourbage/.ssh/Demeter", "/Users/bcourbage/.ssh/known_hosts"] {
-            log.write("readable \(path): \(fm.isReadableFile(atPath: path))")
+        let sshDir = (NSHomeDirectory() as NSString).appendingPathComponent(".ssh")
+        log.write("readable \(sshDir): \(fm.isReadableFile(atPath: sshDir))")
+        if let entries = try? fm.contentsOfDirectory(atPath: sshDir) {
+            for entry in entries.sorted() {
+                let full = (sshDir as NSString).appendingPathComponent(entry)
+                log.write("readable \(sshDir)/\(entry): \(fm.isReadableFile(atPath: full))")
+            }
         }
     }
 
@@ -523,9 +535,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openUnisonProjectHelp(_ sender: Any?) {
-        // Upstream Unison docs (the file synchronizer's own help/wiki).
-        // The legacy app pointed at http://www.cis.upenn.edu/~bcpierce/unison/docs.html
-        // which 404s today; the canonical docs live in the GitHub wiki.
+        // The Unison reference manual, rendered as HTML and bundled in
+        // the .app's Resources directory by `make vendor-manual`
+        // (hevea — upstream's own TeX→HTML toolchain). Opens in the
+        // user's default browser via NSWorkspace; works offline.
+        //
+        // Look up by filename prefix rather than hardcoding the
+        // version, so bumping the vendored manual to a new Unison
+        // version (e.g. `unison-manual-2.55.0.html`) doesn't silently
+        // fall through to the wiki fallback. We just pick the first
+        // match — only one `unison-manual-*.html` ships per build.
+        if let urls = Bundle.main.urls(forResourcesWithExtension: "html",
+                                       subdirectory: nil),
+           let manualURL = urls.first(where: {
+               $0.lastPathComponent.hasPrefix("unison-manual-")
+           }) {
+            NSWorkspace.shared.open(manualURL)
+            return
+        }
+        // Fall back to upstream's wiki if the bundled resource is
+        // missing — defensive for builds done before this resource
+        // was added, or hand-stripped bundles.
         if let url = URL(string: "https://github.com/bcpierce00/unison/wiki") {
             NSWorkspace.shared.open(url)
         }
@@ -541,6 +571,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Help → "Report an Issue". Opens GitHub's new-issue form with
+    /// an Environment block pre-filled — app version, embedded Unison
+    /// version, macOS version, architecture. The repo's
+    /// `.github/ISSUE_TEMPLATE/bug_report.md` provides the rest of
+    /// the structure when the user clicks New Issue from the GitHub
+    /// UI directly; we override the body here because GitHub's URL
+    /// API can't combine `?template=` and `?body=` (body wins), and
+    /// the highest-value thing we can pre-fill is the version info
+    /// the user would otherwise have to look up.
+    @objc func reportIssue(_ sender: Any?) {
+        let body = makeIssueReportBody()
+        var components = URLComponents(string: "https://github.com/bcourbage/unison-ui-mac/issues/new")!
+        components.queryItems = [URLQueryItem(name: "body", value: body)]
+        if let url = components.url {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Builds the pre-filled body for the GitHub new-issue form.
+    /// Pure-ish (reads bundle + ProcessInfo + the OCaml bridge); no
+    /// side effects. Internal so a future XCTest can pin the shape
+    /// against the bug-report template.
+    internal func makeIssueReportBody() -> String {
+        // App version: prefer the human-facing CFBundleShortVersionString
+        // ("0.1.0"); fall back to CFBundleVersion ("1") if absent.
+        let info = Bundle.main.infoDictionary
+        let marketing = (info?["CFBundleShortVersionString"] as? String) ?? "unknown"
+        let build = (info?["CFBundleVersion"] as? String) ?? "unknown"
+        let appVersion = "\(marketing) (build \(build))"
+
+        // Embedded Unison version comes from the OCaml bridge — same
+        // call the About panel uses. This is the line the user could
+        // otherwise only get from About, so pre-filling it removes
+        // the most common bug-report friction.
+        let unisonVersion = unison_bridge_get_version().map { String(cString: $0) } ?? "unknown"
+
+        // macOS version + architecture. operatingSystemVersionString
+        // returns something like "Version 15.0 (Build 24A335)" —
+        // verbose but unambiguous; bug reports thank us for it later.
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        // ARM64 vs x86_64 — relevant since we ship arm64-only. The
+        // `utsname.machine` field is a fixed-size C char array;
+        // `withUnsafeBytes` + `String(cString:)` reads it without
+        // hardcoding the buffer size.
+        var sysinfo = utsname()
+        uname(&sysinfo)
+        let arch = withUnsafeBytes(of: &sysinfo.machine) { rawBuffer in
+            rawBuffer.bindMemory(to: CChar.self).baseAddress
+                .map { String(cString: $0) } ?? "unknown"
+        }
+
+        // The body is plain Markdown — GitHub's new-issue form
+        // renders it as Markdown in the preview tab. The "What
+        // happened?" / "Steps to reproduce" headers nudge the user
+        // toward an actionable report; the Environment block at the
+        // top is what bug triage needs first.
+        return """
+        ## Environment
+
+        - **App version:** \(appVersion)
+        - **Embedded Unison:** \(unisonVersion)
+        - **macOS:** \(osVersion)
+        - **Architecture:** \(arch)
+
+        ## What happened?
+
+        <!-- Describe the unexpected behavior. -->
+
+        ## Steps to reproduce
+
+        1.
+        2.
+        3.
+
+        ## Expected behavior
+
+        <!-- What should have happened instead? -->
+
+        ## Logs (optional but helpful)
+
+        <details>
+        <summary>Unified log slice</summary>
+
+        ```
+        # Capture and paste:
+        # log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 10m
+        ```
+
+        </details>
+        """
     }
 
     @objc func showAboutPanel(_ sender: Any?) {

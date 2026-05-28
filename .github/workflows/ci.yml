@@ -1,0 +1,102 @@
+# Continuous integration for unison-ui-mac.
+#
+# Verifies that the vendored OCaml blob still links against the host
+# OCaml runtime, the Swift app still compiles, and the XCTest suite
+# still passes on a clean macOS arm64 runner. Intentionally minimal —
+# this is a personal-use project, not a fan-out matrix.
+#
+# Why we don't build the OCaml blob from upstream here:
+#   - `vendor/unison-blob-2.54.0-arm64.o` is committed, so `make build`
+#     just compiles Swift + links. The 5–10 min OCaml compile only
+#     happens via `make vendor-blob`, which is a maintainer workflow.
+#   - We do still need `brew install ocaml` because the Swift app links
+#     against libasmrun.a / libthreadsnat.a / libunixnat.a /
+#     libcamlstrnat.a from the OCaml install, and includes its headers.
+#
+# Trigger surface:
+#   - push to main (post-merge confidence + green badge for README)
+#   - pull_request (run before review)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual re-runs from the Actions tab without pushing a no-op
+  # commit — useful when only the workflow file itself changes.
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build + test
+    # macos-15 is the arm64 runner image as of 2026. macos-14 also
+    # works (arm64 since GitHub flipped the default). macos-latest is
+    # tempting but it drags us forward on Apple's schedule rather
+    # than ours — pin explicitly.
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        # No submodules / LFS — the vendored blob lives in the tree.
+
+      - name: Show toolchain versions
+        # Useful for debugging CI-vs-local discrepancies in failure
+        # reports. Cheap; runs in <1 s.
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          uname -m
+
+      # Cache /opt/homebrew so subsequent runs skip the ~3-minute
+      # `brew install ocaml`. Key on the workflow file hash so any
+      # bump (OCaml version, added deps) busts the cache.
+      - name: Cache Homebrew OCaml install
+        id: brew-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/homebrew/Cellar/ocaml
+            /opt/homebrew/opt/ocaml
+            /opt/homebrew/bin/ocaml*
+            /opt/homebrew/lib/ocaml
+          key: ${{ runner.os }}-ocaml-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-ocaml-
+
+      - name: Install OCaml (if not cached)
+        if: steps.brew-cache.outputs.cache-hit != 'true'
+        run: brew install ocaml
+
+      - name: Install xcodegen
+        # xcodegen regenerates the .xcodeproj from project.yml. The
+        # `unison-ui-mac.xcodeproj` directory IS tracked, but Makefile
+        # regenerates it on every build — easier to just install the
+        # tool than fight Make.
+        run: brew install xcodegen
+
+      - name: Build
+        # `make build` regenerates the xcodeproj, builds the app for
+        # Debug, and stops short of running tests. Catches Swift
+        # compile errors with a smaller failure surface than `make
+        # test`, so a broken build shows up clearly in CI logs.
+        run: make build
+
+      - name: Run tests
+        # 286 tests at the v0.1.0 baseline. Should run in ~1 s on the
+        # M-series runner; the wall clock here will be Xcode startup
+        # (~10–20 s) plus the test execution.
+        run: make test
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult-bundle
+          path: .build/derived/Logs/Test/*.xcresult
+          # Don't keep these forever — they're large and only useful
+          # for the immediate failure investigation.
+          retention-days: 7
