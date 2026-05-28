@@ -13,20 +13,22 @@ contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
 trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
 on this fork).
 
-> 📦 **To install:** see [INSTALL.md](INSTALL.md). Prebuilt `.app`
+> **To install:** see [INSTALL.md](INSTALL.md). Prebuilt `.app`
 > downloads (when available) are on the
 > [Releases page](https://github.com/bcourbage/unison-ui-mac/releases);
 > first-run Gatekeeper notes are in
 > [INSTALL.md § Gatekeeper](INSTALL.md#first-launch--gatekeeper).
 >
-> 📖 **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
-> 📝 **Release history:** [CHANGELOG.md](CHANGELOG.md).
+> **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
+> **Release history:** [CHANGELOG.md](CHANGELOG.md).
 
-> 🐛 **Bug reports for this UI go [here](https://github.com/bcourbage/unison-ui-mac/issues),
+> [!IMPORTANT]
+> **Bug reports for this UI go to
+> [this repo's issues](https://github.com/bcourbage/unison-ui-mac/issues),
 > NOT to [upstream Unison](https://github.com/bcpierce00/unison/issues).**
 > This is an independent project — upstream maintainers cannot help with UI
-> issues, and reports filed there are out-of-scope for them. (The Help menu's
-> "Report an Issue" command pre-fills a form pointing at the right place.)
+> issues, and reports filed there are out-of-scope for them. The Help menu's
+> "Report an Issue" command pre-fills a form pointing at the right place.
 
 ## What this is
 
