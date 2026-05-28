@@ -5,12 +5,31 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Public help target** — the `<appname> Help` menu item now points
-      at `MANUAL.md` on `main`. That URL 404s for non-collaborators
-      while the repo is private. Pick one: flip the repo public,
-      enable the wiki and copy `MANUAL.md` content there, or ship an
-      Apple Help bundle inside the `.app`. Blocks the Report-an-Issue
-      item below.
+- [ ] **Verify the first CI run lands green** — `.github/workflows/ci.yml`
+      shipped untested against actual GitHub-hosted runners as part
+      of v0.1.0 (the public flip + first PR/push is what fires it).
+      First-run failures most commonly trace to OCaml version drift
+      between the runner's Homebrew install and the local 5.4.1 we
+      build against. If the linker errors with missing symbols in
+      libasmrun/libunixnat, pin the OCaml version explicitly in the
+      `brew install ocaml` step (e.g. `brew install ocaml@5.4`).
+      Other likely sticky points: xcodegen install (separate
+      `brew install xcodegen` step is in the workflow), and Xcode's
+      validation pass complaining about the ad-hoc identity (we
+      already disable network reachability checks in the build —
+      shouldn't trip).
+
+- [ ] **Release-build automation** — current process for cutting a
+      release is manual: `make build CONFIG=Release` →
+      `ditto -c -k --sequesterRsrc --keepParent` →
+      `gh release create v<version> <zip>`. Worth automating once
+      we've cut 2–3 releases manually and the pattern stabilizes.
+      Shape: `.github/workflows/release.yml` triggered on tag push
+      matching `v*`, runs the same build pipeline as `ci.yml` but
+      Release-config, produces the zipped .app, attaches to the
+      release with auto-generated notes from the matching CHANGELOG
+      section (`gh release create … --notes-from-tag` or a
+      jq-against-CHANGELOG.md script).
 
 - [ ] **App signing for distribution** — current state is ad-hoc
       (`codesign --force --deep --sign -`), packaged for users via
@@ -309,6 +328,14 @@ landed across the bring-up and follow-on sessions.*
       for users who hit New Issue directly via the GitHub UI.
       `AppDelegate.makeIssueReportBody()` is internal so future
       tests can pin its shape against the template.
+- [x] **Public help target** — both Help menu links resolve for
+      everyone now that the repo went public at v0.1.0 (2026-05-28).
+      `<appname> Help` (⌘?) opens MANUAL.md on the v0.1.0 commit;
+      `Unison File Synchronizer Manual` opens the bundled hevea-
+      rendered HTML offline. Originally tracked as a blocker on
+      Report-an-Issue (the new-issue form needs a public repo to
+      accept submissions from non-collaborators) — resolved by the
+      same repo-flip.
 
 ### Terminology + correctness pass
 
@@ -372,6 +399,35 @@ landed across the bring-up and follow-on sessions.*
       `/tmp/unison-test-{a,b}` were already gone. Integration tests
       now build their own per-test fixtures under
       `/tmp/unison-ui-mac-itest/<uuid>/` via `IntegrationFixture`.
+- [x] **Bundle the Unison reference manual** —
+      `make vendor-manual` runs hevea (upstream's TeX→HTML
+      toolchain) against `doc/unison-manual.tex` and writes
+      `vendor/unison-manual-2.54.0.html`. XcodeGen copies it into
+      Resources at build time. `AppDelegate.openUnisonProjectHelp(_:)`
+      opens the bundled HTML via NSWorkspace using a glob-style
+      filename lookup (`unison-manual-*.html`) so a Unison version
+      bump doesn't silently fall through to the wiki fallback. Pairs
+      with `make vendor-blob` — both refresh in lock-step.
+- [x] **GPLv3 §5 bundle hygiene** — `LICENSE` and `NOTICE.md` are
+      now copied into the .app's `Contents/Resources/` at build
+      time via `project.yml`. A standalone-zipped .app carries its
+      own license + attribution; doesn't depend on the source tree
+      being alongside.
+- [x] **GitHub Actions CI** — `.github/workflows/ci.yml` runs
+      `make build` + `make test` on `macos-15` triggered by push to
+      main, PRs, and manual workflow_dispatch. Caches the Homebrew
+      OCaml install (~3 min savings per run after first hit).
+      Uploads xcresult bundle on failure with 7-day retention.
+- [x] **v0.1.0 — first public release (2026-05-28)** — repo flipped
+      public; tag `v0.1.0` annotated at commit `5195c78`; GitHub
+      Release published at
+      <https://github.com/bcourbage/unison-ui-mac/releases/tag/v0.1.0>
+      with `unison-ui-mac-0.1.0.app.zip` (2.1 MB, ad-hoc signed,
+      SHA-256 `fabb595a838ca07ade3f415e3abe7899319163e1ade7e57a3255ac91e6056c30`).
+      Archive built with `ditto -c -k --sequesterRsrc --keepParent`
+      (canonical macOS archiver that preserves the code signature
+      and resource forks; standard `zip` can occasionally strip the
+      signature).
 
 ### Test suite
 
