@@ -14,6 +14,13 @@ import AppKit
 /// The remaining ~80% of `PathCellView` (constraints + symbol
 /// configurations + colors) is verified visually; AppKit layout
 /// constants aren't useful to assert against in unit tests.
+///
+/// `@MainActor` because every test touches NSView APIs (init, textField,
+/// imageView, toolTip), which are main-actor-isolated under Swift 6
+/// strict concurrency. Required for the older Xcode 16.x toolchain that
+/// CI runs under; newer Xcode tolerates the implicit hop, but the
+/// annotation is semantically accurate either way.
+@MainActor
 final class PathCellViewTests: XCTestCase {
 
     private func makeCell() -> PathCellView {
