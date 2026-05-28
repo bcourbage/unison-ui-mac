@@ -1,5 +1,12 @@
 # Unison-UI-Mac
 
+[![CI](https://github.com/bcourbage/unison-ui-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/bcourbage/unison-ui-mac/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/bcourbage/unison-ui-mac?label=release)](https://github.com/bcourbage/unison-ui-mac/releases)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![Platform: macOS 15+](https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey.svg)](https://www.apple.com/macos/)
+[![Arch: arm64](https://img.shields.io/badge/arch-arm64-orange.svg)](#system-requirements)
+[![Embeds Unison 2.54.0](https://img.shields.io/badge/Unison-2.54.0-success.svg)](https://github.com/bcpierce00/unison/releases/tag/v2.54.0)
+
 A native macOS GUI for the [Unison File Synchronizer](https://github.com/bcpierce00/unison),
 written in Swift + AppKit. Personal project; deliberately not for upstream
 contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
