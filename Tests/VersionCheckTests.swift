@@ -263,10 +263,11 @@ final class VersionCheckTests: XCTestCase {
     //   - Remote sides are whatever the user happens to have on the
     //     remote (varies — Homebrew, distro packages, hand-built).
     //
-    // **Greg Troxel (2026-05, unison-users discussion)**: anything
-    // >=2.52.0 ↔ anything >=2.52.0 negotiates fine. Anything
-    // straddling the 2.52 boundary fails. Same-side-of-boundary
-    // mismatches are NOT a user-visible warning anymore.
+    // Wire-protocol compatibility rule: anything >=2.52.0 ↔
+    // anything >=2.52.0 negotiates fine via feature negotiation in
+    // the new wire protocol. Anything straddling the 2.52 boundary
+    // fails. Same-side-of-boundary mismatches are NOT a user-visible
+    // warning anymore.
 
     func test_classify_exactMatch_currentRelease() {
         XCTAssertEqual(
@@ -278,9 +279,9 @@ final class VersionCheckTests: XCTestCase {
     // --- Known-compatible (no user alert) ---
 
     func test_classify_compatible_2_53_8_to_2_54_0() {
-        // Greg's exact scenario from the email thread: he was
-        // running 2.53.0 and 2.53.8, asked whether updating to
-        // 2.54.0 would break things — answer was no.
+        // Realistic deployment scenario: a user on 2.53.8 syncing
+        // with a 2.54.0-embedded UI. Both new-protocol, so the
+        // classifier should treat them as compatible.
         XCTAssertEqual(
             VersionCheck.classify(local: "2.54.0", remote: "2.53.8"),
             .compatibleNewProtocol(local: "2.54.0", remote: "2.53.8")

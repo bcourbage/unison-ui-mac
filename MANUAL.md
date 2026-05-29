@@ -876,12 +876,11 @@ Once you suppress it, you won't see it again for that exact combination
 — but as soon as you upgrade either side, the triple changes and you'll
 see the alert again so you can re-confirm.
 
-**Rationale for the 2.52 boundary**: upstream maintainer Greg Troxel
-(unison-users, 2026-05): "since we changed to 'new wire protocol',
-there is feature negotiation and compatibility […] requiring 2.54 on
-the remote is more restrictive than necessary." Older versions of this
-UI alerted on any version difference; current builds only alert when
-the wire protocol itself is incompatible.
+**Rationale for the 2.52 boundary**: Unison 2.52.0 introduced the
+"new wire protocol" with feature negotiation, so any pair of versions
+>= 2.52.0 interoperates regardless of which exact minor release each
+side runs. Older versions of this UI alerted on any version difference;
+current builds only alert when the wire protocol itself is incompatible.
 
 **The probe is silent in normal operation**:
 - Uses `BatchMode=yes` — won't prompt for a password. If the remote

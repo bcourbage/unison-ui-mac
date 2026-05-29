@@ -33,15 +33,15 @@ enum VersionCheck {
     /// Outcome of a version comparison. Returned to AppDelegate, which
     /// decides whether to show the alert.
     ///
-    /// **Why mismatch is split into two cases (2026-05).** Greg Troxel
-    /// (upstream maintainer) noted that since Unison 2.52.0 introduced
-    /// the "new wire protocol" with feature negotiation, minor-version
-    /// differences within the new-protocol generation interoperate
-    /// fine. We used to fire `.mismatch` on any non-equal pair —
-    /// over-strict, and noisy for the common case of a remote one
-    /// minor version behind/ahead. The split lets the UI stay quiet
-    /// for the compatible-but-different case while still alerting on
-    /// the real wire-protocol break (cross-2.52).
+    /// **Why mismatch is split into two cases.** Unison 2.52.0
+    /// introduced the "new wire protocol" with feature negotiation;
+    /// any pair of versions >= 2.52.0 interoperates regardless of
+    /// which exact minor release each side runs. The earlier outcome
+    /// model fired `.mismatch` on any non-equal pair — over-strict,
+    /// and noisy for the common case of a remote one minor version
+    /// behind/ahead. The split lets the UI stay quiet for the
+    /// compatible-but-different case while still alerting on the
+    /// real wire-protocol break (cross-2.52).
     enum Outcome: Equatable {
         /// Versions are byte-equal. Nothing to surface.
         case match(version: String)

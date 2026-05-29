@@ -5,39 +5,29 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Discoverability — unison-users announcement** — Greg
-      Troxel replied (2026-05-28) with a clear green light, an
-      offer to list the project on upstream's "related software"
-      wiki page, and a substantive technical critique (which we
-      addressed in v0.1.1). Reply to Greg was sent the same day,
-      reporting v0.1.1's version-check fix + Homebrew availability,
-      accepting the wiki listing, and asking his preference on
-      wording. Next: wait for his follow-up on the wiki listing,
-      then draft + post the announcement on
-      `unison-users@seas.upenn.edu`. Plain-text draft from the
-      pre-Greg-reply iteration is in the session transcript;
-      needs a small edit to add the brew install command.
+- [ ] **Discoverability — unison-users announcement** — pending
+      external coordination. Plan: draft + post the announcement on
+      `unison-users@seas.upenn.edu` once external coordination
+      steps are settled. Plain-text draft preserved in session
+      transcript; needs a small edit to add the brew install
+      command.
 
-- [ ] **Upstream PR: register `abortAll` callback** — Greg's
-      reply opened a door for "small, human-authored fixes below
-      the threshold of copyrightability." The 2-line patch in
+- [ ] **Upstream PR candidate: register `abortAll` callback** —
+      The 2-line patch in
       `patches/0001-uimacbridge-register-abortAll.patch` (`let
       unisonAbortAll () = Abort.all ();;` + `Callback.register
-      "abortAll" unisonAbortAll;;`) is the obvious candidate —
-      it follows the file's existing callback-registration
-      pattern verbatim, has zero behavior impact on upstream
-      callers, and expands what external GUIs can hook into
-      (which Greg noted as a direction he's interested in:
-      "long term for unison to have a machine-readable interface
-      for external GUIs"). Plan: defer ~2 weeks after v0.1.1
-      settles, then human-rewrite the patch from scratch (no
-      LLM-derived prose), write a crisp PR description framing
-      it as enabling external GUIs to trigger mid-sync abort
-      via `Callback.register`, send through normal PR flow. Do
-      NOT mention unison-ui-mac in the PR title or commit
-      message; the contribution stands on its own merit. If
-      Pierce/Greg push back, the patch stays downstream — no
-      relationship damage.
+      "abortAll" unisonAbortAll;;`) is a candidate for upstream
+      contribution. It follows the file's existing callback-
+      registration pattern verbatim, has zero behavior impact on
+      upstream callers, and expands what external GUIs can hook
+      into. Plan: defer until v0.1.1 has settled, then human-
+      rewrite the patch from scratch (no LLM-derived prose), write
+      a crisp PR description framing it as enabling external GUIs
+      to trigger mid-sync abort via `Callback.register`, send
+      through normal PR flow. Do NOT mention unison-ui-mac in the
+      PR title or commit message; the contribution stands on its
+      own merit. If upstream declines, the patch stays downstream
+      — no impact.
 
 - [ ] **Release-build automation** — current process for cutting a
       release is manual: `make build CONFIG=Release` →
@@ -480,10 +470,10 @@ landed across the bring-up and follow-on sessions.*
       <https://github.com/bcourbage/unison-ui-mac/releases/tag/v0.1.1>
       with `unison-ui-mac-0.1.1.app.zip` (SHA-256
       `d2b6e3b98e30bcd2b7159afe77aa927974d426e45cbd0714fea59c227c68c7ef`).
-      Same-day patch release driven by Greg Troxel's reply to the
-      pre-announcement courtesy email — three targeted fixes:
+      Three targeted fixes:
       (a) `VersionCheck` now classifies via a 2.52-wire-protocol-
-      boundary predicate (was firing on any non-byte-equal pair);
+      boundary predicate (was firing on any non-byte-equal pair,
+      which over-warned on compatible new-protocol versions);
       (b) `MainMenu` + `PathCellViewTests` annotated `@MainActor`
       so CI passes under Xcode 16.4's strict Swift 6 concurrency
       (we develop on Xcode 26); (c) `Info.plist` version
@@ -505,20 +495,6 @@ landed across the bring-up and follow-on sessions.*
       blockquote updated to match. Maintainer-only runbook for
       bumping the tap on future releases lives at
       `HOMEBREW_TAP.md` (gitignored — kept on disk only).
-- [x] **Upstream-relationship work — Greg Troxel reply landed**
-      (2026-05-28). Substantively positive: (a) green light on
-      posting to unison-users; (b) offer to list on upstream's
-      "related software" wiki page; (c) clarified LLM policy is
-      about reviewability, not principle — "small, human-authored
-      fixes below the threshold of copyrightability" are welcome;
-      (d) technical critique of the version-check (addressed in
-      v0.1.1, same day); (e) honest flag of the legal risk
-      ("if the courts decide LLM output is a derived work of
-      training data, this repo may no longer be distributed").
-      Reply sent same day acknowledging each point and reporting
-      v0.1.1 + Homebrew availability. Next: wait on Greg's
-      follow-up about the wiki listing, then post the
-      unison-users announcement.
 
 ### Test suite
 

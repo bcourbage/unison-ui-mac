@@ -21,9 +21,8 @@ No user-facing functionality changed.
 ### Fixed
 
 - **SSH version-mismatch alert no longer fires on compatible
-  version differences.** Upstream maintainer Greg Troxel (unison-users,
-  2026-05) clarified that since Unison 2.52.0 introduced the new wire
-  protocol with feature negotiation, any pair of versions >= 2.52.0
+  version differences.** Unison 2.52.0 introduced the new wire
+  protocol with feature negotiation; any pair of versions >= 2.52.0
   interoperates without intervention. The previous alert fired on any
   non-byte-equal mismatch — too strict, and a noisy first impression
   for users whose remote happened to be one minor version off.
@@ -51,12 +50,14 @@ No user-facing functionality changed.
 ### Documentation
 
 - **README** now leads with a prominent bug-reports notice pointing
-  at this repo's issues, not upstream Unison's. Per Greg Troxel:
-  "Many won't read [CONTRIBUTING.md]."
+  at this repo's issues, not upstream Unison's. CONTRIBUTING.md
+  already says this, but README is the surface most new users land
+  on first.
 - **README** gains six shields.io badges (CI, release, license,
   platform, arch, embedded Unison version).
 - **MANUAL.md § Version-mismatch warning** updated to reflect the
-  new 2.52-boundary classifier; quotes Greg's exact reasoning.
+  new 2.52-boundary classifier with the underlying wire-protocol
+  rationale.
 - **GitHub topics** applied to the repo (unison, file-sync,
   file-synchronization, macos, macos-app, swift, appkit, gui,
   ocaml, apple-silicon, gplv3, rsync-alternative) for organic
