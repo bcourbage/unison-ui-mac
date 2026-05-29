@@ -11,6 +11,38 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Changed
+
+- **Homebrew is now the recommended install path.** Cask formula
+  published at <https://github.com/bcourbage/homebrew-tap> pointing at
+  the v0.1.1 release artifact. End-user install command:
+
+  ```sh
+  brew tap bcourbage/tap
+  brew install --cask bcourbage/tap/unison-ui-mac
+  ```
+
+  Homebrew strips the macOS quarantine attribute automatically, so
+  first launch is a clean double-click — no Gatekeeper prompt, no
+  manual `xattr` invocation. `INSTALL.md` restructured to lead with
+  this path; the manual zip-download path is now documented as the
+  no-Homebrew fallback. `README.md`'s install blockquote leads with
+  the brew one-liner. `INSTALL.md`'s TL;DR splits into end-user and
+  developer branches.
+
+- **Bug-report issue template tightened.** Added a visible
+  `[!IMPORTANT]` callout at the top redirecting two common non-bug
+  cases: usage questions ("how do I…") to `MANUAL.md` and the
+  in-app Unison reference manual, and upstream Unison bugs (OCaml
+  core, sync semantics, RPC protocol) to
+  [`bcpierce00/unison`](https://github.com/bcpierce00/unison/issues).
+  Aims to keep the issue tracker focused on actual bugs in this UI.
+
+- **README and v0.1.1 GitHub Release notes** dropped decorative
+  emojis in favor of plain bolded text and GitHub's native
+  `[!IMPORTANT]` / `[!WARNING]` alert syntax (renders as colored
+  callout boxes). Cosmetic; no information content changed.
+
 ## [0.1.1] — 2026-05-28
 
 Maintenance release: tightens the SSH version-mismatch warning per
