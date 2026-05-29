@@ -5,7 +5,7 @@ Three paths, in increasing order of effort:
 
 1. **[Homebrew (recommended)](#quickest-install--homebrew)** — one
    command, no Gatekeeper friction, auto-updates. The recommended path
-   for anyone who already has Homebrew installed (most macOS users).
+   for anyone who already has Homebrew installed.
 2. **[Prebuilt `.app` from the Releases page](#quick-install--prebuilt-release)** —
    the manual zip-download path. Use this if you don't use Homebrew or
    want explicit version control over what's installed. The binary is
