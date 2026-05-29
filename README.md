@@ -13,11 +13,15 @@ contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
 trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
 on this fork).
 
-> **To install:** see [INSTALL.md](INSTALL.md). Prebuilt `.app`
-> downloads (when available) are on the
-> [Releases page](https://github.com/bcourbage/unison-ui-mac/releases);
-> first-run Gatekeeper notes are in
-> [INSTALL.md § Gatekeeper](INSTALL.md#first-launch--gatekeeper).
+> **Install** (recommended):
+>
+> ```sh
+> brew install --cask bcourbage/tap/unison-ui-mac
+> ```
+>
+> Other install paths (manual zip, build from source) live in
+> [INSTALL.md](INSTALL.md). First-run Gatekeeper notes apply to the
+> manual-zip path only — the Homebrew install handles it for you.
 >
 > **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
 > **Release history:** [CHANGELOG.md](CHANGELOG.md).

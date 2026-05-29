@@ -1,19 +1,54 @@
 # Installing Unison-UI-Mac
 
-This page walks through getting Unison-UI-Mac running on your Mac. Two
-paths:
+This page walks through getting Unison-UI-Mac running on your Mac.
+Three paths, in increasing order of effort:
 
-1. **Prebuilt `.app` from the [Releases page](https://github.com/bcourbage/unison-ui-mac/releases)** —
-   easiest if a release has been cut for the version you want. The
-   binary is ad-hoc-signed (not Apple-notarized), so you'll need to
-   handle a one-time Gatekeeper prompt; see
+1. **[Homebrew (recommended)](#quickest-install--homebrew)** — one
+   command, no Gatekeeper friction, auto-updates. The recommended path
+   for anyone who already has Homebrew installed (most macOS users).
+2. **[Prebuilt `.app` from the Releases page](#quick-install--prebuilt-release)** —
+   the manual zip-download path. Use this if you don't use Homebrew or
+   want explicit version control over what's installed. The binary is
+   ad-hoc-signed (not Apple-notarized), so you'll need to handle a
+   one-time Gatekeeper prompt; see
    [First launch & Gatekeeper](#first-launch--gatekeeper) below.
-2. **Build from source** — required for development, or if no release
-   is available, or if you'd rather verify the binary yourself. See
-   [Install from source](#install-from-source) below.
+3. **[Build from source](#install-from-source)** — required for
+   development, or if you'd rather verify the binary yourself.
 
 > Already familiar with macOS dev tooling? The 60-second version is at the
 > bottom under [TL;DR](#tldr).
+
+## Quickest install — Homebrew
+
+The recommended path for end users:
+
+```sh
+brew tap bcourbage/tap
+brew install --cask bcourbage/tap/unison-ui-mac
+open /Applications/unison-ui-mac.app
+```
+
+That's it. Homebrew handles the macOS quarantine-attribute strip
+automatically, so first launch is a clean double-click — no Gatekeeper
+prompt, no right-click ceremony, no `xattr` invocation.
+
+To upgrade later when a new release ships:
+
+```sh
+brew upgrade --cask unison-ui-mac
+```
+
+To uninstall:
+
+```sh
+brew uninstall --cask unison-ui-mac           # remove the app
+brew uninstall --cask --zap unison-ui-mac     # also remove user defaults
+```
+
+The cask formula lives at
+<https://github.com/bcourbage/homebrew-tap/blob/main/Casks/unison-ui-mac.rb>.
+It pins macOS 15+ and Apple Silicon, so brew refuses to install on
+incompatible hosts rather than producing a bundle that won't launch.
 
 ## System requirements
 
@@ -67,10 +102,13 @@ make build BLOB=$(pwd)/../unison/src/unison-blob.o
 
 ## Quick install — prebuilt release
 
-The easiest path if a release has been cut for your needs:
+Use this path if you don't have Homebrew, or want to install a specific
+version other than the latest. Otherwise the
+[Homebrew path above](#quickest-install--homebrew) is shorter and
+handles Gatekeeper for you.
 
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
-   download the `.app.zip` attached to the most recent release.
+   download the `.app.zip` attached to the release you want.
 2. Unzip and drag `unison-ui-mac.app` to `/Applications`.
 3. **Clear the quarantine attribute, then launch.** macOS 15
    (Sequoia) blocks downloaded unsigned apps on first launch with
@@ -82,10 +120,11 @@ The easiest path if a release has been cut for your needs:
 
 The fastest path is the one-line shell install — strips the
 quarantine attribute up front so the first launch is a clean
-double-click:
+double-click (substitute the version you downloaded):
 
 ```sh
-unzip ~/Downloads/unison-ui-mac-0.1.0.app.zip -d /Applications
+VERSION=0.1.1
+unzip ~/Downloads/unison-ui-mac-${VERSION}.app.zip -d /Applications
 xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
 ```
@@ -245,6 +284,14 @@ Unison's CLI also uses it.
 
 ## TL;DR
 
+**End users:**
+
+```sh
+brew install --cask bcourbage/tap/unison-ui-mac
+```
+
+**Developers (build from source):**
+
 ```sh
 xcode-select --install
 brew install ocaml xcodegen
@@ -253,8 +300,21 @@ make install
 
 ## Troubleshooting
 
+- **`brew install --cask bcourbage/tap/unison-ui-mac` errors with
+  "Cask 'unison-ui-mac' is unavailable"** — the tap isn't registered
+  yet. Run `brew tap bcourbage/tap` once, then re-run install. The
+  fully-qualified form (`bcourbage/tap/unison-ui-mac`) usually
+  auto-taps, but some Homebrew configurations need the explicit
+  `brew tap` first.
+- **`brew install --cask` errors with "depends_on macos"** — your
+  Mac is older than macOS 15 (Sequoia) or running on Intel. The
+  app is arm64-only and targets macOS 15+; the cask refuses to
+  install on older OSes / Intel CPUs rather than producing a
+  bundle that won't launch.
 - **"can't be opened because Apple cannot check it for malicious
-  software"** — quarantine attribute is still on the bundle. Re-run
+  software"** — quarantine attribute is still on the bundle. This
+  shouldn't happen with the Homebrew install (brew strips it
+  automatically) but can happen with the manual zip path. Re-run
   `./install.sh` or `sudo xattr -dr com.apple.quarantine
   /Applications/unison-ui-mac.app`.
 - **App launches then immediately quits** — check Console.app under
