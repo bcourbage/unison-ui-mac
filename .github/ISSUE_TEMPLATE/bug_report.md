@@ -6,16 +6,27 @@ labels: bug
 assignees: ''
 ---
 
+> [!IMPORTANT]
+> **This template is for bug reports against the macOS GUI** —
+> reproducible incorrect behavior in this app. Before filing:
+>
+> - **Usage questions ("how do I…")** are not tracked as issues. See
+>   [MANUAL.md](https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md)
+>   for GUI usage, and **Help → Unison File Synchronizer Manual** in
+>   the app for sync-behavior questions.
+> - **Upstream Unison bugs** (OCaml core, sync semantics, RPC
+>   protocol) go to
+>   [`bcpierce00/unison`](https://github.com/bcpierce00/unison/issues),
+>   not here. When in doubt, file here and we'll figure out which
+>   side it belongs on.
+> - **Scope details** in
+>   [CONTRIBUTING.md](https://github.com/bcourbage/unison-ui-mac/blob/main/CONTRIBUTING.md).
+
 <!--
 If you reached this page via Help → "Report an Issue" inside the app,
 the Environment block below will already be filled in for you.
 Otherwise please fill it in by hand from the About panel (Unison-UI-Mac →
 About Unison-UI-Mac) and `sw_vers`.
-
-Before filing: please skim https://github.com/bcourbage/unison-ui-mac/blob/main/CONTRIBUTING.md
-— it explains what belongs here (macOS GUI bugs) vs. what belongs
-upstream at https://github.com/bcpierce00/unison (OCaml core / sync
-semantics / protocol changes). Save us both a triage step.
 -->
 
 ## Environment
