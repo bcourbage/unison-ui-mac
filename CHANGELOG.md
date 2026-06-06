@@ -18,7 +18,6 @@ across releases per Apple's bundle-version rules.
   the v0.1.1 release artifact. End-user install command:
 
   ```sh
-  brew tap bcourbage/tap
   brew install --cask bcourbage/tap/unison-ui-mac
   ```
 
