@@ -23,7 +23,6 @@ Three paths, in increasing order of effort:
 The recommended path for end users:
 
 ```sh
-brew tap bcourbage/tap
 brew install --cask bcourbage/tap/unison-ui-mac
 open /Applications/unison-ui-mac.app
 ```
