@@ -15,6 +15,3 @@ DerivedData/
 # Editor noise
 *.swp
 *~
-
-# Maintainer-only local docs — kept on disk but not committed.
-HOMEBREW_TAP.md
