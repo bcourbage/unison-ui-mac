@@ -5,13 +5,6 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Discoverability — unison-users announcement** — pending
-      external coordination. Plan: draft + post the announcement on
-      `unison-users@seas.upenn.edu` once external coordination
-      steps are settled. Plain-text draft preserved in session
-      transcript; needs a small edit to add the brew install
-      command.
-
 - [ ] **Upstream PR candidate: register `abortAll` callback** —
       The 2-line patch in
       `patches/0001-uimacbridge-register-abortAll.patch` (`let
