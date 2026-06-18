@@ -24,6 +24,7 @@ The recommended path for end users:
 
 ```sh
 brew install --cask bcourbage/tap/unison-ui-mac
+brew trust bcourbage/tap
 open /Applications/unison-ui-mac.app
 ```
 
