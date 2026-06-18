@@ -5,6 +5,19 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
+- [ ] **Isolate test archives from the real Unison dir** — the
+      integration tests (`BridgeTests` driving `init1`/`init2`
+      against ephemeral `/tmp` fixtures) write Unison archive files
+      (`ar*` / `fp*`) into the user's real
+      `~/Library/Application Support/Unison/`, because the bridge
+      defaults the archive location there. Every `make test` leaves
+      stale archives for now-deleted fixture roots; worse, it means
+      the test suite operates in the same directory as real profile
+      archives. Point the harness at an isolated archive dir per run
+      (e.g. set the `UNISON` env var or
+      `UnisonBridge.unisonDirectoryOverride` to a temp dir in test
+      setUp) so tests never touch — or risk — real archives.
+
 - [ ] **Upstream PR candidate: register `abortAll` callback** —
       The 2-line patch in
       `patches/0001-uimacbridge-register-abortAll.patch` (`let
