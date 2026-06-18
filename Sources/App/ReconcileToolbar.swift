@@ -71,6 +71,7 @@ enum DirectionAction: CaseIterable {
     static let stopIdentifier       = NSToolbarItem.Identifier("sync.stop")
     static let rescanIdentifier     = NSToolbarItem.Identifier("sync.rescan")
     static let profilesIdentifier   = NSToolbarItem.Identifier("nav.profiles")
+    static let quitIdentifier        = NSToolbarItem.Identifier("app.quit")
     /// Segmented-control group hosting the toolbar direction items.
     static let directionGroupIdentifier = NSToolbarItem.Identifier("dir.group")
 
@@ -134,6 +135,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
          DirectionAction.directionGroupIdentifier,
          DirectionAction.goIdentifier,
          DirectionAction.stopIdentifier,
+         DirectionAction.quitIdentifier,
          .flexibleSpace, .space]
     }
 
@@ -152,7 +154,9 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
          .space, .space,
          .flexibleSpace,
          DirectionAction.goIdentifier,
-         DirectionAction.stopIdentifier]
+         DirectionAction.stopIdentifier,
+         .space,
+         DirectionAction.quitIdentifier]
     }
 
     func toolbar(_ toolbar: NSToolbar,
@@ -191,6 +195,14 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     symbol: "arrow.clockwise",
                                     tint: nil,
                                     action: #selector(rescanAction(_:)))
+        case DirectionAction.quitIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Quit",
+                                    paletteLabel: "Quit",
+                                    toolTip: "Quit the app (⌘Q)",
+                                    symbol: "power",
+                                    tint: nil,
+                                    action: #selector(quitAction(_:)))
         case DirectionAction.directionGroupIdentifier:
             return makeDirectionGroup(itemIdentifier)
         default:
@@ -286,6 +298,12 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @objc private func profilesAction(_ sender: NSToolbarItem) {
         controller?.returnToPicker()
+    }
+
+    @objc private func quitAction(_ sender: NSToolbarItem) {
+        // Route through NSApp.terminate so it behaves identically to ⌘Q
+        // (runs applicationWillTerminate → clean OCaml bridge shutdown).
+        NSApp.terminate(sender)
     }
 
     // MARK: - Validation

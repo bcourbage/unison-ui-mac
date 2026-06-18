@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import unison_ui_mac
 
 /// Tests for the reconcile-window's one-line summary. Pure logic
@@ -200,5 +201,26 @@ final class ReconcileSummaryTests: XCTestCase {
               let itemsPos  = out.range(of: "1 items")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
         XCTAssertLessThan(statusPos, itemsPos)
+    }
+
+    // MARK: - Completion emphasis
+
+    func test_completionEmphasis_zeroFailures_isGreenCheck() {
+        let e = ReconcileSummary.completionEmphasis(failures: 0)
+        XCTAssertEqual(e.symbolName, "checkmark.circle.fill")
+        XCTAssertEqual(e.tint, .systemGreen)
+    }
+
+    func test_completionEmphasis_withFailures_isRedWarning() {
+        let e = ReconcileSummary.completionEmphasis(failures: 3)
+        XCTAssertEqual(e.symbolName, "exclamationmark.triangle.fill")
+        XCTAssertEqual(e.tint, .systemRed)
+    }
+
+    func test_completionEmphasis_oneFailure_stillRedWarning() {
+        // Boundary: a single failure is still the error treatment.
+        let e = ReconcileSummary.completionEmphasis(failures: 1)
+        XCTAssertEqual(e.symbolName, "exclamationmark.triangle.fill")
+        XCTAssertEqual(e.tint, .systemRed)
     }
 }

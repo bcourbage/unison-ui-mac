@@ -20,6 +20,7 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
     // into reconcile + sync. "Open" was misleading: it sounded like
     // opening a document for editing.
     private let runButton = NSButton(title: "Run", target: nil, action: nil)
+    private let quitButton = NSButton(title: "Quit", target: nil, action: nil)
     private let pathLabel = NSTextField(labelWithString: "")
 
     init(unisonDirectory: String, onComplete: @escaping Completion) {
@@ -94,11 +95,18 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         runButton.action = #selector(runSelected)
         runButton.keyEquivalent = "\r"
 
-        // Picker is now pure: list + Run. Create / Duplicate / Rename /
-        // Edit / Delete / Hide / Reorder all live in the Profile Editor
-        // manager window (Edit → Profile Editor…). Keeps the main view
-        // uncluttered — one canonical place for "manage my profiles".
-        let bottomRow = NSStackView(views: [NSView(), runButton])
+        // Quit lives at the far left of the bottom bar — separated from
+        // the primary Run action on the right so it can't be hit by
+        // reflex. Same affordance as ⌘Q / the reconcile-window toolbar.
+        quitButton.bezelStyle = .rounded
+        quitButton.target = self
+        quitButton.action = #selector(quitApp)
+
+        // Picker is now pure: list + Run (+ Quit). Create / Duplicate /
+        // Rename / Edit / Delete / Hide / Reorder all live in the Profile
+        // Editor manager window (Edit → Profile Editor…). Keeps the main
+        // view uncluttered — one canonical place for "manage my profiles".
+        let bottomRow = NSStackView(views: [quitButton, NSView(), runButton])
         bottomRow.orientation = .horizontal
         bottomRow.distribution = .fill
         bottomRow.spacing = 8
@@ -202,6 +210,12 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         }
         tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         runSelected()
+    }
+
+    @objc private func quitApp() {
+        // NSApp.terminate runs applicationWillTerminate → clean OCaml
+        // bridge shutdown, identical to ⌘Q.
+        NSApp.terminate(nil)
     }
 
     @objc private func runSelected() {

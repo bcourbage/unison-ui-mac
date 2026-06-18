@@ -26,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log.write("applicationDidFinishLaunching start")
         logEnvSnapshot()
 
+        // Ask for notification permission up front (only if the cue is
+        // enabled, which it is by default) so the first sync-complete
+        // banner can display. No-op when already determined. Install the
+        // presentation delegate too, so banners show even while we're the
+        // frontmost app (macOS otherwise suppresses them for the active
+        // app and routes them to Notification Center only).
+        SyncCompletionAnnouncer.installPresenter()
+        SyncCompletionAnnouncer.requestAuthorizationIfEnabled()
+
         UnisonBridge.installStatusHandler { [log] status in
             log.write("[ocaml→status] \(status)")
         }

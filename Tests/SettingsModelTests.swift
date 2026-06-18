@@ -309,4 +309,41 @@ final class SettingsModelTests: XCTestCase {
                        "reconcile reset must not touch picker layout")
         XCTAssertEqual(ordered, 1)
     }
+
+    // MARK: - Sync-completion cues
+
+    func test_notifyOnSyncComplete_defaultsToTrue() {
+        XCTAssertTrue(SettingsModel.notifyOnSyncComplete(in: defaults),
+                      "absent key must read as opt-out default ON")
+    }
+
+    func test_soundOnSyncComplete_defaultsToTrue() {
+        XCTAssertTrue(SettingsModel.soundOnSyncComplete(in: defaults),
+                      "absent key must read as opt-out default ON")
+    }
+
+    func test_notifyOnSyncComplete_roundTripsExplicitFalse() {
+        SettingsModel.setNotifyOnSyncComplete(false, in: defaults)
+        XCTAssertFalse(SettingsModel.notifyOnSyncComplete(in: defaults),
+                       "explicit false must not collapse to the true default")
+        SettingsModel.setNotifyOnSyncComplete(true, in: defaults)
+        XCTAssertTrue(SettingsModel.notifyOnSyncComplete(in: defaults))
+    }
+
+    func test_soundOnSyncComplete_roundTripsExplicitFalse() {
+        SettingsModel.setSoundOnSyncComplete(false, in: defaults)
+        XCTAssertFalse(SettingsModel.soundOnSyncComplete(in: defaults))
+        SettingsModel.setSoundOnSyncComplete(true, in: defaults)
+        XCTAssertTrue(SettingsModel.soundOnSyncComplete(in: defaults))
+    }
+
+    func test_syncCompletionCues_areIndependent() {
+        SettingsModel.setNotifyOnSyncComplete(false, in: defaults)
+        XCTAssertTrue(SettingsModel.soundOnSyncComplete(in: defaults),
+                      "disabling notification must not affect the sound cue")
+        SettingsModel.setSoundOnSyncComplete(false, in: defaults)
+        SettingsModel.setNotifyOnSyncComplete(true, in: defaults)
+        XCTAssertFalse(SettingsModel.soundOnSyncComplete(in: defaults),
+                       "re-enabling notification must not flip the sound cue")
+    }
 }

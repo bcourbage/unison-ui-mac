@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// Builds the one-line summary that appears above the reconcile
 /// outline view. Status word (when there is one) always leads; the
@@ -137,5 +137,29 @@ enum ReconcileSummary {
         if toRight > 0   { parts.append("\(toRight) First → Second") }
         if other > 0     { parts.append("\(other) other") }
         return parts.joined(separator: "  ·  ")
+    }
+
+    /// Leading-icon + tint emphasis for a *finished* sync, shown next to
+    /// the summary label so "complete" reads at a glance instead of
+    /// blending into the same neutral line as every other status. Pure
+    /// (returns an `NSColor` like `DirectionVisual.tint`) so the
+    /// symbol/tint choice is testable without AppKit UI. Only meaningful
+    /// for the `.done` phase — callers apply it in `syncDidComplete`.
+    ///
+    /// Colors match the app's existing palette: success = systemGreen
+    /// (the `→ Second` direction tint), errors = systemRed (the FAILED
+    /// row / Stop tint).
+    struct CompletionEmphasis: Equatable {
+        let symbolName: String
+        let tint: NSColor
+    }
+
+    static func completionEmphasis(failures: Int) -> CompletionEmphasis {
+        if failures > 0 {
+            return CompletionEmphasis(symbolName: "exclamationmark.triangle.fill",
+                                      tint: .systemRed)
+        }
+        return CompletionEmphasis(symbolName: "checkmark.circle.fill",
+                                  tint: .systemGreen)
     }
 }

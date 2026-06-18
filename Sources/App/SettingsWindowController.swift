@@ -1,4 +1,5 @@
 import AppKit
+import UserNotifications
 
 /// The Settings window — opens via `<appname> → Settings… (⌘,)`.
 /// Single-tab today, with three sections under it; if/when real
@@ -36,6 +37,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private let reconcileLayoutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let reconcileExpandPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    // MARK: - Section 5: Sync completion
+
+    private let notifyCheckbox = NSButton(
+        checkboxWithTitle: "Show a notification when a sync finishes",
+        target: nil, action: nil)
+    private let soundCheckbox = NSButton(
+        checkboxWithTitle: "Play a sound when a sync finishes",
+        target: nil, action: nil)
 
     /// Order pinned in code so the popup item indices line up with
     /// these arrays for the selectItem/selectedIndex round-trip.
@@ -186,11 +196,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         expandRow.orientation = .horizontal
         expandRow.spacing = 8
 
+        // Section 5: Sync completion cues
+        let section5Title = sectionHeader("Sync Completion")
+        let section5Desc = sectionDescription(
+            "Extra cues when a synchronization finishes. The reconcile " +
+            "window always shows an inline result (green ✓ on success, " +
+            "red ⚠ on errors); these add a Notification Center banner and " +
+            "a sound on top — useful when you've switched away from a long " +
+            "sync. Both are on by default."
+        )
+        notifyCheckbox.target = self
+        notifyCheckbox.action = #selector(notifyToggled(_:))
+        soundCheckbox.target = self
+        soundCheckbox.action = #selector(soundToggled(_:))
+        let completionRow = NSStackView(views: [notifyCheckbox, soundCheckbox])
+        completionRow.orientation = .vertical
+        completionRow.alignment = .leading
+        completionRow.spacing = 6
+
         let stack = NSStackView(views: [
             section1Title, section1Desc, section1Row, divider(),
             section2Title, section2Desc, suppressionsScroll, section2Row, divider(),
             section3Title, section3Desc, section3Row, divider(),
-            section4Title, section4Desc, layoutRow, expandRow,
+            section4Title, section4Desc, layoutRow, expandRow, divider(),
+            section5Title, section5Desc, completionRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -215,6 +244,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             section4Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
             layoutRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
             expandRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            section5Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            completionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
         ])
     }
 
@@ -286,6 +317,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if let idx = expandPolicies.firstIndex(of: SettingsModel.reconcileExpandPolicy()) {
             reconcileExpandPopup.selectItem(at: idx)
         }
+
+        notifyCheckbox.state = SettingsModel.notifyOnSyncComplete() ? .on : .off
+        soundCheckbox.state = SettingsModel.soundOnSyncComplete() ? .on : .off
     }
 
     private func labelText(hidden: Int, ordered: Int) -> String {
@@ -391,6 +425,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let idx = reconcileExpandPopup.indexOfSelectedItem
         guard idx >= 0, idx < expandPolicies.count else { return }
         SettingsModel.setReconcileExpandPolicy(expandPolicies[idx])
+    }
+
+    @objc private func notifyToggled(_ sender: NSButton) {
+        let on = sender.state == .on
+        SettingsModel.setNotifyOnSyncComplete(on)
+        // Prompt for permission the moment the user opts in, so the first
+        // post-enable sync actually surfaces a banner. macOS only shows
+        // the system prompt once; later toggles are silent no-ops.
+        if on { SyncCompletionAnnouncer.requestAuthorizationIfEnabled() }
+    }
+
+    @objc private func soundToggled(_ sender: NSButton) {
+        SettingsModel.setSoundOnSyncComplete(sender.state == .on)
     }
 }
 

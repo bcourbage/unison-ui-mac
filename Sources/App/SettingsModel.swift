@@ -40,6 +40,7 @@ enum SettingsModel {
     /// identifier bumps**, otherwise the orphan stays in defaults
     /// and "Reset Window & Toolbar Layout" doesn't actually clean it.
     static let toolbarConfigurationKeys: [String] = [
+        "NSToolbar Configuration ReconcileToolbar.v6",
         "NSToolbar Configuration ReconcileToolbar.v5",
         "NSToolbar Configuration ReconcileToolbar.v4",
         "NSToolbar Configuration ReconcileToolbar.v3",
@@ -207,5 +208,41 @@ enum SettingsModel {
     static func resetReconcileDisplay(in defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: reconcileLayoutModeKey)
         defaults.removeObject(forKey: reconcileExpandPolicyKey)
+    }
+
+    // MARK: - Sync-completion cues
+
+    /// UserDefaults key for "post a Notification Center banner when a
+    /// sync finishes". Bool-valued; **absent → ON**. The inline summary
+    /// emphasis (green ✓ / red ⚠) is always on and not gated here — only
+    /// the notification and sound cues are user-toggleable.
+    static let syncCompleteNotifyKey = "sync.complete.notify"
+
+    /// UserDefaults key for "play a sound when a sync finishes".
+    /// Bool-valued; **absent → ON**.
+    static let syncCompleteSoundKey = "sync.complete.sound"
+
+    /// Whether to post a completion notification. Opt-out (defaults to
+    /// `true`): the user asked for the finish to be conspicuous, so the
+    /// cue is on until explicitly disabled. `object(forKey:) as? Bool`
+    /// distinguishes "absent" (→ default true) from an explicit stored
+    /// `false`, which `bool(forKey:)` could not.
+    static func notifyOnSyncComplete(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: syncCompleteNotifyKey) as? Bool ?? true
+    }
+
+    static func setNotifyOnSyncComplete(_ on: Bool,
+                                        in defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: syncCompleteNotifyKey)
+    }
+
+    /// Whether to play a sound on completion. Opt-out (defaults to `true`).
+    static func soundOnSyncComplete(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: syncCompleteSoundKey) as? Bool ?? true
+    }
+
+    static func setSoundOnSyncComplete(_ on: Bool,
+                                       in defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: syncCompleteSoundKey)
     }
 }

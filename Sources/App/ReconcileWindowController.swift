@@ -43,6 +43,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onRescanRequested: RescanRequest
     private let outlineView = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
+    /// Leading status glyph for the summary row. Hidden except after a
+    /// sync completes, when `applyCompletionEmphasis` shows a green ✓
+    /// (clean) or red ⚠ (errors) so the finish reads at a glance.
+    private let statusIcon = NSImageView()
     /// Visible only when the most-recent status message has more than
     /// one line — OCaml's `displayStatus` frequently includes multi-line
     /// SSH error dumps, which we'd otherwise truncate to the first line.
@@ -333,7 +337,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // the trailing edge and only appears when there's multi-line
         // status to disclose. Error banner sits next to it, also
         // hugging trailing edge, also only visible when relevant.
-        let summaryRow = NSStackView(views: [summaryLabel, statusDetailsButton])
+        statusIcon.isHidden = true
+        statusIcon.setContentHuggingPriority(.required, for: .horizontal)
+        statusIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let summaryRow = NSStackView(views: [statusIcon, summaryLabel, statusDetailsButton])
         summaryRow.orientation = .horizontal
         summaryRow.spacing = 6
         summaryRow.alignment = .firstBaseline
@@ -420,7 +427,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // users coming from v4 don't carry a Merge button into profiles
         // that don't support it. v4 was the Local/Remote → First/Second
         // terminology pass.
-        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v5")
+        // v6 bump: added the Quit toolbar item. Bumping resets the
+        // autosaved layout so existing users actually get the new button.
+        let toolbar = NSToolbar(identifier: "ReconcileToolbar.v6")
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -634,6 +643,38 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         summaryLabel.toolTip = nil
         lastMultiLineStatus = nil
         statusDetailsButton.isHidden = true
+        clearCompletionEmphasis()
+    }
+
+    /// Reset the summary line to its neutral styling — hides the status
+    /// glyph and drops the bold/colored completion treatment. Called from
+    /// `setSummary` so any non-completion write (rescan, start-sync,
+    /// abort, status line) automatically sheds a prior sync's green/red
+    /// emphasis. Mirrors the initial styling set in `configure`.
+    private func clearCompletionEmphasis() {
+        statusIcon.isHidden = true
+        statusIcon.image = nil
+        summaryLabel.textColor = .labelColor
+        summaryLabel.font = .systemFont(
+            ofSize: NSFont.smallSystemFontSize, weight: .medium)
+    }
+
+    /// Apply the green-✓ / red-⚠ completion treatment: leading glyph,
+    /// tinted bold summary text. Called from `syncDidComplete` after the
+    /// summary text is set. The next `setSummary` (e.g. a rescan) clears
+    /// it via `clearCompletionEmphasis`.
+    private func applyCompletionEmphasis(failures: Int) {
+        let emphasis = ReconcileSummary.completionEmphasis(failures: failures)
+        let config = NSImage.SymbolConfiguration(
+            pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
+            .applying(.init(paletteColors: [emphasis.tint]))
+        statusIcon.image = NSImage(systemSymbolName: emphasis.symbolName,
+                                   accessibilityDescription: emphasis.symbolName)?
+            .withSymbolConfiguration(config)
+        statusIcon.isHidden = false
+        summaryLabel.textColor = emphasis.tint
+        summaryLabel.font = .systemFont(
+            ofSize: NSFont.smallSystemFontSize, weight: .bold)
     }
 
     @objc private func showStatusDetails(_ sender: Any?) {
@@ -718,8 +759,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         })
         let failures = failedRowSet.count
         phase = .done(failures: failures)
-        setSummary(summaryText())
+        let summary = summaryText()
+        setSummary(summary)
+        applyCompletionEmphasis(failures: failures)
         refreshToolbarEnabled()
+
+        // Opt-out audible + Notification Center cues (Settings-gated;
+        // both default ON). The inline green ✓ / red ⚠ above is always
+        // on. Surfaced here, once, at the single sync-complete chokepoint.
+        SyncCompletionAnnouncer.announce(summary: summary, failures: failures)
 
         // If anything failed, force-expand the ancestor chain of every
         // FAILED row — even when the user's configured ExpandPolicy is
@@ -1318,6 +1366,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return !syncing
         case DirectionAction.profilesIdentifier:
             // Always navigable back to the picker.
+            return true
+        case DirectionAction.quitIdentifier:
+            // Quit is always available — same as ⌘Q.
             return true
         case DirectionAction.directionGroupIdentifier:
             // The group container is enabled if any subitem would be
