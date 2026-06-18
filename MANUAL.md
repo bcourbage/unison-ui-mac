@@ -100,6 +100,9 @@ reconcile window in scanning mode.
 
 Double-click also runs.
 
+**Quit** — at the far left of the bottom bar, quits the app (same as
+⌘Q). Placed away from Run so it isn't clicked by reflex.
+
 > The button is labeled "Run" rather than "Open" because picking a profile
 > kicks off the sync workflow — same verb as the CLI `unison <profile>`.
 > "Open" was the old label but was misleading: nothing here opens a
@@ -454,6 +457,8 @@ when idle.
   sync continues in the background until it finishes naturally — there
   is no true mid-sync abort available; see TODO P3 "Real mid-sync
   abort").
+- **Quit** — quit the app, identical to `⌘Q` (runs the clean OCaml
+  bridge shutdown on the way out).
 
 ### Details footer
 
@@ -514,12 +519,12 @@ text. Pick another row's Diff to recover.
 
 ## Settings
 
-Opens via `Unison-UI-Mac → Settings…` (⌘,). Single window with three
-sections, each describing a category of stored state and offering a
-way to reset it. No preferences are *set* here today — everything is
-implicit (you hide a profile by clicking its eye icon, dismiss a
-version-mismatch alert via its checkbox, etc.). The Settings window is
-the place to *inspect* and *reset* that implicit state.
+Opens via `Unison-UI-Mac → Settings…` (⌘,). Single window with
+several sections. Most describe a category of *implicit* stored state
+(you hide a profile by clicking its eye icon, dismiss a
+version-mismatch alert via its checkbox, etc.) and offer a way to
+inspect and reset it. The **Sync completion** section is different —
+it holds actual on/off preferences you set directly.
 
 ### Profile picker layout
 
@@ -605,6 +610,31 @@ user's setting isn't mutated; this is a one-shot widening for the
 current sync result, reverted on the next rescan. The configured
 policy still governs the pre-sync (just-rescanned) view.
 
+### Sync completion
+
+Two checkboxes controlling the optional cues fired when a sync
+finishes (both **on by default**):
+
+- **Show a notification when a sync finishes** — posts a Notification
+  Center banner ("Sync complete", or "Sync finished with N errors").
+- **Play a sound when a sync finishes** — a chime on a clean sync, the
+  system error tone when there were failures.
+
+Unlike the other sections (which inspect/reset implicit state), these
+are real, explicitly-set preferences, stored under
+`sync.complete.notify` and `sync.complete.sound`.
+
+Independent of these toggles, the reconcile summary **always** shows
+an inline result badge when a sync ends — a green ✓ (clean) or red ⚠
+(errors), with the summary text tinted to match.
+
+> **Banner not appearing?** macOS suppresses notification banners
+> while you're **screen sharing**, and routes them silently to
+> Notification Center when **Scheduled Summary** ("Summarize
+> notifications") or a **Focus** filter is active. The notification
+> still lands in Notification Center, and the inline ✓/⚠ badge and the
+> sound are unaffected. See [Troubleshooting](#sync-complete-notification-doesnt-pop-up).
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -617,8 +647,10 @@ accessed via the standard `UserDefaults` API. The keys this app writes:
 | `versionMismatch.suppressed` | List of suppressed `host\|local\|remote` triples |
 | `reconcile.layoutMode` | `flat` / `nestedCollapsed` / `nestedFull` |
 | `reconcile.expandPolicy` | `smart` / `all` / `rootOnly` |
+| `sync.complete.notify` | Show a Notification Center banner on sync completion (default on) |
+| `sync.complete.sound` | Play a sound on sync completion (default on) |
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
-| `NSToolbar Configuration ReconcileToolbar.v5` | Reconcile toolbar customization |
+| `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 
 You can inspect them directly with `defaults read net.courbage.unison-ui-mac`,
 or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`
@@ -807,6 +839,27 @@ button), you get a three-option prompt: **Keep Syncing** /
 the window but lets the sync continue in the background until natural
 completion — useful when you want to reclaim screen space but not
 interrupt the transfer.
+
+### Sync-complete notification doesn't pop up
+
+You finished a sync but never saw the banner. This is almost always
+macOS holding it, not the app failing to send it — the notification
+still lands in **Notification Center** (click the clock to check). The
+common causes:
+
+- **Screen sharing.** macOS suppresses *all* notification banners
+  while you're sharing your screen (a privacy feature). They appear
+  silently in Notification Center instead.
+- **Scheduled Summary** ("Summarize notifications", in System Settings
+  → Notifications). When the app is included in a summary, individual
+  banners are held and batched. Exclude Unison-UI-Mac from the summary
+  (or turn the summary off) for immediate banners.
+- **Focus.** An active Focus filter can route the banner straight to
+  Notification Center.
+
+The inline green ✓ / red ⚠ badge in the reconcile window and the
+completion sound don't depend on any of this — they always fire (when
+the sound toggle is on). See [Settings → Sync completion](#sync-completion).
 
 ### The app starts slowly / OCaml takes time to spin up
 

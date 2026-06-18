@@ -11,7 +11,32 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-18
+
+### Added
+
+- **Quit button in the UI.** A Quit button now appears on the
+  profile picker (bottom bar, separated from Run) and on the
+  reconcile-window toolbar. Both route through the standard
+  app-termination path, identical to `⌘Q` — so the OCaml bridge
+  still shuts down cleanly on the way out.
+
+- **Sync completion is now conspicuous.** When a sync finishes, the
+  reconcile summary gains an inline result badge — a green ✓ on a
+  clean sync, a red ⚠ when there were errors — with the summary text
+  tinted and bolded to match. On top of that, two optional cues
+  (both **on by default**, toggleable under **Settings → Sync
+  Completion**): a Notification Center banner and a completion sound
+  (a chime on success, the system error tone on failure). Note that
+  macOS suppresses notification banners while screen sharing and can
+  hold them via Scheduled Summary / Focus — the inline badge and
+  sound are unaffected.
+
 ### Changed
+
+- **CI runner-action versions bumped to `v5`** (`actions/checkout`,
+  `actions/cache`, `actions/upload-artifact`) ahead of GitHub's
+  Node 20→24 runner migration, which deprecates the `v4` line.
 
 - **Homebrew is now the recommended install path.** Cask formula
   published at <https://github.com/bcourbage/homebrew-tap> pointing at
@@ -195,5 +220,7 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bcourbage/unison-ui-mac/releases/tag/v0.1.0
