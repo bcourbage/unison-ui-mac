@@ -17,6 +17,7 @@ on this fork).
 >
 > ```sh
 > brew install --cask bcourbage/tap/unison-ui-mac
+> brew trust bcourbage/tap
 > ```
 >
 > Other install paths (manual zip, build from source) live in
