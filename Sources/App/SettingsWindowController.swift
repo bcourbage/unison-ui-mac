@@ -1,11 +1,10 @@
 import AppKit
 import UserNotifications
 
-/// The Settings window — opens via `<appname> → Settings… (⌘,)`.
-/// Single-tab today, with three sections under it; if/when real
-/// configurable preferences appear, the single tab becomes the first
-/// of several inside an NSToolbar-on-window layout. For now the
-/// content lives directly in the window's content view.
+/// The Settings window, opened via `<appname> → Settings… (⌘,)`.
+/// Toolbar-tab layout (`SettingsTabViewController`, `.toolbar` style):
+/// Saved State, Reconcile, and Sync, each a pane built in `makePane`.
+/// The window resizes to the selected tab's height.
 ///
 /// All wiring goes through `SettingsModel` so the reset semantics
 /// are testable without standing up AppKit.
@@ -47,6 +46,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "Play a sound when a sync finishes",
         target: nil, action: nil)
 
+
     /// Order pinned in code so the popup item indices line up with
     /// these arrays for the selectItem/selectedIndex round-trip.
     private let layoutModes: [ReconcileTree.LayoutMode] =
@@ -81,7 +81,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.title = "Settings"
         window.center()
         super.init(window: window)
-        windowFrameAutosaveName = "SettingsWindow"
+        // No frame autosave: it restores a fixed frame that fights
+        // NSTabViewController's per-tab height sizing. The window sizes
+        // itself to the selected tab on open.
         window.delegate = self
         configure()
         reload()
@@ -99,14 +101,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Layout
 
     private func configure() {
-        guard let contentView = window?.contentView else { return }
-
         // Section 1: Profile picker layout
         let section1Title = sectionHeader("Profile Picker Layout")
         let section1Desc = sectionDescription(
             "Profiles you've hidden from the picker and the custom drag " +
-            "order set in the Profile Editor. UI-only — does not affect " +
-            "the .prf files on disk or the CLI `unison <profile>` command."
+            "order set in the Profile Editor. This is display-only. It does " +
+            "not affect the .prf files on disk or the CLI `unison <profile>` " +
+            "command."
         )
         pickerLayoutLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         pickerLayoutLabel.textColor = .labelColor
@@ -201,9 +202,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let section5Desc = sectionDescription(
             "Extra cues when a synchronization finishes. The reconcile " +
             "window always shows an inline result (green ✓ on success, " +
-            "red ⚠ on errors); these add a Notification Center banner and " +
-            "a sound on top — useful when you've switched away from a long " +
-            "sync. Both are on by default."
+            "red ⚠ on errors). These add a Notification Center banner and a " +
+            "sound, useful when you've switched away from a long sync. Both " +
+            "are on by default."
         )
         notifyCheckbox.target = self
         notifyCheckbox.action = #selector(notifyToggled(_:))
@@ -214,39 +215,79 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         completionRow.alignment = .leading
         completionRow.spacing = 6
 
-        let stack = NSStackView(views: [
-            section1Title, section1Desc, section1Row, divider(),
-            section2Title, section2Desc, suppressionsScroll, section2Row, divider(),
-            section3Title, section3Desc, section3Row, divider(),
-            section4Title, section4Desc, layoutRow, expandRow, divider(),
-            section5Title, section5Desc, completionRow,
-        ])
+        // ----- Group sections into Safari-style toolbar tabs -----
+        // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
+        // views, and animates the window to each pane's preferredContentSize
+        // (set in makePane) with content kept top-anchored.
+        let tabVC = NSTabViewController()
+        tabVC.tabStyle = .toolbar
+        // No crossfade on tab switch; just the native height animation.
+        tabVC.transitionOptions = []
+        tabVC.addTabViewItem(makePane(
+            symbol: "arrow.counterclockwise.circle", label: "Saved State",
+            views: [section1Title, section1Desc, section1Row, divider(),
+                    section2Title, section2Desc, suppressionsScroll, section2Row, divider(),
+                    section3Title, section3Desc, section3Row],
+            tallViews: [(suppressionsScroll, 140)]))
+        tabVC.addTabViewItem(makePane(
+            symbol: "arrow.left.arrow.right.square", label: "Reconcile",
+            views: [section4Title, section4Desc, layoutRow, expandRow]))
+        tabVC.addTabViewItem(makePane(
+            symbol: "bell.badge", label: "Sync",
+            views: [section5Title, section5Desc, completionRow]))
+
+        window?.contentViewController = tabVC
+        window?.toolbarStyle = .preference
+        window?.title = "Settings"
+    }
+
+    /// Build one toolbar-tab pane: a vertical stack of `views` in a
+    /// fixed-width container, each subview pinned to the content width so
+    /// wrapping descriptions wrap and trailing buttons right-align.
+    /// `tallViews` get a minimum height (the suppressions table). Returns
+    /// an `NSTabViewItem` ready to add to the `NSTabViewController`.
+    private func makePane(symbol: String, label: String,
+                          views: [NSView],
+                          tallViews: [(NSView, CGFloat)] = []) -> NSTabViewItem {
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        // Extra bottom inset so the last control isn't crammed against the
+        // window edge after the height-fit.
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 24, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
 
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            section1Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section1Row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section2Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            suppressionsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            suppressionsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
-            section2Row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section3Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section3Row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section4Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            layoutRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            expandRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            section5Desc.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            completionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-        ])
+        let pane = NSView()
+        pane.addSubview(stack)
+        var constraints: [NSLayoutConstraint] = [
+            stack.topAnchor.constraint(equalTo: pane.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
+            stack.widthAnchor.constraint(equalToConstant: 540),
+        ]
+        for v in views {
+            constraints.append(
+                v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32))
+        }
+        for (v, h) in tallViews {
+            constraints.append(v.heightAnchor.constraint(greaterThanOrEqualToConstant: h))
+        }
+        NSLayoutConstraint.activate(constraints)
+
+        let vc = NSViewController()
+        vc.view = pane
+        // Drive the per-tab window height. Reliable now that the wrapping
+        // descriptions set preferredMaxLayoutWidth, so fittingSize is the
+        // true content height. NSTabViewController animates the window to
+        // this on switch, keeping content top-anchored (no "fly-in").
+        pane.layoutSubtreeIfNeeded()
+        vc.preferredContentSize = pane.fittingSize
+        let item = NSTabViewItem(viewController: vc)
+        item.label = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        return item
     }
 
     private func configureSuppressionsTable() {
@@ -284,6 +325,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tf.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         tf.textColor = .secondaryLabelColor
         tf.maximumNumberOfLines = 0
+        // Pane is 540 wide with 16pt side insets → 508pt content. Pinning
+        // the wrap width here (not just via a width constraint) lets
+        // `fittingSize` compute the real multi-line height, which the
+        // tab-resize logic depends on. Matches the width constraint in
+        // `makePane` (stack.width − 32).
+        tf.preferredMaxLayoutWidth = 540 - 32
         return tf
     }
 
@@ -333,7 +380,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func layoutLabelText(frames: Int, toolbars: Int) -> String {
         if frames == 0 && toolbars == 0 {
-            return "Default layout — no stored frames or toolbar configurations"
+            return "Default layout. No stored frames or toolbar configurations."
         }
         let framesPart: String = {
             switch frames {
@@ -406,8 +453,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         alert.messageText = "Window positions cleared"
         alert.informativeText =
             "Stored window positions and toolbar layout have been removed. " +
-            "Open windows keep their current positions until you close them; " +
-            "the next time you reopen each window, it uses the default frame."
+            "Open windows keep their current positions until you close them. " +
+            "The next time you reopen each window, it uses the default frame."
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
