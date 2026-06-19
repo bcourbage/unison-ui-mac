@@ -156,6 +156,10 @@ A table of every profile, with three columns:
 - **Profile name** — the basename of the `.prf` file. Dimmed when the
   profile is hidden.
 
+Above the list, a path line shows the Unison directory. The folder
+glyph at its right opens that directory in Finder — handy for
+inspecting `.prf` files or archive files directly.
+
 Bottom-bar buttons (left to right by profile lifecycle):
 
 - **New…** — opens the Profile Form with empty fields. Save creates a
@@ -519,12 +523,20 @@ text. Pick another row's Diff to recover.
 
 ## Settings
 
-Opens via `Unison-UI-Mac → Settings…` (⌘,). Single window with
-several sections. Most describe a category of *implicit* stored state
-(you hide a profile by clicking its eye icon, dismiss a
-version-mismatch alert via its checkbox, etc.) and offer a way to
-inspect and reset it. The **Sync completion** section is different —
-it holds actual on/off preferences you set directly.
+Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
+(System Settings style) with three tabs that resize the window to fit:
+
+- **Saved State** — *implicit* state the app remembers and lets you
+  reset: profile picker layout, SSH version-mismatch suppressions, and
+  window & toolbar layout.
+- **Reconcile** — how the reconcile window renders differences.
+- **Sync** — the end-of-sync notification and sound (actual on/off
+  preferences you set directly).
+
+Most of the Saved State items are reset/clear actions on remembered
+state (you hide a profile by clicking its eye icon, dismiss a
+version-mismatch alert via its checkbox, etc.); the Sync tab is the one
+place that holds preferences you toggle directly.
 
 ### Profile picker layout
 
@@ -690,6 +702,7 @@ otherwise they're greyed.
 | Go | ⌘⏎ | Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows. |
 | Stop | ⌘. | Abort a running sync. Disabled when no sync is running. (See [Stop button](#stop-button-how-abort-works) for the abort semantics.) |
 | Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
+| Rescan Ignoring Archives… | — | Re-open the profile with a one-shot `ignorearchives` to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See [Troubleshooting](#archive-inconsistency-fatal-mid-reconcile). |
 | Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync — use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
 | → Second | — | Propagate first → second for selected leaves |
 | ← First | — | Propagate second → first |
@@ -765,13 +778,21 @@ Shortcuts → App Shortcuts if you want them.
 ### "Archive inconsistency" fatal mid-reconcile
 
 Unison detected that its archive files are out of sync (typically from a
-crashed sync). A modal alert appears with the offending archive list. If
-the archive files exist locally, the alert offers a one-click **"Delete
-N Orphan Archive(s) and Retry"** button. Click it to remove the
-orphaned files and retry the reconcile.
+crashed sync). A modal alert appears with the offending archive list,
+offering two recoveries:
 
-For pre-emptive cleanup (no error yet, but suspect): use **Reset
-Archives…** in the Profile Editor.
+- **Retry Ignoring Archives** — always available. Unison rebuilds its
+  state by comparing the two replicas directly, ignoring the saved
+  archive for one scan. Use this when the missing or extra archive is
+  on the remote host (nothing local to delete), or whenever you just
+  want to get going again. The scan may show more rows than usual, so
+  review them before you sync. Your profile file is not changed.
+- **Delete N Orphan Archive(s) and Retry** — shown only when orphaned
+  archive files exist on this Mac. Removes them and retries.
+
+You can also trigger the first option yourself any time from **Action →
+Rescan Ignoring Archives…**. For pre-emptive cleanup (no error yet, but
+suspect): use **Reset Archives…** in the Profile Editor.
 
 ### SSH "permission denied" / "host key changed"
 

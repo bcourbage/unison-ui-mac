@@ -11,6 +11,29 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-06-19
+
+### Added
+
+- **Rescan ignoring archives (recovery).** A one-shot way to recover
+  from a Unison "archive inconsistency" error without hand-editing the
+  `.prf` or using the CLI. Available as **Action → Rescan Ignoring
+  Archives…** and as a **Retry Ignoring Archives** button on the
+  archive-inconsistency error itself (including the case where the
+  missing/extra archive is on the *remote* host, which previously had
+  no in-app recovery). Unison rebuilds its state by comparing the two
+  replicas directly; your profile file is left unchanged.
+
+- **Reveal profile folder in Finder.** A folder button on the Profile
+  Editor's path line opens `~/Library/Application Support/Unison/` in
+  Finder.
+
+### Changed
+
+- **Settings is now tab-based** (Saved State / Reconcile / Sync),
+  replacing the single long scrolling page. The window resizes to each
+  tab. Mirrors the macOS System Settings / Safari preferences layout.
+
 ## [0.1.2] — 2026-06-18
 
 ### Added
@@ -220,7 +243,8 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bcourbage/unison-ui-mac/releases/tag/v0.1.0
