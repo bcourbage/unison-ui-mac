@@ -20,6 +20,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the user accepts an "auto-fix" action (e.g. orphan archive cleanup).
     private var lastAttemptedProfile: String?
 
+    /// Pending restore for a one-shot `-ignorearchives` rescan: the
+    /// `.prf` we temporarily injected `ignorearchives = true` into, plus
+    /// its exact original contents. Restored the moment init1 has loaded
+    /// the pref into Unison's memory (the in-memory value then survives
+    /// init2 + the sync, so the archive still rebuilds — but the file is
+    /// never permanently changed). See `rescanIgnoringArchives`.
+    private var ignoreArchivesRestore: (url: URL, original: String)?
+
+    /// Sentinel comment bracketing our injected line, so a stray copy
+    /// (e.g. left by a crash mid-rescan) can be detected + stripped on
+    /// next launch without touching a user's own `ignorearchives` line.
+    private static let ignoreArchivesMarker =
+        "# unison-ui-mac: one-shot -ignorearchives (auto-removed)"
+
     private let log = TraceLog.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -72,6 +86,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // "Retry Ignoring Archives" on the archive-inconsistency fatal:
+        // close the broken reconcile state and re-run the same profile
+        // with a one-shot `ignorearchives` override. Mirrors the
+        // delete-orphans retry path above, but routes through the
+        // .prf-injection helper instead of a plain re-open.
+        UnisonBridge.fatalRetryIgnoreArchivesHandler = { [weak self] in
+            guard let self, let profile = self.lastAttemptedProfile else { return }
+            self.log.write("fatal recovery: retry ignoring archives for '\(profile)'")
+            self.abortAllInFlight(reason: "retrying with ignorearchives",
+                                  forceClose: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.rescanIgnoringArchives(profile: profile)
+            }
+        }
+
         // Spin up the OCaml runtime on its dedicated thread. This blocks
         // briefly (~hundreds of ms) — acceptable during launch.
         //
@@ -102,6 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             unisonDirectory = NSString(string: "~/Library/Application Support/Unison")
                 .expandingTildeInPath
         }
+
+        // Defensive: strip any stray one-shot `ignorearchives` line left in
+        // a .prf by a crash mid-rescan, so it never silently persists.
+        Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
 
         showProfilePicker()
 
@@ -228,6 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
             self?.log.write("init1 complete (needs_prompt=\(needsPrompt))")
             guard let self else { return }
+            // init1 ran loadTheFile, so any one-shot `ignorearchives` is
+            // now in Unison's in-memory prefs — safe to restore the .prf.
+            self.restoreIgnoreArchivesPrfIfNeeded()
             if needsPrompt {
                 self.drivePromptLoop()
             } else {
@@ -296,6 +332,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reconcile?.endRescan(newItems: items)
         }
         unison_bridge_init2()
+    }
+
+    // MARK: - One-shot -ignorearchives recovery
+
+    /// Recover from an "archive inconsistency" by re-running the profile
+    /// once with `ignorearchives = true`. We temporarily append that line
+    /// to the profile's `.prf` (which `do_unisonInit1`'s `loadTheFile`
+    /// reads into Unison's in-memory prefs), re-run init1/init2, then
+    /// restore the original `.prf` the instant init1 has consumed it. The
+    /// in-memory pref outlives the file edit — init2 and the subsequent
+    /// sync still ignore the archive and rebuild it — but the profile on
+    /// disk is left byte-for-byte unchanged. No OCaml bridge change is
+    /// needed, which is why this is a `.prf` edit rather than a pref call.
+    private func rescanIgnoringArchives(profile: String) {
+        let url = URL(fileURLWithPath: unisonDirectory)
+            .appendingPathComponent("\(profile).prf")
+        guard let original = try? String(contentsOf: url, encoding: .utf8) else {
+            log.write("ignorearchives: cannot read \(url.path)")
+            NSSound.beep()
+            return
+        }
+        ignoreArchivesRestore = (url, original)
+        let injected = original
+            + "\n\(Self.ignoreArchivesMarker)\nignorearchives = true\n"
+        do {
+            try injected.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            log.write("ignorearchives: write failed for \(url.path): \(error)")
+            ignoreArchivesRestore = nil
+            NSSound.beep()
+            return
+        }
+        log.write("ignorearchives: injected into \(profile).prf — re-running profile")
+        profileSelected(profile)
+    }
+
+    /// Restore the `.prf` we injected into, if any. Idempotent — safe to
+    /// call from every completion/teardown path.
+    private func restoreIgnoreArchivesPrfIfNeeded() {
+        guard let (url, original) = ignoreArchivesRestore else { return }
+        ignoreArchivesRestore = nil
+        do {
+            try original.write(to: url, atomically: true, encoding: .utf8)
+            log.write("ignorearchives: restored \(url.lastPathComponent)")
+        } catch {
+            log.write("ignorearchives: RESTORE FAILED for \(url.path): \(error)")
+        }
+    }
+
+    /// Action-menu entry point: confirm, then run the one-shot rescan for
+    /// the profile currently open in the reconcile window.
+    @objc func rescanIgnoringArchivesMenu(_ sender: Any?) {
+        guard reconcileWindowController != nil,
+              let profile = lastAttemptedProfile else { NSSound.beep(); return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Rescan ignoring archives?"
+        alert.informativeText =
+            "Use this to recover from an “archive inconsistency” error. "
+            + "Unison will compare the two replicas directly instead of "
+            + "using its saved archive.\n\n"
+            + "The scan may show more items than usual. Review them before "
+            + "you sync. Your profile file is not changed."
+        alert.addButton(withTitle: "Rescan Ignoring Archives")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        rescanIgnoringArchives(profile: profile)
+    }
+
+    /// Strip a stray one-shot `ignorearchives` injection from any `.prf`
+    /// carrying our sentinel marker (never a user's own `ignorearchives`
+    /// line). Defensive cleanup at launch in case a crash mid-rescan left
+    /// the file edited.
+    private static func cleanupStrayIgnoreArchivesMarkers(in unisonDirectory: String) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return }
+        for name in names where name.hasSuffix(".prf") {
+            let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(name)
+            guard let content = try? String(contentsOf: url, encoding: .utf8),
+                  content.contains(ignoreArchivesMarker) else { continue }
+            let lines = content.components(separatedBy: "\n")
+            var kept: [String] = []
+            var i = 0
+            while i < lines.count {
+                if lines[i].contains(ignoreArchivesMarker) {
+                    if i + 1 < lines.count,
+                       lines[i + 1].trimmingCharacters(in: .whitespaces) == "ignorearchives = true" {
+                        i += 2   // drop marker + the injected pref line
+                    } else {
+                        i += 1   // drop marker only
+                    }
+                    continue
+                }
+                kept.append(lines[i])
+                i += 1
+            }
+            try? kept.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            TraceLog.shared.write("ignorearchives: cleaned stray marker from \(name)")
+        }
+    }
+
+    // MARK: - Menu validation
+
+    // @objc so AppKit actually consults it during menu validation — a
+    // plain Swift method here is invisible to the responder-chain
+    // validation path, which left "Rescan Ignoring Archives…" enabled
+    // (and a no-op) from the Profile Picker.
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
+            // Only meaningful with a reconcile window open on a profile.
+            return reconcileWindowController != nil && lastAttemptedProfile != nil
+        }
+        return true
     }
 
     // MARK: - Autotest hooks (Debug-only)

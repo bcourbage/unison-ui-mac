@@ -53,6 +53,13 @@ enum UnisonBridge {
     /// operation (typically by calling `profileSelected` again).
     nonisolated(unsafe) static var fatalDismissedHandler: ((_ msg: String, _ shouldRetry: Bool) -> Void)?
 
+    /// Invoked (main queue) when the user picks "Retry Ignoring Archives"
+    /// on an archive-inconsistency fatal. The handler is expected to close
+    /// the broken reconcile state and re-run the profile with a one-shot
+    /// `ignorearchives` override. Distinct from `fatalDismissedHandler` so
+    /// the existing dismiss / delete-orphans-and-retry paths are untouched.
+    nonisolated(unsafe) static var fatalRetryIgnoreArchivesHandler: (() -> Void)?
+
     /// Override hook for tests / autotest. When set, the fatal trampoline
     /// consults this for the path to the local Unison directory used by
     /// `ArchiveRecovery`. Production code reads it from
@@ -257,13 +264,27 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
         alert.informativeText = text
 
         var shouldRetry = false
+        var retryIgnoringArchives = false
 
-        if let recovery, recovery.hasLocalOrphans {
-            let count = recovery.localOrphans.filter { $0.lastPathComponent.hasPrefix("ar") }.count
-            alert.addButton(withTitle: "Delete \(count) Orphan Archive\(count == 1 ? "" : "s") and Retry")
+        if let recovery {
+            // Archive inconsistency. "Retry Ignoring Archives" is the
+            // robust, always-available recovery (rebuilds Unison's state
+            // by comparing the replicas directly) — it's the default
+            // (first) button, and the only escape from the case where the
+            // missing/extra archive lives on the *remote* host, so there's
+            // nothing local to delete. The orphan-delete button is offered
+            // additionally only when local orphans actually exist.
+            alert.addButton(withTitle: "Retry Ignoring Archives")
+            let hasDelete = recovery.hasLocalOrphans
+            if hasDelete {
+                let count = recovery.localOrphans.filter { $0.lastPathComponent.hasPrefix("ar") }.count
+                alert.addButton(withTitle: "Delete \(count) Orphan Archive\(count == 1 ? "" : "s") and Retry")
+            }
             alert.addButton(withTitle: "OK")
             let response = alert.runModal()
             if response == .alertFirstButtonReturn {
+                retryIgnoringArchives = true
+            } else if hasDelete, response == .alertSecondButtonReturn {
                 let deleted = recovery.deleteLocalOrphans()
                 TraceLog.shared.write("ArchiveRecovery: deleted \(deleted.count) file(s):")
                 for p in deleted { TraceLog.shared.write("  \(p)") }
@@ -275,6 +296,10 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
         }
 
         unison_bridge_fatal_response(UnsafeMutableRawPointer(bitPattern: opaqueBits))
-        UnisonBridge.fatalDismissedHandler?(text, shouldRetry)
+        if retryIgnoringArchives {
+            UnisonBridge.fatalRetryIgnoreArchivesHandler?()
+        } else {
+            UnisonBridge.fatalDismissedHandler?(text, shouldRetry)
+        }
     }
 }

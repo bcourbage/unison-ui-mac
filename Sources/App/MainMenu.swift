@@ -217,6 +217,15 @@ enum MainMenu {
         rescanItem.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(rescanItem)
 
+        // Recovery variant of Rescan: re-open the profile with a one-shot
+        // `ignorearchives` so Unison rebuilds its state from the replicas
+        // directly (escape from "archive inconsistency"). No shortcut —
+        // deliberate recovery action. Handled by AppDelegate at the
+        // responder-chain tail; validated there too.
+        menu.addItem(withTitle: "Rescan Ignoring Archives…",
+                     action: Selector(("rescanIgnoringArchivesMenu:")),
+                     keyEquivalent: "")
+
         // Navigate back to the launch view (closes the reconcile
         // window; the AppDelegate onClose handler reopens the picker
         // with the just-run profile pre-selected). ⌘⇧P parallels the
