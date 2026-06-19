@@ -56,6 +56,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// focus.
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
+    /// Opens the Unison directory (where the `.prf` files live) in Finder —
+    /// for inspecting profiles or archives directly.
+    private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
 
     private var formController: ProfileFormWindowController?
 
@@ -136,6 +139,16 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                        doneButton] {
             button.bezelStyle = .rounded
         }
+        // Reveal lives on the path line as a borderless folder glyph
+        // (right-justified), not in the bottom button row.
+        revealButton.target = self
+        revealButton.action = #selector(revealAction(_:))
+        revealButton.image = NSImage(systemSymbolName: "folder",
+                                     accessibilityDescription: "Reveal in Finder")
+        revealButton.imagePosition = .imageOnly
+        revealButton.isBordered = false
+        revealButton.toolTip = "Reveal the profile folder in Finder"
+        revealButton.setContentHuggingPriority(.required, for: .horizontal)
         newButton.target = self
         newButton.action = #selector(newAction(_:))
         duplicateButton.target = self
@@ -171,7 +184,13 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         bottomRow.spacing = 8
         bottomRow.distribution = .fill
 
-        let stack = NSStackView(views: [pathLabel, scroll, bottomRow, footerLabel])
+        // Path on the left, Reveal-in-Finder glyph right-justified.
+        let pathRow = NSStackView(views: [pathLabel, NSView(), revealButton])
+        pathRow.orientation = .horizontal
+        pathRow.spacing = 8
+        pathRow.alignment = .centerY
+
+        let stack = NSStackView(views: [pathRow, scroll, bottomRow, footerLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -186,7 +205,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            pathLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
+            pathRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
             footerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
             bottomRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
         ])
@@ -299,6 +318,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// stayed key). Cheap; just hits the filesystem and reloads the table.
     @objc private func refreshAction(_ sender: Any?) {
         reload()
+    }
+
+    /// Open the Unison directory (where the `.prf` files live) in a Finder
+    /// window. Folder-level reveal — doesn't select a particular file.
+    @objc private func revealAction(_ sender: Any?) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: unisonDirectory)
     }
 
     /// Open the single-profile form for create-or-edit. The form's
