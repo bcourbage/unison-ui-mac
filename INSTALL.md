@@ -269,6 +269,35 @@ sudo xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
 ```
 
+## Pinning a specific version
+
+Homebrew casks don't pin versions side by side — `brew upgrade` always
+moves you to the latest published release, and there's no
+`unison-ui-mac@0.1` track. If you want to **stay on a specific version**
+(e.g. keep `0.1.x` and skip a future `0.2.0`), install that version from
+source by its git tag and take it out of Homebrew's hands:
+
+```sh
+# 1. If you installed via Homebrew, stop it from managing/upgrading the app
+brew uninstall --cask unison-ui-mac
+
+# 2. Build and install the exact version you want
+git clone https://github.com/bcourbage/unison-ui-mac.git
+cd unison-ui-mac
+git tag                    # list available versions
+git checkout v0.1.2        # the version you want to stay on
+make install               # Release build → /Applications (see "Install from source")
+```
+
+Nothing will upgrade the app after this until you choose to. To move to
+a different version later, `git checkout <other-tag>` then `make install`
+again. To rejoin the auto-updating Homebrew track, reinstall the cask:
+`brew install --cask bcourbage/tap/unison-ui-mac`.
+
+Prerequisites are the same one-time tools as [Install from
+source](#install-from-source) (`xcode-select --install`,
+`brew install ocaml xcodegen`).
+
 ## Uninstall
 
 ```sh
