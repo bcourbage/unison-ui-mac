@@ -9,7 +9,7 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
-## [Unreleased]
+## [0.1.4] — 2026-06-21
 
 ### Added
 
@@ -29,8 +29,16 @@ across releases per Apple's bundle-version rules.
 
 - **Includes.** Pull in another prefs file with an `include` directive, via
   a small row editor. Each include has a **Top / Bottom** position (Top: the
-  profile wins single-value conflicts; Bottom: the included file wins). A
-  banner notes when a profile includes others.
+  profile wins single-value conflicts; Bottom: the included file wins) and an
+  optional comment line. A banner notes when a profile includes others.
+  Included names may contain spaces (written back-slash-escaped, e.g.
+  `include File\ System\ Ignores.prf`), and the `.prf` extension is added
+  for you on the saved line while the editor shows the bare profile name.
+
+- **Comments in the freeform list fields.** Paths, Ignore patterns, and
+  Exceptions (and the Includes rows) accept `#` comment lines, preserved in
+  place across a load/save round-trip. Wrapped long lines are shown with a
+  hanging indent so a wrap is visually distinct from a new entry.
 
 - **Logging.** A `log` / `logfile` control in the editor's Options, plus a
   Settings **Logging** tab with three modes: all profiles share one file,
@@ -58,7 +66,9 @@ across releases per Apple's bundle-version rules.
   still shown in the Profile Editor, where it's actionable).
 
 - Settings and the profile editor are now mutually exclusive, so a logging
-  change can't conflict with an open, unsaved edit.
+  change can't conflict with an open, unsaved edit. The **Settings** menu
+  item is greyed out while a profile is open for editing; opening a profile
+  while Settings is open surfaces a "Close Settings first" prompt.
 
 - The Advanced box now refuses to save settings that have a dedicated
   section, or `include` directives, pointing you to the right place instead
@@ -69,6 +79,13 @@ across releases per Apple's bundle-version rules.
 - The profile editor window no longer grows wide to fit long help text.
 - The selected sidebar row's label is now reliably readable (white on the
   active highlight) on open and while clicking.
+- **Saving a profile with a conflict-handling preference no longer drops a
+  nearby comment.** Re-applying `force` / `prefer` used to move the line to
+  the end of the file; combined with a bottom `include`, that could delete
+  the comment line sitting just above it (e.g. a commented-out `# path = …`).
+  The preference is now rewritten in place.
+- A profile's file-header comment is no longer absorbed as the first Top
+  include's comment (the include block is fenced off with a blank line).
 
 ## [0.1.3] — 2026-06-19
 

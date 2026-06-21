@@ -444,6 +444,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Only meaningful with a reconcile window open on a profile.
             return reconcileWindowController != nil && lastAttemptedProfile != nil
         }
+        if menuItem.action == #selector(showSettings(_:)) {
+            // Grey out Settings while a profile is being edited (they're
+            // mutually exclusive — see isEditProfileFormOpen).
+            return !isEditProfileFormOpen
+        }
         return true
     }
 
@@ -663,26 +668,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu actions
 
-    /// `<appname> → Settings…` (⌘,) — opens the Settings window. Singleton;
-    /// reopening just brings the existing instance to front. The window
-    /// itself owns its content (see SettingsWindowController).
-    @objc func showSettings(_ sender: Any?) {
-        // Settings and the profile-edit form are mutually exclusive: both
-        // can write logging-related state, so allowing both open invites a
-        // divergence (e.g. a Settings change rewrites a .prf while the form
-        // holds a stale copy). The form may have unsaved edits, so we don't
-        // close it from here — block and surface it instead.
-        if let formWin = NSApp.windows.first(where: {
+    /// True when a single-profile edit form is open. Settings and that form
+    /// are mutually exclusive (both can write logging state, which would
+    /// diverge from an open, unsaved form).
+    private var isEditProfileFormOpen: Bool {
+        NSApp.windows.contains {
             ($0.windowController is ProfileFormWindowController) && $0.isVisible
-        }) {
-            formWin.makeKeyAndOrderFront(nil)
-            let alert = NSAlert()
-            alert.messageText = "Finish editing the profile first"
-            alert.informativeText = "Close the profile you're editing before opening Settings. They can't be open at the same time, because a logging change in Settings could conflict with unsaved edits."
-            alert.addButton(withTitle: "OK")
-            alert.beginSheetModal(for: formWin) { _ in }
-            return
         }
+    }
+
+    /// `<appname> → Settings…` (⌘,) — opens the Settings window. Singleton;
+    /// reopening just brings the existing instance to front.
+    @objc func showSettings(_ sender: Any?) {
+        // Backstop: the menu item is disabled while editing (see
+        // validateMenuItem), so this normally can't be reached then.
+        guard !isEditProfileFormOpen else { return }
         if let existing = settingsWindowController {
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)

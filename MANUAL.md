@@ -257,6 +257,11 @@ One path per line; each becomes a `path = …` entry. An empty list means
 [path specification](https://github.com/bcpierce00/unison/wiki/Manual#path-specification)
 in the upstream wiki for the syntax.
 
+Lines beginning with `#` are comments and are kept in place across edits.
+When a long line wraps, the continuation is shown with a hanging indent so
+you can tell a wrap apart from a new entry. (The same applies to the Ignore
+and Exceptions fields.)
+
 ### Ignore
 
 - **Ignore patterns** — one pattern per line (`Name *.tmp`, `Path build`,
@@ -296,7 +301,8 @@ How a sync runs, as opposed to what is synced:
 
 Pull in another prefs file with an `include` directive. Each row is a file
 name (the dropdown lists the other `.prf` files in your Unison directory,
-or you can type a name) plus a **Top / Bottom** position:
+or you can type a name), an optional **comment** line, and a **Top / Bottom**
+position:
 
 - **Top** — applied before this profile's own settings, so this profile
   wins single-value conflicts.
@@ -308,6 +314,11 @@ example a "common" file of ignore patterns. Note that an `include` pulls in
 the *entire* target file, so a shared list file should contain only the
 relevant lines. A banner at the top of the editor notes when a profile
 includes others.
+
+Profile names with spaces are fine — they're written back-slash-escaped
+(`include File\ System\ Ignores.prf`), which is how Unison reads a name as a
+single word. The `.prf` extension is added on the saved line for clarity;
+the editor still shows you the bare profile name.
 
 ### Advanced (other prefs)
 
@@ -550,10 +561,11 @@ Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
 - **Logging** — how log file locations are chosen across profiles.
 
 Settings and the profile editor can't be open at the same time. Because a
-logging change here can rewrite `.prf` files, opening Settings while you're
-editing a profile is blocked (the editor is brought forward instead), and
-opening a profile editor closes an open Settings window. This prevents a
-Settings change from conflicting with unsaved edits.
+logging change here can rewrite `.prf` files, the **Settings** menu item is
+greyed out while a profile is open for editing; and opening a profile editor
+while Settings is open is blocked with a "Close Settings first" prompt
+(Settings is brought forward instead). This prevents a Settings change from
+conflicting with unsaved edits.
 
 Most of the Saved State items are reset/clear actions on remembered
 state (you hide a profile by clicking its eye icon, dismiss a

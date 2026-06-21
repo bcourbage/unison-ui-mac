@@ -330,11 +330,20 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// onSaved callback feeds back to us so we can refresh the list
     /// (and propagate to the picker via savePrefsAndNotify).
     private func openForm(for profileName: String?) {
+        // Settings and the profile-edit form are mutually exclusive (both can
+        // write logging state). If Settings is open, block and surface it.
+        if let settingsWin = NSApp.windows.first(where: {
+            $0.windowController is SettingsWindowController && $0.isVisible
+        }) {
+            settingsWin.makeKeyAndOrderFront(nil)
+            let alert = NSAlert()
+            alert.messageText = "Close Settings first"
+            alert.informativeText = "Settings and the profile editor can't be open at the same time, because a logging change in Settings could conflict with your edits. Close Settings, then edit the profile."
+            alert.addButton(withTitle: "OK")
+            alert.beginSheetModal(for: settingsWin) { _ in }
+            return
+        }
         formController?.close()
-        // Settings and the profile-edit form are mutually exclusive (both
-        // can write logging state). Settings has no unsaved state, so it's
-        // safe to close it when opening the form.
-        NSApp.windows.first { $0.windowController is SettingsWindowController }?.close()
         let form = ProfileFormWindowController(
             unisonDirectory: unisonDirectory,
             profileName: profileName

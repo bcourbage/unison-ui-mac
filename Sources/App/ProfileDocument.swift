@@ -91,9 +91,13 @@ struct ProfileDocument: Equatable {
             // `include <name>` directive — pulls in another prefs file at
             // parse time. No `=`, so it must be handled before the
             // preserve-as-comment fallback or it would be commented out.
-            let parts = trimmed.split(separator: " ", maxSplits: 1)
-            if parts.count == 2, parts[0] == "include" {
-                let name = parts[1].trimmingCharacters(in: .whitespaces)
+            // Unison parses the line with backslash-escaping (Util.splitIntoWords
+            // with esc='\\'), so a name with spaces is written `include a\ b`.
+            // We strip the keyword and unescape, storing the *logical* name.
+            if trimmed == "include" || trimmed.hasPrefix("include ") {
+                let raw = String(trimmed.dropFirst("include".count))
+                    .drop(while: { $0 == " " })
+                let name = ProfileDocument.unescapeWord(String(raw))
                 if !name.isEmpty {
                     doc.entries.append(.include(name))
                     continue
@@ -145,6 +149,54 @@ struct ProfileDocument: Equatable {
         }
     }
 
+    /// Like `values(forKey:)` but also surfaces `#` comment lines that sit
+    /// directly above a value (as `# text`), so a freeform editor box can
+    /// show and round-trip per-entry comments. A blank line between a comment
+    /// and a value breaks the association (the comment is then left alone).
+    func valuesWithComments(forKey key: String) -> [String] {
+        var out: [String] = []
+        for (i, e) in entries.enumerated() {
+            guard case let .keyValue(k, v) = e, k == key else { continue }
+            var comments: [String] = []
+            var j = i - 1
+            while j >= 0, case let .comment(c) = entries[j] {
+                comments.append("# " + c); j -= 1
+            }
+            out.append(contentsOf: comments.reversed())
+            out.append(v)
+        }
+        return out
+    }
+
+    /// Replace a key's values from box lines, treating `#`-prefixed lines as
+    /// comments that attach to the value below them. Removes the old values
+    /// and the comments directly above each, then inserts the rebuilt block
+    /// where the key's first value was.
+    mutating func setValuesWithComments(_ lines: [String], forKey key: String) {
+        var newEntries: [Entry] = []
+        for line in lines {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { continue }
+            if t.hasPrefix("#") {
+                newEntries.append(.comment(String(t.dropFirst()).trimmingCharacters(in: .whitespaces)))
+            } else {
+                newEntries.append(.keyValue(key: key, value: t))
+            }
+        }
+        var remove = Set<Int>()
+        for (i, e) in entries.enumerated() {
+            guard case let .keyValue(k, _) = e, k == key else { continue }
+            remove.insert(i)
+            var j = i - 1
+            while j >= 0, case .comment = entries[j], !remove.contains(j) {
+                remove.insert(j); j -= 1
+            }
+        }
+        let insertAt = remove.min() ?? entries.count
+        for idx in remove.sorted(by: >) { entries.remove(at: idx) }
+        entries.insert(contentsOf: newEntries, at: min(insertAt, entries.count))
+    }
+
     /// All `include` directive names, in document order.
     var includes: [String] {
         entries.compactMap { if case let .include(n) = $0 { return n } else { return nil } }
@@ -154,48 +206,76 @@ struct ProfileDocument: Equatable {
         entries.firstIndex { if case .keyValue = $0 { return true } else { return false } }
     }
 
-    /// Include names that appear before the first `key = value` pref. These
-    /// load before the profile's own settings, so the profile overrides them
-    /// (for single-value prefs). With no prefs present, all includes are top.
-    var topIncludes: [String] {
-        guard let firstKV = firstKeyValueIndex else { return includes }
-        return entries[..<firstKV].compactMap {
-            if case let .include(n) = $0 { return n } else { return nil }
+    /// One include directive plus the optional comment line directly above it.
+    struct IncludeEntry: Equatable {
+        var name: String
+        var comment: String   // empty = no comment line
+    }
+
+    /// `include` entries within an index range, each carrying the comment
+    /// line directly above it (if any).
+    private func includeList(in range: Range<Int>) -> [IncludeEntry] {
+        range.compactMap { i -> IncludeEntry? in
+            guard case let .include(n) = entries[i] else { return nil }
+            var comment = ""
+            if i > 0, case let .comment(c) = entries[i - 1] { comment = c }
+            return IncludeEntry(name: n, comment: comment)
         }
     }
 
-    /// Include names that appear at/after the first pref — these override the
-    /// profile's own single-value prefs.
-    var bottomIncludes: [String] {
+    /// Includes before the first `key = value` pref. They load before the
+    /// profile's own settings, so the profile overrides them (single-value
+    /// prefs). With no prefs present, all includes are top.
+    var topIncludes: [IncludeEntry] {
+        guard let firstKV = firstKeyValueIndex else { return includeList(in: 0..<entries.count) }
+        return includeList(in: 0..<firstKV)
+    }
+
+    /// Includes at/after the first pref — these override the profile's own
+    /// single-value prefs.
+    var bottomIncludes: [IncludeEntry] {
         guard let firstKV = firstKeyValueIndex else { return [] }
-        return entries[firstKV...].compactMap {
-            if case let .include(n) = $0 { return n } else { return nil }
-        }
+        return includeList(in: firstKV..<entries.count)
     }
 
-    /// Replace all `include` directives: `top` names land before the first
-    /// pref line, `bottom` names after the last. Insert bottom first so the
-    /// top insertion index stays valid.
-    mutating func setIncludes(top: [String], bottom: [String]) {
-        entries.removeAll(where: { $0.isInclude })
+    /// Replace all `include` directives. `top` entries land before the first
+    /// pref line, `bottom` after the last. Each entry's non-empty comment is
+    /// written as a `#` line directly above its `include`. The old includes
+    /// and the comments directly above them are removed first.
+    mutating func setIncludes(top: [IncludeEntry], bottom: [IncludeEntry]) {
+        var remove = Set<Int>()
+        for (i, e) in entries.enumerated() where e.isInclude {
+            remove.insert(i)
+            if i > 0, case .comment = entries[i - 1], !remove.contains(i - 1) {
+                remove.insert(i - 1)
+            }
+        }
+        for idx in remove.sorted(by: >) { entries.remove(at: idx) }
+
+        func build(_ list: [IncludeEntry]) -> [Entry] {
+            var out: [Entry] = []
+            for inc in list {
+                let c = inc.comment.trimmingCharacters(in: .whitespaces)
+                if !c.isEmpty { out.append(.comment(c)) }
+                out.append(.include(inc.name))
+            }
+            return out
+        }
         let lastKV = entries.lastIndex { if case .keyValue = $0 { return true } else { return false } }
         let bottomAt = lastKV.map { $0 + 1 } ?? entries.count
-        entries.insert(contentsOf: bottom.map { Entry.include($0) },
-                       at: min(bottomAt, entries.count))
-        let topAt = firstKeyValueIndex ?? 0
-        entries.insert(contentsOf: top.map { Entry.include($0) }, at: min(topAt, entries.count))
-    }
+        entries.insert(contentsOf: build(bottom), at: min(bottomAt, entries.count))
 
-    /// Replace every `include` directive with the given names. New includes
-    /// land at the top (before other prefs) so a profile's own scalar
-    /// settings, which follow, override the included file's — while
-    /// list-valued prefs (ignore/path) accumulate, as Unison intends.
-    mutating func setIncludes(_ names: [String]) {
-        let firstIdx = entries.firstIndex(where: { $0.isInclude })
-        entries.removeAll(where: { $0.isInclude })
-        let insertAt = firstIdx ?? 0
-        entries.insert(contentsOf: names.map { Entry.include($0) },
-                       at: min(insertAt, entries.count))
+        let topAt = firstKeyValueIndex ?? 0
+        var topBlock = build(top)
+        // Fence the top block off from a preceding comment (typically the
+        // file header) with a blank line, so the header isn't re-read as the
+        // first include's comment on the next load. Load and the remove phase
+        // above both treat a blank line as a boundary, so this round-trips
+        // cleanly and doesn't accumulate blanks on repeated saves.
+        if !topBlock.isEmpty, topAt > 0, case .comment = entries[topAt - 1] {
+            topBlock.insert(.blank, at: 0)
+        }
+        entries.insert(contentsOf: topBlock, at: min(topAt, entries.count))
     }
 
     // MARK: - Serialization
@@ -216,10 +296,43 @@ struct ProfileDocument: Equatable {
             case .keyValue(let key, let value):
                 lines.append("\(key) = \(value)")
             case .include(let name):
-                lines.append("include \(name)")
+                lines.append("include \(ProfileDocument.escapeWord(name))")
             }
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    // MARK: - Word escaping (mirrors Unison's Util.splitIntoWords, esc='\\')
+
+    /// Escape a word so Unison reads it back as a single token: backslash and
+    /// space (the escape char and the word separator) are prefixed with `\`.
+    /// `File System Ignores` → `File\ System\ Ignores`.
+    static func escapeWord(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        for ch in s {
+            if ch == "\\" || ch == " " { out.append("\\") }
+            out.append(ch)
+        }
+        return out
+    }
+
+    /// Inverse of `escapeWord`: a `\` makes the following character literal
+    /// (Unison's rule — any char, not just space/backslash). A trailing `\`
+    /// is dropped, matching Unison's "ignore final esc".
+    static func unescapeWord(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        var it = s.makeIterator()
+        while let ch = it.next() {
+            if ch == "\\" {
+                if let next = it.next() { out.append(next) }
+                // trailing backslash: drop it
+            } else {
+                out.append(ch)
+            }
+        }
+        return out
     }
 
     // MARK: - Known keys (helpers shared with the editor UI)

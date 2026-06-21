@@ -44,15 +44,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     // List fields (multi-line, one value per line)
     private let pathsView = ListFieldView(
         label: "Paths to sync",
-        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\"."
+        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\". Lines beginning with # are comments."
     )
     private let ignoreView = ListFieldView(
         label: "Ignore patterns",
-        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets."
+        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets. Lines beginning with # are comments."
     )
     private let ignorenotView = ListFieldView(
         label: "Exceptions (override ignore)",
-        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line."
+        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line. Lines beginning with # are comments."
     )
 
     // Built in configure() (needs the list of existing profiles).
@@ -691,10 +691,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         firstRootField.stringValue = roots.first ?? ""
         secondRootField.stringValue = roots.count >= 2 ? roots[1] : ""
 
-        // List fields
-        pathsView.values = prfDocument.values(forKey: "path")
-        ignoreView.values = prfDocument.values(forKey: "ignore")
-        ignorenotView.values = prfDocument.values(forKey: "ignorenot")
+        // List fields (with interleaved # comments preserved)
+        pathsView.values = prfDocument.valuesWithComments(forKey: "path")
+        ignoreView.values = prfDocument.valuesWithComments(forKey: "ignore")
+        ignorenotView.values = prfDocument.valuesWithComments(forKey: "ignorenot")
 
         // Advanced: every key we don't surface above, rendered as
         // `key = value` lines in original order.
@@ -748,10 +748,28 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         updateLogfileVisibility()
 
-        // Includes (with Top/Bottom position).
-        includesView.entries = prfDocument.topIncludes.map { ($0, true) }
-            + prfDocument.bottomIncludes.map { ($0, false) }
+        // Includes (Top/Bottom position + optional comment). The combo shows
+        // the profile name without the `.prf` suffix — we add it back on save.
+        includesView.entries =
+            prfDocument.topIncludes.map { (name: Self.displayIncludeName($0.name), top: true, comment: $0.comment) }
+            + prfDocument.bottomIncludes.map { (name: Self.displayIncludeName($0.name), top: false, comment: $0.comment) }
         refreshIncludesBanner()
+    }
+
+    /// Strip a trailing `.prf` for display in the Includes combo — the user
+    /// picks profiles by name, not filename.
+    private static func displayIncludeName(_ name: String) -> String {
+        name.hasSuffix(".prf") ? String(name.dropLast(4)) : name
+    }
+
+    /// Append `.prf` for the on-disk `include` line so it's explicit that the
+    /// target is a profile file. Unison loads `include Foo.prf` and the bare
+    /// `include Foo` to the same file (prefs.ml profilePathname), so this is
+    /// safe; we just make it clearer.
+    private static func includeNameForDisk(_ name: String) -> String {
+        let t = name.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty || t.hasSuffix(".prf") { return t }
+        return t + ".prf"
     }
 
     /// Map the profile's `prefer`/`force` onto the conflict popup. An
@@ -889,9 +907,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if !second.isEmpty { roots.append(second) }
         doc.setValues(roots, forKey: "root")
 
-        doc.setValues(pathsView.values, forKey: "path")
-        doc.setValues(ignoreView.values, forKey: "ignore")
-        doc.setValues(ignorenotView.values, forKey: "ignorenot")
+        doc.setValuesWithComments(pathsView.values, forKey: "path")
+        doc.setValuesWithComments(ignoreView.values, forKey: "ignore")
+        doc.setValuesWithComments(ignorenotView.values, forKey: "ignorenot")
 
         // Remote connection keys, owned by Roots → Remote Connection. Set
         // the value or remove the key when the field is blank.
@@ -922,18 +940,27 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         doc.setValue(triStateValue(autoPopup), forKey: "auto")
         doc.setValue(triStateValue(fastcheckPopup), forKey: "fastcheck")
 
-        // Conflict handling: rewrite prefer/force from the popup (only one
-        // is ever set), or restore a value the popup couldn't represent.
-        doc.setValue(nil, forKey: "prefer")
-        doc.setValue(nil, forKey: "force")
+        // Conflict handling: prefer/force are mutually exclusive. Set the
+        // chosen key IN PLACE (a single setValue replaces it at its original
+        // position) and clear only the other one. Nulling both first and then
+        // re-adding would append the line to the END of the document — which
+        // can move it past a bottom `include`, so the next setIncludes would
+        // then eat the comment now sitting directly above the include. (This
+        // dropped a `# path = …` line that lived just above `force`.)
         let sel = conflictPopup.indexOfSelectedItem
         if sel < Self.conflictChoices.count {
             let c = Self.conflictChoices[sel]
             if let key = c.key, let target = c.target {
                 doc.setValue(conflictValue(forTarget: target), forKey: key)
+                doc.setValue(nil, forKey: key == "force" ? "prefer" : "force")
+            } else {
+                // Default (ask on conflict): clear both.
+                doc.setValue(nil, forKey: "force")
+                doc.setValue(nil, forKey: "prefer")
             }
         } else if let raw = rawConflict {
             doc.setValue(raw.value, forKey: raw.key)
+            doc.setValue(nil, forKey: raw.key == "force" ? "prefer" : "force")
         }
 
         // Logging. The global mode decides how logfile is composed.
@@ -960,10 +987,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setValue(nil, forKey: "logfile")
         }
 
-        // Includes (Top before the first pref, Bottom after the last).
+        // Includes (Top before the first pref, Bottom after the last; each
+        // with its optional comment line).
         let inc = includesView.entries
-        doc.setIncludes(top: inc.filter { $0.top }.map { $0.name },
-                        bottom: inc.filter { !$0.top }.map { $0.name })
+            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+        doc.setIncludes(
+            top: inc.filter { $0.top }
+                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
+            bottom: inc.filter { !$0.top }
+                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
 
         // Reconcile the advanced field with the existing document. Each
         // line should be `key = value`; we drop any line that doesn't
@@ -1220,6 +1252,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
+        // Names with spaces are fine: ProfileDocument escapes them on write
+        // (`include File\ System\ Ignores`), which Unison reads back as one
+        // word. No validation needed here.
+
         let doc = formIntoDocument()
         let text = doc.serialized
 
@@ -1471,6 +1507,15 @@ final class ListFieldView: NSView {
     private let textView = NSTextView()
     private let scrollView = NSScrollView()
 
+    /// Wrapped continuation lines indent under their entry's first line, so a
+    /// long entry that wraps is visually distinct from separate entries.
+    private let hangingStyle: NSParagraphStyle = {
+        let p = NSMutableParagraphStyle()
+        p.firstLineHeadIndent = 0
+        p.headIndent = 18
+        return p
+    }()
+
     var values: [String] {
         get {
             textView.string
@@ -1480,6 +1525,10 @@ final class ListFieldView: NSView {
         }
         set {
             textView.string = newValue.joined(separator: "\n")
+            if let ts = textView.textStorage {
+                ts.addAttribute(.paragraphStyle, value: hangingStyle,
+                                range: NSRange(location: 0, length: ts.length))
+            }
         }
     }
 
@@ -1501,6 +1550,12 @@ final class ListFieldView: NSView {
         textView.isEditable = true
         textView.isRichText = false
         textView.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+        textView.defaultParagraphStyle = hangingStyle
+        textView.typingAttributes = [
+            .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular),
+            .paragraphStyle: hangingStyle,
+            .foregroundColor: NSColor.labelColor,
+        ]
         textView.allowsUndo = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -1551,20 +1606,23 @@ final class IncludeListView: NSView {
     private let existingNames: [String]
     var onChange: (() -> Void)?
 
-    /// Each include as (file name, isTop). Blank-name rows are dropped.
-    var entries: [(name: String, top: Bool)] {
+    /// Each include as (file name, isTop, comment). Blank-name rows are
+    /// dropped; comment is the optional line shown above the include.
+    var entries: [(name: String, top: Bool, comment: String)] {
         get {
             rowsStack.arrangedSubviews.compactMap { row in
                 guard let combo = row.viewWithTag(1) as? NSComboBox,
                       let popup = row.viewWithTag(2) as? NSPopUpButton else { return nil }
                 let name = combo.stringValue.trimmingCharacters(in: .whitespaces)
                 guard !name.isEmpty else { return nil }
-                return (name, popup.indexOfSelectedItem == 0)
+                let comment = (row.viewWithTag(3) as? NSTextField)?
+                    .stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+                return (name, popup.indexOfSelectedItem == 0, comment)
             }
         }
         set {
             rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-            for e in newValue { appendRow(makeRow(name: e.name, top: e.top)) }
+            for e in newValue { appendRow(makeRow(name: e.name, top: e.top, comment: e.comment)) }
         }
     }
 
@@ -1617,7 +1675,14 @@ final class IncludeListView: NSView {
         row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
     }
 
-    private func makeRow(name: String, top: Bool) -> NSView {
+    private func makeRow(name: String, top: Bool, comment: String) -> NSView {
+        let commentField = NSTextField(string: comment)
+        commentField.tag = 3
+        commentField.placeholderString = "Comment (optional)"
+        commentField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        commentField.delegate = self
+        commentField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         let combo = NSComboBox()
         combo.tag = 1
         combo.isEditable = true
@@ -1652,21 +1717,42 @@ final class IncludeListView: NSView {
         remove.setContentHuggingPriority(.required, for: .horizontal)
         remove.widthAnchor.constraint(equalToConstant: 22).isActive = true
 
-        let row = NSStackView(views: [combo, popup, remove])
-        row.orientation = .horizontal
-        row.spacing = 6
-        row.distribution = .fill
+        let controls = NSStackView(views: [combo, popup, remove])
+        controls.orientation = .horizontal
+        controls.spacing = 6
+        controls.distribution = .fill
         combo.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+
+        // The comment sits on its own line above the file + position row,
+        // prefixed with a "#" so it reads as a comment even when filled in.
+        let hash = NSTextField(labelWithString: "#")
+        hash.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        hash.textColor = .secondaryLabelColor
+        hash.setContentHuggingPriority(.required, for: .horizontal)
+        let commentRow = NSStackView(views: [hash, commentField])
+        commentRow.orientation = .horizontal
+        commentRow.spacing = 4
+        commentRow.distribution = .fill
+
+        let row = NSStackView(views: [commentRow, controls])
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 3
+        commentRow.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+        controls.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
         return row
     }
 
     @objc private func addTapped() {
-        appendRow(makeRow(name: "", top: true))
+        appendRow(makeRow(name: "", top: true, comment: ""))
         onChange?()
     }
 
     @objc private func removeTapped(_ sender: NSButton) {
-        sender.superview?.removeFromSuperview()   // superview is the row stack
+        // Walk up to the row that's a direct arranged subview of rowsStack.
+        var v: NSView? = sender
+        while let cur = v, cur.superview !== rowsStack { v = cur.superview }
+        v?.removeFromSuperview()
         onChange?()
     }
 
@@ -1674,5 +1760,9 @@ final class IncludeListView: NSView {
 }
 
 extension IncludeListView: NSComboBoxDelegate {
-    func controlTextDidChange(_ obj: Notification) { onChange?() }
+    func controlTextDidChange(_ obj: Notification) {
+        // Spaces in include names are fine now — they're backslash-escaped on
+        // write (see ProfileDocument.escapeWord), so no inline validation.
+        onChange?()
+    }
 }
