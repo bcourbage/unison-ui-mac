@@ -11,6 +11,65 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+
+- **Rewritten single-profile editor with a sidebar navigator.** The editor
+  now organizes settings into sections in a left sidebar with a search box
+  and per-section glyphs: General, Roots, Paths, Ignore, File Attributes,
+  Options, Includes, and Advanced.
+
+- **File Attributes section.** Dedicated controls for the metadata Unison
+  preserves: modification times, permissions, resource forks, owner, group,
+  and suppress-chmod (each Default / On / Off). Permissions offers Default,
+  "ignore differences", or a custom octal / hex / decimal mask.
+
+- **Options section.** Conflict handling (Prefer or Force a root, or
+  newer / older), plus confirm-big-deletions, auto-accept-changes, and
+  fast-update-check.
+
+- **Includes.** Pull in another prefs file with an `include` directive, via
+  a small row editor. Each include has a **Top / Bottom** position (Top: the
+  profile wins single-value conflicts; Bottom: the included file wins). A
+  banner notes when a profile includes others.
+
+- **Logging.** A `log` / `logfile` control in the editor's Options, plus a
+  Settings **Logging** tab with three modes: all profiles share one file,
+  all share one folder (one file each), or each profile sets its own
+  location. Switching into a shared mode offers to update existing profiles
+  (all-or-nothing, with a confirmation). The default location is Unison's
+  own directory.
+
+- **Open the .prf in your editor.** A pop-out button in the editor's
+  top-right opens the raw profile file in your default app for that type.
+
+- **Remote Connection fields** (`servercmd`, `sshcmd`, `sshargs`,
+  `clientHostName`) in the Roots section, shown when a root is `ssh://` or
+  `socket://`.
+
+- **"Show in the profile picker"** checkbox in the editor's General section
+  (mirrors the Profile Editor's eye toggle).
+
+- **Keyboard shortcuts for the reconcile direction controls:** `>` send to
+  second, `<` send to first, `/` skip.
+
+### Changed
+
+- The Unison-directory path was removed from the Profile Picker window (it's
+  still shown in the Profile Editor, where it's actionable).
+
+- Settings and the profile editor are now mutually exclusive, so a logging
+  change can't conflict with an open, unsaved edit.
+
+- The Advanced box now refuses to save settings that have a dedicated
+  section, or `include` directives, pointing you to the right place instead
+  of silently dropping them.
+
+### Fixed
+
+- The profile editor window no longer grows wide to fit long help text.
+- The selected sidebar row's label is now reliably readable (white on the
+  active highlight) on open and while clicking.
+
 ## [0.1.3] — 2026-06-19
 
 ### Added

@@ -213,102 +213,117 @@ Footer text: "Hide and reorder only affect this app's picker. The CLI
 
 ## The Profile Form (single-profile content editor)
 
-Opens from the manager's **New…** or **Edit…** buttons. Top to bottom:
+Opens from the manager's **New…** or **Edit…** buttons. A sidebar on the
+left lists the editor's sections, with a search box above it that filters
+the list as you type. A small pop-out button in the window's top-right
+corner opens the raw `.prf` in your default editor for that file type
+(enabled once the profile has been saved at least once). Each section is
+described below.
 
-### Profile name
+### General
 
-The `.prf` filename without the `.prf` extension. **Editable in both New
-and Edit modes** — changing the name on an existing profile and clicking
-Save performs a rename of the `.prf` file on disk (and carries the
-`.prf.bak` sidecar along). The user's view preferences (hide / custom
-order) also follow the renamed profile.
+- **Profile name** — the `.prf` filename without the extension, editable in
+  both New and Edit modes. Changing it on an existing profile and clicking
+  Save renames the `.prf` on disk, carrying the `.prf.bak` sidecar and your
+  hide / custom-order view preferences along. Renaming is benign for
+  Unison's archive state, which is keyed off the roots and host, not the
+  filename. Forbidden characters: `/`, `\`, `:`.
+- **Show in the profile picker** — mirrors the eye toggle in the Profile
+  Editor. Unchecked hides the profile from the picker. The `.prf` is
+  untouched.
 
-**Renaming is benign for Unison's archive state** — archive files are
-keyed off the roots + hostname + archive format, *not* the `.prf`
-filename, so the rename doesn't orphan any archives. (Earlier versions of
-this app warned about archive orphans on rename; that warning was based
-on a misreading of upstream and has been removed.)
+### Roots
 
-Forbidden characters: `/`, `\`, `:` (would break the filename).
-
-### First root / Second root
-
-Two text fields, each with a **Browse…** button for picking a local
-directory. The terminology matches the upstream Unison manual — see
-[Roots](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex)
-§ "Specifying Roots". Either root can be:
+Two text fields (First root / Second root), each with a **Browse…** button
+for picking a local directory. Either root can be:
 
 - A local absolute path: `/Users/you/Documents`
-- An SSH URL: `ssh://user@host//absolute/path` (note the double slash
-  for absolute remote paths; single slash for relative-to-home)
+- An SSH URL: `ssh://user@host//absolute/path` (double slash for an
+  absolute remote path, single slash for relative-to-home)
 - A socket URL: `socket://host:port/path`
-- A `file://` URL (rarely needed)
 
-**Both roots can be local** — there is no client/server distinction in
-the `.prf` data model. The "First" and "Second" labels just match the
-order of the `root = …` lines in the profile file.
+Both roots can be local. There is no client/server distinction in the
+`.prf`. "First" and "Second" just match the order of the `root = …` lines.
 
-Below the root fields, a paragraph reminds you that either side can be
-local or remote.
+**Remote Connection.** When either root is `ssh://` or `socket://`, an
+extra group appears with the remote-connection prefs: `servercmd` (path to
+Unison on the remote), `sshcmd`, `sshargs`, and `clientHostName`. It hides
+again when both roots are local.
 
-### Paths to sync
+### Paths
 
-Multi-line field, one path per line. Each line becomes a `path = …` entry
-in the `.prf`. Empty list = "sync everything under the roots."
+One path per line; each becomes a `path = …` entry. An empty list means
+"sync everything under the roots." See
+[path specification](https://github.com/bcpierce00/unison/wiki/Manual#path-specification)
+in the upstream wiki for the syntax.
 
-See [path specification](https://github.com/bcpierce00/unison/wiki/Manual#path-specification)
-in the upstream wiki for the syntax (relative to the root, forward-slash
-separated regardless of OS).
+### Ignore
 
-### Ignore patterns
+- **Ignore patterns** — one pattern per line (`Name *.tmp`, `Path build`,
+  `Regex \..*`, `BelowPath foo`). The **Add Common…** menu appends typical
+  sets. The reconcile window's right-click Ignore actions append here too.
+- **Exceptions (override ignore)** — one pattern per line, written as
+  `ignorenot`. A match keeps a path even when an ignore rule would drop it.
 
-Multi-line field, one pattern per line. Each line becomes an `ignore = …`
-entry. Pattern syntax (also in the wiki):
+### File Attributes
 
-- `Path foo/bar` — ignore a specific path
-- `Name *.tmp` — ignore by basename (glob)
-- `Regex \..*` — ignore by regex
+Which file metadata Unison keeps in sync. Each control has a **Default**
+state that leaves the setting out of the profile (Unison's standard
+behavior):
 
-These patterns can also be added on the fly from the reconcile window's
-right-click menu (Ignore Path / Extension / Name) — those entries get
-appended to this same list.
+- **Modification times**, **Resource forks**, **Owner**, **Group**,
+  **Suppress chmod** — Default / On / Off.
+- **Permissions** — Default, "Ignore permission differences", or **Custom
+  mask…**, which reveals a field for an octal (`0o755`), hex (`0x1FF`), or
+  decimal mask.
 
-### Include (override ignore)
+### Options
 
-Multi-line field. Each line becomes an `ignorenot = …` entry. Exceptions
-to the ignore patterns: a match here keeps a path even if `ignore` would
-have dropped it. Useful for "ignore everything in `temp/` *except*
-`temp/important.txt`".
+How a sync runs, as opposed to what is synced:
+
+- **Conflict handling** — Default (ask on conflict), or Prefer / Force a
+  root (first, second, newer, or older). "Force" makes one root
+  authoritative and overwrites the other; "Prefer" only breaks ties on
+  conflicting changes.
+- **Confirm big deletions** (`confirmbigdel`), **Auto-accept changes**
+  (`auto`), **Fast update check** (`fastcheck`) — Default / On / Off.
+- **Write a log file** — toggles `log`. Which fields appear depends on the
+  global logging mode set in [Settings → Logging](#logging): shared-file
+  mode shows just the checkbox, shared-folder mode adds a file name, and
+  per-profile mode adds a folder and a file name.
+
+### Includes
+
+Pull in another prefs file with an `include` directive. Each row is a file
+name (the dropdown lists the other `.prf` files in your Unison directory,
+or you can type a name) plus a **Top / Bottom** position:
+
+- **Top** — applied before this profile's own settings, so this profile
+  wins single-value conflicts.
+- **Bottom** — applied after, so the included file wins.
+
+For list-valued prefs (ignore, ignorenot, path) the position has no effect;
+they accumulate either way. Use this to share a list across profiles, for
+example a "common" file of ignore patterns. Note that an `include` pulls in
+the *entire* target file, so a shared list file should contain only the
+relevant lines. A banner at the top of the editor notes when a profile
+includes others.
 
 ### Advanced (other prefs)
 
-A raw text field for every `.prf` preference the form doesn't have a
-dedicated field for. One `key = value` per line. The form preserves these
-verbatim on save — unknown keys, comments, blank lines all survive a
-load-edit-save round trip without alteration.
-
-Common entries you might put here:
-
-- `auto = true` — auto-accept Unison's default direction for non-conflicting
-  rows (the GUI doesn't honor this exactly; you'll still see the
-  reconcile window, but it pre-selects defaults).
-- `batch = true` — non-interactive mode (not very meaningful in the GUI).
-- `merge = Name * -> /usr/bin/opendiff CURRENT1 CURRENT2 -merge NEW` —
-  configure a merge tool. Without this, the Merge action is hidden from
-  the toolbar and greyed in the menu — see [Hide Merge below](#the-merge-action).
-- `sshcmd = /usr/bin/ssh` / `sshargs = -i /path/to/key` — SSH connection
-  details.
-- `servercmd = /opt/homebrew/bin/unison` — where to find Unison on the
-  remote (if it's not in the default `$PATH` of the SSH login shell).
+A raw `key = value` box for any preference the form doesn't surface. One
+entry per line. Unknown keys, comments, and blank lines all survive a
+load-edit-save round trip unchanged. Settings that have their own section
+(and `include` directives) can't be saved from here: the editor stops you
+and points you to the right section, so nothing is silently dropped.
 
 Full reference: the [Preferences section of the upstream
 wiki](https://github.com/bcpierce00/unison/wiki/Manual#preferences).
 
 ### Save / Cancel
 
-`Save` writes the `.prf` atomically (`NSString.write(to:atomically:)`)
-after backing up the previous version to `.prf.bak`. `Cancel` discards
-everything.
+`Save` writes the `.prf` atomically after backing up the previous version
+to `.prf.bak`. `Cancel` discards everything.
 
 ---
 
@@ -524,7 +539,7 @@ text. Pick another row's Diff to recover.
 ## Settings
 
 Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
-(System Settings style) with three tabs that resize the window to fit:
+(System Settings style) with four tabs that resize the window to fit:
 
 - **Saved State** — *implicit* state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
@@ -532,6 +547,13 @@ Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
 - **Reconcile** — how the reconcile window renders differences.
 - **Sync** — the end-of-sync notification and sound (actual on/off
   preferences you set directly).
+- **Logging** — how log file locations are chosen across profiles.
+
+Settings and the profile editor can't be open at the same time. Because a
+logging change here can rewrite `.prf` files, opening Settings while you're
+editing a profile is blocked (the editor is brought forward instead), and
+opening a profile editor closes an open Settings window. This prevents a
+Settings change from conflicting with unsaved edits.
 
 Most of the Saved State items are reset/clear actions on remembered
 state (you hide a profile by clicking its eye icon, dismiss a
@@ -647,6 +669,36 @@ an inline result badge when a sync ends — a green ✓ (clean) or red ⚠
 > still lands in Notification Center, and the inline ✓/⚠ badge and the
 > sound are unaffected. See [Troubleshooting](#sync-complete-notification-doesnt-pop-up).
 
+### Logging
+
+Controls how each profile's `logfile` is chosen. A **Mode** popup with
+three choices, and a path field whose label follows the mode:
+
+- **All profiles share one log file** — every profile that has logging on
+  writes to the same file. The field is that file's path.
+- **All profiles share one folder (one file each)** — a shared folder; each
+  profile gets its own file in it (`Unison-<profile>.log` by default). The
+  field is the folder.
+- **Each profile has its own location** *(default)* — every profile sets
+  its own path in its editor. The field is a **default folder** used only
+  to pre-fill a new profile's path; it is never forced and never changes a
+  profile you've already configured.
+
+The default location is Unison's own directory
+(`~/Library/Application Support/Unison`), alongside your profiles and
+archives.
+
+When you switch into a shared mode (or change its file/folder), the app
+asks whether to **apply it to every profile that already has logging on**.
+This is all-or-nothing: choose **Update All** to rewrite those `.prf`
+files, or **Don't Update** to leave them as they are (new saves still use
+the current shared location). The prompt supports Return (Update All) and
+Escape (Don't Update).
+
+The `logfile` line is written into each profile's `.prf` (which is what
+Unison reads). The matching per-profile controls live in the editor's
+**Options** section — see [Write a log file](#options).
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -704,9 +756,9 @@ otherwise they're greyed.
 | Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
 | Rescan Ignoring Archives… | — | Re-open the profile with a one-shot `ignorearchives` to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See [Troubleshooting](#archive-inconsistency-fatal-mid-reconcile). |
 | Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync — use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
-| → Second | — | Propagate first → second for selected leaves |
-| ← First | — | Propagate second → first |
-| Skip | — | Mark selected leaves as user-skipped |
+| → Second | `>` | Propagate first → second for selected leaves |
+| ← First | `<` | Propagate second → first |
+| Skip | `/` | Mark selected leaves as user-skipped |
 | Merge | — | Run the configured `merge` command on selected leaves (greyed if `merge` pref isn't set) |
 | Force Older | — | Pick the older-mtime side for each selected leaf |
 | Force Newer | — | Pick the newer-mtime side |
@@ -759,6 +811,8 @@ focused window via the standard responder action.
 | ⌘⏎ (in reconcile window) | Go (start sync) |
 | ⌘. (in reconcile window) | Stop (abort sync) |
 | ⌘⇧R (in reconcile window) | Rescan |
+| `>` / `<` (in reconcile window) | Set selected rows to → Second / ← First |
+| `/` (in reconcile window) | Skip selected rows |
 | ⌘⇧P (in reconcile window) | Show Profile Picker |
 | ⌘? | App help |
 | ⌘W | Close focused window |

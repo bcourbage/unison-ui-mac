@@ -21,7 +21,6 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
     // opening a document for editing.
     private let runButton = NSButton(title: "Run", target: nil, action: nil)
     private let quitButton = NSButton(title: "Quit", target: nil, action: nil)
-    private let pathLabel = NSTextField(labelWithString: "")
 
     init(unisonDirectory: String, onComplete: @escaping Completion) {
         self.unisonDirectory = unisonDirectory
@@ -58,19 +57,6 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
 
     private func configure() {
         guard let contentView = window?.contentView else { return }
-
-        pathLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        pathLabel.textColor = .secondaryLabelColor
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        // Low horizontal compression resistance so a long Unison
-        // directory path truncates within the label rather than
-        // pushing the window wider. See the same fix on
-        // ReconcileWindowController.summaryLabel for the pathology
-        // (single-line NSTextField + .resizable window → AppKit
-        // walks the constraint chain up and grows the window).
-        pathLabel.setContentCompressionResistancePriority(
-            .defaultLow, for: .horizontal)
-        pathLabel.stringValue = unisonDirectory
 
         let column = NSTableColumn(identifier: .init("profile"))
         column.title = "Profile"
@@ -111,7 +97,7 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         bottomRow.distribution = .fill
         bottomRow.spacing = 8
 
-        let stack = NSStackView(views: [pathLabel, scroll, bottomRow])
+        let stack = NSStackView(views: [scroll, bottomRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -126,7 +112,6 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
-            pathLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
         ])
     }
 

@@ -667,12 +667,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reopening just brings the existing instance to front. The window
     /// itself owns its content (see SettingsWindowController).
     @objc func showSettings(_ sender: Any?) {
+        // Settings and the profile-edit form are mutually exclusive: both
+        // can write logging-related state, so allowing both open invites a
+        // divergence (e.g. a Settings change rewrites a .prf while the form
+        // holds a stale copy). The form may have unsaved edits, so we don't
+        // close it from here — block and surface it instead.
+        if let formWin = NSApp.windows.first(where: {
+            ($0.windowController is ProfileFormWindowController) && $0.isVisible
+        }) {
+            formWin.makeKeyAndOrderFront(nil)
+            let alert = NSAlert()
+            alert.messageText = "Finish editing the profile first"
+            alert.informativeText = "Close the profile you're editing before opening Settings. They can't be open at the same time, because a logging change in Settings could conflict with unsaved edits."
+            alert.addButton(withTitle: "OK")
+            alert.beginSheetModal(for: formWin) { _ in }
+            return
+        }
         if let existing = settingsWindowController {
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
-        let settings = SettingsWindowController()
+        let settings = SettingsWindowController(unisonDirectory: unisonDirectory)
         settings.showWindow(nil)
         settings.window?.makeKeyAndOrderFront(nil)
         settingsWindowController = settings

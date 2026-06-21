@@ -41,6 +41,13 @@ UPSTREAM_MANUAL_TEX := $(UNISON_SRC)/../doc/unison-manual.tex
 #   make build BLOB=$(UNISON_SRC)/unison-blob.o
 # …to rebuild from source instead of using the vendored copy.
 BLOB ?= $(VENDORED_BLOB)
+# Exported so `xcodegen generate` bakes the resolved path into the
+# generated project's BLOB build setting (project.yml: `BLOB: ${BLOB}`).
+# Without this, only `make build` (which passes BLOB= on the xcodebuild
+# command line) links the OCaml engine — a bare `xcodebuild` or an
+# Xcode.app build would silently produce an unlinked, broken bundle.
+# OCAMLLIBDIR and STRIPPED_ASMRUN_DIR are exported for the same reason.
+export BLOB
 
 # Stripped copy of libasmrun.a without main.n.o, so the linker doesn't see
 # two definitions of `_main` (one from libasmrun, one synthesized by Swift).

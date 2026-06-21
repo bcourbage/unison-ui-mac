@@ -331,6 +331,10 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// (and propagate to the picker via savePrefsAndNotify).
     private func openForm(for profileName: String?) {
         formController?.close()
+        // Settings and the profile-edit form are mutually exclusive (both
+        // can write logging state). Settings has no unsaved state, so it's
+        // safe to close it when opening the form.
+        NSApp.windows.first { $0.windowController is SettingsWindowController }?.close()
         let form = ProfileFormWindowController(
             unisonDirectory: unisonDirectory,
             profileName: profileName

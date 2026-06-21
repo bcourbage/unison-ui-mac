@@ -21,10 +21,16 @@ struct ProfileDocument: Equatable {
         case blank
         case comment(String)            // text after the leading `#`, with leading space trimmed
         case keyValue(key: String, value: String)
+        case include(String)            // `include <name>` directive (no `=`)
 
         /// True if this entry is a key=value with the given key.
         func matches(key target: String) -> Bool {
             if case let .keyValue(k, _) = self { return k == target }
+            return false
+        }
+
+        var isInclude: Bool {
+            if case .include = self { return true }
             return false
         }
     }
@@ -82,6 +88,17 @@ struct ProfileDocument: Equatable {
                     continue
                 }
             }
+            // `include <name>` directive — pulls in another prefs file at
+            // parse time. No `=`, so it must be handled before the
+            // preserve-as-comment fallback or it would be commented out.
+            let parts = trimmed.split(separator: " ", maxSplits: 1)
+            if parts.count == 2, parts[0] == "include" {
+                let name = parts[1].trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty {
+                    doc.entries.append(.include(name))
+                    continue
+                }
+            }
             // Fallback — preserve verbatim as a comment so we never lose
             // data even if the file has something we don't understand.
             doc.entries.append(.comment(trimmed))
@@ -128,6 +145,59 @@ struct ProfileDocument: Equatable {
         }
     }
 
+    /// All `include` directive names, in document order.
+    var includes: [String] {
+        entries.compactMap { if case let .include(n) = $0 { return n } else { return nil } }
+    }
+
+    private var firstKeyValueIndex: Int? {
+        entries.firstIndex { if case .keyValue = $0 { return true } else { return false } }
+    }
+
+    /// Include names that appear before the first `key = value` pref. These
+    /// load before the profile's own settings, so the profile overrides them
+    /// (for single-value prefs). With no prefs present, all includes are top.
+    var topIncludes: [String] {
+        guard let firstKV = firstKeyValueIndex else { return includes }
+        return entries[..<firstKV].compactMap {
+            if case let .include(n) = $0 { return n } else { return nil }
+        }
+    }
+
+    /// Include names that appear at/after the first pref — these override the
+    /// profile's own single-value prefs.
+    var bottomIncludes: [String] {
+        guard let firstKV = firstKeyValueIndex else { return [] }
+        return entries[firstKV...].compactMap {
+            if case let .include(n) = $0 { return n } else { return nil }
+        }
+    }
+
+    /// Replace all `include` directives: `top` names land before the first
+    /// pref line, `bottom` names after the last. Insert bottom first so the
+    /// top insertion index stays valid.
+    mutating func setIncludes(top: [String], bottom: [String]) {
+        entries.removeAll(where: { $0.isInclude })
+        let lastKV = entries.lastIndex { if case .keyValue = $0 { return true } else { return false } }
+        let bottomAt = lastKV.map { $0 + 1 } ?? entries.count
+        entries.insert(contentsOf: bottom.map { Entry.include($0) },
+                       at: min(bottomAt, entries.count))
+        let topAt = firstKeyValueIndex ?? 0
+        entries.insert(contentsOf: top.map { Entry.include($0) }, at: min(topAt, entries.count))
+    }
+
+    /// Replace every `include` directive with the given names. New includes
+    /// land at the top (before other prefs) so a profile's own scalar
+    /// settings, which follow, override the included file's — while
+    /// list-valued prefs (ignore/path) accumulate, as Unison intends.
+    mutating func setIncludes(_ names: [String]) {
+        let firstIdx = entries.firstIndex(where: { $0.isInclude })
+        entries.removeAll(where: { $0.isInclude })
+        let insertAt = firstIdx ?? 0
+        entries.insert(contentsOf: names.map { Entry.include($0) },
+                       at: min(insertAt, entries.count))
+    }
+
     // MARK: - Serialization
 
     /// Render back to .prf text. Trailing newline is included so the file
@@ -145,6 +215,8 @@ struct ProfileDocument: Equatable {
                 lines.append(body.isEmpty ? "#" : "# " + body)
             case .keyValue(let key, let value):
                 lines.append("\(key) = \(value)")
+            case .include(let name):
+                lines.append("include \(name)")
             }
         }
         return lines.joined(separator: "\n") + "\n"

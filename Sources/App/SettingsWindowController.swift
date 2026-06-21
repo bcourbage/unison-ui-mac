@@ -46,6 +46,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "Play a sound when a sync finishes",
         target: nil, action: nil)
 
+    // MARK: - Section 6: Logging
+
+    /// Unison directory, so shared-mode changes can rewrite the .prf files.
+    private let unisonDirectory: String
+
+    private let logModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let logPathLabel = NSTextField(labelWithString: "Default folder:")
+    private let logPathField = NSTextField(string: "")
+    private let logPathBrowse =
+        NSButton(title: "Choose…", target: nil, action: nil)
+    /// Prevents the propagation prompt from showing twice when one user
+    /// action triggers both the mode popup and the path field's end-editing.
+    private var propagationPromptActive = false
+
+    /// Pinned order so popup indices line up with the enum.
+    private let loggingModes: [SettingsModel.LoggingMode] =
+        [.sameFile, .sameDirectory, .perProfile]
+
+    private static func displayName(for mode: SettingsModel.LoggingMode) -> String {
+        switch mode {
+        case .sameFile:      return "All profiles share one log file"
+        case .sameDirectory: return "All profiles share one folder (one file each)"
+        case .perProfile:    return "Each profile has its own location"
+        }
+    }
+
 
     /// Order pinned in code so the popup item indices line up with
     /// these arrays for the selectItem/selectedIndex round-trip.
@@ -72,7 +98,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Init
 
-    init() {
+    init(unisonDirectory: String) {
+        self.unisonDirectory = unisonDirectory
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -215,6 +242,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         completionRow.alignment = .leading
         completionRow.spacing = 6
 
+        // Section 6: Logging
+        let section6Title = sectionHeader("Logging")
+        let section6Desc = sectionDescription(
+            "How log file locations are chosen for your profiles. Shared " +
+            "modes apply one file or folder to every profile that has " +
+            "logging on. Per-profile mode lets each profile set its own " +
+            "location, using the folder below only as a starting suggestion."
+        )
+        for mode in loggingModes {
+            logModePopup.addItem(withTitle: Self.displayName(for: mode))
+        }
+        logModePopup.target = self
+        logModePopup.action = #selector(logModeChanged(_:))
+        let modeRow = NSStackView(views: [
+            NSTextField(labelWithString: "Mode:"), logModePopup, NSView(),
+        ])
+        modeRow.orientation = .horizontal
+        modeRow.spacing = 8
+        logPathField.delegate = self
+        logPathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        logPathBrowse.bezelStyle = .rounded
+        logPathBrowse.target = self
+        logPathBrowse.action = #selector(chooseLogPathAction(_:))
+        let section6Row = NSStackView(views: [
+            logPathLabel, logPathField, logPathBrowse,
+        ])
+        section6Row.orientation = .horizontal
+        section6Row.spacing = 8
+
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
         // views, and animates the window to each pane's preferredContentSize
@@ -235,6 +291,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabVC.addTabViewItem(makePane(
             symbol: "bell.badge", label: "Sync",
             views: [section5Title, section5Desc, completionRow]))
+        tabVC.addTabViewItem(makePane(
+            symbol: "doc.text", label: "Logging",
+            views: [section6Title, section6Desc, modeRow, section6Row]))
 
         window?.contentViewController = tabVC
         window?.toolbarStyle = .preference
@@ -367,6 +426,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         notifyCheckbox.state = SettingsModel.notifyOnSyncComplete() ? .on : .off
         soundCheckbox.state = SettingsModel.soundOnSyncComplete() ? .on : .off
+
+        // Logging: reflect the current mode and its path. Don't clobber the
+        // path field while it's being edited (it's the first responder).
+        if let idx = loggingModes.firstIndex(of: SettingsModel.loggingMode()) {
+            logModePopup.selectItem(at: idx)
+        }
+        if window?.firstResponder !== logPathField.currentEditor() {
+            syncLogPathRowToMode()
+        }
+    }
+
+    /// Update the path label, value, and placeholder to match the selected
+    /// logging mode.
+    private func syncLogPathRowToMode() {
+        switch SettingsModel.loggingMode() {
+        case .sameFile:
+            logPathLabel.stringValue = "Log file:"
+            logPathField.placeholderString =
+                (SettingsModel.defaultUnisonDirectory as NSString).appendingPathComponent("Unison.log")
+            logPathField.stringValue =
+                UserDefaults.standard.string(forKey: SettingsModel.sharedLogFileKey) ?? ""
+        case .sameDirectory:
+            logPathLabel.stringValue = "Folder:"
+            logPathField.placeholderString = SettingsModel.defaultUnisonDirectory
+            logPathField.stringValue =
+                UserDefaults.standard.string(forKey: SettingsModel.sharedLogDirectoryKey) ?? ""
+        case .perProfile:
+            logPathLabel.stringValue = "Default folder:"
+            logPathField.placeholderString = SettingsModel.defaultUnisonDirectory
+            logPathField.stringValue =
+                UserDefaults.standard.string(forKey: SettingsModel.defaultLogDirectoryKey) ?? ""
+        }
     }
 
     private func labelText(hidden: Int, ordered: Int) -> String {
@@ -485,6 +576,152 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func soundToggled(_ sender: NSButton) {
         SettingsModel.setSoundOnSyncComplete(sender.state == .on)
+    }
+
+    @objc private func logModeChanged(_ sender: Any?) {
+        let idx = logModePopup.indexOfSelectedItem
+        guard idx >= 0, idx < loggingModes.count else { return }
+        SettingsModel.setLoggingMode(loggingModes[idx])
+        syncLogPathRowToMode()
+        // Switching into a shared mode is a deliberate "everyone shares"
+        // action — offer to apply it to existing profiles.
+        offerPropagationIfShared()
+    }
+
+    @objc private func chooseLogPathAction(_ sender: Any?) {
+        let mode = SettingsModel.loggingMode()
+        let pickFile = (mode == .sameFile)
+        let onPick: (String) -> Void = { [weak self] path in
+            guard let self else { return }
+            self.logPathField.stringValue = path
+            self.persistLogPath(path, for: mode)
+            self.offerPropagationIfShared()
+        }
+        if pickFile {
+            let panel = NSSavePanel()
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue =
+                (SettingsModel.sharedLogFile() as NSString).lastPathComponent
+            panel.directoryURL = URL(fileURLWithPath:
+                (SettingsModel.sharedLogFile() as NSString).deletingLastPathComponent)
+            let run: (NSApplication.ModalResponse) -> Void = { resp in
+                guard resp == .OK, let url = panel.url else { return }
+                onPick(url.path)
+            }
+            if let window { panel.beginSheetModal(for: window, completionHandler: run) }
+            else { run(panel.runModal()) }
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Choose"
+            let run: (NSApplication.ModalResponse) -> Void = { resp in
+                guard resp == .OK, let url = panel.url else { return }
+                onPick(url.path)
+            }
+            if let window { panel.beginSheetModal(for: window, completionHandler: run) }
+            else { run(panel.runModal()) }
+        }
+    }
+
+    private func persistLogPath(_ path: String, for mode: SettingsModel.LoggingMode) {
+        switch mode {
+        case .sameFile:      SettingsModel.setSharedLogFile(path)
+        case .sameDirectory: SettingsModel.setSharedLogDirectory(path)
+        case .perProfile:    SettingsModel.setDefaultLogDirectory(path)
+        }
+    }
+
+    /// In a shared mode, ask whether to apply the shared file/folder to every
+    /// profile that already has logging on (all-or-nothing). Per-profile mode
+    /// never touches existing profiles.
+    private func offerPropagationIfShared() {
+        let mode = SettingsModel.loggingMode()
+        guard mode == .sameFile || mode == .sameDirectory else { return }
+        // One user action (picking the mode) can fire both the popup action
+        // and the path field's end-editing, each calling this. Guard so the
+        // prompt shows only once.
+        guard !propagationPromptActive else { return }
+        propagationPromptActive = true
+        let target = (mode == .sameFile)
+            ? SettingsModel.sharedLogFile()
+            : SettingsModel.sharedLogDirectory()
+        let alert = NSAlert()
+        alert.messageText = "Apply to all profiles?"
+        alert.informativeText = "Update every profile that has logging turned on to use \(target)? This rewrites the log file setting in those .prf files. Choose Don't Update to leave existing profiles unchanged."
+        let updateButton = alert.addButton(withTitle: "Update All")
+        let dontButton = alert.addButton(withTitle: "Don't Update")
+        updateButton.keyEquivalent = "\r"        // Enter → Update All
+        dontButton.keyEquivalent = "\u{1b}"      // Esc → Don't Update
+        let act: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
+            guard let self else { return }
+            self.propagationPromptActive = false
+            guard resp == .alertFirstButtonReturn else { return }
+            let n = self.propagateLoggingToAllProfiles(mode: mode)
+            self.reportPropagation(count: n)
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: act) }
+        else { act(alert.runModal()) }
+    }
+
+    /// Rewrite the `logfile` of every profile with logging on to match the
+    /// shared mode. Returns the number of profiles updated.
+    private func propagateLoggingToAllProfiles(mode: SettingsModel.LoggingMode) -> Int {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return 0 }
+        var count = 0
+        for file in names where (file as NSString).pathExtension == "prf" {
+            let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(file)
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var doc = ProfileDocument.parse(text)
+            guard doc.firstValue(forKey: "log") == "true" else { continue }
+            let newLogfile: String
+            switch mode {
+            case .sameFile:
+                newLogfile = SettingsModel.sharedLogFile()
+            case .sameDirectory:
+                let existing = doc.firstValue(forKey: "logfile") ?? ""
+                let base = (file as NSString).deletingPathExtension
+                let name = existing.isEmpty ? SettingsModel.defaultLogName(forProfile: base)
+                                            : (existing as NSString).lastPathComponent
+                newLogfile = (SettingsModel.sharedLogDirectory() as NSString)
+                    .appendingPathComponent(name)
+            case .perProfile:
+                continue
+            }
+            guard doc.firstValue(forKey: "logfile") != newLogfile else { continue }
+            doc.setValue(newLogfile, forKey: "logfile")
+            if (try? doc.serialized.write(to: url, atomically: true, encoding: .utf8)) != nil {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func reportPropagation(count: Int) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = count == 0 ? "No profiles needed updating"
+            : (count == 1 ? "1 profile updated" : "\(count) profiles updated")
+        alert.informativeText = count == 0
+            ? "No profiles with logging on needed a change."
+            : "Their log file setting now matches the shared location."
+        alert.addButton(withTitle: "OK")
+        if let window { alert.beginSheetModal(for: window) { _ in } }
+        else { alert.runModal() }
+    }
+}
+
+extension SettingsWindowController: NSTextFieldDelegate {
+    // Persist the path when the user finishes editing, then offer to apply
+    // it in shared modes. Editing the field per keystroke would prompt too
+    // eagerly, so we act on commit only.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard obj.object as AnyObject === logPathField else { return }
+        persistLogPath(logPathField.stringValue, for: SettingsModel.loggingMode())
+        offerPropagationIfShared()
     }
 }
 

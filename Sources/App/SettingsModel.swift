@@ -22,7 +22,8 @@ enum SettingsModel {
     static let windowFrameAutosaveNames: [String] = [
         "ProfileWindow",
         "ProfileEditorWindow",
-        "ProfileFormWindow",
+        "ProfileFormWindow",     // orphaned after the .v2 rename; kept so reset cleans it
+        "ProfileFormWindow.v2",
         "ReconcileWindow",
         "DiffWindow",
         "SettingsWindow",
@@ -244,5 +245,102 @@ enum SettingsModel {
     static func setSoundOnSyncComplete(_ on: Bool,
                                        in defaults: UserDefaults = .standard) {
         defaults.set(on, forKey: syncCompleteSoundKey)
+    }
+
+    // MARK: - Default log directory
+
+    /// UserDefaults key for the directory the profile editor uses when it
+    /// suggests a `logfile` path. String-valued; absent → `~/Library/Logs`.
+    static let defaultLogDirectoryKey = "logging.defaultDirectory"
+
+    /// Unison's directory on macOS — where profiles and archives live, and
+    /// the natural home for log files (co-located, as Unison itself
+    /// defaults). Used as the fallback default log directory.
+    static let defaultUnisonDirectory = "~/Library/Application Support/Unison"
+
+    /// The configured default log directory, expanded to an absolute path.
+    /// Falls back to Unison's directory when unset.
+    static func defaultLogDirectory(in defaults: UserDefaults = .standard) -> String {
+        let raw = defaults.string(forKey: defaultLogDirectoryKey)?
+            .trimmingCharacters(in: .whitespaces)
+        let path = (raw?.isEmpty == false) ? raw! : defaultUnisonDirectory
+        return (path as NSString).expandingTildeInPath
+    }
+
+    static func setDefaultLogDirectory(_ path: String,
+                                       in defaults: UserDefaults = .standard) {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            defaults.removeObject(forKey: defaultLogDirectoryKey)
+        } else {
+            defaults.set(trimmed, forKey: defaultLogDirectoryKey)
+        }
+    }
+
+    /// Suggested absolute `logfile` path for a profile: the default log
+    /// directory + `Unison-<profile>.log`.
+    static func suggestedLogfile(forProfile name: String,
+                                 in defaults: UserDefaults = .standard) -> String {
+        let safe = name.isEmpty ? "sync" : name
+        return (defaultLogDirectory(in: defaults) as NSString)
+            .appendingPathComponent("Unison-\(safe).log")
+    }
+
+    /// Default per-profile log file name.
+    static func defaultLogName(forProfile name: String) -> String {
+        "Unison-\(name.isEmpty ? "sync" : name).log"
+    }
+
+    // MARK: - Logging mode
+
+    /// How log file paths are chosen across profiles. Drives what the
+    /// profile editor's logging controls show and how `logfile` is written.
+    enum LoggingMode: String {
+        case sameFile        // all profiles log to one shared file
+        case sameDirectory   // all profiles log into one shared folder, one file each
+        case perProfile      // each profile sets its own path (default is a pre-fill only)
+    }
+
+    static let loggingModeKey = "logging.mode"
+
+    static func loggingMode(in defaults: UserDefaults = .standard) -> LoggingMode {
+        guard let raw = defaults.string(forKey: loggingModeKey),
+              let mode = LoggingMode(rawValue: raw) else { return .perProfile }
+        return mode
+    }
+
+    static func setLoggingMode(_ mode: LoggingMode, in defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: loggingModeKey)
+    }
+
+    // Mode 1: the single shared log file (absolute path).
+    static let sharedLogFileKey = "logging.sharedFile"
+
+    static func sharedLogFile(in defaults: UserDefaults = .standard) -> String {
+        let raw = defaults.string(forKey: sharedLogFileKey)?.trimmingCharacters(in: .whitespaces)
+        let path = (raw?.isEmpty == false) ? raw!
+            : (defaultUnisonDirectory as NSString).appendingPathComponent("Unison.log")
+        return (path as NSString).expandingTildeInPath
+    }
+
+    static func setSharedLogFile(_ path: String, in defaults: UserDefaults = .standard) {
+        let t = path.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { defaults.removeObject(forKey: sharedLogFileKey) }
+        else { defaults.set(t, forKey: sharedLogFileKey) }
+    }
+
+    // Mode 2: the shared folder (absolute path); file name stays per-profile.
+    static let sharedLogDirectoryKey = "logging.sharedDirectory"
+
+    static func sharedLogDirectory(in defaults: UserDefaults = .standard) -> String {
+        let raw = defaults.string(forKey: sharedLogDirectoryKey)?.trimmingCharacters(in: .whitespaces)
+        let path = (raw?.isEmpty == false) ? raw! : defaultUnisonDirectory
+        return (path as NSString).expandingTildeInPath
+    }
+
+    static func setSharedLogDirectory(_ path: String, in defaults: UserDefaults = .standard) {
+        let t = path.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { defaults.removeObject(forKey: sharedLogDirectoryKey) }
+        else { defaults.set(t, forKey: sharedLogDirectoryKey) }
     }
 }

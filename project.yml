@@ -26,6 +26,23 @@ targets:
   unison-ui-mac:
     type: application
     platform: macOS
+    preBuildScripts:
+      # Fail loudly if the OCaml engine object isn't wired up, instead of
+      # linking a broken bundle that crashes at launch with undefined
+      # caml_* symbols. BLOB is baked in by `xcodegen generate` (see the
+      # Makefile's `export BLOB`); if it's empty here the project was
+      # generated without it — build via `make build`.
+      - name: Check OCaml blob is linked
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -z "${BLOB}" ] || [ ! -f "${BLOB}" ]; then
+            echo "error: OCaml engine object not found (BLOB='${BLOB}'). Build with 'make build', which generates the Xcode project and runtime libs. See README → Build and install." >&2
+            exit 1
+          fi
+          if [ ! -f "${STRIPPED_ASMRUN_DIR}/libasmrun_nomain.a" ]; then
+            echo "error: stripped OCaml runtime not found in STRIPPED_ASMRUN_DIR='${STRIPPED_ASMRUN_DIR}'. Run 'make build' to generate it. See README → Build and install." >&2
+            exit 1
+          fi
     sources:
       - path: Sources/App
       - path: Sources/Bridge

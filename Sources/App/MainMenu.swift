@@ -247,7 +247,9 @@ enum MainMenu {
         for action in DirectionAction.menuActions {
             let mi = NSMenuItem(title: action.label,
                                 action: directionSelector,
-                                keyEquivalent: "")
+                                keyEquivalent: action.keyEquivalent)
+            // No-modifier single keys (> < /) à la Unison's text UI.
+            mi.keyEquivalentModifierMask = []
             mi.tag = action.menuTag
             menu.addItem(mi)
         }

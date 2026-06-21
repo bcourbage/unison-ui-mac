@@ -110,6 +110,21 @@ enum DirectionAction: CaseIterable {
         DirectionAction.allCases.first { $0.menuTag == tag }
     }
 
+    /// Single-key Action-menu shortcut (no modifier), matching Unison's
+    /// text-UI bindings: `>` propagate First→Second, `<` Second→First,
+    /// `/` skip. Chosen over arrows (taken by row nav / folder
+    /// expand-collapse) and over letters (which trigger the outline
+    /// view's type-to-select). Merge / Force have no single-key (Merge's
+    /// `m` would collide with type-select).
+    var keyEquivalent: String {
+        switch self {
+        case .toSecond: return ">"
+        case .toFirst:  return "<"
+        case .skip:     return "/"
+        default:        return ""
+        }
+    }
+
     /// Display order in the toolbar group, left → right.
     /// First first (matches the column reading "First → Second"), then
     /// Second, then non-direction outcomes (Skip, Merge). Force older/

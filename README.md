@@ -149,6 +149,19 @@ build would take. Override the blob path on the command line if you
 want to test a custom build:
 `make build BLOB=/path/to/your/unison-blob.o`.
 
+### Building in Xcode / with bare `xcodebuild`
+
+The `.xcodeproj` is **not** committed — it's generated from
+[`project.yml`](project.yml) by XcodeGen, which `make` runs for you.
+Run `make build` (or `make xcodeproj`) once; that step bakes the
+vendored blob path and OCaml library paths into the generated project,
+so afterwards `make open` (or opening `unison-ui-mac.xcodeproj`
+directly) and a bare `xcodebuild` both build and link correctly with no
+extra flags. A build that somehow runs without those paths set fails
+immediately with a clear error pointing back here, rather than
+producing a bundle that crashes at launch. Prerequisites for any build:
+Xcode, `xcodegen`, and `ocaml` (`brew install xcodegen ocaml`).
+
 ### Local fork patches
 
 This project applies a small set of patches to the upstream Unison

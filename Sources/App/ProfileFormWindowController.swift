@@ -48,21 +48,127 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     )
     private let ignoreView = ListFieldView(
         label: "Ignore patterns",
-        help: "Each line is a raw Unison ignore pattern: `Path foo/bar`, `Name *.tmp`, `Regex \\..*`."
+        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets."
     )
     private let ignorenotView = ListFieldView(
-        label: "Include (override ignore)",
-        help: "Exceptions to the ignore patterns. A match here keeps the path even if `ignore` would drop it."
+        label: "Exceptions (override ignore)",
+        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line."
     )
+
+    // Built in configure() (needs the list of existing profiles).
+    private var includesView: IncludeListView!
 
     // Catch-all for unknown keys / advanced prefs
     private let advancedView = ListFieldView(
         label: "Advanced (other prefs)",
-        help: "Each line is a raw `key = value` pref. Edit with care — typos here propagate to the .prf file as-is."
+        help: "Each line is a raw `key = value` pref. Edit with care. Typos here propagate to the .prf file as is."
     )
+
+    // Logging (Options section)
+    private let logCheckbox = NSButton(
+        checkboxWithTitle: "Write a log file", target: nil, action: nil)
+    private let logFolderField = NSTextField(string: "")
+    private let logFolderBrowse = NSButton(title: "Choose…", target: nil, action: nil)
+    private let logNameField = NSTextField(string: "")
+    private var logFolderRow: NSView!
+    private var logNameRow: NSView!
+    /// `log` value as loaded, so turning the checkbox off can preserve an
+    /// explicit `false`/absent rather than silently flipping the meaning.
+    private var originalLog: String?
+
+    /// Tier-1 inheritance banner: shown when the profile `include`s others.
+    private let includesBanner = NSTextField(labelWithString: "")
+
+    // Remote connection (SSH / servercmd). Surfaced inside Roots when a
+    // root is remote; previously these lived in the Advanced catch-all.
+    private let servercmdField = NSTextField(string: "")
+    private let sshcmdField = NSTextField(string: "")
+    private let sshargsField = NSTextField(string: "")
+    private let clientHostNameField = NSTextField(string: "")
+    private let remoteGroup = NSStackView()
+    /// Keys owned by the SSH subsection — excluded from the Advanced
+    /// catch-all so they aren't edited in two places.
+    private static let remoteKeys = ["servercmd", "sshcmd", "sshargs", "clientHostName"]
+
+    /// Templates for the Ignore section's "Add Common…" menu. Values are
+    /// raw `ignore` strings, appended to the freeform editor.
+    private static let commonIgnores: [(label: String, patterns: [String])] = [
+        ("macOS metadata", ["Name .DS_Store", "Name ._*", "Name .Spotlight-V100",
+                            "Name .Trashes", "Name .fseventsd"]),
+        ("iCloud placeholders", ["Name *.icloud", "Name .*.icloud"]),
+        ("Version control", ["Name .git", "Name .svn", "Name .hg"]),
+        ("Build artifacts", ["Name node_modules", "Name .build", "Name DerivedData",
+                            "Name __pycache__"]),
+        ("Temp / editor files", ["Name *.tmp", "Name *.swp", "Name *~"]),
+    ]
+
+    // General: mirrors the Profile Editor list's hide/show toggle
+    // (UserDefaults `profiles.hidden`). "Show" checked == not hidden.
+    private let visibilityCheckbox = NSButton(
+        checkboxWithTitle: "Show in the profile picker", target: nil, action: nil)
+
+    // File Attributes — which metadata Unison preserves. Tri-state popups
+    // (Default / On / Off); Default writes no line.
+    private let timesPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let rsrcPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let ownerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let groupPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let dontchmodPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    // perms is a bitmask, not a bool: Default / Ignore differences (= 0) /
+    // Custom mask. The mask field sits inline after the popup and is shown
+    // only for "Custom mask…" (collapsed otherwise) — so the rows below it
+    // never shift.
+    private let permsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let permsMaskField = NSTextField(string: "")
+
+    // Options — sync *behavior* prefs (how a sync runs), distinct from what
+    // is synced. Same tri-state popups (Default / On / Off).
+    private let confirmbigdelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let autoPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let fastcheckPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    // Conflict handling — `prefer`/`force` collapsed into one popup. `force`
+    // makes a replica authoritative (overwrites the other); `prefer` only
+    // resolves conflicts. Both take a root value or `newer`/`older`.
+    private let conflictPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// (title, key, target). target ∈ first|second|newer|older; Default = nils.
+    private static let conflictChoices: [(title: String, key: String?, target: String?)] = [
+        ("Default (ask on conflict)", nil, nil),
+        ("Prefer first root",  "prefer", "first"),
+        ("Prefer second root", "prefer", "second"),
+        ("Prefer newer",       "prefer", "newer"),
+        ("Prefer older",       "prefer", "older"),
+        ("Force first root",   "force",  "first"),
+        ("Force second root",  "force",  "second"),
+        ("Force newer",        "force",  "newer"),
+        ("Force older",        "force",  "older"),
+    ]
+    /// Holds a `prefer`/`force` value the popup can't represent (e.g. a root
+    /// that matches neither field) so it still round-trips on save.
+    private var rawConflict: (key: String, value: String)?
+
+    private static let attrKeys = ["times", "perms", "rsrc", "owner", "group", "dontchmod"]
+    private static let optionKeys = ["confirmbigdel", "auto", "fastcheck", "prefer", "force", "log", "logfile"]
+    /// All keys with dedicated UI — excluded from the Advanced catch-all.
+    private static var handledKeys: Set<String> {
+        Set(["root", "path", "ignore", "ignorenot"] + remoteKeys + attrKeys + optionKeys)
+    }
 
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private let openPrfButton = NSButton(title: "Open .prf File…", target: nil, action: nil)
+
+    // Sidebar navigator (left) + swappable section container (right).
+    // Each entry pairs a sidebar title with the section's content view;
+    // the controls inside are the same instances the load/save logic
+    // reads, just rehoused — so `loadDocumentIntoForm`/`formIntoDocument`
+    // are unchanged.
+    private let sidebarTable = NSTableView()
+    private let sidebarSearch = NSSearchField()
+    /// Row → index into sectionViews, honoring the current search filter.
+    private var visibleSectionIndices: [Int] = []
+    private let sectionContainer = NSView()
+    private var sectionViews: [(title: String, icon: String, view: NSView)] = []
 
     // (Historical note: there used to be a `renameWarningAcceptedFor`
     // flag here that gated an "archive orphan" warning on rename. The
@@ -98,7 +204,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Form (single-profile content editor) has its own autosave key
         // distinct from the multi-profile manager so they don't fight
         // over the same saved frame in NSUserDefaults.
-        windowFrameAutosaveName = "ProfileFormWindow"
+        // `.v2` abandons any frame saved before the help-label width fix —
+        // those got polluted to an over-wide value. New name → reopens at
+        // the default size once, then autosaves normally.
+        windowFrameAutosaveName = "ProfileFormWindow.v2"
         window.delegate = self
 
         configure()
@@ -165,12 +274,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let rootsHelp = NSTextField(wrappingLabelWithString:
             "Each root is one endpoint of the sync. A root can be a local " +
             "directory (e.g. /Users/you/Documents) or a remote URL " +
-            "(ssh://user@host//path). Both can be local — there is no " +
+            "(ssh://user@host//path). Both can be local. There is no " +
             "client/server distinction in the .prf file."
         )
         rootsHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         rootsHelp.textColor = .secondaryLabelColor
         rootsHelp.maximumNumberOfLines = 0
+        rootsHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let nameRow = labeledRow(label: "Profile name", control: nameField)
         let firstRow = labeledRow(label: "First root",
@@ -188,43 +298,295 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         cancelButton.action = #selector(cancelAction(_:))
         cancelButton.keyEquivalent = "\u{1b}"  // Escape
 
+        // Escape hatch: hand the raw .prf to the user's default editor.
+        // Lives as a "pop-out" affordance in the content's upper-right
+        // corner (à la Outlook's reading-pane pop-out), built into the
+        // right pane below. Only meaningful once the file exists, so it's
+        // disabled for a brand-new (unsaved) profile. See makePopOutBar().
+        configurePopOutButton()
+
         let buttonRow = NSStackView(views: [NSView(), cancelButton, saveButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
         buttonRow.distribution = .fill
 
-        let stack = NSStackView(views: [
-            nameRow, firstRow, secondRow, rootsHelp,
-            sectionDivider(),
-            pathsView,
-            ignoreView,
-            ignorenotView,
-            sectionDivider(),
-            advancedView,
-            buttonRow,
+        // Remote Connection subsection (inside Roots), shown only when a
+        // root is remote. Re-evaluated live as the root fields change.
+        servercmdField.placeholderString = "remote unison path (servercmd)"
+        sshcmdField.placeholderString = "ssh"
+        sshargsField.placeholderString = "extra ssh args, e.g. -p 2222"
+        clientHostNameField.placeholderString = "this Mac's hostname (rarely needed)"
+        for f in [servercmdField, sshcmdField, sshargsField, clientHostNameField] {
+            f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        let remoteHeader = NSTextField(labelWithString: "Remote Connection")
+        remoteHeader.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let remoteHelp = NSTextField(wrappingLabelWithString:
+            "How to reach a remote (ssh://) root. Leave blank to use Unison's defaults.")
+        remoteHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        remoteHelp.textColor = .secondaryLabelColor
+        remoteHelp.maximumNumberOfLines = 0
+        remoteHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        remoteGroup.orientation = .vertical
+        remoteGroup.alignment = .leading
+        remoteGroup.spacing = 8
+        let remoteRows: [NSView] = [
+            remoteHeader, remoteHelp,
+            labeledRow(label: "Remote unison", control: servercmdField),
+            labeledRow(label: "SSH command", control: sshcmdField),
+            labeledRow(label: "SSH args", control: sshargsField),
+            labeledRow(label: "Client host", control: clientHostNameField),
+        ]
+        for v in remoteRows {
+            remoteGroup.addArrangedSubview(v)
+            v.widthAnchor.constraint(equalTo: remoteGroup.widthAnchor).isActive = true
+        }
+        // Live remote detection: show/hide the subsection as roots change.
+        firstRootField.delegate = self
+        secondRootField.delegate = self
+
+        // Let the editable list views absorb a section's spare vertical
+        // space instead of leaving it empty at the bottom.
+        for v in [pathsView, ignoreView, ignorenotView, advancedView] as [NSView] {
+            v.setContentHuggingPriority(.defaultLow, for: .vertical)
+        }
+
+        // "Add Common…" appends typical ignore sets to the freeform editor.
+        let addCommonPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+        addCommonPopup.bezelStyle = .rounded
+        addCommonPopup.addItem(withTitle: "Add Common…")
+        for t in Self.commonIgnores { addCommonPopup.addItem(withTitle: t.label) }
+        addCommonPopup.target = self
+        addCommonPopup.action = #selector(addCommonIgnore(_:))
+        addCommonPopup.setContentHuggingPriority(.required, for: .horizontal)
+        let addCommonRow = NSStackView(views: [addCommonPopup, NSView()])
+        addCommonRow.orientation = .horizontal
+        addCommonRow.spacing = 8
+
+        // ----- File Attributes section -----
+        for p in [timesPopup, rsrcPopup, ownerPopup, groupPopup, dontchmodPopup] {
+            p.addItems(withTitles: ["Default", "On", "Off"])
+        }
+        permsPopup.addItems(withTitles:
+            ["Default", "Ignore permission differences", "Custom mask…"])
+        permsPopup.target = self
+        permsPopup.action = #selector(permsModeChanged)
+        permsPopup.setContentHuggingPriority(.required, for: .horizontal)
+        permsMaskField.placeholderString = "e.g. 0o1777"
+        permsMaskField.toolTip = "Octal (0o755), hex (0x1FF), or decimal"
+        permsMaskField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        // Mask field lives inline after the popup; a trailing spacer keeps
+        // it from stretching across the row.
+        let permsSpacer = NSView()
+        permsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let permsRow = labeledRow(label: "Permissions",
+            control: hstack([permsPopup, permsMaskField, permsSpacer]))
+
+        let attrHelp = NSTextField(wrappingLabelWithString:
+            "Which file metadata Unison keeps in sync. \"Default\" leaves the setting out of the profile entirely (Unison's standard behavior).")
+        attrHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        attrHelp.textColor = .secondaryLabelColor
+        attrHelp.maximumNumberOfLines = 0
+        attrHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let fileAttrs = sectionStack([
+            attrHelp,
+            attrRow("Modification times", timesPopup),
+            permsRow,
+            attrRow("Resource forks", rsrcPopup),
+            attrRow("Owner", ownerPopup),
+            attrRow("Group", groupPopup),
+            attrRow("Suppress chmod", dontchmodPopup),
         ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+
+        // ----- Options section -----
+        for p in [confirmbigdelPopup, autoPopup, fastcheckPopup] {
+            p.addItems(withTitles: ["Default", "On", "Off"])
+        }
+        conflictPopup.addItems(withTitles: Self.conflictChoices.map { $0.title })
+        let optionsHelp = NSTextField(wrappingLabelWithString:
+            "How a sync runs (not what is synced). \"Default\" leaves the setting out of the profile entirely (Unison's standard behavior).")
+        optionsHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        optionsHelp.textColor = .secondaryLabelColor
+        optionsHelp.maximumNumberOfLines = 0
+        optionsHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let conflictHelp = NSTextField(wrappingLabelWithString:
+            "\"Force\" makes one root authoritative and overwrites the other. \"Prefer\" only breaks ties on conflicting changes.")
+        conflictHelp.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        conflictHelp.textColor = .secondaryLabelColor
+        conflictHelp.maximumNumberOfLines = 0
+        conflictHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Logging controls (in Options). The checkbox toggles logging. The
+        // folder defaults to the app's log directory (shown as the
+        // placeholder) unless you choose a different one. The file name
+        // defaults to Unison-<profile>.log. Both rows hide when logging off.
+        logCheckbox.target = self
+        logCheckbox.action = #selector(logToggled(_:))
+        logFolderField.placeholderString = SettingsModel.defaultLogDirectory()
+        logFolderField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        logFolderBrowse.bezelStyle = .rounded
+        logFolderBrowse.target = self
+        logFolderBrowse.action = #selector(browseLogFolder(_:))
+        logFolderBrowse.setContentHuggingPriority(.required, for: .horizontal)
+        logNameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        logFolderRow = labeledRow(label: "Folder",
+            control: hstack([logFolderField, logFolderBrowse]))
+        logNameRow = labeledRow(label: "File name", control: logNameField)
+
+        let options = sectionStack([
+            optionsHelp,
+            attrRow("Conflict handling", conflictPopup),
+            conflictHelp,
+            attrRow("Confirm big deletions", confirmbigdelPopup),
+            attrRow("Auto-accept changes", autoPopup),
+            attrRow("Fast update check", fastcheckPopup),
+            sectionDivider(),
+            logCheckbox,
+            logFolderRow,
+            logNameRow,
+        ])
+
+        // Includes section: a small rule-based editor (one row per included
+        // file, each with a Top/Bottom position).
+        includesView = IncludeListView(
+            label: "Included profiles",
+            help: "Pull in another prefs file's settings. \"Top\" applies before this profile, so this profile wins single-value conflicts. \"Bottom\" applies after, so the included file wins.",
+            existingNames: existingProfileNames())
+        includesView.onChange = { [weak self] in self?.refreshIncludesBanner() }
+
+        // ----- Sidebar sections (controls rehoused) -----
+        sectionViews = [
+            ("General",  "gearshape", sectionStack([nameRow, visibilityCheckbox])),
+            ("Roots",    "arrow.left.arrow.right", sectionStack([firstRow, secondRow, rootsHelp, remoteGroup])),
+            ("Paths",    "folder", sectionStack([pathsView], fill: true)),
+            ("Ignore",   "eye.slash", sectionStack([ignoreView, addCommonRow, ignorenotView], fill: true)),
+            ("File Attributes", "tag", fileAttrs),
+            ("Options",  "slider.horizontal.3", options),
+            ("Includes", "doc.on.doc", sectionStack([includesView])),
+            ("Advanced", "curlybraces", sectionStack([advancedView], fill: true)),
+        ]
+        visibleSectionIndices = Array(sectionViews.indices)
+
+        // The Ignore section stacks two list views; with equal hugging the
+        // stack would hand all the slack to one. Pin them equal so each
+        // gets ~half the height. Activated here — after both are arranged
+        // subviews of the Ignore stack — so they share a common ancestor.
+        ignorenotView.heightAnchor.constraint(equalTo: ignoreView.heightAnchor).isActive = true
+
+        let col = NSTableColumn(identifier: .init("section"))
+        col.resizingMask = .autoresizingMask
+        sidebarTable.addTableColumn(col)
+        sidebarTable.headerView = nil
+        sidebarTable.dataSource = self
+        sidebarTable.delegate = self
+        sidebarTable.style = .sourceList
+        sidebarTable.rowSizeStyle = .default
+        sidebarTable.selectionHighlightStyle = .none  // HoverRowView draws selection + hover with matching geometry
+        sidebarTable.backgroundColor = .clear
+        let sidebarScroll = NSScrollView()
+        sidebarScroll.documentView = sidebarTable
+        sidebarScroll.hasVerticalScroller = true
+        sidebarScroll.drawsBackground = false
+        sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        // Search box atop the sidebar (Claude-style), filtering sections.
+        sidebarSearch.placeholderString = "Search"
+        sidebarSearch.delegate = self
+        sidebarSearch.sendsWholeSearchString = false
+        sidebarSearch.translatesAutoresizingMaskIntoConstraints = false
+
+        let sidebar = NSStackView(views: [sidebarSearch, sidebarScroll])
+        sidebar.orientation = .vertical
+        sidebar.spacing = 8
+        sidebar.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 8, right: 8)
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebarSearch.widthAnchor.constraint(equalTo: sidebar.widthAnchor, constant: -16).isActive = true
+        sidebarScroll.widthAnchor.constraint(equalTo: sidebar.widthAnchor, constant: -16).isActive = true
+
+        sectionContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        // Pop-out button sits right-aligned in a slim top bar above the
+        // section content — the window's upper-right corner.
+        let popOutBar = NSStackView(views: [NSView(), openPrfButton])
+        popOutBar.orientation = .horizontal
+        popOutBar.translatesAutoresizingMaskIntoConstraints = false
+
+        // Tier-1 inheritance banner — hidden unless the profile includes
+        // others. Spans the content width above the section.
+        includesBanner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        includesBanner.textColor = .secondaryLabelColor
+        includesBanner.lineBreakMode = .byTruncatingTail
+        includesBanner.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        includesBanner.isHidden = true
+
+        let rightSide = NSStackView(views: [popOutBar, includesBanner, sectionContainer, buttonRow])
+        rightSide.orientation = .vertical
+        rightSide.spacing = 10
+        rightSide.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        rightSide.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(sidebar)
+        contentView.addSubview(rightSide)
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            // Stretch every form row to the stack's full width.
-            nameRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            firstRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            secondRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            rootsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            pathsView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            ignoreView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            ignorenotView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            advancedView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
-            buttonRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
+            sidebar.topAnchor.constraint(equalTo: contentView.topAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: 176),
+
+            rightSide.topAnchor.constraint(equalTo: contentView.topAnchor),
+            rightSide.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            rightSide.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            rightSide.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+
+            sectionContainer.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
+            buttonRow.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
+            popOutBar.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
+            includesBanner.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
+        ])
+
+        sidebarTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        showSection(0)
+    }
+
+    /// Vertical stack of a section's controls, each stretched to width.
+    private func sectionStack(_ views: [NSView], fill: Bool = false) -> NSView {
+        let s = NSStackView(views: views)
+        s.orientation = .vertical
+        s.alignment = .leading
+        s.spacing = 10
+        s.translatesAutoresizingMaskIntoConstraints = false
+        for v in views {
+            v.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
+        }
+        // Field sections top-pack: a flexible spacer soaks up the extra
+        // height so rows aren't spread apart. Editor sections (fill: true)
+        // let their text view absorb the space instead.
+        if !fill {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+            spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+            s.addArrangedSubview(spacer)
+            spacer.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
+        }
+        return s
+    }
+
+    /// Swap the right-side container to show the selected section. Views
+    /// are reused (the array retains them), so control state persists.
+    private func showSection(_ index: Int) {
+        guard sectionViews.indices.contains(index) else { return }
+        refreshIncludesBanner()
+        sectionContainer.subviews.forEach { $0.removeFromSuperview() }
+        let v = sectionViews[index].view
+        sectionContainer.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: sectionContainer.topAnchor),
+            v.leadingAnchor.constraint(equalTo: sectionContainer.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: sectionContainer.trailingAnchor),
+            v.bottomAnchor.constraint(equalTo: sectionContainer.bottomAnchor),
         ])
     }
 
@@ -237,9 +599,56 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         row.orientation = .horizontal
         row.spacing = 8
         row.distribution = .fill
-        lbl.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        lbl.widthAnchor.constraint(equalToConstant: 130).isActive = true
         return row
     }
+
+    /// Show/hide the Tier-1 inheritance banner from the current includes.
+    private func refreshIncludesBanner() {
+        let names = includesView.entries.map { $0.name }
+        includesBanner.isHidden = names.isEmpty
+        if !names.isEmpty {
+            includesBanner.stringValue = "Includes " + names.joined(separator: ", ")
+                + ". Settings from those files also apply at sync time."
+        }
+    }
+
+    /// Other `.prf` basenames in the Unison directory (excluding this one),
+    /// offered in the "Add Existing…" include picker.
+    private func existingProfileNames() -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: unisonDirectory)) ?? []
+        return names
+            .filter { ($0 as NSString).pathExtension == "prf" }
+            .map { ($0 as NSString).deletingPathExtension }
+            .filter { $0 != initialProfileName }
+            .sorted()
+    }
+
+    /// Show the log path controls per the global logging mode:
+    /// shared-file → checkbox only; shared-folder → file name only;
+    /// per-profile → folder + file name. All hidden when logging is off.
+    private func updateLogfileVisibility() {
+        let on = (logCheckbox.state == .on)
+        let mode = SettingsModel.loggingMode()
+        logFolderRow?.isHidden = !on || mode != .perProfile
+        logNameRow?.isHidden   = !on || mode == .sameFile
+    }
+
+    /// Default log file name for the current profile.
+    private func defaultLogName() -> String {
+        let typed = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = typed.isEmpty ? (initialProfileName ?? "sync") : typed
+        return "Unison-\(name).log"
+    }
+
+    // Redraw the sidebar rows so the selection (and each cell's text/glyph
+    // color, applied in HoverRowView.drawBackground) refreshes when the
+    // window gains or loses key.
+    private func redrawSidebarSelection() {
+        sidebarTable.enumerateAvailableRowViews { rowView, _ in rowView.needsDisplay = true }
+    }
+    func windowDidBecomeKey(_ notification: Notification) { redrawSidebarSelection() }
+    func windowDidResignKey(_ notification: Notification) { redrawSidebarSelection() }
 
     private func hstack(_ views: [NSView]) -> NSStackView {
         let s = NSStackView(views: views)
@@ -290,6 +699,161 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Advanced: every key we don't surface above, rendered as
         // `key = value` lines in original order.
         advancedView.values = advancedLines(from: prfDocument)
+
+        // Remote connection fields (owned by Roots → Remote Connection).
+        servercmdField.stringValue = prfDocument.firstValue(forKey: "servercmd") ?? ""
+        sshcmdField.stringValue = prfDocument.firstValue(forKey: "sshcmd") ?? ""
+        sshargsField.stringValue = prfDocument.firstValue(forKey: "sshargs") ?? ""
+        clientHostNameField.stringValue = prfDocument.firstValue(forKey: "clientHostName") ?? ""
+        updateRemoteVisibility()
+
+        // Picker visibility (mirrors the Profile Editor's eye toggle).
+        let isHidden = initialProfileName.map {
+            ProfilePreferences.load().hidden.contains($0)
+        } ?? false
+        visibilityCheckbox.state = isHidden ? .off : .on
+
+        // File attributes
+        setTriState(timesPopup, from: prfDocument.firstValue(forKey: "times"))
+        setTriState(rsrcPopup, from: prfDocument.firstValue(forKey: "rsrc"))
+        setTriState(ownerPopup, from: prfDocument.firstValue(forKey: "owner"))
+        setTriState(groupPopup, from: prfDocument.firstValue(forKey: "group"))
+        setTriState(dontchmodPopup, from: prfDocument.firstValue(forKey: "dontchmod"))
+        switch prfDocument.firstValue(forKey: "perms") {
+        case nil:        permsPopup.selectItem(at: 0)
+        case "0"?:       permsPopup.selectItem(at: 1)
+        case let mask?:  permsPopup.selectItem(at: 2); permsMaskField.stringValue = mask
+        }
+        updatePermsMaskVisibility()
+
+        // Options
+        setTriState(confirmbigdelPopup, from: prfDocument.firstValue(forKey: "confirmbigdel"))
+        setTriState(autoPopup, from: prfDocument.firstValue(forKey: "auto"))
+        setTriState(fastcheckPopup, from: prfDocument.firstValue(forKey: "fastcheck"))
+        loadConflict()
+
+        // Logging. Split an existing logfile into folder + name. Leave the
+        // folder blank when it matches the default so the placeholder shows
+        // through (blank means "use the default").
+        originalLog = prfDocument.firstValue(forKey: "log")
+        logCheckbox.state = (originalLog == "true") ? .on : .off
+        logNameField.placeholderString = defaultLogName()
+        if let lf = prfDocument.firstValue(forKey: "logfile"), !lf.isEmpty {
+            let dir = (lf as NSString).deletingLastPathComponent
+            logFolderField.stringValue = (dir == SettingsModel.defaultLogDirectory()) ? "" : dir
+            logNameField.stringValue = (lf as NSString).lastPathComponent
+        } else {
+            logFolderField.stringValue = ""
+            logNameField.stringValue = ""
+        }
+        updateLogfileVisibility()
+
+        // Includes (with Top/Bottom position).
+        includesView.entries = prfDocument.topIncludes.map { ($0, true) }
+            + prfDocument.bottomIncludes.map { ($0, false) }
+        refreshIncludesBanner()
+    }
+
+    /// Map the profile's `prefer`/`force` onto the conflict popup. An
+    /// unrepresentable value (root matching neither field) gets a dynamic
+    /// item appended so it stays visible and round-trips on save.
+    private func loadConflict() {
+        rawConflict = nil
+        while conflictPopup.numberOfItems > Self.conflictChoices.count {
+            conflictPopup.removeItem(at: conflictPopup.numberOfItems - 1)
+        }
+        // `force` wins over `prefer` if a profile somehow sets both.
+        let pair: (String, String)?
+        if let f = prfDocument.firstValue(forKey: "force") { pair = ("force", f) }
+        else if let p = prfDocument.firstValue(forKey: "prefer") { pair = ("prefer", p) }
+        else { pair = nil }
+
+        guard let (key, value) = pair else { conflictPopup.selectItem(at: 0); return }
+        if let idx = conflictIndex(key: key, value: value) {
+            conflictPopup.selectItem(at: idx)
+        } else {
+            rawConflict = (key, value)
+            conflictPopup.addItem(withTitle: "\(key) = \(value)")
+            conflictPopup.selectItem(at: conflictPopup.numberOfItems - 1)
+        }
+    }
+
+    /// Index of the standard popup choice matching (key, value), or nil if
+    /// the value doesn't map to first/second root or newer/older.
+    private func conflictIndex(key: String, value: String) -> Int? {
+        let first = firstRootField.stringValue.trimmingCharacters(in: .whitespaces)
+        let second = secondRootField.stringValue.trimmingCharacters(in: .whitespaces)
+        let target: String?
+        if value == "newer" { target = "newer" }
+        else if value == "older" { target = "older" }
+        else if !first.isEmpty, value == first { target = "first" }
+        else if !second.isEmpty, value == second { target = "second" }
+        else { target = nil }
+        guard let target else { return nil }
+        return Self.conflictChoices.firstIndex { $0.key == key && $0.target == target }
+    }
+
+    /// The literal `prefer`/`force` value for a popup target.
+    private func conflictValue(forTarget target: String) -> String {
+        switch target {
+        case "first":  return firstRootField.stringValue.trimmingCharacters(in: .whitespaces)
+        case "second": return secondRootField.stringValue.trimmingCharacters(in: .whitespaces)
+        default:       return target   // "newer" / "older"
+        }
+    }
+
+    private func isRemoteRoot(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces).lowercased()
+        return t.hasPrefix("ssh://") || t.hasPrefix("socket://")
+    }
+
+    /// Show the Remote Connection subsection only when a root is remote.
+    private func updateRemoteVisibility() {
+        remoteGroup.isHidden = !(isRemoteRoot(firstRootField.stringValue)
+                                 || isRemoteRoot(secondRootField.stringValue))
+    }
+
+    // MARK: - File attributes helpers
+
+    /// A label + left-aligned control row for the File Attributes section.
+    private func attrRow(_ label: String, _ control: NSView) -> NSView {
+        labeledRow(label: label, control: hstack([control, NSView()]))
+    }
+
+    private func setTriState(_ p: NSPopUpButton, from value: String?) {
+        switch value?.lowercased() {
+        case "true":  p.selectItem(at: 1)
+        case "false": p.selectItem(at: 2)
+        default:      p.selectItem(at: 0)   // Default / absent
+        }
+    }
+
+    /// "true"/"false" for On/Off, or nil for Default (so the key is omitted).
+    private func triStateValue(_ p: NSPopUpButton) -> String? {
+        switch p.indexOfSelectedItem {
+        case 1:  return "true"
+        case 2:  return "false"
+        default: return nil
+        }
+    }
+
+    @objc private func permsModeChanged() { updatePermsMaskVisibility() }
+
+    /// The inline mask field is shown only for "Custom mask…". It's an
+    /// arranged subview of the row's stack, so hiding it collapses it and
+    /// the popup keeps its place — mirrors the Remote Connection group's
+    /// show/hide. The rows below never shift.
+    private func updatePermsMaskVisibility() {
+        permsMaskField.isHidden = (permsPopup.indexOfSelectedItem != 2)
+    }
+
+    /// Accept an octal (`0o755`), hex (`0x1FF`), or decimal integer.
+    private func isValidPermsMask(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return false }
+        if t.hasPrefix("0o") || t.hasPrefix("0O") { return Int(t.dropFirst(2), radix: 8) != nil }
+        if t.hasPrefix("0x") || t.hasPrefix("0X") { return Int(t.dropFirst(2), radix: 16) != nil }
+        return Int(t) != nil
     }
 
     /// Compute the "advanced" view content: every key=value entry whose
@@ -298,7 +862,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// shown here — they live on the document only and are merged back at
     /// save time.
     private func advancedLines(from doc: ProfileDocument) -> [String] {
-        let handled: Set<String> = ["root", "path", "ignore", "ignorenot"]
+        let handled: Set<String> = Self.handledKeys
         return doc.entries.compactMap { entry in
             if case let .keyValue(k, v) = entry, !handled.contains(k) {
                 return "\(k) = \(v)"
@@ -329,11 +893,83 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         doc.setValues(ignoreView.values, forKey: "ignore")
         doc.setValues(ignorenotView.values, forKey: "ignorenot")
 
+        // Remote connection keys, owned by Roots → Remote Connection. Set
+        // the value or remove the key when the field is blank.
+        for (field, key) in [(servercmdField, "servercmd"),
+                             (sshcmdField, "sshcmd"),
+                             (sshargsField, "sshargs"),
+                             (clientHostNameField, "clientHostName")] {
+            let v = field.stringValue.trimmingCharacters(in: .whitespaces)
+            doc.setValue(v.isEmpty ? nil : v, forKey: key)
+        }
+
+        // File attributes (tri-state booleans + perms). Default → no line.
+        doc.setValue(triStateValue(timesPopup), forKey: "times")
+        doc.setValue(triStateValue(rsrcPopup), forKey: "rsrc")
+        doc.setValue(triStateValue(ownerPopup), forKey: "owner")
+        doc.setValue(triStateValue(groupPopup), forKey: "group")
+        doc.setValue(triStateValue(dontchmodPopup), forKey: "dontchmod")
+        switch permsPopup.indexOfSelectedItem {
+        case 1: doc.setValue("0", forKey: "perms")
+        case 2:
+            let m = permsMaskField.stringValue.trimmingCharacters(in: .whitespaces)
+            doc.setValue(m.isEmpty ? nil : m, forKey: "perms")
+        default: doc.setValue(nil, forKey: "perms")
+        }
+
+        // Options (tri-state behavior prefs). Default → no line.
+        doc.setValue(triStateValue(confirmbigdelPopup), forKey: "confirmbigdel")
+        doc.setValue(triStateValue(autoPopup), forKey: "auto")
+        doc.setValue(triStateValue(fastcheckPopup), forKey: "fastcheck")
+
+        // Conflict handling: rewrite prefer/force from the popup (only one
+        // is ever set), or restore a value the popup couldn't represent.
+        doc.setValue(nil, forKey: "prefer")
+        doc.setValue(nil, forKey: "force")
+        let sel = conflictPopup.indexOfSelectedItem
+        if sel < Self.conflictChoices.count {
+            let c = Self.conflictChoices[sel]
+            if let key = c.key, let target = c.target {
+                doc.setValue(conflictValue(forTarget: target), forKey: key)
+            }
+        } else if let raw = rawConflict {
+            doc.setValue(raw.value, forKey: raw.key)
+        }
+
+        // Logging. The global mode decides how logfile is composed.
+        if logCheckbox.state == .on {
+            doc.setValue("true", forKey: "log")
+            let nameRaw = logNameField.stringValue.trimmingCharacters(in: .whitespaces)
+            let name = nameRaw.isEmpty ? defaultLogName() : nameRaw
+            switch SettingsModel.loggingMode() {
+            case .sameFile:
+                doc.setValue(SettingsModel.sharedLogFile(), forKey: "logfile")
+            case .sameDirectory:
+                doc.setValue((SettingsModel.sharedLogDirectory() as NSString)
+                    .appendingPathComponent(name), forKey: "logfile")
+            case .perProfile:
+                let folderRaw = logFolderField.stringValue.trimmingCharacters(in: .whitespaces)
+                let folder = folderRaw.isEmpty ? SettingsModel.defaultLogDirectory()
+                                               : (folderRaw as NSString).expandingTildeInPath
+                doc.setValue((folder as NSString).appendingPathComponent(name), forKey: "logfile")
+            }
+        } else {
+            // Off: write `false` only if it was previously on; otherwise
+            // preserve the original (absent stays absent, false stays false).
+            doc.setValue(originalLog == "true" ? "false" : originalLog, forKey: "log")
+            doc.setValue(nil, forKey: "logfile")
+        }
+
+        // Includes (Top before the first pref, Bottom after the last).
+        let inc = includesView.entries
+        doc.setIncludes(top: inc.filter { $0.top }.map { $0.name },
+                        bottom: inc.filter { !$0.top }.map { $0.name })
+
         // Reconcile the advanced field with the existing document. Each
         // line should be `key = value`; we drop any line that doesn't
         // parse. Then for each key, replace any existing entries — but
         // only for keys NOT in our known set (those are already handled).
-        let handled: Set<String> = ["root", "path", "ignore", "ignorenot"]
+        let handled: Set<String> = Self.handledKeys
         var seenAdvancedKeys: [String: [String]] = [:]
         var orderedAdvancedKeys: [String] = []
         for line in advancedView.values {
@@ -360,7 +996,101 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         return doc
     }
 
+    /// Add the "pop-out" button to the title bar's upper-right corner as a
+    /// borderless symbol button (Outlook-style). It hands the raw .prf to
+    /// the user's default editor via openPrfFile(_:).
+    /// Hand-drawn "open in external editor" glyph: a rounded box with an
+    /// open top-right corner and an arrow shooting out through it. SF
+    /// Symbols only offers an arrow *inside* a closed square, which doesn't
+    /// read as "pop out", so we draw our own template image.
+    private static func popOutGlyph() -> NSImage {
+        let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            NSColor.black.setStroke()
+            // Box, open at the top-right corner.
+            let box = NSBezierPath()
+            box.lineWidth = 1.6
+            box.lineCapStyle = .round
+            box.lineJoinStyle = .round
+            box.move(to: NSPoint(x: 8.5, y: 13.5))   // top edge, left of opening
+            box.line(to: NSPoint(x: 4, y: 13.5))     // top-left
+            box.line(to: NSPoint(x: 4, y: 4))        // left → bottom-left
+            box.line(to: NSPoint(x: 13.5, y: 4))     // bottom → bottom-right
+            box.line(to: NSPoint(x: 13.5, y: 8.5))   // right edge, below opening
+            box.stroke()
+            // Arrow shooting out through the open corner.
+            let arrow = NSBezierPath()
+            arrow.lineWidth = 1.6
+            arrow.lineCapStyle = .round
+            arrow.lineJoinStyle = .round
+            arrow.move(to: NSPoint(x: 8, y: 8))
+            arrow.line(to: NSPoint(x: 15, y: 15))    // shaft to upper-right
+            arrow.move(to: NSPoint(x: 10.5, y: 15))  // arrowhead barbs
+            arrow.line(to: NSPoint(x: 15, y: 15))
+            arrow.line(to: NSPoint(x: 15, y: 10.5))
+            arrow.stroke()
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    private func configurePopOutButton() {
+        openPrfButton.image = Self.popOutGlyph()
+        openPrfButton.imagePosition = .imageOnly
+        openPrfButton.imageScaling = .scaleProportionallyDown
+        openPrfButton.isBordered = false
+        openPrfButton.bezelStyle = .regularSquare
+        openPrfButton.contentTintColor = .controlAccentColor
+        openPrfButton.target = self
+        openPrfButton.action = #selector(openPrfFile(_:))
+        openPrfButton.isEnabled = (initialProfileName != nil)
+        openPrfButton.toolTip = initialProfileName != nil
+            ? "Open this profile's .prf file in your default editor"
+            : "Save the profile first to edit its .prf file directly."
+        openPrfButton.setContentHuggingPriority(.required, for: .horizontal)
+        openPrfButton.translatesAutoresizingMaskIntoConstraints = false
+        openPrfButton.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        openPrfButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
+    }
+
     // MARK: - Actions
+
+    @objc private func addCommonIgnore(_ sender: NSPopUpButton) {
+        let idx = sender.indexOfSelectedItem - 1   // item 0 is the "Add Common…" title
+        guard idx >= 0, idx < Self.commonIgnores.count else { return }
+        var lines = ignoreView.values
+        for p in Self.commonIgnores[idx].patterns where !lines.contains(p) {
+            lines.append(p)
+        }
+        ignoreView.values = lines
+        sender.selectItem(at: 0)
+    }
+
+    @objc private func logToggled(_ sender: NSButton) {
+        // Default folder + name show through as placeholders, so nothing to
+        // pre-fill: blank fields mean "use the default".
+        logNameField.placeholderString = defaultLogName()
+        updateLogfileVisibility()
+    }
+
+    @objc private func browseLogFolder(_ sender: NSButton) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        let start = logFolderField.stringValue.trimmingCharacters(in: .whitespaces)
+        panel.directoryURL = URL(fileURLWithPath:
+            start.isEmpty ? SettingsModel.defaultLogDirectory()
+                          : (start as NSString).expandingTildeInPath)
+        let runIt: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            self?.logFolderField.stringValue = url.path
+        }
+        if let window { panel.beginSheetModal(for: window, completionHandler: runIt) }
+        else { runIt(panel.runModal()) }
+    }
 
     @objc private func browseFirstRoot(_ sender: NSButton) {
         browseRoot(into: firstRootField)
@@ -385,6 +1115,35 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func cancelAction(_ sender: NSButton) {
         window?.performClose(nil)
+    }
+
+    /// Open the profile's .prf in the user's default editor for that file
+    /// type. Disabled for unsaved profiles. Warns first, since editing the
+    /// file externally while this form is open means whichever is saved
+    /// last wins.
+    @objc private func openPrfFile(_ sender: NSButton) {
+        guard let name = initialProfileName else { return }
+        let url = profileURL(forName: name)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            showAlert(text: "File not found",
+                      info: "\(url.lastPathComponent) no longer exists on disk.",
+                      style: .warning)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Open \(url.lastPathComponent) in an external editor?"
+        alert.informativeText = "Changes you make there and changes you make here both write the same file. Whichever is saved last wins. Close this editor with Cancel before saving externally to avoid overwriting your edits."
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        let openIfConfirmed: (NSApplication.ModalResponse) -> Void = { resp in
+            if resp == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+        }
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: openIfConfirmed)
+        } else {
+            openIfConfirmed(alert.runModal())
+        }
     }
 
     @objc private func saveAction(_ sender: NSButton) {
@@ -421,6 +1180,42 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if collisionTarget, FileManager.default.fileExists(atPath: url.path) {
             showAlert(text: "Profile already exists",
                       info: "\(name).prf is already in the Unison directory. Pick a different name.",
+                      style: .warning)
+            return
+        }
+
+        // Validate a custom permission mask before writing anything.
+        if permsPopup.indexOfSelectedItem == 2,
+           !isValidPermsMask(permsMaskField.stringValue) {
+            showAlert(text: "Invalid permission mask",
+                      info: "Enter an octal (e.g. 0o755), hex (0x1FF), or decimal number, or choose a different Permissions option.",
+                      style: .warning)
+            return
+        }
+
+        // A key that has a dedicated section won't be saved from the
+        // Advanced box (the section is authoritative). Rather than silently
+        // drop it, stop and point the user to the right place.
+        let strandedKeys = advancedView.values.compactMap { line -> String? in
+            guard let eq = line.firstIndex(of: "=") else { return nil }
+            let k = line[..<eq].trimmingCharacters(in: .whitespaces)
+            return Self.handledKeys.contains(k) ? k : nil
+        }
+        if !strandedKeys.isEmpty {
+            let list = Array(Set(strandedKeys)).sorted().joined(separator: ", ")
+            showAlert(text: "Set these in their own section",
+                      info: "These settings have a dedicated section and won't be saved from Advanced: \(list). Set them in the matching section (Roots, Ignore, File Attributes, or Options), then remove them from Advanced.",
+                      style: .warning)
+            return
+        }
+
+        // `include` directives have no `=`, so the Advanced reconciler would
+        // silently drop them. Point the user to the Includes section instead.
+        if advancedView.values.contains(where: {
+            $0.trimmingCharacters(in: .whitespaces).split(separator: " ").first == "include"
+        }) {
+            showAlert(text: "Manage includes in the Includes section",
+                      info: "Move any include lines to the Includes section, where you can set each one's Top or Bottom position, then remove them from Advanced.",
                       style: .warning)
             return
         }
@@ -474,6 +1269,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             TraceLog.shared.write("ProfileForm: wrote \(url.path) (\(text.count) bytes)")
+            // Apply picker visibility for the final name (mirrors the
+            // Profile Editor's eye toggle). Done after any rename so it
+            // keys off the name the file now has.
+            var prefs = ProfilePreferences.load()
+            if visibilityCheckbox.state == .on { prefs.hidden.remove(name) }
+            else { prefs.hidden.insert(name) }
+            prefs.save()
             onSaved(name)
             window?.performClose(nil)
         } catch {
@@ -503,6 +1305,159 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     // the .prf's `root = …` lines, not the filename. Renaming the
     // .prf doesn't change the roots, so the archive hash is stable
     // and no orphans occur.)
+}
+
+// MARK: - Sidebar navigator
+
+extension ProfileFormWindowController: NSTableViewDataSource, NSTableViewDelegate {
+    func numberOfRows(in tableView: NSTableView) -> Int { visibleSectionIndices.count }
+
+    func tableView(_ tableView: NSTableView,
+                   viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("SidebarCell")
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+            let v = NSTableCellView()
+            let iv = NSImageView()
+            iv.translatesAutoresizingMaskIntoConstraints = false
+            iv.imageScaling = .scaleProportionallyDown
+            iv.contentTintColor = .secondaryLabelColor
+            v.addSubview(iv)
+            v.imageView = iv
+            let tf = NSTextField(labelWithString: "")
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            tf.font = .systemFont(ofSize: NSFont.systemFontSize)
+            v.addSubview(tf)
+            v.textField = tf
+            v.identifier = id
+            NSLayoutConstraint.activate([
+                iv.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 8),
+                iv.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                iv.widthAnchor.constraint(equalToConstant: 18),
+                iv.heightAnchor.constraint(equalToConstant: 18),
+                tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 8),
+                tf.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                tf.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -6),
+            ])
+            return v
+        }()
+        guard visibleSectionIndices.indices.contains(row) else { return cell }
+        let s = sectionViews[visibleSectionIndices[row]]
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        cell.imageView?.image = NSImage(systemSymbolName: s.icon, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        cell.textField?.stringValue = s.title
+        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("SidebarRow")
+        return tableView.makeView(withIdentifier: id, owner: self) as? HoverRowView
+            ?? { let r = HoverRowView(); r.identifier = id; return r }()
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        // selectionHighlightStyle == .none means AppKit won't repaint the
+        // old/new rows on its own; force it so our custom selection moves.
+        redrawSidebarSelection()
+        let r = sidebarTable.selectedRow
+        guard visibleSectionIndices.indices.contains(r) else { return }
+        showSection(visibleSectionIndices[r])
+    }
+
+    /// Recompute the visible rows from the search text, preserving the
+    /// current selection when it survives the filter.
+    private func filterSidebar() {
+        let q = sidebarSearch.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let selectedIdx = sidebarTable.selectedRow >= 0
+            && visibleSectionIndices.indices.contains(sidebarTable.selectedRow)
+            ? visibleSectionIndices[sidebarTable.selectedRow] : nil
+        visibleSectionIndices = sectionViews.indices.filter {
+            q.isEmpty || sectionViews[$0].title.lowercased().contains(q)
+        }
+        sidebarTable.reloadData()
+        if let selectedIdx, let row = visibleSectionIndices.firstIndex(of: selectedIdx) {
+            sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        } else if !visibleSectionIndices.isEmpty {
+            sidebarTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+    }
+}
+
+extension ProfileFormWindowController: NSSearchFieldDelegate {
+    // The search field and the two root fields all route here. Dispatch
+    // on the sender: search filters the sidebar; a root change re-evaluates
+    // the Remote Connection subsection's visibility.
+    func controlTextDidChange(_ obj: Notification) {
+        if obj.object as AnyObject === sidebarSearch {
+            filterSidebar()
+        } else {
+            updateRemoteVisibility()
+        }
+    }
+}
+
+/// Sidebar row that draws its own rounded selection and hover highlights so
+/// the two share identical geometry (Claude-style). Selection is "blue"
+/// while the window is active (like a standard macOS sidebar) and falls back
+/// to the unemphasized gray when it isn't.
+final class HoverRowView: NSTableRowView {
+    private var tracking: NSTrackingArea?
+    private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
+
+    /// Sidebars stay highlighted while the window is active, regardless of
+    /// which control holds focus.
+    private var active: Bool { window?.isKeyWindow ?? false }
+
+    // Selection drives the cell's text/glyph color ourselves. With
+    // selectionHighlightStyle == .none, AppKit never propagates an
+    // emphasized background style to the cell, so we set it directly —
+    // and crucially we do it in the draw cycle and on every isSelected
+    // change, so the label turns white the instant the row is selected
+    // (e.g. on mouse-down), not only after the selection notification.
+    override var isSelected: Bool { didSet { needsDisplay = true; applyCellStyle() } }
+
+    private func applyCellStyle() {
+        let emphasized = isSelected && active
+        let bg: NSView.BackgroundStyle = emphasized ? .emphasized : .normal
+        let tint: NSColor = emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor
+        for case let cell as NSTableCellView in subviews {
+            if cell.backgroundStyle != bg { cell.backgroundStyle = bg }
+            if cell.imageView?.contentTintColor != tint { cell.imageView?.contentTintColor = tint }
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyCellStyle()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        applyCellStyle()
+        let r = bounds.insetBy(dx: 4, dy: 1)
+        let path = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
+        if isSelected {
+            (active ? NSColor.selectedContentBackgroundColor
+                    : NSColor.unemphasizedSelectedContentBackgroundColor).setFill()
+            path.fill()
+        } else if hovered {
+            NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+            path.fill()
+        }
+    }
 }
 
 /// Re-usable multi-line list field. One entry per line; blank lines
@@ -538,6 +1493,10 @@ final class ListFieldView: NSView {
         helpField.textColor = .secondaryLabelColor
         helpField.lineBreakMode = .byWordWrapping
         helpField.maximumNumberOfLines = 2
+        // Don't let the (required) width chain up to the window honor this
+        // label's single-line intrinsic width — that grows the resizable
+        // window. Low resistance → it wraps to the available width instead.
+        helpField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         textView.isEditable = true
         textView.isRichText = false
@@ -578,4 +1537,142 @@ final class ListFieldView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
+}
+
+/// Structured editor for `include` directives. One row per included file: an
+/// editable combo box (the existing .prf files, or a typed name) plus a
+/// Top/Bottom position. There are only ever a few, so it's a plain row list
+/// with an Add button rather than a text box.
+@MainActor
+final class IncludeListView: NSView {
+
+    private let rowsStack = NSStackView()
+    private let addButton = NSButton(title: "Add Include", target: nil, action: nil)
+    private let existingNames: [String]
+    var onChange: (() -> Void)?
+
+    /// Each include as (file name, isTop). Blank-name rows are dropped.
+    var entries: [(name: String, top: Bool)] {
+        get {
+            rowsStack.arrangedSubviews.compactMap { row in
+                guard let combo = row.viewWithTag(1) as? NSComboBox,
+                      let popup = row.viewWithTag(2) as? NSPopUpButton else { return nil }
+                let name = combo.stringValue.trimmingCharacters(in: .whitespaces)
+                guard !name.isEmpty else { return nil }
+                return (name, popup.indexOfSelectedItem == 0)
+            }
+        }
+        set {
+            rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for e in newValue { appendRow(makeRow(name: e.name, top: e.top)) }
+        }
+    }
+
+    init(label: String, help: String, existingNames: [String]) {
+        self.existingNames = existingNames
+        super.init(frame: .zero)
+
+        let labelField = NSTextField(labelWithString: label)
+        labelField.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        let helpField = NSTextField(wrappingLabelWithString: help)
+        helpField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        helpField.textColor = .secondaryLabelColor
+        helpField.maximumNumberOfLines = 0
+        helpField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        rowsStack.orientation = .vertical
+        rowsStack.alignment = .leading
+        rowsStack.spacing = 6
+        rowsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        addButton.bezelStyle = .rounded
+        addButton.target = self
+        addButton.action = #selector(addTapped)
+        addButton.setContentHuggingPriority(.required, for: .horizontal)
+        let addRow = NSStackView(views: [addButton, NSView()])
+        addRow.orientation = .horizontal
+
+        let outer = NSStackView(views: [labelField, helpField, rowsStack, addRow])
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 8
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(outer)
+        NSLayoutConstraint.activate([
+            outer.topAnchor.constraint(equalTo: topAnchor),
+            outer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            outer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            outer.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        for v in [helpField, rowsStack, addRow] as [NSView] {
+            v.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    private func appendRow(_ row: NSView) {
+        rowsStack.addArrangedSubview(row)
+        // Safe to pin width now: the row shares rowsStack as ancestor.
+        row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
+    }
+
+    private func makeRow(name: String, top: Bool) -> NSView {
+        let combo = NSComboBox()
+        combo.tag = 1
+        combo.isEditable = true
+        combo.completes = true
+        combo.addItems(withObjectValues: existingNames)
+        combo.stringValue = name
+        combo.target = self
+        combo.action = #selector(rowChanged)
+        combo.delegate = self
+        combo.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        combo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let popup = NSPopUpButton()
+        popup.tag = 2
+        popup.addItems(withTitles: ["Top", "Bottom"])
+        popup.selectItem(at: top ? 0 : 1)
+        popup.target = self
+        popup.action = #selector(rowChanged)
+        popup.setContentHuggingPriority(.required, for: .horizontal)
+
+        let removeCfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let remove = NSButton(
+            image: NSImage(systemSymbolName: "minus.circle",
+                           accessibilityDescription: "Remove")?
+                .withSymbolConfiguration(removeCfg) ?? NSImage(),
+            target: self, action: #selector(removeTapped(_:)))
+        remove.isBordered = false
+        remove.bezelStyle = .regularSquare
+        remove.imagePosition = .imageOnly
+        remove.contentTintColor = .secondaryLabelColor
+        remove.toolTip = "Remove this include"
+        remove.setContentHuggingPriority(.required, for: .horizontal)
+        remove.widthAnchor.constraint(equalToConstant: 22).isActive = true
+
+        let row = NSStackView(views: [combo, popup, remove])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.distribution = .fill
+        combo.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        return row
+    }
+
+    @objc private func addTapped() {
+        appendRow(makeRow(name: "", top: true))
+        onChange?()
+    }
+
+    @objc private func removeTapped(_ sender: NSButton) {
+        sender.superview?.removeFromSuperview()   // superview is the row stack
+        onChange?()
+    }
+
+    @objc private func rowChanged(_ sender: Any?) { onChange?() }
+}
+
+extension IncludeListView: NSComboBoxDelegate {
+    func controlTextDidChange(_ obj: Notification) { onChange?() }
 }
