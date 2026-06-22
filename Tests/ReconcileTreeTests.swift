@@ -576,4 +576,56 @@ final class ReconcileTreeTests: XCTestCase {
         let tree = ReconcileTree(items: items, layout: .nestedFull)
         XCTAssertTrue(tree.nodesToRevealFailedRows([999]).isEmpty)
     }
+
+    // MARK: - progressFraction (collapsed-folder aggregate bar)
+
+    private func sized(_ path: String, size: Int64, progress: String,
+                       bytes: Int64) -> StateItem {
+        StateItem(path: path, left: "", right: "", direction: "",
+                  sizeBytes: size, fileType: "FILE",
+                  progress: progress, bytesTransferred: bytes)
+    }
+
+    func test_progressFraction_nilWhenIdle() {
+        let items = [sized("d/a", size: 100, progress: "", bytes: 0),
+                     sized("d/b", size: 100, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertNil(folder.progressFraction(items: items))
+    }
+
+    func test_progressFraction_byteWeighted() {
+        // Big file 50% + small file untouched ⇒ ~weighted toward the big one.
+        let items = [sized("d/big", size: 900, progress: "50%", bytes: 450),
+                     sized("d/small", size: 100, progress: "start", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.progressFraction(items: items)!, 0.45, accuracy: 0.0001)
+    }
+
+    func test_progressFraction_doneCountsAsFull() {
+        let items = [sized("d/a", size: 100, progress: "done", bytes: 0),
+                     sized("d/b", size: 100, progress: "done", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.progressFraction(items: items)!, 1.0, accuracy: 0.0001)
+    }
+
+    func test_progressFraction_failedCountsAsProcessed() {
+        // One done, one FAILED ⇒ folder still reaches 100% (both terminal).
+        let items = [sized("d/a", size: 100, progress: "done", bytes: 100),
+                     sized("d/b", size: 100, progress: "FAILED: nope", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.progressFraction(items: items)!, 1.0, accuracy: 0.0001)
+    }
+
+    func test_progressFraction_zeroSizeFallsBackToCount() {
+        // All zero-size (e.g. deletions): one done of two ⇒ 0.5 by count.
+        let items = [sized("d/a", size: 0, progress: "done", bytes: 0),
+                     sized("d/b", size: 0, progress: "start", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.progressFraction(items: items)!, 0.5, accuracy: 0.0001)
+    }
 }

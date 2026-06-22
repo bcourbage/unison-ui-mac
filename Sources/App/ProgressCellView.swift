@@ -126,6 +126,18 @@ final class ProgressCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
+    /// Show an aggregate fraction (a collapsed-folder summary) as a
+    /// bar-only cell — no text overlay, like a numeric leaf row. Used for
+    /// folder rows during sync; leaves go through `configure(progress:)`.
+    func configure(fraction: Double) {
+        let clamped = max(0, min(1, fraction))
+        descriptor = ProgressDescriptor(fraction: clamped, text: "", isFailure: false)
+        bar.isHidden = false
+        bar.doubleValue = clamped
+        textOverlay.stringValue = ""
+        toolTip = nil
+    }
+
     func configure(progress: String) {
         descriptor = ProgressDescriptor.parse(progress)
         if let f = descriptor.fraction, !descriptor.isFailure {

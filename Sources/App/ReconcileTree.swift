@@ -163,6 +163,58 @@ extension ReconcileNode {
 
         return .mixed
     }
+
+    /// Aggregate transfer progress over every leaf in this subtree, as a
+    /// fraction 0…1, for drawing a bar on a *collapsed* folder during sync.
+    /// Returns nil when the subtree has no leaves or nothing has started
+    /// yet (idle → blank cell, same as a leaf).
+    ///
+    /// Byte-weighted when the subtree has known sizes (Σ size > 0), so a
+    /// big file dominates a small one — matching the global bar's feel.
+    /// Falls back to terminal-count / total when every leaf is zero-size
+    /// (e.g. a folder of pure deletions or prop-only changes), so those
+    /// folders still advance. "Terminal" means a `done` or `FAILED` row: a
+    /// failure counts as processed, otherwise a folder containing one could
+    /// never reach 100%.
+    func progressFraction(items: [StateItem]) -> Double? {
+        func isTerminal(_ p: String) -> Bool {
+            let t = p.trimmingCharacters(in: .whitespaces)
+            return t.caseInsensitiveCompare("done") == .orderedSame
+                || t.uppercased().contains("FAIL")
+        }
+
+        var totalSize: Int64 = 0
+        var doneSize = 0.0
+        var leafCount = 0
+        var terminalCount = 0
+        var anyStarted = false
+
+        func walk(_ node: ReconcileNode) {
+            if let row = node.row {
+                guard row < items.count else { return }
+                let it = items[row]
+                leafCount += 1
+                let terminal = isTerminal(it.progress)
+                if terminal { terminalCount += 1 }
+                if !it.progress.trimmingCharacters(in: .whitespaces).isEmpty {
+                    anyStarted = true
+                }
+                if it.sizeBytes > 0 {
+                    totalSize += it.sizeBytes
+                    doneSize += terminal
+                        ? Double(it.sizeBytes)
+                        : Double(min(max(0, it.bytesTransferred), it.sizeBytes))
+                }
+            } else {
+                for c in node.children { walk(c) }
+            }
+        }
+        walk(self)
+
+        guard leafCount > 0, anyStarted else { return nil }
+        if totalSize > 0 { return max(0, min(1, doneSize / Double(totalSize))) }
+        return Double(terminalCount) / Double(leafCount)
+    }
 }
 
 /// Builds a tree from a flat `[StateItem]` for the reconcile outline
