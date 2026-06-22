@@ -838,21 +838,44 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         labeledRow(label: label, control: hstack([control, NSView()]))
     }
 
-    private func setTriState(_ p: NSPopUpButton, from value: String?) {
+    /// Popup positions for the Default/On/Off tri-state options. Raw
+    /// values match the `addItems(withTitles: ["Default","On","Off"])`
+    /// order so they double as `selectItem(at:)` indices.
+    enum TriState: Int { case `default` = 0, on = 1, off = 2 }
+
+    /// Map a pref's raw string value to a tri-state position. Pure +
+    /// `nonisolated` so it's unit-testable without the popup. Unison
+    /// accepts several boolean spellings — true/false, yes/no, and a bare
+    /// key (no `= value`) meaning true — so all must map to On/Off.
+    /// Anything else (incl. the literal "default", or an absent key)
+    /// is Default. The old true/false-only mapping silently turned
+    /// `fastcheck = no` into "Default" and then DROPPED it on save.
+    nonisolated static func triState(forPrefValue value: String?) -> TriState {
         switch value?.lowercased() {
-        case "true":  p.selectItem(at: 1)
-        case "false": p.selectItem(at: 2)
-        default:      p.selectItem(at: 0)   // Default / absent
+        case "true", "yes", "":  return .on   // incl. bare key (= true)
+        case "false", "no":      return .off
+        default:                 return .default
         }
     }
 
-    /// "true"/"false" for On/Off, or nil for Default (so the key is omitted).
-    private func triStateValue(_ p: NSPopUpButton) -> String? {
-        switch p.indexOfSelectedItem {
-        case 1:  return "true"
-        case 2:  return "false"
-        default: return nil
+    /// Inverse: the value to persist for a tri-state position — `true`/
+    /// `false` for On/Off, or nil for Default (so the key is omitted).
+    /// Note this normalizes yes/no → true/false on save (behaviourally
+    /// identical to Unison; a cosmetic rewrite of the user's spelling).
+    nonisolated static func prefValue(forTriState t: TriState) -> String? {
+        switch t {
+        case .on:      return "true"
+        case .off:     return "false"
+        case .default: return nil
         }
+    }
+
+    private func setTriState(_ p: NSPopUpButton, from value: String?) {
+        p.selectItem(at: Self.triState(forPrefValue: value).rawValue)
+    }
+
+    private func triStateValue(_ p: NSPopUpButton) -> String? {
+        Self.prefValue(forTriState: TriState(rawValue: p.indexOfSelectedItem) ?? .default)
     }
 
     @objc private func permsModeChanged() { updatePermsMaskVisibility() }
@@ -978,16 +1001,6 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setValue(nil, forKey: "logfile")
         }
 
-        // Includes (Top before the first pref, Bottom after the last; each
-        // with its optional comment line).
-        let inc = includesView.entries
-            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
-        doc.setIncludes(
-            top: inc.filter { $0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
-            bottom: inc.filter { !$0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
-
         // Reconcile the advanced field with the existing document. Each
         // line should be `key = value`; we drop any line that doesn't
         // parse. Then for each key, replace any existing entries — but
@@ -1015,6 +1028,21 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         for k in orderedAdvancedKeys {
             doc.setValues(seenAdvancedKeys[k] ?? [], forKey: k)
         }
+
+        // Includes LAST — after every key-value write above. `setIncludes`
+        // positions bottom includes right after the last key-value entry,
+        // so writing them last guarantees they sit below newly-added
+        // Advanced (and conflict/log) keys. Done earlier, a key appended at
+        // end-of-document would land *below* a just-placed bottom include,
+        // flipping their order (the reported "include jumps above my
+        // Advanced item" bug). Top includes still land before the first pref.
+        let inc = includesView.entries
+            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+        doc.setIncludes(
+            top: inc.filter { $0.top }
+                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
+            bottom: inc.filter { !$0.top }
+                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
 
         return doc
     }
@@ -1398,15 +1426,71 @@ extension ProfileFormWindowController: NSTableViewDataSource, NSTableViewDelegat
         let selectedIdx = sidebarTable.selectedRow >= 0
             && visibleSectionIndices.indices.contains(sidebarTable.selectedRow)
             ? visibleSectionIndices[sidebarTable.selectedRow] : nil
+        // Match the section TITLE *and* the labels of the controls inside it,
+        // so e.g. "fast" surfaces the Options section via its "Fast update
+        // check" field. Title-only matching hid every field whose section
+        // title didn't happen to contain the query.
         visibleSectionIndices = sectionViews.indices.filter {
-            q.isEmpty || sectionViews[$0].title.lowercased().contains(q)
+            q.isEmpty
+                || sectionViews[$0].title.lowercased().contains(q)
+                || Self.sectionKeys(forTitle: sectionViews[$0].title).contains { $0.contains(q) }
+                || Self.sectionContainsLabel(sectionViews[$0].view, query: q)
         }
         sidebarTable.reloadData()
-        if let selectedIdx, let row = visibleSectionIndices.firstIndex(of: selectedIdx) {
+        // Resolve which section to display: keep the current one if it still
+        // matches, otherwise jump to the first match. Crucially, call
+        // showSection — programmatic selectRowIndexes does NOT fire
+        // tableViewSelectionDidChange, so without this the detail pane would
+        // stay stuck on the pre-search section (the reported symptom: search
+        // "fast", sidebar empties, but File Attributes stays on screen).
+        let target = (selectedIdx.map(visibleSectionIndices.contains) == true)
+            ? selectedIdx
+            : visibleSectionIndices.first
+        if let target, let row = visibleSectionIndices.firstIndex(of: target) {
             sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        } else if !visibleSectionIndices.isEmpty {
-            sidebarTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            showSection(target)
+        } else {
+            // No matches — clear the detail so it's unambiguously "no results"
+            // rather than a stale section.
+            sectionContainer.subviews.forEach { $0.removeFromSuperview() }
         }
+    }
+
+    /// The technical Unison pref keys a section owns, so search matches
+    /// e.g. "fastcheck" (the .prf key) as well as "Fast update check" (the
+    /// visible label). Reuses the same key lists the load/save logic uses,
+    /// so it can't drift from what each section actually edits. Lowercased
+    /// for case-insensitive `contains` against the query.
+    static func sectionKeys(forTitle title: String) -> [String] {
+        let keys: [String]
+        switch title {
+        case "Roots":           keys = ["root"] + remoteKeys
+        case "Paths":           keys = ["path"]
+        case "Ignore":          keys = ["ignore", "ignorenot"]
+        case "File Attributes": keys = attrKeys
+        case "Options":         keys = optionKeys
+        case "Includes":        keys = ["include"]
+        default:                keys = []
+        }
+        return keys.map { $0.lowercased() }
+    }
+
+    /// True if any label-bearing control in `view`'s subtree contains
+    /// `query` (already lowercased). Walks NSTextField labels (skipping
+    /// editable fields so user-typed values like roots/paths don't match),
+    /// NSButton titles (checkboxes), and NSPopUpButton item titles. Done
+    /// on demand rather than precomputed so it's robust to controls whose
+    /// titles are populated after section assembly.
+    private static func sectionContainsLabel(_ view: NSView, query: String) -> Bool {
+        if let pop = view as? NSPopUpButton {
+            if pop.itemTitles.contains(where: { $0.lowercased().contains(query) }) { return true }
+        } else if let field = view as? NSTextField, !field.isEditable {
+            if field.stringValue.lowercased().contains(query) { return true }
+        } else if let button = view as? NSButton {
+            if button.title.lowercased().contains(query) { return true }
+        }
+        for sub in view.subviews where sectionContainsLabel(sub, query: query) { return true }
+        return false
     }
 }
 
@@ -1555,8 +1639,14 @@ final class ListFieldView: NSView {
         // Disable smart-paste shenanigans on path content.
         textView.isAutomaticLinkDetectionEnabled = false
 
-        scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
+        // Canonical NSTextView-in-NSScrollView geometry (see
+        // ScrollableTextView). Without it these path fields drew but
+        // never became first responder on click — effectively
+        // non-editable — in the shipped (CI, SDK 15.5) build while fine
+        // in local Debug. Wrap mode: path content scrolls vertically.
+        ScrollableTextView.configure(text: textView, scroll: scrollView,
+                                     mode: .wrap,
+                                     initialSize: NSSize(width: 400, height: 80))
         scrollView.borderType = .lineBorder
         scrollView.autohidesScrollers = true
 
