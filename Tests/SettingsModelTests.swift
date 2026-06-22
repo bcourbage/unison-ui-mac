@@ -232,7 +232,8 @@ final class SettingsModelTests: XCTestCase {
         let expected: Set<String> = [
             "ProfileWindow",
             "ProfileEditorWindow",
-            "ProfileFormWindow",
+            "ProfileFormWindow",        // orphaned after the .v2 rename; kept so reset cleans it
+            "ProfileFormWindow.v2",
             "ReconcileWindow",
             "DiffWindow",
             "SettingsWindow",
@@ -345,5 +346,31 @@ final class SettingsModelTests: XCTestCase {
         SettingsModel.setNotifyOnSyncComplete(true, in: defaults)
         XCTAssertFalse(SettingsModel.soundOnSyncComplete(in: defaults),
                        "re-enabling notification must not flip the sound cue")
+    }
+
+    // MARK: - composeLogfile (per-mode logfile path)
+
+    func test_composeLogfile_sameFile_usesSharedFile_ignoringName() {
+        let path = SettingsModel.composeLogfile(
+            mode: .sameFile, name: "Ignored.log",
+            sharedFile: "/logs/All.log",
+            sharedDirectory: "/logs", perProfileFolder: "/per")
+        XCTAssertEqual(path, "/logs/All.log")
+    }
+
+    func test_composeLogfile_sameDirectory_joinsSharedDirAndName() {
+        let path = SettingsModel.composeLogfile(
+            mode: .sameDirectory, name: "Photos.log",
+            sharedFile: "/logs/All.log",
+            sharedDirectory: "/logs", perProfileFolder: "/per")
+        XCTAssertEqual(path, "/logs/Photos.log")
+    }
+
+    func test_composeLogfile_perProfile_joinsProfileFolderAndName() {
+        let path = SettingsModel.composeLogfile(
+            mode: .perProfile, name: "Photos.log",
+            sharedFile: "/logs/All.log",
+            sharedDirectory: "/logs", perProfileFolder: "/Users/me/PhotoLogs")
+        XCTAssertEqual(path, "/Users/me/PhotoLogs/Photos.log")
     }
 }

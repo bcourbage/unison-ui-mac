@@ -313,6 +313,24 @@ enum SettingsModel {
         defaults.set(mode.rawValue, forKey: loggingModeKey)
     }
 
+    /// Compose a profile's `logfile` path from the logging mode and the
+    /// already-resolved inputs. Pure (the caller does the UserDefaults reads
+    /// and tilde expansion) so the per-mode rule is unit-testable:
+    ///   - `.sameFile`      → the one shared file (`name` ignored)
+    ///   - `.sameDirectory` → shared folder + per-profile file `name`
+    ///   - `.perProfile`    → this profile's folder + file `name`
+    static func composeLogfile(mode: LoggingMode,
+                               name: String,
+                               sharedFile: String,
+                               sharedDirectory: String,
+                               perProfileFolder: String) -> String {
+        switch mode {
+        case .sameFile:      return sharedFile
+        case .sameDirectory: return (sharedDirectory as NSString).appendingPathComponent(name)
+        case .perProfile:    return (perProfileFolder as NSString).appendingPathComponent(name)
+        }
+    }
+
     // Mode 1: the single shared log file (absolute path).
     static let sharedLogFileKey = "logging.sharedFile"
 

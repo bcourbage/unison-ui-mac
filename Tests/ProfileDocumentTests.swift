@@ -226,4 +226,84 @@ final class ProfileDocumentTests: XCTestCase {
         XCTAssertEqual(ProfileDocument.listValuedKeys,
                        ["root", "path", "ignore", "ignorenot"])
     }
+
+    // MARK: - include directives + word escaping
+
+    func test_include_parse_andSerialize_roundTrip() {
+        let doc = ProfileDocument.parse("include Common.prf\nroot = /a\n")
+        XCTAssertEqual(doc.topIncludes.map(\.name), ["Common.prf"])
+        XCTAssertEqual(doc.serialized, "include Common.prf\nroot = /a\n")
+    }
+
+    func test_include_escapedSpaces_parseUnescapes_serializeReEscapes() {
+        // Unison reads `include a\ b` as the single word "a b".
+        let doc = ProfileDocument.parse("include File\\ System\\ Ignores.prf\n")
+        XCTAssertEqual(doc.topIncludes.map(\.name), ["File System Ignores.prf"])
+        XCTAssertEqual(doc.serialized, "include File\\ System\\ Ignores.prf\n")
+    }
+
+    func test_escapeWord_unescapeWord_roundTrip() {
+        for s in ["plain", "with space", "back\\slash", "a b\\c d", ""] {
+            XCTAssertEqual(
+                ProfileDocument.unescapeWord(ProfileDocument.escapeWord(s)), s,
+                "round-trip failed for \(s.debugDescription)")
+        }
+        XCTAssertEqual(ProfileDocument.escapeWord("File System Ignores"),
+                       "File\\ System\\ Ignores")
+    }
+
+    // MARK: - setIncludes: file-header fence (regression)
+
+    func test_setIncludes_topInclude_doesNotStealFileHeader() {
+        // A Top include is inserted just before the first pref. Without a
+        // fence it would land directly under the file-header comment and,
+        // on reload, claim that comment as its own. A blank line must
+        // separate them.
+        var doc = ProfileDocument.parse("# My profile header\nroot = /a\n")
+        doc.setIncludes(
+            top: [ProfileDocument.IncludeEntry(name: "Common.prf", comment: "")],
+            bottom: [])
+        // Header survives, and the include carries no comment on reload.
+        let reloaded = ProfileDocument.parse(doc.serialized)
+        XCTAssertEqual(reloaded.topIncludes.map(\.name), ["Common.prf"])
+        XCTAssertEqual(reloaded.topIncludes.first?.comment, "")
+        XCTAssertTrue(doc.serialized.contains("# My profile header"))
+    }
+
+    func test_setIncludes_topInclude_keepsItsOwnComment() {
+        var doc = ProfileDocument.parse("# header\nroot = /a\n")
+        doc.setIncludes(
+            top: [ProfileDocument.IncludeEntry(name: "Common.prf", comment: "shared ignores")],
+            bottom: [])
+        let reloaded = ProfileDocument.parse(doc.serialized)
+        XCTAssertEqual(reloaded.topIncludes.first?.comment, "shared ignores")
+        XCTAssertTrue(doc.serialized.contains("# header"))
+    }
+
+    // MARK: - setConflict (force/prefer) — position-preserving (regression)
+
+    func test_setConflict_setsInPlace_withoutMovingTheLine() {
+        // The regression: re-applying `force` must not move it to EOF (which,
+        // past a bottom include, let setIncludes eat a neighbouring comment).
+        var doc = ProfileDocument.parse("# above\nforce = /old\nauto = true\n")
+        doc.setConflict(key: "force", value: "/new")
+        // force keeps its slot: still before `auto`, comment still above it.
+        XCTAssertEqual(doc.serialized,
+                       "# above\nforce = /new\nauto = true\n")
+    }
+
+    func test_setConflict_clearsTheOtherKey() {
+        var doc = ProfileDocument.parse("prefer = newer\n")
+        doc.setConflict(key: "force", value: "/x")
+        XCTAssertEqual(doc.firstValue(forKey: "force"), "/x")
+        XCTAssertNil(doc.firstValue(forKey: "prefer"))
+    }
+
+    func test_setConflict_nilClearsBoth() {
+        var doc = ProfileDocument.parse("force = /x\nprefer = newer\nauto = true\n")
+        doc.setConflict(key: nil, value: nil)
+        XCTAssertNil(doc.firstValue(forKey: "force"))
+        XCTAssertNil(doc.firstValue(forKey: "prefer"))
+        XCTAssertEqual(doc.firstValue(forKey: "auto"), "true")
+    }
 }

@@ -149,6 +149,25 @@ struct ProfileDocument: Equatable {
         }
     }
 
+    /// Apply a mutually-exclusive conflict preference (`force` / `prefer`)
+    /// in place. `key` is `"force"` or `"prefer"`; nil clears both.
+    ///
+    /// The chosen key is written with a single `setValue`, so it keeps its
+    /// existing position; only the *other* key is cleared. Clearing both
+    /// first and then re-adding would append the line at end-of-file — and
+    /// with a bottom `include` present, that moved the line past the
+    /// include so `setIncludes` then deleted the comment directly above it
+    /// (the dropped `# path = …` regression). Setting in place avoids it.
+    mutating func setConflict(key: String?, value: String?) {
+        guard let key else {
+            setValue(nil, forKey: "force")
+            setValue(nil, forKey: "prefer")
+            return
+        }
+        setValue(value, forKey: key)
+        setValue(nil, forKey: key == "force" ? "prefer" : "force")
+    }
+
     /// Like `values(forKey:)` but also surfaces `#` comment lines that sit
     /// directly above a value (as `# text`), so a freeform editor box can
     /// show and round-trip per-entry comments. A blank line between a comment

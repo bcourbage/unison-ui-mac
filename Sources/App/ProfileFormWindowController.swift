@@ -940,27 +940,20 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         doc.setValue(triStateValue(autoPopup), forKey: "auto")
         doc.setValue(triStateValue(fastcheckPopup), forKey: "fastcheck")
 
-        // Conflict handling: prefer/force are mutually exclusive. Set the
-        // chosen key IN PLACE (a single setValue replaces it at its original
-        // position) and clear only the other one. Nulling both first and then
-        // re-adding would append the line to the END of the document — which
-        // can move it past a bottom `include`, so the next setIncludes would
-        // then eat the comment now sitting directly above the include. (This
-        // dropped a `# path = …` line that lived just above `force`.)
+        // Conflict handling: resolve the popup (or a raw value it can't
+        // represent) into a single (key, value) and apply it via
+        // ProfileDocument.setConflict, which sets in place and clears the
+        // other key. See that method for why position matters here.
         let sel = conflictPopup.indexOfSelectedItem
         if sel < Self.conflictChoices.count {
             let c = Self.conflictChoices[sel]
             if let key = c.key, let target = c.target {
-                doc.setValue(conflictValue(forTarget: target), forKey: key)
-                doc.setValue(nil, forKey: key == "force" ? "prefer" : "force")
+                doc.setConflict(key: key, value: conflictValue(forTarget: target))
             } else {
-                // Default (ask on conflict): clear both.
-                doc.setValue(nil, forKey: "force")
-                doc.setValue(nil, forKey: "prefer")
+                doc.setConflict(key: nil, value: nil)   // Default (ask on conflict)
             }
         } else if let raw = rawConflict {
-            doc.setValue(raw.value, forKey: raw.key)
-            doc.setValue(nil, forKey: raw.key == "force" ? "prefer" : "force")
+            doc.setConflict(key: raw.key, value: raw.value)
         }
 
         // Logging. The global mode decides how logfile is composed.
@@ -968,18 +961,16 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setValue("true", forKey: "log")
             let nameRaw = logNameField.stringValue.trimmingCharacters(in: .whitespaces)
             let name = nameRaw.isEmpty ? defaultLogName() : nameRaw
-            switch SettingsModel.loggingMode() {
-            case .sameFile:
-                doc.setValue(SettingsModel.sharedLogFile(), forKey: "logfile")
-            case .sameDirectory:
-                doc.setValue((SettingsModel.sharedLogDirectory() as NSString)
-                    .appendingPathComponent(name), forKey: "logfile")
-            case .perProfile:
-                let folderRaw = logFolderField.stringValue.trimmingCharacters(in: .whitespaces)
-                let folder = folderRaw.isEmpty ? SettingsModel.defaultLogDirectory()
-                                               : (folderRaw as NSString).expandingTildeInPath
-                doc.setValue((folder as NSString).appendingPathComponent(name), forKey: "logfile")
-            }
+            let folderRaw = logFolderField.stringValue.trimmingCharacters(in: .whitespaces)
+            let perProfileFolder = folderRaw.isEmpty
+                ? SettingsModel.defaultLogDirectory()
+                : (folderRaw as NSString).expandingTildeInPath
+            doc.setValue(SettingsModel.composeLogfile(
+                mode: SettingsModel.loggingMode(),
+                name: name,
+                sharedFile: SettingsModel.sharedLogFile(),
+                sharedDirectory: SettingsModel.sharedLogDirectory(),
+                perProfileFolder: perProfileFolder), forKey: "logfile")
         } else {
             // Off: write `false` only if it was previously on; otherwise
             // preserve the original (absent stays absent, false stays false).
