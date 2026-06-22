@@ -536,6 +536,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     // MARK: - Details panel
 
     private func configureDetailsPanel() {
+        // Canonical "NSTextView inside an NSScrollView" geometry. Without
+        // this explicit frame + resizing + text-container setup, a
+        // programmatically created NSTextView lays out and paints under
+        // newer SDKs but renders BLANK under older ones — the string is in
+        // the model (AX can read it) but never drawn. That's exactly what
+        // bit the CI-built release (SDK 15.5): the details footer showed
+        // nothing even though the data was there. See Apple's "Putting an
+        // NSTextView in an NSScrollView" guidance.
+        let startSize = NSSize(width: 400, height: 80)
+        detailsTextView.frame = CGRect(origin: .zero, size: startSize)
+        detailsTextView.minSize = NSSize(width: 0, height: 0)
+        detailsTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                         height: CGFloat.greatestFiniteMagnitude)
+        detailsTextView.isVerticallyResizable = true
+        detailsTextView.isHorizontallyResizable = false
+        detailsTextView.autoresizingMask = [.width]
+        detailsTextView.textContainer?.containerSize =
+            NSSize(width: startSize.width, height: CGFloat.greatestFiniteMagnitude)
+        detailsTextView.textContainer?.widthTracksTextView = true
+
         detailsTextView.isEditable = false
         detailsTextView.isSelectable = true
         detailsTextView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
