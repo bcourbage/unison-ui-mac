@@ -25,6 +25,15 @@ section at the bottom so this list stays scannable.
       a UI test harness. Decision: deferred unless a regression
       pattern emerges that pure-logic tests can't catch.
 
+      **Progress (2026-06-21):** continued the pure-logic split —
+      extracted `ProfileDocument.setConflict` (the force/prefer
+      reconciliation, with a regression test for the dropped-comment bug)
+      and `SettingsModel.composeLogfile` (per-mode logfile path) out of
+      `ProfileFormWindowController.formIntoDocument`, plus backfilled
+      `ProfileDocument` include/escape/fence tests. Suite 286 → 333.
+      View-controller line counts above are now stale (files have grown).
+      Posture unchanged: keep extracting, no UI harness.
+
 
 ---
 
