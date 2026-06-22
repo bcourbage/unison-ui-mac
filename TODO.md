@@ -5,17 +5,6 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Upstream `abortAll` callback — PR in flight.** The local patch
-      (`patches/0001-uimacbridge-register-abortAll.patch`, applied via
-      `make apply-patches`) was human-rewritten and submitted upstream as
-      [bcpierce00/unison#1198](https://github.com/bcpierce00/unison/pull/1198).
-      If it merges, retire the downstream patch: drop the `patches/` file
-      and the `make apply-patches` step once the vendored blob is rebuilt
-      from an upstream that includes the registration. (This reverses the
-      earlier "stays downstream" decision — proposing it was fine because
-      a human authored the contribution from scratch.) If upstream
-      declines, the patch simply stays local — no impact.
-
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
