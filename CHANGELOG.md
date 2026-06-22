@@ -9,6 +9,47 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.1.8] — 2026-06-22
+
+### Fixed
+
+- **App could hang (beachball, force-quit) on a bad SSH connection.** When
+  a profile's SSH key, host, or `servercmd` was wrong, the connection ran
+  synchronously on the main thread, freezing the whole UI until force-quit.
+  The connect + scan (`init1`, the credential prompt loop, `init2`) now run
+  off the main thread, guarded by a no-progress stall watchdog that
+  recovers cleanly to the profile picker. **Stop** works during the
+  connect/scan phase, and a slow-but-progressing large scan is no longer
+  mistaken for a hang.
+
+- **Profile Editor silently deleted boolean prefs written as `yes`/`no`.**
+  A profile with e.g. `fastcheck = no` showed "Default" in the editor and,
+  on save, dropped the line entirely. The Default/On/Off popups
+  (`fastcheck`, `auto`, `confirmbigdel`, `rsrc`, `owner`, `group`,
+  `dontchmod`, `times`) now understand Unison's full boolean vocabulary —
+  `yes`/`no` and a bare key, not just `true`/`false`.
+
+- **Blank / un-scrollable text views in release builds.** The Diff window
+  rendered blank diffs, and the status-details panel clipped long SSH error
+  dumps with no way to scroll. The canonical `NSTextView`-in-`NSScrollView`
+  setup is now enforced through a single shared factory used by every
+  scrollable text view, retiring this recurring release-only bug class.
+
+- **Profile Editor: bottom `include` could jump above an added Advanced
+  item.** Includes are now written last on save, so a bottom include stays
+  below later-added keys.
+
+### Added
+
+- **Diff button on the reconcile toolbar.** Diff was previously buried in
+  the Action menu; it now has a toolbar button between the Direction group
+  and Go, enabled only when a single diff-able file is selected.
+
+- **Profile Editor search matches more.** The sidebar search now matches a
+  section's technical preference names (e.g. `fastcheck`, `sshargs`) and
+  its field labels, not only the section title, and the detail pane follows
+  the match.
+
 ## [0.1.7] — 2026-06-22
 
 ### Fixed
