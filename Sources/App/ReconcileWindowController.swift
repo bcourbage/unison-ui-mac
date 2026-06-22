@@ -1662,16 +1662,33 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
     // aggregate summary bar (collapsed) and blank (expanded, children own
     // their bars). Repaint it immediately rather than waiting for the next
     // progress tick. The toggled item arrives under the "NSObject" key.
+    //
+    // CRITICAL: repaint by RELOADING THE ROW'S CELLS (by index), never via
+    // `reloadItem(_:reloadChildren:)`. `reloadItem` synchronously re-posts
+    // the ItemDidExpand/DidCollapse notification, which re-enters this very
+    // handler and recurses until the stack overflows (observed as a crash
+    // in 0.1.5/0.1.6 when collapsing a folder mid-sync). Reloading a row's
+    // cells changes no expansion state, so it can't re-enter.
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard isSyncing, let node = notification.userInfo?["NSObject"] as? ReconcileNode
-        else { return }
-        outlineView.reloadItem(node, reloadChildren: false)
+        guard let node = notification.userInfo?["NSObject"] as? ReconcileNode else { return }
+        repaintProgressCell(for: node)
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard isSyncing, let node = notification.userInfo?["NSObject"] as? ReconcileNode
-        else { return }
-        outlineView.reloadItem(node, reloadChildren: true)
+        guard let node = notification.userInfo?["NSObject"] as? ReconcileNode else { return }
+        repaintProgressCell(for: node)
+    }
+
+    /// Repaint just the toggled folder's own row (so its collapsed-folder
+    /// aggregate bar appears/clears). Only meaningful during sync; reloads
+    /// the row's cells by index, which posts no expand/collapse notification.
+    private func repaintProgressCell(for node: ReconcileNode) {
+        guard isSyncing else { return }
+        let row = outlineView.row(forItem: node)
+        guard row >= 0, outlineView.numberOfColumns > 0 else { return }
+        outlineView.reloadData(
+            forRowIndexes: IndexSet(integer: row),
+            columnIndexes: IndexSet(integersIn: 0..<outlineView.numberOfColumns))
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {

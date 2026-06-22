@@ -9,6 +9,21 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.1.7] — 2026-06-22
+
+### Fixed
+
+- **Crash when expanding or collapsing a folder mid-sync.** Toggling a
+  folder's disclosure triangle while a sync was in progress crashed the
+  app (`EXC_BAD_ACCESS`, stack overflow). The `outlineViewItemDidExpand` /
+  `outlineViewItemDidCollapse` handlers repainted the toggled row's
+  progress cell via `reloadItem(_:reloadChildren:)`, which synchronously
+  re-posts the same expand/collapse notification — re-entering the handler
+  and recursing until the stack was exhausted. Repaint now reloads the
+  row's cells by index (`reloadData(forRowIndexes:columnIndexes:)`), which
+  changes no expansion state and posts no notification, so it cannot
+  re-enter. Reproduced on a live network sync and verified fixed.
+
 ## [0.1.6] — 2026-06-21
 
 ### Fixed
