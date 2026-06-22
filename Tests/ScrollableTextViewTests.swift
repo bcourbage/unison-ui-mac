@@ -21,8 +21,15 @@ final class ScrollableTextViewTests: XCTestCase {
     func test_configure_setsNonZeroFrame() {
         let (_, text) = ScrollableTextView.make(
             mode: .wrap, initialSize: NSSize(width: 300, height: 120))
-        // A zero/implicit frame is the original footgun — nothing draws.
-        XCTAssertEqual(text.frame.size, NSSize(width: 300, height: 120))
+        // The invariant is a NON-ZERO frame — a zero/implicit frame is the
+        // original footgun (nothing draws). Don't assert the exact width:
+        // assigning the text view as documentView shrinks it by the
+        // vertical scroller's width, and that inset differs by environment
+        // (0 for overlay scrollers locally, ~15pt for legacy scrollers in
+        // CI). Exact pixels here would be the same env-sensitivity this
+        // whole helper exists to tame.
+        XCTAssertGreaterThan(text.frame.width, 0)
+        XCTAssertGreaterThan(text.frame.height, 0)
     }
 
     func test_configure_isVerticallyResizable_bothModes() {
@@ -60,10 +67,12 @@ final class ScrollableTextViewTests: XCTestCase {
             mode: .wrap, initialSize: NSSize(width: 400, height: 80))
         XCTAssertFalse(text.isHorizontallyResizable)
         XCTAssertEqual(text.autoresizingMask, [.width])
+        // The wrap invariant: the container tracks the text view's width
+        // (so text wraps to whatever the box is) and is unbounded in
+        // height (so it grows + scrolls). The exact container width isn't
+        // asserted — it follows the scroller-adjusted text-view width,
+        // which varies by environment (overlay vs legacy scrollers).
         XCTAssertTrue(text.textContainer?.widthTracksTextView ?? false)
-        // Container width is bounded to the initial width (so text wraps),
-        // height unbounded (so it grows + scrolls).
-        XCTAssertEqual(text.textContainer?.containerSize.width, 400)
         XCTAssertEqual(text.textContainer?.containerSize.height, CGFloat.greatestFiniteMagnitude)
         XCTAssertFalse(scroll.hasHorizontalScroller)
     }
