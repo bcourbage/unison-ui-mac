@@ -1,0 +1,165 @@
+# Cut a GitHub release when a `v*` tag is pushed.
+#
+# Mirrors ci.yml's build environment but builds the Release configuration,
+# packages the ad-hoc-signed .app with `ditto`, and attaches the zip to a
+# GitHub Release whose notes come from the matching CHANGELOG section.
+#
+# This replaces the manual flow (`make build CONFIG=Release` → `ditto` →
+# `gh release create`). The Homebrew cask is NOT bumped here — the tap
+# repo's `bump-cask.yml` detects the new release via `brew livecheck`
+# daily and opens the bump PR on its own.
+#
+# Normal use: bump MARKETING_VERSION in project.yml, update CHANGELOG,
+# commit, then `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
+#
+# Dry run: Actions tab → Run workflow → pick a tag, leave dry_run=true.
+# It builds + packages and uploads the zip as a workflow artifact, but
+# does NOT create or modify any Release (so a published asset's bytes —
+# and thus the cask's sha256 — are never disturbed).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.1.5"
+        required: true
+      dry_run:
+        description: "Build + package only; do not create/modify a Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build + publish release
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Resolve tag + version
+        id: ver
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag '$tag' must start with 'v'"; exit 1 ;;
+          esac
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"   >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tagged commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Show toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          uname -m
+
+      # Same cache shape + key as ci.yml so the two workflows share the
+      # restored OCaml install.
+      - name: Cache Homebrew OCaml install
+        id: brew-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /opt/homebrew/Cellar/ocaml
+            /opt/homebrew/opt/ocaml
+            /opt/homebrew/bin/ocaml*
+            /opt/homebrew/lib/ocaml
+          key: ${{ runner.os }}-ocaml-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-ocaml-
+
+      - name: Install OCaml (if not cached)
+        if: steps.brew-cache.outputs.cache-hit != 'true'
+        run: brew install ocaml
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Verify the tag matches MARKETING_VERSION
+        # Guards against tagging without bumping project.yml (or vice
+        # versa) — the About panel / CFBundleShortVersionString would
+        # otherwise disagree with the release name.
+        run: |
+          mv=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$mv" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::tag version ${{ steps.ver.outputs.version }} != project.yml MARKETING_VERSION $mv"
+            exit 1
+          fi
+
+      - name: Run tests
+        # The tag is usually cut from a green main, but a release is
+        # high-stakes — re-verify on the exact tagged tree before shipping.
+        run: make test
+
+      - name: Build (Release configuration)
+        run: make build CONFIG=Release
+
+      - name: Package the .app
+        id: pkg
+        run: |
+          app=".build/derived/Build/Products/Release/unison-ui-mac.app"
+          test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
+          # Fail loudly if the ad-hoc signature didn't take — a stripped
+          # signature is the classic cause of "app is damaged" on launch.
+          codesign --verify --deep --strict "$app"
+          zip="unison-ui-mac-${{ steps.ver.outputs.version }}.app.zip"
+          /usr/bin/ditto -c -k --keepParent "$app" "$zip"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "Built $zip"
+          shasum -a 256 "$zip"
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          # Lines between this version's `## [x.y.z]` header and the next
+          # `## [` header.
+          awk -v ver="$v" '
+            $0 ~ ("^## \\[" ver "\\]") {f=1; next}
+            /^## \[/ {f=0}
+            f
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "Release $v." > notes.md
+            echo "::warning::no CHANGELOG section for $v — using a stub note."
+          fi
+
+      # Dry run (workflow_dispatch with dry_run=true): keep the artifact
+      # for inspection, touch no Release.
+      - name: Upload artifact (dry run)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.pkg.outputs.zip }}
+          path: ${{ steps.pkg.outputs.zip }}
+          retention-days: 7
+
+      # Real publish (tag push, or dispatch with dry_run=false). Create the
+      # Release if it doesn't exist; otherwise replace its asset in place.
+      - name: Create / update the GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          zip="${{ steps.pkg.outputs.zip }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag exists — replacing its asset."
+            gh release upload "$tag" "$zip" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "$zip" \
+              --repo "${{ github.repository }}" \
+              --title "$tag" \
+              --notes-file notes.md
+          fi

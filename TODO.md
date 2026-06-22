@@ -5,18 +5,6 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Release-build automation** — current process for cutting a
-      release is manual: `make build CONFIG=Release` →
-      `ditto -c -k --sequesterRsrc --keepParent` →
-      `gh release create v<version> <zip>`. Worth automating once
-      we've cut 2–3 releases manually and the pattern stabilizes.
-      Shape: `.github/workflows/release.yml` triggered on tag push
-      matching `v*`, runs the same build pipeline as `ci.yml` but
-      Release-config, produces the zipped .app, attaches to the
-      release with auto-generated notes from the matching CHANGELOG
-      section (`gh release create … --notes-from-tag` or a
-      jq-against-CHANGELOG.md script).
-
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
@@ -352,6 +340,20 @@ landed across the bring-up and follow-on sessions.*
       divergence is findable if a related bug ever surfaces.
 
 ### Build + ops
+
+- [x] **Release-build automation** — `.github/workflows/release.yml`
+      triggers on a `v*` tag push: it checks out the tag, mirrors
+      `ci.yml`'s OCaml/xcodegen setup, asserts the tag matches
+      `project.yml`'s `MARKETING_VERSION`, runs `make test`, builds
+      `make build CONFIG=Release`, verifies the ad-hoc signature, packages
+      with `ditto -c -k --keepParent`, pulls notes from the matching
+      CHANGELOG section, and `gh release create`s (or re-uploads the asset
+      if the release already exists). A `workflow_dispatch` `dry_run` mode
+      (default on) builds + uploads the zip as an artifact without touching
+      any Release, so the pipeline is testable without disturbing a
+      published asset's bytes (and thus the cask sha256). The Homebrew
+      cask is intentionally NOT bumped here — the tap's `bump-cask.yml`
+      detects the new release via `brew livecheck` daily and opens the PR.
 
 - [x] **Isolate test archives from the real Unison dir** — when the
       unit-test bundle is hosted by the app, `AppDelegate`
