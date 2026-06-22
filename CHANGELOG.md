@@ -9,6 +9,36 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [Unreleased]
+
+### Added
+
+- **Progress bar on collapsed folders during sync.** A collapsed folder
+  row now shows an aggregate progress bar summarizing the transfer of its
+  hidden contents, instead of a blank Progress cell. The fraction is
+  byte-weighted (a large file dominates a small one), falling back to a
+  done-count when the folder's items have no size (e.g. deletions). The
+  bar appears/clears as you collapse/expand the folder.
+
+### Fixed
+
+- **The Profile Editor now honors "Reset window & toolbar layout."**
+  Previously the editor reused a long-lived window object, so a reset
+  cleared the saved frame in defaults but the next open still appeared at
+  the old (possibly off-screen) position. The editor is now released on
+  close, so it re-reads the saved frame — or centers when none exists.
+
+### Internal
+
+- Release builds + GitHub releases are now automated by a `v*`-tag
+  workflow (`.github/workflows/release.yml`); the Homebrew cask continues
+  to auto-bump from the tap.
+- Integration tests now run against an isolated `$UNISON` temp directory,
+  so the suite never reads or writes the user's real Unison archives.
+- More controller logic extracted to pure, tested functions
+  (`ProfileDocument.setConflict`, `SettingsModel.composeLogfile`); suite
+  grew to 333 tests.
+
 ## [0.1.4] — 2026-06-21
 
 ### Added

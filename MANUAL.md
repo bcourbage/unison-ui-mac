@@ -468,6 +468,20 @@ line. Clicking it pops up a scrollable, selectable view with the full
 text. The summary label's hover tooltip also carries the full text as a
 one-hover alternative.
 
+### Progress column
+
+During a sync, each **file** row shows its own transfer progress in the
+Progress column (a bar that fills as bytes move; `done` when complete; a
+red `⚠` on failure — hover for the reason).
+
+A **collapsed folder** row shows an *aggregate* bar summarizing the
+transfer of everything hidden beneath it, so you can watch a whole branch
+advance without expanding it. The fraction is byte-weighted — a large file
+contributes more than a small one — and falls back to a simple
+done-count when the folder's items carry no size (e.g. a folder of
+deletions). Expanding the folder clears its aggregate bar (its children
+then show their own); collapsing it again brings the summary back.
+
 ### Global progress bar
 
 Visible during init2 (indeterminate) and during sync (determinate). Hidden
