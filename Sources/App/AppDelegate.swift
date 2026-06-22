@@ -36,6 +36,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let log = TraceLog.shared
 
+    /// Serial queue for the BLOCKING OCaml connect/scan bridge calls —
+    /// `init1`, the connection prompt loop, and `init2`. Each parks the
+    /// calling thread inside `run_on_ocaml_thread` until OCaml returns;
+    /// running them here instead of on the main thread means a slow or
+    /// wedged SSH connection (bad host, bad key, bad `servercmd`) can't
+    /// beachball the UI. The OCaml-side completion callbacks already hop
+    /// back to the main queue, so all UI work stays main-isolated.
+    private let connectQueue = DispatchQueue(label: "net.courbage.unison-ui.connect")
+
+    /// Monotonic epoch for the current connect attempt. Bumped whenever
+    /// an attempt is superseded or torn down (timeout, user cancel,
+    /// fatal/warn abort) so a late callback from an abandoned attempt is
+    /// ignored rather than driving the flow against stale UI.
+    private var connectGeneration = 0
+
+    /// Fires if the initial connect+scan doesn't resolve (items, a
+    /// credential prompt, or an error) within `connectStallTimeout`. Without
+    /// it a wedged SSH would leave the window spinning forever with no
+    /// way out but force-quit. Lives on the main queue — which is now
+    /// free to fire it precisely because the connect is off-main.
+    private var connectWatchdog: DispatchWorkItem?
+
+    /// The (profile, generation) the live watchdog belongs to, so a
+    /// progress event can re-arm it without the caller threading those
+    /// through. Non-nil iff a watchdog is currently armed.
+    private var activeConnect: (profile: String, generation: Int)?
+
+    /// How long the connect/scan may go WITHOUT PROGRESS before the
+    /// watchdog declares a timeout. This is a *stall* timer, not a
+    /// total-elapsed budget: every scan-status message from Unison
+    /// resets it (see `noteConnectProgress`), so a slow-but-progressing
+    /// first scan of a large tree never trips it — only genuine silence
+    /// (a hung ssh or a dropped connection) does. That's why a single
+    /// generous value works for every profile without a per-profile knob.
+    private let connectStallTimeout: TimeInterval = 60
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.write("applicationDidFinishLaunching start")
 
@@ -223,6 +259,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // logging to TraceLog for dev visibility.
         UnisonBridge.installStatusHandler { [weak self] msg in
             TraceLog.shared.write("[ocaml→status] \(msg.prefix(200))")
+            // A status message means the connect/scan is making progress
+            // — reset the stall timer so a slow-but-live scan isn't
+            // mistaken for a hang.
+            self?.noteConnectProgress()
             self?.reconcileWindowController?.updateScanStatus(msg)
         }
 
@@ -254,6 +294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onRescanRequested: { [weak self] in
                 self?.rescanCurrentProfile(profile)
+            },
+            onCancelScan: { [weak self] in
+                self?.cancelConnectInProgress(reason: "user pressed Stop")
             }
         )
         reconcile.showWindow(nil)
@@ -272,32 +315,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // established, the probe is typically done.
         runVersionCheckIfNeeded(profile: profile)
 
+        // Start a fresh connect attempt: bump the epoch + arm the
+        // watchdog. `generation` is captured by the handlers below so a
+        // late callback from a timed-out/superseded attempt is ignored.
+        let generation = beginConnectAttempt(profile: profile)
+
         // Wire init1/init2 handlers, then kick off init1. Init2Complete will
         // populate the reconcile window via endRescan/replaceItems.
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
-            self?.log.write("init1 complete (needs_prompt=\(needsPrompt))")
             guard let self else { return }
+            self.log.write("init1 complete (needs_prompt=\(needsPrompt))")
+            guard self.isCurrentConnect(generation) else {
+                self.log.write("init1 complete ignored — superseded/timed-out attempt")
+                return
+            }
             // init1 ran loadTheFile, so any one-shot `ignorearchives` is
             // now in Unison's in-memory prefs — safe to restore the .prf.
             self.restoreIgnoreArchivesPrfIfNeeded()
             if needsPrompt {
-                self.drivePromptLoop()
+                self.drivePromptLoop(profile: profile, generation: generation)
             } else {
                 self.log.write("init1 ok — calling init2")
-                unison_bridge_init2()
+                self.connectQueue.async { unison_bridge_init2() }
             }
         }
         UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
-            self?.log.write("init2 complete — \(items.count) reconcile items")
+            guard let self else { return }
+            guard self.isCurrentConnect(generation) else {
+                self.log.write("init2 complete ignored — superseded/timed-out attempt")
+                return
+            }
+            // Scan resolved within the window — stand the watchdog down.
+            self.disarmConnectWatchdog()
+            self.log.write("init2 complete — \(items.count) reconcile items")
             reconcile?.endRescan(newItems: items)
             // Autotest hooks live here so they run after the items land.
             // Compiled out in Release builds.
             #if DEBUG
-            self?.maybeRunAutotestHooks(reconcile: reconcile, items: items)
+            self.maybeRunAutotestHooks(reconcile: reconcile, items: items)
             #endif
         }
 
-        profile.withCString { unison_bridge_init1($0) }
+        // init1 BLOCKS until OCaml resolves the connection — run it off
+        // the main thread (see `connectQueue`). The init1-complete
+        // callback hops back to main on its own.
+        connectQueue.async {
+            profile.withCString { unison_bridge_init1($0) }
+        }
     }
 
     /// SSH credential prompt loop. Runs after init1Complete with
@@ -306,32 +370,157 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// since the picker has already closed by this point.
     private var pendingPasswordSheet: PasswordSheet?
 
-    private func drivePromptLoop() {
-        guard let cstr = unison_bridge_connection_prompt() else {
-            log.write("connection: no more prompts — calling connection_end + init2")
-            unison_bridge_connection_end()
-            unison_bridge_init2()
-            return
+    // MARK: - Connect attempt lifecycle (epoch + watchdog)
+
+    /// Open a new connect attempt: bump the epoch and arm the watchdog.
+    /// Returns the new generation for the init1/init2 handlers to capture.
+    @discardableResult
+    private func beginConnectAttempt(profile: String) -> Int {
+        connectGeneration += 1
+        let generation = connectGeneration
+        armConnectWatchdog(profile: profile, generation: generation)
+        return generation
+    }
+
+    /// True when `generation` is still the live attempt. Handlers check
+    /// this before acting so a callback from a timed-out / cancelled /
+    /// superseded attempt is ignored.
+    private func isCurrentConnect(_ generation: Int) -> Bool {
+        generation == connectGeneration
+    }
+
+    /// Abandon the current attempt: bump the epoch (so in-flight
+    /// callbacks no-op) and stand the watchdog down.
+    private func invalidateConnect() {
+        connectGeneration += 1
+        disarmConnectWatchdog()
+    }
+
+    /// (Re)schedule the watchdog for `generation`. Replaces any existing
+    /// timer, so callers can use it both to reset the clock at each
+    /// blocking phase boundary (init1 → prompt fetch → init2) and as the
+    /// per-progress reset (`noteConnectProgress`).
+    private func armConnectWatchdog(profile: String, generation: Int) {
+        connectWatchdog?.cancel()
+        activeConnect = (profile, generation)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isCurrentConnect(generation) else { return }
+            self.handleConnectTimeout(profile: profile, generation: generation)
         }
-        let prompt = String(cString: cstr)
-        log.write("connection prompt: \(prompt)")
-        let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
-            guard let self else { return }
-            self.pendingPasswordSheet = nil
-            guard let response else {
-                self.log.write("connection: user cancelled")
-                unison_bridge_connection_cancel()
-                // Cancelling drops us back to the picker — closing reconcile
-                // triggers the onClose -> showProfilePicker path.
-                self.reconcileWindowController?.close()
+        connectWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + connectStallTimeout, execute: item)
+    }
+
+    private func disarmConnectWatchdog() {
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
+        activeConnect = nil
+    }
+
+    /// Reset the stall timer because the connect/scan reported progress.
+    /// Called on every scan-status message while a watchdog is armed, so
+    /// a long-but-progressing scan is never mistaken for a hang. No-op
+    /// when no attempt is in flight (e.g. status during a sync, or while
+    /// a credential sheet is open — both leave the watchdog disarmed).
+    private func noteConnectProgress() {
+        guard let (profile, generation) = activeConnect,
+              isCurrentConnect(generation) else { return }
+        armConnectWatchdog(profile: profile, generation: generation)
+    }
+
+    /// The connect+scan went `connectStallTimeout` seconds without any
+    /// progress. Recover the UI (the part we can always do) and make a
+    /// best-effort attempt to cancel the half-open OCaml connection.
+    private func handleConnectTimeout(profile: String, generation: Int) {
+        guard isCurrentConnect(generation) else { return }
+        log.write("connect watchdog: '\(profile)' stalled \(Int(connectStallTimeout))s with no progress — tearing down")
+        // Invalidate first so any late init1/init2 callback (e.g. if the
+        // OS eventually fails the ssh) is ignored, including ones that
+        // could arrive while the alert below is modal.
+        invalidateConnect()
+        // Best-effort cancel of the OCaml-side connection. NOT on
+        // connectQueue — that's wedged in the stuck init1/init2 — so use a
+        // throwaway thread. If the OCaml worker is truly blocked on SSH
+        // I/O this may not return promptly; that's why it's fire-and-
+        // forget. The UI recovers regardless, and the zombie worker / ssh
+        // is reaped when the app exits.
+        DispatchQueue.global().async { unison_bridge_connection_cancel() }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn’t connect to the remote"
+        alert.informativeText =
+            "Unison stopped responding while connecting to “\(profile)” "
+            + "(no progress for \(Int(connectStallTimeout)) seconds). "
+            + "This usually means the SSH host is unreachable, the key in sshargs is wrong, "
+            + "or servercmd points at a unison that isn’t there. Check the profile’s root, "
+            + "sshargs, and servercmd, then try again."
+        alert.addButton(withTitle: "Back to Profiles")
+        alert.runModal()
+        // Close the spinning reconcile window; its onClose returns to the
+        // picker. forceClose because we're not in a sync (isSyncing=false)
+        // and want it gone regardless.
+        abortAllInFlight(reason: "connect timed out", forceClose: true)
+    }
+
+    /// User pressed Stop while the connect/scan was in flight. Mirrors the
+    /// timeout teardown minus the alert — they asked for it, no need to
+    /// explain. Best-effort cancel of the OCaml connection, then close the
+    /// window (→ picker). `abortAllInFlight` invalidates the attempt so a
+    /// late callback is ignored.
+    private func cancelConnectInProgress(reason: String) {
+        log.write("connect: \(reason) — aborting in-flight connect/scan")
+        DispatchQueue.global().async { unison_bridge_connection_cancel() }
+        abortAllInFlight(reason: reason, forceClose: true)
+    }
+
+    private func drivePromptLoop(profile: String, generation: Int) {
+        guard isCurrentConnect(generation) else { return }
+        // Fetching the next prompt, replying, and ending the connection
+        // all BLOCK on the OCaml worker, so run them on connectQueue.
+        // Keep the watchdog armed across the (blocking) prompt fetch so a
+        // wedge there is still caught; disarm only once we're actually
+        // waiting on the user with a sheet open. The post-reply recursion
+        // re-arms it for the next fetch.
+        armConnectWatchdog(profile: profile, generation: generation)
+        connectQueue.async {
+            let cstr = unison_bridge_connection_prompt()
+            guard let cstr else {
+                // TraceLog.shared is thread-safe (the OCaml callbacks log
+                // through it off-main too); `self.log` would be a main-actor hop.
+                TraceLog.shared.write("connection: no more prompts — connection_end + init2")
+                unison_bridge_connection_end()
+                // Watchdog stays armed across init2; init2Complete disarms.
+                unison_bridge_init2()
                 return
             }
-            unison_bridge_connection_reply(response)
-            self.drivePromptLoop()
-        }
-        pendingPasswordSheet = sheet
-        if let parent = reconcileWindowController?.window ?? profileWindowController?.window {
-            sheet.runAsSheet(over: parent)
+            let prompt = String(cString: cstr)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrentConnect(generation) else { return }
+                // Now waiting on the user — don't time out while the sheet is open.
+                self.disarmConnectWatchdog()
+                self.log.write("connection prompt: \(prompt)")
+                let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
+                    guard let self, self.isCurrentConnect(generation) else { return }
+                    self.pendingPasswordSheet = nil
+                    guard let response else {
+                        self.log.write("connection: user cancelled")
+                        self.invalidateConnect()
+                        self.connectQueue.async { unison_bridge_connection_cancel() }
+                        // Cancelling drops us back to the picker — closing
+                        // reconcile triggers the onClose -> showProfilePicker path.
+                        self.reconcileWindowController?.close()
+                        return
+                    }
+                    self.connectQueue.async { unison_bridge_connection_reply(response) }
+                    // Next cycle re-arms the watchdog for the post-reply fetch.
+                    self.drivePromptLoop(profile: profile, generation: generation)
+                }
+                self.pendingPasswordSheet = sheet
+                if let parent = self.reconcileWindowController?.window ?? self.profileWindowController?.window {
+                    sheet.runAsSheet(over: parent)
+                }
+            }
         }
     }
 
@@ -343,11 +532,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let reconcile = reconcileWindowController else { return }
         log.write("rescan: re-running init2 for profile '\(profile)'")
         reconcile.beginRescan()
+        // init2 BLOCKS too — and if the connection dropped between scans
+        // it can wedge exactly like the initial connect. Same treatment:
+        // run it off-main under a fresh watchdog'd attempt.
+        let generation = beginConnectAttempt(profile: profile)
         UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
-            self?.log.write("rescan: init2 complete — \(items.count) items")
+            guard let self else { return }
+            guard self.isCurrentConnect(generation) else {
+                self.log.write("rescan: init2 complete ignored — superseded/timed-out")
+                return
+            }
+            self.disarmConnectWatchdog()
+            self.log.write("rescan: init2 complete — \(items.count) items")
             reconcile?.endRescan(newItems: items)
         }
-        unison_bridge_init2()
+        connectQueue.async { unison_bridge_init2() }
     }
 
     // MARK: - One-shot -ignorearchives recovery
@@ -539,6 +738,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// sees why the abort happened ("fatal error" vs "you cancelled
     /// the warning").
     private func abortAllInFlight(reason: String, forceClose: Bool = false) {
+        // Whatever the reason, the current connect attempt is over: stop
+        // the watchdog and bump the epoch so any straggler init1/init2
+        // callback is ignored rather than re-driving a torn-down window.
+        invalidateConnect()
         if let sheet = pendingPasswordSheet?.window, let parent = sheet.sheetParent {
             parent.endSheet(sheet)
         }

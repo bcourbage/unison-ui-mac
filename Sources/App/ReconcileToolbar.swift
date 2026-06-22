@@ -72,6 +72,9 @@ enum DirectionAction: CaseIterable {
     static let rescanIdentifier     = NSToolbarItem.Identifier("sync.rescan")
     static let profilesIdentifier   = NSToolbarItem.Identifier("nav.profiles")
     static let quitIdentifier        = NSToolbarItem.Identifier("app.quit")
+    /// Diff a single selected leaf — sits between the direction group
+    /// and Go, enabled only when the selection is one diff-able file.
+    static let diffIdentifier        = NSToolbarItem.Identifier("row.diff")
     /// Segmented-control group hosting the toolbar direction items.
     static let directionGroupIdentifier = NSToolbarItem.Identifier("dir.group")
 
@@ -148,6 +151,7 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
         [DirectionAction.profilesIdentifier,
          DirectionAction.rescanIdentifier,
          DirectionAction.directionGroupIdentifier,
+         DirectionAction.diffIdentifier,
          DirectionAction.goIdentifier,
          DirectionAction.stopIdentifier,
          DirectionAction.quitIdentifier,
@@ -166,7 +170,9 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
          DirectionAction.rescanIdentifier,
          .space, .space,
          DirectionAction.directionGroupIdentifier,
-         .space, .space,
+         .space,
+         DirectionAction.diffIdentifier,
+         .space,
          .flexibleSpace,
          DirectionAction.goIdentifier,
          DirectionAction.stopIdentifier,
@@ -218,6 +224,14 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     symbol: "power",
                                     tint: nil,
                                     action: #selector(quitAction(_:)))
+        case DirectionAction.diffIdentifier:
+            return makeWorkflowItem(itemIdentifier,
+                                    label: "Diff",
+                                    paletteLabel: "Diff",
+                                    toolTip: "Show the diff for the selected file",
+                                    symbol: "doc.text.magnifyingglass",
+                                    tint: nil,
+                                    action: #selector(diffAction(_:)))
         case DirectionAction.directionGroupIdentifier:
             return makeDirectionGroup(itemIdentifier)
         default:
@@ -309,6 +323,10 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @objc private func rescanAction(_ sender: NSToolbarItem) {
         controller?.rescan()
+    }
+
+    @objc private func diffAction(_ sender: NSToolbarItem) {
+        controller?.diffSelectedRow()
     }
 
     @objc private func profilesAction(_ sender: NSToolbarItem) {

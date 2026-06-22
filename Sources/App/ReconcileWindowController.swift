@@ -14,6 +14,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     typealias CloseHandler = @MainActor () -> Void
     typealias RescanRequest = @MainActor () -> Void
+    /// Invoked when the user presses Stop while a connect/scan (not a
+    /// sync) is in flight. The owner (AppDelegate) owns the connect
+    /// lifecycle, so it does the actual abort + teardown.
+    typealias CancelScanRequest = @MainActor () -> Void
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -41,6 +45,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let profile: String
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
+    private let onCancelScan: CancelScanRequest
+    /// True between `beginScanning` and `endRescan` — i.e. while the
+    /// initial connect/scan (or a rescan) is in flight. Gates the Stop
+    /// button so the user can abort a slow/wedged connection instead of
+    /// waiting for AppDelegate's watchdog. Distinct from `isSyncing`
+    /// (a running file transfer).
+    private(set) var isScanning = false
     private let outlineView = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
     /// Leading status glyph for the summary row. Hidden except after a
@@ -107,12 +118,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     init(profile: String,
          mergeConfigured: Bool,
          onClose: @escaping CloseHandler,
-         onRescanRequested: @escaping RescanRequest) {
+         onRescanRequested: @escaping RescanRequest,
+         onCancelScan: @escaping CancelScanRequest) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
+        self.onCancelScan = onCancelScan
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -476,6 +489,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// unwinds. `syncDidComplete` fires once OCaml has fully wound
     /// down and resets the UI to "done" state.
     func cancelSync() {
+        // Stop during the connect/scan phase (pre-sync): hand off to the
+        // owner, which aborts the in-flight connection and returns to the
+        // picker. Lets the user bail out of a slow/wedged connect without
+        // waiting for the watchdog timeout.
+        if isScanning && !isSyncing {
+            Log.reconcile.notice("user requested Stop during connect/scan — aborting")
+            TraceLog.shared.write("ReconcileWindow: Stop during connect/scan — cancelling")
+            setSummary("Cancelling…")
+            onCancelScan()
+            return
+        }
         guard isSyncing else { NSSound.beep(); return }
         Log.reconcile.notice("user requested Stop — sending abort signal to OCaml")
         TraceLog.shared.write("ReconcileWindow: user requested Stop — aborting in-flight sync")
@@ -511,6 +535,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         outlineView.reloadData()
         detailsTextView.string = "Select a row to see details."
 
+        isScanning = true
         progressBar.isHidden = false
         progressBar.isIndeterminate = true
         progressBar.startAnimation(nil)
@@ -527,34 +552,24 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     func endRescan(newItems: [StateItem]) {
+        isScanning = false
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
         progressBar.isHidden = true
         replaceItems(newItems)
+        refreshToolbarEnabled()
     }
 
     // MARK: - Details panel
 
     private func configureDetailsPanel() {
-        // Canonical "NSTextView inside an NSScrollView" geometry. Without
-        // this explicit frame + resizing + text-container setup, a
-        // programmatically created NSTextView lays out and paints under
-        // newer SDKs but renders BLANK under older ones — the string is in
-        // the model (AX can read it) but never drawn. That's exactly what
-        // bit the CI-built release (SDK 15.5): the details footer showed
-        // nothing even though the data was there. See Apple's "Putting an
-        // NSTextView in an NSScrollView" guidance.
-        let startSize = NSSize(width: 400, height: 80)
-        detailsTextView.frame = CGRect(origin: .zero, size: startSize)
-        detailsTextView.minSize = NSSize(width: 0, height: 0)
-        detailsTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                         height: CGFloat.greatestFiniteMagnitude)
-        detailsTextView.isVerticallyResizable = true
-        detailsTextView.isHorizontallyResizable = false
-        detailsTextView.autoresizingMask = [.width]
-        detailsTextView.textContainer?.containerSize =
-            NSSize(width: startSize.width, height: CGFloat.greatestFiniteMagnitude)
-        detailsTextView.textContainer?.widthTracksTextView = true
+        // Canonical NSTextView-in-NSScrollView geometry (see
+        // ScrollableTextView). Without it this footer rendered BLANK in
+        // the CI-built release (SDK 15.5) — the string was in the model
+        // but never drawn. Wrap mode: details scroll vertically.
+        ScrollableTextView.configure(text: detailsTextView, scroll: detailsScroll,
+                                     mode: .wrap,
+                                     initialSize: NSSize(width: 400, height: 80))
 
         detailsTextView.isEditable = false
         detailsTextView.isSelectable = true
@@ -565,8 +580,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         detailsTextView.string = "Select a row to see details."
         detailsTextView.textColor = .secondaryLabelColor
 
-        detailsScroll.documentView = detailsTextView
-        detailsScroll.hasVerticalScroller = true
         detailsScroll.borderType = .lineBorder
         detailsScroll.autohidesScrollers = true
     }
@@ -704,18 +717,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         alert.messageText = "Status details"
         // NSAlert truncates `informativeText` aggressively for long
         // strings — use an accessoryView with a scrolling text view so
-        // multi-screen SSH error dumps stay readable + selectable.
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
-        scroll.hasVerticalScroller = true
+        // multi-screen SSH error dumps stay readable + selectable. Wrap
+        // mode (vertical scroll) via the canonical geometry — without it
+        // a long dump clips with a dead scroller. See ScrollableTextView.
+        let (scroll, textView) = ScrollableTextView.make(
+            mode: .wrap, initialSize: NSSize(width: 520, height: 240))
         scroll.borderType = .lineBorder
-        let textView = NSTextView(frame: scroll.bounds)
         textView.isEditable = false
         textView.isSelectable = true
         textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         textView.textContainerInset = NSSize(width: 6, height: 6)
         textView.string = text
-        textView.autoresizingMask = [.width, .height]
-        scroll.documentView = textView
         alert.accessoryView = scroll
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -1115,14 +1127,37 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         applyDiff()
     }
 
+    /// Diff entry point for the toolbar button. Resolves the target
+    /// strictly from the *selection* (passing `rightClickedNode: nil`)
+    /// rather than through `rowForDiff()`, whose `outlineView.clickedRow`
+    /// lookup can return a stale row left over from an earlier
+    /// context-menu invocation — a toolbar click doesn't update
+    /// clickedRow. This matches `canDiffCurrentSelection()`, the same
+    /// predicate that enables/disables the toolbar item.
+    func diffSelectedRow() {
+        guard let row = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: selectedNodes()),
+              row >= 0, row < items.count else { NSSound.beep(); return }
+        performDiff(row: row)
+    }
+
     /// Public so the context menu can call this directly. Returns
     /// silently when the action isn't applicable (no selection, sync
     /// in flight, can't-diff row) — `validateMenuItem` should have
     /// already greyed the entry point.
     func applyDiff() {
-        guard !isSyncing else { NSSound.beep(); return }
         guard let row = rowForDiff(),
               row >= 0, row < items.count else { NSSound.beep(); return }
+        performDiff(row: row)
+    }
+
+    /// Shared Diff core for both entry points (menu/context via
+    /// `applyDiff()`, toolbar button via `diffSelectedRow()`). Runs the
+    /// sync-in-flight + defensive `canDiff` re-checks, surfaces the
+    /// loading window, and kicks off the async OCaml diff. `row` is
+    /// assumed in-bounds.
+    private func performDiff(row: Int) {
+        guard !isSyncing else { NSSound.beep(); return }
         let path = items[row].path
         // Defensive re-check — the menu validation calls canDiff too,
         // but a context-menu click on a row that changed since
@@ -1300,9 +1335,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         }
         if menuItem.action == #selector(stopMenuAction(_:)) {
-            // Stop only meaningful mid-sync.
+            // Stop is meaningful mid-sync OR mid connect/scan (abort a
+            // slow/wedged connection without waiting for the watchdog).
             if case .syncing = phase { return true }
-            return false
+            return isScanning
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
             // Rescan is the way out of .done back to .ready — we
@@ -1380,6 +1416,22 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         window?.toolbar?.validateVisibleItems()
     }
 
+    /// True when the current *selection* (ignoring any clicked row) is
+    /// exactly one diff-able leaf — the Diff toolbar item's enablement
+    /// predicate. Mirrors the `validateMenuItem` gate for
+    /// `diffMenuAction` but driven off selection, since the toolbar
+    /// button isn't a context-menu entry: requires `.ready` with items
+    /// (`isActionable`), a single selected leaf (`diffTarget`), and the
+    /// bridge's `canDiff` to pass. The bridge call is cheap and only
+    /// reached once both cheaper gates clear.
+    private func canDiffCurrentSelection() -> Bool {
+        guard isActionable else { return false }
+        guard let row = RowSelectionRules.diffTarget(
+            rightClickedNode: nil, selectedNodes: selectedNodes()),
+              row >= 0, row < items.count else { return false }
+        return unison_bridge_can_diff(Int32(row))
+    }
+
     /// Single source of truth for whether a given toolbar item should
     /// be enabled. Called by `ReconcileToolbarDelegate.validateToolbarItem`
     /// during AppKit's auto-validation cycle. The same lifecycle
@@ -1396,8 +1448,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // sync, after sync completes, and when items is empty.
             return isActionable
         case DirectionAction.stopIdentifier:
-            // Stop only meaningful while a sync is in flight.
-            return syncing
+            // Stop is meaningful while a sync is in flight OR while the
+            // connect/scan is running — the latter lets the user abort a
+            // slow/wedged connection rather than wait for the watchdog.
+            return syncing || isScanning
         case DirectionAction.rescanIdentifier:
             // Rescan is the way out of `.done` back to `.ready` —
             // explicitly available after completion. Only blocked
@@ -1409,6 +1463,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         case DirectionAction.quitIdentifier:
             // Quit is always available — same as ⌘Q.
             return true
+        case DirectionAction.diffIdentifier:
+            // Diff: enabled only when the selection is exactly one
+            // diff-able leaf. Same predicate that gates the Action-menu
+            // / context-menu Diff entry, driven off selection.
+            return canDiffCurrentSelection()
         case DirectionAction.directionGroupIdentifier:
             // The group container is enabled if any subitem would be
             // enabled — but AppKit also validates each subitem

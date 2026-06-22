@@ -73,9 +73,12 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
 
-        scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
+        // Canonical NSTextView-in-NSScrollView geometry (see
+        // ScrollableTextView). No-wrap so long unified-diff lines scroll
+        // horizontally rather than wrap and mangle column alignment.
+        ScrollableTextView.configure(text: textView, scroll: scrollView,
+                                     mode: .noWrap,
+                                     initialSize: NSSize(width: 700, height: 500))
         scrollView.borderType = .lineBorder
         scrollView.autohidesScrollers = false
 
