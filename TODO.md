@@ -5,36 +5,6 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **Isolate test archives from the real Unison dir** — the
-      integration tests (`BridgeTests` driving `init1`/`init2`
-      against ephemeral `/tmp` fixtures) write Unison archive files
-      (`ar*` / `fp*`) into the user's real
-      `~/Library/Application Support/Unison/`, because the bridge
-      defaults the archive location there. Every `make test` leaves
-      stale archives for now-deleted fixture roots; worse, it means
-      the test suite operates in the same directory as real profile
-      archives. Point the harness at an isolated archive dir per run
-      (e.g. set the `UNISON` env var or
-      `UnisonBridge.unisonDirectoryOverride` to a temp dir in test
-      setUp) so tests never touch — or risk — real archives.
-
-- [ ] **Upstream PR candidate: register `abortAll` callback** —
-      The 2-line patch in
-      `patches/0001-uimacbridge-register-abortAll.patch` (`let
-      unisonAbortAll () = Abort.all ();;` + `Callback.register
-      "abortAll" unisonAbortAll;;`) is a candidate for upstream
-      contribution. It follows the file's existing callback-
-      registration pattern verbatim, has zero behavior impact on
-      upstream callers, and expands what external GUIs can hook
-      into. Plan: defer until v0.1.1 has settled, then human-
-      rewrite the patch from scratch (no LLM-derived prose), write
-      a crisp PR description framing it as enabling external GUIs
-      to trigger mid-sync abort via `Callback.register`, send
-      through normal PR flow. Do NOT mention unison-ui-mac in the
-      PR title or commit message; the contribution stands on its
-      own merit. If upstream declines, the patch stays downstream
-      — no impact.
-
 - [ ] **Release-build automation** — current process for cutting a
       release is manual: `make build CONFIG=Release` →
       `ditto -c -k --sequesterRsrc --keepParent` →
@@ -46,25 +16,6 @@ section at the bottom so this list stays scannable.
       release with auto-generated notes from the matching CHANGELOG
       section (`gh release create … --notes-from-tag` or a
       jq-against-CHANGELOG.md script).
-
-- [ ] **App signing for distribution** — current state is ad-hoc
-      (`codesign --force --deep --sign -`), packaged for users via
-      `install.sh`, which also clears `com.apple.quarantine` on the
-      installed copy. This means launches from `/Applications` no
-      longer trip the Gatekeeper prompt — the install-time `xattr
-      -dr` handles it once. So **for personal use, this is settled**;
-      the open question below is only about distributing builds to
-      other Macs. Distributing to other Macs would require an Apple
-      Developer account for a Developer ID Application certificate
-      plus notarization. Setup would be: `CODE_SIGN_STYLE = Manual`
-      + `CODE_SIGN_IDENTITY = "Developer ID Application: …"` in
-      `project.yml`, then `xcrun notarytool submit … --wait --staple`
-      as a Makefile target. A notarized build would also need
-      Hardened Runtime (default for new Xcode projects) + an
-      entitlements file for outgoing SSH network access + a current
-      `LSMinimumSystemVersion`. The Mac App Store route is not
-      viable — we embed GPLv3 code and the App Store license terms
-      aren't GPL-compatible.
 
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
@@ -98,6 +49,26 @@ section at the bottom so this list stays scannable.
 
 *Historical log of finished work, preserved for context. 40+ items
 landed across the bring-up and follow-on sessions.*
+
+### Resolved as won't-do
+
+- [x] **App signing / notarization for distribution** — not pursuing.
+      For personal use this is already settled: the ad-hoc signature
+      (`codesign --sign -`) plus `install.sh`'s `xattr -dr
+      com.apple.quarantine` means launches from `/Applications` don't
+      trip Gatekeeper. Distributing notarized builds to other Macs
+      (Developer ID cert + `notarytool` + Hardened Runtime +
+      entitlements) is out of scope and not of interest. The Mac App
+      Store route stays off the table anyway (GPLv3 vs. App Store terms).
+
+- [x] **Upstream PR candidate: register `abortAll` callback** —
+      Resolved: the `abortAll` patch stays downstream and is **not**
+      proposed to bcpierce00/unison, consistent with the project's
+      LLM-usage posture (see "Real mid-sync abort" below, which states
+      the patch "stays local — never proposed back"). The local patch
+      (`patches/0001-uimacbridge-register-abortAll.patch`) is applied
+      via `make apply-patches` and ships in the blob; nothing further to
+      do.
 
 ### Bring-up workflow
 
@@ -381,6 +352,18 @@ landed across the bring-up and follow-on sessions.*
       divergence is findable if a related bug ever surfaces.
 
 ### Build + ops
+
+- [x] **Isolate test archives from the real Unison dir** — when the
+      unit-test bundle is hosted by the app, `AppDelegate`
+      `applicationDidFinishLaunching` now detects XCTest (via the
+      `XCTestConfigurationFilePath` env var) and `setenv`s `UNISON` to a
+      throwaway temp dir (`$TMPDIR/unison-ui-mac-test-unisondir`) *before*
+      `unison_bridge_startup()` — the point at which the OCaml runtime
+      reads `$UNISON`. So `BridgeTests`' `init1`/`init2` now read fixture
+      profiles from, and write `ar*`/`fp*` archives into, the temp dir
+      instead of `~/Library/Application Support/Unison/`. Verified: real
+      dir archive count unchanged across a run, archives land in the temp
+      dir, zero fixture profiles leak into the real dir.
 
 - [x] **Gate dev hooks behind a Debug build flag** —
       `UNISON_AUTOTEST_*` env-var handling + `runRiOpsAutotest` /
