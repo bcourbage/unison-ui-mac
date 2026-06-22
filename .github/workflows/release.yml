@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build, e.g. v0.1.5"
+        description: "Ref to build: a v* tag to publish, or any branch/SHA (e.g. main) for a dry run"
         required: true
       dry_run:
         description: "Build + package only; do not create/modify a Release"
@@ -43,16 +43,22 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Resolve tag + version
+      - name: Resolve ref + version
         id: ver
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          case "$tag" in
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          # Real publishes must come from a v* tag. Dry runs may target any
+          # ref (e.g. `main`) to test the release build before tagging.
+          case "$ref" in
             v*) ;;
-            *) echo "::error::tag '$tag' must start with 'v'"; exit 1 ;;
+            *) if [ "${{ github.event_name }}" = "push" ] || [ "$DRY_RUN" = "false" ]; then
+                 echo "::error::ref '$ref' must be a v* tag for a real release"; exit 1
+               fi ;;
           esac
-          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}"   >> "$GITHUB_OUTPUT"
+          echo "tag=$ref"            >> "$GITHUB_OUTPUT"
+          echo "version=${ref#v}"    >> "$GITHUB_OUTPUT"
 
       - name: Check out the tagged commit
         uses: actions/checkout@v5
@@ -91,7 +97,10 @@ jobs:
       - name: Verify the tag matches MARKETING_VERSION
         # Guards against tagging without bumping project.yml (or vice
         # versa) — the About panel / CFBundleShortVersionString would
-        # otherwise disagree with the release name.
+        # otherwise disagree with the release name. Skipped for dry runs,
+        # which may target a branch (e.g. `main`) to test the release build
+        # before tagging — there's no version to match yet.
+        if: github.event_name == 'push' || github.event.inputs.dry_run != 'true'
         run: |
           mv=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           if [ "$mv" != "${{ steps.ver.outputs.version }}" ]; then
