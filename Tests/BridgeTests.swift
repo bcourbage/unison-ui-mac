@@ -255,10 +255,11 @@ private final class IntegrationFixture {
         try FileManager.default.createDirectory(at: aRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: bRoot, withIntermediateDirectories: true)
 
-        // Profile must live in the Unison directory so init1 finds it
-        // by basename — we can't easily redirect Unison's profile path.
-        // We name it with a UUID so we don't collide with the user's
-        // real profiles. Cleaned up in deinit.
+        // Profile must live in the Unison directory so init1 finds it by
+        // basename. Under XCTest that directory is an isolated temp dir
+        // (AppDelegate redirects $UNISON before bridge startup when hosted by
+        // XCTest), so this never lands among the user's real profiles. The
+        // UUID-suffixed name is belt-and-suspenders. Cleaned up in deinit.
         guard let unisonDir = unison_bridge_unison_directory().map({ String(cString: $0) }) else {
             throw IntegrationFixtureError.unisonDirectoryUnavailable
         }

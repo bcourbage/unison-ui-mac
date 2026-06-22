@@ -38,6 +38,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.write("applicationDidFinishLaunching start")
+
+        // Test isolation: when hosted by XCTest, redirect Unison's directory
+        // (where it reads profiles and writes `ar*`/`fp*` archives) to a
+        // throwaway temp dir, so the suite never touches the user's real
+        // ~/Library/Application Support/Unison. Must run BEFORE
+        // unison_bridge_startup() below — that's when the OCaml runtime reads
+        // $UNISON. (Closes the "isolate test archives" TODO.)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            let testDir = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("unison-ui-mac-test-unisondir")
+            try? FileManager.default.createDirectory(
+                atPath: testDir, withIntermediateDirectories: true)
+            setenv("UNISON", testDir, 1)
+            log.write("XCTest host detected — UNISON redirected to \(testDir)")
+        }
+
         logEnvSnapshot()
 
         // Ask for notification permission up front (only if the cue is
@@ -711,6 +727,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // saved/deleted — refresh the picker to reflect the new state.
             self?.profileWindowController?.reloadProfiles()
         }
+        // Release on close so the next open rebuilds the window from
+        // defaults (centering after a layout reset) instead of reusing a
+        // stale, retained window object.
+        editor.onClose = { [weak self] in self?.profileEditorWindowController = nil }
         editor.showWindow(nil)
         editor.window?.makeKeyAndOrderFront(nil)
         profileEditorWindowController = editor

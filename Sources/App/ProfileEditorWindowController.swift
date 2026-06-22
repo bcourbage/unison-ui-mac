@@ -27,6 +27,13 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// this to refresh `ProfileWindowController.reloadProfiles()`.
     private let onProfilesChanged: ChangedHandler
 
+    /// Called when the window closes so the owner can release this
+    /// controller. Without that release the window object would outlive
+    /// the close and be reused on the next open — which made "Reset window
+    /// & toolbar layout" look broken: clearing the saved frame in defaults
+    /// had no effect because the live window kept (and re-saved) its frame.
+    var onClose: (() -> Void)?
+
     /// All profiles found on disk, after applying the user's custom
     /// order. Hidden profiles are still shown here (dimmed) so the user
     /// can unhide them — that's the editor's whole job.
@@ -99,6 +106,14 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// a `contentsOfDirectory` + `reloadData` — cheap.
     func windowDidBecomeKey(_ notification: Notification) {
         reload()
+    }
+
+    /// Release this controller on close (deferred so AppKit finishes the
+    /// close first). A fresh open then rebuilds the window, re-reading the
+    /// saved frame from defaults — or centering when it's absent, e.g.
+    /// right after a layout reset.
+    func windowWillClose(_ notification: Notification) {
+        DispatchQueue.main.async { [onClose] in onClose?() }
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
