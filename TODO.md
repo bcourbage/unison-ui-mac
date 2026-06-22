@@ -5,6 +5,17 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
+- [ ] **Upstream `abortAll` callback — PR in flight.** The local patch
+      (`patches/0001-uimacbridge-register-abortAll.patch`, applied via
+      `make apply-patches`) was human-rewritten and submitted upstream as
+      [bcpierce00/unison#1198](https://github.com/bcpierce00/unison/pull/1198).
+      If it merges, retire the downstream patch: drop the `patches/` file
+      and the `make apply-patches` step once the vendored blob is rebuilt
+      from an upstream that includes the registration. (This reverses the
+      earlier "stays downstream" decision — proposing it was fine because
+      a human authored the contribution from scratch.) If upstream
+      declines, the patch simply stays local — no impact.
+
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
@@ -49,14 +60,6 @@ landed across the bring-up and follow-on sessions.*
       entitlements) is out of scope and not of interest. The Mac App
       Store route stays off the table anyway (GPLv3 vs. App Store terms).
 
-- [x] **Upstream PR candidate: register `abortAll` callback** —
-      Resolved: the `abortAll` patch stays downstream and is **not**
-      proposed to bcpierce00/unison, consistent with the project's
-      LLM-usage posture (see "Real mid-sync abort" below, which states
-      the patch "stays local — never proposed back"). The local patch
-      (`patches/0001-uimacbridge-register-abortAll.patch`) is applied
-      via `make apply-patches` and ships in the blob; nothing further to
-      do.
 
 ### Bring-up workflow
 
