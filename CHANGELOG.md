@@ -9,6 +9,18 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.1.6] — 2026-06-21
+
+### Fixed
+
+- **Details footer was blank in release builds.** Selecting a row showed
+  no details (size / mtime / conflict info) in the bottom panel. The
+  details `NSTextView` was created without the canonical
+  frame + resizing + text-container setup; newer SDKs laid it out anyway,
+  but the binary built by CI (older SDK) never painted the text — the
+  content was present (reachable via accessibility) but invisible. First
+  shipped in 0.1.5, which was the first CI-built release.
+
 ## [0.1.5] — 2026-06-21
 
 ### Added
