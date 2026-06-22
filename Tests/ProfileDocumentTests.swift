@@ -136,6 +136,7 @@ final class ProfileDocumentTests: XCTestCase {
             case .blank:                       return "blank"
             case .comment(let c):              return "# \(c)"
             case .keyValue(let k, let v):      return "\(k)=\(v)"
+            case .include(let n):              return "include \(n)"
             }
         }
         XCTAssertEqual(kinds, [
