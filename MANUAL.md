@@ -497,10 +497,11 @@ when idle.
   selected leaf rows. Multi-select supported; selecting a folder applies
   to every leaf under it.
 - **Go** (green) — synchronize. Propagates every row's Action.
-- **Stop** (red) — visible during sync. Closes the window (the running
-  sync continues in the background until it finishes naturally — there
-  is no true mid-sync abort available; see TODO P3 "Real mid-sync
-  abort").
+- **Stop** (red) — visible during sync. Aborts the running sync: it
+  signals Unison to stop at its next checkpoint (between files), so a
+  transfer already in flight may finish before the abort takes hold. The
+  window stays open afterward so you can inspect any rows left `⚠ FAILED`
+  in the Progress column; close it or Rescan when you're ready.
 - **Quit** — quit the app, identical to `⌘Q` (runs the clean OCaml
   bridge shutdown on the way out).
 

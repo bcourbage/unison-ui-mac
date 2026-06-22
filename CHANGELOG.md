@@ -9,7 +9,7 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
-## [Unreleased]
+## [0.1.5] — 2026-06-21
 
 ### Added
 
