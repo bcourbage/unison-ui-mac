@@ -34,6 +34,45 @@ section at the bottom so this list stays scannable.
       View-controller line counts above are now stale (files have grown).
       Posture unchanged: keep extracting, no UI harness.
 
+- [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
+      Today, pressing Stop *during the connect/scan phase* (`isScanning &&
+      !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
+      actually stop the scan. It routes through `onCancelScan()` →
+      `AppDelegate.cancelConnectInProgress` → `abortAllInFlight(forceClose:
+      true)`, which bumps the connect-generation epoch (so the eventual
+      `init2` callback is ignored), disarms the watchdog, and closes the
+      reconcile window to return to the picker. None of that calls into
+      OCaml — `invalidateConnect()` is pure Swift bookkeeping — so the
+      OCaml-side update-detection scan keeps running to completion in the
+      background. For local profiles that's a brief invisible waste; for
+      remote/ssh profiles it means a lingering remote `unison` process and
+      wasted bandwidth, and a quick Stop-then-reopen can leave two scans
+      racing.
+      **Wording issue:** because of the above, the button's label/tooltip
+      lie during the scan phase. The toolbar item is "Stop" /
+      "Cancel the running synchronization" (`ReconcileToolbar.swift:203`)
+      and `cancelSync` sets the summary to "Cancelling…" — but there is no
+      synchronization running during a scan, and the scan isn't actually
+      cancelled, only the UI is abandoned. The scan-phase affordance should
+      read honestly (e.g. "Cancel" / "Stop connecting and return to
+      profiles") and the summary should say something like "Returning to
+      profiles…".
+      **Keep the escape hatch:** do NOT simply grey Stop out during the
+      scan. Even though it doesn't truly abort the scan, it serves a real
+      purpose — it lets the user bail out of a slow or wedged connect/scan
+      and get back to the picker immediately, instead of waiting for the
+      watchdog timeout. The goal here is to make that cancel *real* (and
+      honestly labelled), not to remove it.
+      **Why it's hard:** the scan genuinely isn't interruptible via the
+      `Abort` mechanism — `Abort.check`/`checkAll` are only consulted during
+      propagation (`copy.ml`/`files.ml`), never in `update.ml`, and the
+      `abortAll` callback we registered only sets the propagation flag. The
+      only honest way to stop an in-flight scan is to tear down the bridge
+      connection / kill the remote child process. `unison_bridge_connection_
+      cancel()` exists but is currently scoped to the password-prompt phase,
+      not an in-progress `init2` — extending a real teardown to the scan
+      phase is the actual work item.
+
 
 ---
 
