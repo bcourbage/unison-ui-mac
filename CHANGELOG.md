@@ -9,6 +9,51 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.2.0] — 2026-06-27
+
+### Fixed
+
+- **Crash at launch on macOS 26 with notifications enabled.** The app could
+  quit unexpectedly while reopening windows. A `@MainActor`-inferred
+  completion closure passed to `UNUserNotificationCenter.requestAuthorization`
+  was invoked off the main actor by the system; macOS 26's stricter Swift
+  runtime traps on the executor-isolation check, crashing at launch even
+  though the closure body was empty. Now uses the `async` API, which has no
+  off-actor callback. (Reported in #4.)
+
+- **"Cancel sync" at a warning quit the whole app.** Choosing Cancel on a
+  Unison warning (e.g. the "no archive files were found" notice) made the
+  engine call `exit()`, terminating the app instead of returning to the
+  profile picker. Cancel now aborts the operation and returns to the picker.
+
+- **Stopping a sync still reported "Synchronization complete."** Pressing Stop
+  during propagation now ends in a distinct **"Synchronization stopped"**
+  state (orange), so a user-initiated stop is acknowledged instead of looking
+  like a normal, successful finish.
+
+- **Version check failed for profiles that authenticate via `sshargs`.** The
+  remote-version probe ignored the profile's `sshcmd`/`sshargs`, so a host
+  reachable only via an `-i <key>` in `sshargs` failed `publickey` in the
+  probe (while the real sync succeeded), and the wire-protocol mismatch
+  warning never fired for it. The probe now honors `sshcmd`/`sshargs`.
+
+- **Hardened the connect watchdog and cancel paths.** The connect-timeout
+  watchdog now covers only the connect phase (not the scan, which can run
+  long and silent on a large remote tree and would otherwise false-fire), and
+  the timeout/Stop teardown no longer pokes the engine mid-scan (which could
+  trip an `update.ml` assertion or an Lwt error).
+
+### Added
+
+- **Crash-report prompt.** If the app crashed on a previous launch, it offers
+  once to send the macOS crash report — revealing it in Finder and opening a
+  pre-filled GitHub issue.
+
+- **Richer, shorter bug reports.** "Report an Issue" now includes the remote
+  Unison version (probed for the active profile) and uses a leaner template;
+  the log-capture instructions were corrected (they previously produced empty
+  output by omitting `--info --debug`).
+
 ## [0.1.8] — 2026-06-22
 
 ### Fixed
