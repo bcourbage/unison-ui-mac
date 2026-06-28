@@ -11,6 +11,32 @@ import XCTest
 ///     UserDefaults suite so we don't pollute the real domain
 final class VersionCheckTests: XCTestCase {
 
+    // MARK: - tokenizeSSHArgs
+
+    func test_tokenizeSSHArgs_nil_isEmpty() {
+        XCTAssertEqual(VersionCheck.tokenizeSSHArgs(nil), [])
+    }
+
+    func test_tokenizeSSHArgs_blank_isEmpty() {
+        XCTAssertEqual(VersionCheck.tokenizeSSHArgs("   "), [])
+    }
+
+    func test_tokenizeSSHArgs_typicalKeyAndOptions() {
+        // The real Sync-Home-Demeter sshargs shape.
+        let args = VersionCheck.tokenizeSSHArgs(
+            "-i /Users/bcourbage/.ssh/Demeter -o ServerAliveInterval=30 -o StrictHostKeyChecking=accept-new")
+        XCTAssertEqual(args, [
+            "-i", "/Users/bcourbage/.ssh/Demeter",
+            "-o", "ServerAliveInterval=30",
+            "-o", "StrictHostKeyChecking=accept-new",
+        ])
+    }
+
+    func test_tokenizeSSHArgs_collapsesRunsOfWhitespaceAndTabs() {
+        XCTAssertEqual(VersionCheck.tokenizeSSHArgs("-i\t/key   -p  2222"),
+                       ["-i", "/key", "-p", "2222"])
+    }
+
     // MARK: - SSHRoot.parse
 
     func test_sshRoot_userAtHostAbsolutePath() {

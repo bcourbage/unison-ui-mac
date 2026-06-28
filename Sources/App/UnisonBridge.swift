@@ -235,11 +235,16 @@ private func _swiftWarnTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMuta
         alert.addButton(withTitle: "Proceed")
         alert.addButton(withTitle: "Cancel sync")
         let response = alert.runModal()
-        let userWantsExit = (response == .alertSecondButtonReturn)
-        // Wake the OCaml worker first so it can continue (or exit) promptly,
-        // then notify the app so it can reset UI state if the user cancelled.
-        unison_bridge_warn_response(UnsafeMutableRawPointer(bitPattern: opaqueBits), userWantsExit)
-        UnisonBridge.warnDismissedHandler?(text, userWantsExit)
+        let userCancelled = (response == .alertSecondButtonReturn)
+        // NEVER answer the engine "exit". Unison's Cocoa-bridge warn
+        // semantics treat exit=true as "quit the program" — it calls
+        // exit(), which silently killed the whole app on "Cancel sync"
+        // (clean exit, no crash report). Always answer "proceed" (false)
+        // so the engine keeps the process alive; if the user cancelled,
+        // the handler below aborts the operation and returns to the picker
+        // (like Stop). Wake the worker first, then notify the app.
+        unison_bridge_warn_response(UnsafeMutableRawPointer(bitPattern: opaqueBits), false)
+        UnisonBridge.warnDismissedHandler?(text, userCancelled)
     }
 }
 

@@ -59,8 +59,20 @@ enum SyncCompletionAnnouncer {
     /// the result surfaces naturally the next time a sync finishes.
     static func requestAuthorizationIfEnabled(defaults: UserDefaults = .standard) {
         guard SettingsModel.notifyOnSyncComplete(in: defaults) else { return }
-        UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Use the `async` API, NOT the completion-handler overload. This
+        // enum is @MainActor, so a trailing closure is inferred
+        // @MainActor — but UNUserNotificationCenter invokes it on its own
+        // background XPC queue. On macOS's stricter Swift runtime (seen on
+        // 26.5.1) the executor-isolation check (`swift_task_isCurrentExecutor`
+        // → `dispatch_assert_queue`) then TRAPS on entry to the closure,
+        // crashing the app at launch even though the body is empty (this was
+        // the 0.1.8 crash in issue #4). `await` has no off-actor callback,
+        // so there's nothing to mis-isolate; the result is unused on purpose
+        // (it surfaces naturally the next time a sync finishes).
+        Task {
+            _ = try? await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+        }
     }
 
     /// Retained delegate so completion banners appear even while we're the

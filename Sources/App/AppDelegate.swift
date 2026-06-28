@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// recovery path to re-run init1+init2 against the same profile after
     /// the user accepts an "auto-fix" action (e.g. orphan archive cleanup).
     private var lastAttemptedProfile: String?
+    /// Last SSH version-check result (profile + outcome), cached so the
+    /// "Report an Issue" body can include the remote Unison version
+    /// without re-probing. Set on every `handleVersionCheckOutcome`.
+    private var lastVersionOutcome: (profile: String, outcome: VersionCheck.Outcome)?
 
     /// Pending restore for a one-shot `-ignorearchives` rescan: the
     /// `.prf` we temporarily injected `ignorearchives = true` into, plus
@@ -112,9 +116,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // On fatal (or on warn-cancel) the in-flight init1/init2 won't fire
         // its completion handler; we have to reset the busy UI ourselves.
         UnisonBridge.installWarnHandler { [weak self] msg, cancelled in
-            self?.log.write("warn dismissed (cancelled=\(cancelled)): \(msg.prefix(120))")
+            guard let self else { return }
+            self.log.write("warn dismissed (cancelled=\(cancelled)): \(msg.prefix(120))")
             if cancelled {
-                self?.abortAllInFlight(reason: "you cancelled the warning")
+                // The engine was answered "proceed" (never "exit", which
+                // would quit the app), so the operation is still running.
+                // Only flag an abort if a TRANSPORT is in flight — Abort.check
+                // observes it there and stops the sync. Do NOT flag during a
+                // scan: update detection never consults Abort, and setting the
+                // flag mid-scan trips an assertion in update.ml (it's not a
+                // no-op, it's actively harmful). A scan instead just finishes
+                // in the background; its callback is generation-ignored.
+                // (See TODO: scan-phase cancel isn't a true abort.) Either
+                // way, tear the UI back down to the picker.
+                if self.reconcileWindowController?.isSyncing == true {
+                    DispatchQueue.global().async { unison_bridge_abort_sync() }
+                }
+                self.abortAllInFlight(reason: "cancelled at a warning")
             }
         }
         UnisonBridge.installFatalHandler { [weak self] msg, shouldRetry in
@@ -191,6 +209,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showProfilePicker()
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // If the app crashed on a previous launch, offer (once) to send the
+        // macOS crash report. Deferred to the next run-loop turn so the
+        // picker is up first and the alert doesn't compete with launch.
+        DispatchQueue.main.async { [weak self] in
+            self?.checkForPriorCrashReport()
+        }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
         // and trigger init1 right away. Lets us exercise the init flow from
@@ -336,6 +361,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.drivePromptLoop(profile: profile, generation: generation)
             } else {
                 self.log.write("init1 ok — calling init2")
+                // Connect phase done — the scan (init2) is NOT watchdog'd.
+                self.disarmConnectWatchdog()
                 self.connectQueue.async { unison_bridge_init2() }
             }
         }
@@ -373,13 +400,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Connect attempt lifecycle (epoch + watchdog)
 
     /// Open a new connect attempt: bump the epoch and arm the watchdog.
+    /// The watchdog covers ONLY the connect phase (init1 + the credential
+    /// prompt fetch); it's disarmed before init2. Update detection can run
+    /// silently for a long time on a large remote tree, so watchdogging it
+    /// would false-fire — and the timeout poking the engine mid-scan is
+    /// unsafe (it can trip an `update.ml` assertion or an Lwt "wakeup").
+    /// A hung scan is instead handled by off-main + Stop.
     /// Returns the new generation for the init1/init2 handlers to capture.
     @discardableResult
     private func beginConnectAttempt(profile: String) -> Int {
-        connectGeneration += 1
-        let generation = connectGeneration
+        let generation = newConnectGeneration()
         armConnectWatchdog(profile: profile, generation: generation)
         return generation
+    }
+
+    /// Bump the connect epoch WITHOUT arming the watchdog — for rescan,
+    /// which is scan-only (no connect phase to guard).
+    private func newConnectGeneration() -> Int {
+        connectGeneration += 1
+        return connectGeneration
     }
 
     /// True when `generation` is still the live attempt. Handlers check
@@ -428,24 +467,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         armConnectWatchdog(profile: profile, generation: generation)
     }
 
-    /// The connect+scan went `connectStallTimeout` seconds without any
-    /// progress. Recover the UI (the part we can always do) and make a
-    /// best-effort attempt to cancel the half-open OCaml connection.
+    /// The connect phase went `connectStallTimeout` seconds without
+    /// completing (init1 / the credential prompt fetch). Recover the UI by
+    /// returning to the picker. Only fires during the connect phase — the
+    /// watchdog is disarmed before the scan (see `beginConnectAttempt`).
     private func handleConnectTimeout(profile: String, generation: Int) {
         guard isCurrentConnect(generation) else { return }
-        log.write("connect watchdog: '\(profile)' stalled \(Int(connectStallTimeout))s with no progress — tearing down")
+        log.write("connect watchdog: '\(profile)' stalled \(Int(connectStallTimeout))s in connect phase — tearing down")
         // Invalidate first so any late init1/init2 callback (e.g. if the
         // OS eventually fails the ssh) is ignored, including ones that
         // could arrive while the alert below is modal.
         invalidateConnect()
-        // Best-effort cancel of the OCaml-side connection. NOT on
-        // connectQueue — that's wedged in the stuck init1/init2 — so use a
-        // throwaway thread. If the OCaml worker is truly blocked on SSH
-        // I/O this may not return promptly; that's why it's fire-and-
-        // forget. The UI recovers regardless, and the zombie worker / ssh
-        // is reaped when the app exits.
-        DispatchQueue.global().async { unison_bridge_connection_cancel() }
-
+        // Do NOT poke the engine here (no connection_cancel): cancelling a
+        // half-open OCaml connection has proven unsafe — it can raise an Lwt
+        // "wakeup" / trip an assertion. Recover the UI; a wedged ssh child is
+        // harmless and reaped at app exit.
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn’t connect to the remote"
@@ -469,8 +505,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window (→ picker). `abortAllInFlight` invalidates the attempt so a
     /// late callback is ignored.
     private func cancelConnectInProgress(reason: String) {
-        log.write("connect: \(reason) — aborting in-flight connect/scan")
-        DispatchQueue.global().async { unison_bridge_connection_cancel() }
+        log.write("connect: \(reason) — returning to picker")
+        // Don't poke the engine: Stop can land during a scan, where
+        // connection_cancel/abort can trip an assertion or an Lwt "wakeup".
+        // Just tear the UI down to the picker (abortAllInFlight invalidates
+        // the attempt so a late callback is ignored); the background op
+        // settles on its own and any wedged ssh is reaped at exit. See TODO:
+        // a true scan teardown needs caml_callback_exn hardening first.
         abortAllInFlight(reason: reason, forceClose: true)
     }
 
@@ -489,9 +530,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // TraceLog.shared is thread-safe (the OCaml callbacks log
                 // through it off-main too); `self.log` would be a main-actor hop.
                 TraceLog.shared.write("connection: no more prompts — connection_end + init2")
-                unison_bridge_connection_end()
-                // Watchdog stays armed across init2; init2Complete disarms.
-                unison_bridge_init2()
+                // Connect phase done — disarm on main (the scan is NOT
+                // watchdog'd), then run connection_end + init2 on connectQueue.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.disarmConnectWatchdog()
+                    self.connectQueue.async {
+                        unison_bridge_connection_end()
+                        unison_bridge_init2()
+                    }
+                }
                 return
             }
             let prompt = String(cString: cstr)
@@ -532,10 +580,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let reconcile = reconcileWindowController else { return }
         log.write("rescan: re-running init2 for profile '\(profile)'")
         reconcile.beginRescan()
-        // init2 BLOCKS too — and if the connection dropped between scans
-        // it can wedge exactly like the initial connect. Same treatment:
-        // run it off-main under a fresh watchdog'd attempt.
-        let generation = beginConnectAttempt(profile: profile)
+        // init2 BLOCKS too, so run it off-main under a fresh generation
+        // (so a late/superseded callback is ignored). NO watchdog: a rescan
+        // is pure update detection, which can legitimately run silent for a
+        // while on a large remote tree — watchdogging it would false-fire.
+        let generation = newConnectGeneration()
         UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
             guard let self else { return }
             guard self.isCurrentConnect(generation) else {
@@ -784,6 +833,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func handleVersionCheckOutcome(_ outcome: VersionCheck.Outcome,
                                            profile: String) {
+        // Cache for the issue-report body (remote Unison version).
+        lastVersionOutcome = (profile, outcome)
         switch outcome {
         case .match(let v):
             Log.versionCheck.info("version match: \(v, privacy: .public) on both sides")
@@ -821,8 +872,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText =
             "This Mac has Unison \(local). The remote (\(host)) is running \(remote). " +
             "Unison changed its wire protocol at version 2.52.0, and the two sides " +
-            "here are on opposite sides of that change — they cannot connect to " +
-            "each other. Update the older side to a release >= 2.52.0.\n\n" +
+            "here are on opposite sides of that change, so they cannot connect " +
+            "to each other. Update the older side to a release >= 2.52.0.\n\n" +
             "Upstream FAQ: https://github.com/bcpierce00/unison/wiki/FAQ"
         // NSAlert.showsSuppressionButton is purpose-built for this —
         // adds a checkbox the user toggles, no need for a custom
@@ -987,8 +1038,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// API can't combine `?template=` and `?body=` (body wins), and
     /// the highest-value thing we can pre-fill is the version info
     /// the user would otherwise have to look up.
+    // MARK: - Post-crash report prompt
+
+    private static let crashReportMarkerKey = "crashReport.lastHandledDate"
+
+    /// Offer (once) to send a crash report if the app crashed since we last
+    /// asked. First run seeds the marker to "now" so reports predating this
+    /// feature are never surfaced.
+    private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {
+        guard let marker = defaults.object(forKey: Self.crashReportMarkerKey) as? Date else {
+            defaults.set(Date(), forKey: Self.crashReportMarkerKey)
+            return
+        }
+        let found = Self.collectCrashReports()
+        guard let newest = CrashReportScanner.newestUnhandled(found.map(\.report), since: marker),
+              let entry = found.first(where: { $0.report == newest }) else { return }
+        log.write("crash report detected: \(newest.name) — offering to report")
+        promptToSendCrashReport(report: newest, url: entry.url, defaults: defaults)
+    }
+
+    /// This app's crash reports in the standard macOS locations.
+    private static func collectCrashReports() -> [(report: CrashReportScanner.Report, url: URL)] {
+        let fm = FileManager.default
+        let dirs = ["~/Library/Logs/DiagnosticReports",
+                    "~/Library/Logs/DiagnosticReports/Retired"]
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        var out: [(report: CrashReportScanner.Report, url: URL)] = []
+        for dir in dirs {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]) else { continue }
+            for f in entries {
+                let lower = f.lastPathComponent.lowercased()
+                // macOS names crash reports "<procName>-<date>.ips"; our
+                // process is "unison-ui-mac".
+                guard lower.hasPrefix("unison-ui-mac-"), lower.hasSuffix(".ips") else { continue }
+                let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? Date.distantPast
+                out.append((CrashReportScanner.Report(name: f.lastPathComponent, modified: mtime), f))
+            }
+        }
+        return out
+    }
+
+    private func promptToSendCrashReport(report: CrashReportScanner.Report, url: URL,
+                                         defaults: UserDefaults) {
+        // Advance the marker first — one offer per crash regardless of the
+        // user's choice, so the next launch doesn't re-ask for this report.
+        defaults.set(report.modified, forKey: Self.crashReportMarkerKey)
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unison-UI-Mac quit unexpectedly last time"
+        alert.informativeText =
+            "Sending the crash report helps find and fix the problem. It's a "
+            + "technical stack trace with no personal data.\n\n"
+            + "“Report…” opens a pre-filled GitHub issue and reveals the crash "
+            + "report in Finder; just drag it into the issue."
+        alert.addButton(withTitle: "Report…")
+        alert.addButton(withTitle: "Not Now")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        revealCrashReportForAttachment(url)
+        openIssueReport(context:
+            "The app crashed on a previous launch. The macOS crash report "
+            + "(`\(report.name)`) has been revealed in Finder. Please drag it into "
+            + "this issue. It contains no personal data.")
+    }
+
+    /// Copy the `.ips` to a `.txt` in the temp dir (GitHub rejects the
+    /// `.ips` extension for attachments) and reveal it in Finder so the
+    /// user can drag it straight into the issue. Falls back to revealing
+    /// the original on copy failure.
+    private func revealCrashReportForAttachment(_ url: URL) {
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent(url.lastPathComponent + ".txt")
+        try? FileManager.default.removeItem(at: dest)
+        let toReveal: URL
+        do {
+            try FileManager.default.copyItem(at: url, to: dest)
+            toReveal = dest
+        } catch {
+            toReveal = url
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([toReveal])
+    }
+
     @objc func reportIssue(_ sender: Any?) {
-        let body = makeIssueReportBody()
+        openIssueReport()
+    }
+
+    /// Open the GitHub new-issue form with a pre-filled body. `context`
+    /// (when set) prefills "What happened?" — used by the post-crash
+    /// prompt to seed the report.
+    func openIssueReport(context: String? = nil) {
+        let body = makeIssueReportBody(context: context)
         var components = URLComponents(string: "https://github.com/bcourbage/unison-ui-mac/issues/new")!
         components.queryItems = [URLQueryItem(name: "body", value: body)]
         if let url = components.url {
@@ -996,11 +1140,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Remote-Unison line for the issue report, derived from the last
+    /// SSH version-check this session (`lastVersionOutcome`). nil when no
+    /// profile was opened yet. The hostname is intentionally omitted
+    /// (privacy); the profile name is kept for triage.
+    private func remoteUnisonReportLine() -> String? {
+        guard let (profile, outcome) = lastVersionOutcome else { return nil }
+        let value: String
+        switch outcome {
+        case .match(let v):                 value = v
+        case .compatibleMismatch(_, let r): value = r
+        case .mismatch(_, let r, _):        value = r
+        case .noRemoteRoot:                 value = "n/a (local-only profile)"
+        // Don't surface the raw reason — it embeds the host/IP. The detail
+        // is logged (Log.versionCheck) for triage; the report stays clean.
+        case .probeFailed:                  value = "probe failed"
+        }
+        return "- **Remote Unison (profile “\(profile)”):** \(value)"
+    }
+
     /// Builds the pre-filled body for the GitHub new-issue form.
     /// Pure-ish (reads bundle + ProcessInfo + the OCaml bridge); no
     /// side effects. Internal so a future XCTest can pin the shape
     /// against the bug-report template.
-    internal func makeIssueReportBody() -> String {
+    internal func makeIssueReportBody(context: String? = nil) -> String {
         // App version: prefer the human-facing CFBundleShortVersionString
         // ("0.1.0"); fall back to CFBundleVersion ("1") if absent.
         let info = Bundle.main.infoDictionary
@@ -1029,44 +1192,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .map { String(cString: $0) } ?? "unknown"
         }
 
-        // The body is plain Markdown — GitHub's new-issue form
-        // renders it as Markdown in the preview tab. The "What
-        // happened?" / "Steps to reproduce" headers nudge the user
-        // toward an actionable report; the Environment block at the
-        // top is what bug triage needs first.
+        // Remote Unison version from the last SSH probe this session (if a
+        // profile with a remote root was opened). Blank when there's no
+        // remote context — e.g. a crash report filed before any sync.
+        let remoteUnisonLine = remoteUnisonReportLine().map { "\n" + $0 } ?? ""
+
+        // "What happened?" is prefilled when we have context (e.g. the
+        // post-crash prompt passes the crash summary); otherwise the user
+        // fills the placeholder.
+        let whatHappened = context ?? "<!-- Describe the unexpected behavior. -->"
+
+        // Keep this SHORT — a wall of text just doesn't get read. The
+        // Environment block is auto-filled (the valuable, zero-effort part);
+        // the user only writes "what happened". Crash reports are handled
+        // automatically by the post-crash prompt, so there's no need to
+        // explain the `.ips` dance here; logs are a one-line footnote for
+        // the rare non-crash case where they're asked for.
         return """
         ## Environment
 
         - **App version:** \(appVersion)
-        - **Embedded Unison:** \(unisonVersion)
+        - **Embedded Unison:** \(unisonVersion)\(remoteUnisonLine)
         - **macOS:** \(osVersion)
         - **Architecture:** \(arch)
 
         ## What happened?
 
-        <!-- Describe the unexpected behavior. -->
+        \(whatHappened)
 
         ## Steps to reproduce
 
         1.
         2.
-        3.
 
-        ## Expected behavior
-
-        <!-- What should have happened instead? -->
-
-        ## Logs (optional but helpful)
-
-        <details>
-        <summary>Unified log slice</summary>
-
-        ```
-        # Capture and paste:
-        # log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 10m
-        ```
-
-        </details>
+        ---
+        <sub>If the app crashed, it offers to attach the crash report the next time you open it. Logs (only if asked): <code>log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --info --debug --last 30m</code></sub>
         """
     }
 

@@ -87,6 +87,29 @@ final class ReconcileSummaryTests: XCTestCase {
         XCTAssertFalse(out.contains("1 errors"), "must use singular")
     }
 
+    func test_doneStopped_leadsWithSynchronizationStopped() {
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(items: items, phase: .done(failures: 0),
+                                        stopped: true)
+        XCTAssertTrue(out.hasPrefix("Synchronization stopped  ·  "), out)
+    }
+
+    func test_doneStopped_takesPrecedenceOverErrorCount() {
+        // Aborted items often register as failures; a user-stopped run must
+        // still read "stopped", not "completed with N errors".
+        let items = [item(direction: toSecond, size: 1)]
+        let out = ReconcileSummary.text(items: items, phase: .done(failures: 5),
+                                        stopped: true)
+        XCTAssertTrue(out.hasPrefix("Synchronization stopped"), out)
+        XCTAssertFalse(out.contains("errors"), out)
+    }
+
+    func test_doneStopped_emptyItems() {
+        let out = ReconcileSummary.text(items: [], phase: .done(failures: 0),
+                                        stopped: true)
+        XCTAssertTrue(out.hasPrefix("Synchronization stopped"), out)
+    }
+
     // MARK: - Profile name is NOT included
 
     func test_summary_doesNotIncludeProfileName() {
@@ -222,5 +245,19 @@ final class ReconcileSummaryTests: XCTestCase {
         let e = ReconcileSummary.completionEmphasis(failures: 1)
         XCTAssertEqual(e.symbolName, "exclamationmark.triangle.fill")
         XCTAssertEqual(e.tint, .systemRed)
+    }
+
+    func test_completionEmphasis_stopped_isOrangeStop() {
+        let e = ReconcileSummary.completionEmphasis(failures: 0, stopped: true)
+        XCTAssertEqual(e.symbolName, "stop.circle.fill")
+        XCTAssertEqual(e.tint, .systemOrange)
+    }
+
+    func test_completionEmphasis_stopped_winsOverFailures() {
+        // A user-stopped run reads as "stopped" (orange), not error (red),
+        // even when aborted items registered as failures.
+        let e = ReconcileSummary.completionEmphasis(failures: 4, stopped: true)
+        XCTAssertEqual(e.symbolName, "stop.circle.fill")
+        XCTAssertEqual(e.tint, .systemOrange)
     }
 }

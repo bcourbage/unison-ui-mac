@@ -60,7 +60,15 @@ enum ReconcileSummary {
     }
 
     /// Build the displayed summary for the given items and phase.
-    static func text(items: [StateItem], phase: Phase = .ready) -> String {
+    ///
+    /// `stopped` (only meaningful in `.done`) means the user pressed Stop
+    /// mid-sync — the run ended on a user abort, not normal completion, so
+    /// the status reads "Synchronization stopped" instead of "complete" /
+    /// "completed with N errors". Aborted items still carry their per-row
+    /// "Aborted by user request" marker; we deliberately don't recast those
+    /// as "errors" in the summary.
+    static func text(items: [StateItem], phase: Phase = .ready,
+                     stopped: Bool = false) -> String {
         // Build the leading status word (if any). Done-with-errors
         // uses past-tense "completed" because it flows naturally with
         // the "with N errors" clause; the clean-done case uses
@@ -73,7 +81,9 @@ enum ReconcileSummary {
         case .syncing:
             statusPrefix = "Synchronizing"
         case .done(let failures):
-            if failures > 0 {
+            if stopped {
+                statusPrefix = "Synchronization stopped"
+            } else if failures > 0 {
                 let noun = failures == 1 ? "error" : "errors"
                 statusPrefix = "Synchronization completed with \(failures) \(noun)"
             } else {
@@ -154,7 +164,15 @@ enum ReconcileSummary {
         let tint: NSColor
     }
 
-    static func completionEmphasis(failures: Int) -> CompletionEmphasis {
+    static func completionEmphasis(failures: Int,
+                                   stopped: Bool = false) -> CompletionEmphasis {
+        if stopped {
+            // Distinct from success (green) and error (red): the user
+            // halted it deliberately. Orange "stop" reads as "you stopped
+            // this", not "it failed".
+            return CompletionEmphasis(symbolName: "stop.circle.fill",
+                                      tint: .systemOrange)
+        }
         if failures > 0 {
             return CompletionEmphasis(symbolName: "exclamationmark.triangle.fill",
                                       tint: .systemRed)

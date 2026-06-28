@@ -74,6 +74,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let detailsScroll = NSScrollView()
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
+    /// True when the user pressed Stop during the current sync. Read at
+    /// `syncDidComplete` so the terminal summary reads "Synchronization
+    /// stopped" (orange) instead of "complete"/"completed with N errors".
+    /// Reset at each `startSync`.
+    private var userRequestedStop = false
 
     /// Reconcile-window lifecycle phase. Single source of truth for
     /// what stage the window is in:
@@ -188,12 +193,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             alert.messageText = "Synchronization is still running"
             alert.informativeText =
                 "Choose how to close this window:\n\n" +
-                "• Abort & Close — stop the sync and close. Already-in-progress " +
+                "• Abort & Close: stop the sync and close. Already-in-progress " +
                 "transfers may complete before the abort takes effect; queued " +
                 "rows will fail.\n" +
-                "• Close (let it run) — close the window but let the sync " +
+                "• Close (let it run): close the window but let the sync " +
                 "continue in the background until it finishes naturally.\n" +
-                "• Keep Syncing — don't close. You can hit Stop in the toolbar " +
+                "• Keep Syncing: don't close. You can hit Stop in the toolbar " +
                 "to abort with the window staying open."
             alert.addButton(withTitle: "Keep Syncing")
             let abortClose = alert.addButton(withTitle: "Abort & Close")
@@ -456,6 +461,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     func startSync() {
         guard !isSyncing else { return }
         isSyncing = true
+        userRequestedStop = false   // fresh run
         progressBar.doubleValue = 0
         progressBar.isHidden = false
         // Compose the breakdown into the summary so the user keeps
@@ -501,6 +507,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return
         }
         guard isSyncing else { NSSound.beep(); return }
+        userRequestedStop = true   // syncDidComplete reads this for the "stopped" summary
         Log.reconcile.notice("user requested Stop — sending abort signal to OCaml")
         TraceLog.shared.write("ReconcileWindow: user requested Stop — aborting in-flight sync")
         setSummary("Aborting sync… in-progress transfers may finish before the abort takes effect")
@@ -696,8 +703,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// tinted bold summary text. Called from `syncDidComplete` after the
     /// summary text is set. The next `setSummary` (e.g. a rescan) clears
     /// it via `clearCompletionEmphasis`.
-    private func applyCompletionEmphasis(failures: Int) {
-        let emphasis = ReconcileSummary.completionEmphasis(failures: failures)
+    private func applyCompletionEmphasis(failures: Int, stopped: Bool = false) {
+        let emphasis = ReconcileSummary.completionEmphasis(failures: failures, stopped: stopped)
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [emphasis.tint]))
@@ -810,9 +817,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         })
         let failures = failedRowSet.count
         phase = .done(failures: failures)
-        let summary = summaryText()
+        // If the user pressed Stop, the run ended on an abort — report it as
+        // "stopped" (orange), not "complete"/"errors", so the Stop is
+        // acknowledged even when in-flight transfers happened to finish first.
+        let summary = ReconcileSummary.text(items: items, phase: phase,
+                                            stopped: userRequestedStop)
         setSummary(summary)
-        applyCompletionEmphasis(failures: failures)
+        applyCompletionEmphasis(failures: failures, stopped: userRequestedStop)
         refreshToolbarEnabled()
 
         // Opt-out audible + Notification Center cues (Settings-gated;
@@ -952,7 +963,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             .filter { ProgressDescriptor.parse($0.progress).isFailure }
             .count
         phase = .done(failures: failures)
-        setSummary("Sync interrupted — \(reason)")
+        setSummary("Sync interrupted: \(reason)")
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: resetSyncUIAfterAbort (\(reason))")
     }

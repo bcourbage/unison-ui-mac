@@ -16,11 +16,12 @@ import Foundation
 /// rather than double-prompting the user for a password.
 ///
 /// **Compatibility caveats**:
-/// - Doesn't follow Unison's full SSH option set (`sshcmd`, `sshargs`).
-///   We invoke `/usr/bin/ssh` directly with a minimal arg list. If
-///   the user has aggressive customization in their .prf, the probe
-///   may fail differently than Unison's actual connection — we just
-///   skip with a log line.
+/// - Honors the profile's `sshcmd` (when an absolute path) and `sshargs`
+///   so the probe authenticates like Unison's real connection — notably
+///   an `-i <key>` in `sshargs`, without which a key-only host fails
+///   `publickey` in the probe while the sync succeeds. `sshargs` is split
+///   on whitespace, so an argument with embedded spaces isn't handled; a
+///   bare (non-absolute) `sshcmd` falls back to `/usr/bin/ssh`.
 /// - Doesn't handle `socket://` profiles. Those skip the check (the
 ///   socket protocol doesn't have a `-version` shortcut we can use
 ///   the same way).
@@ -191,13 +192,31 @@ enum VersionCheck {
             return .noRemoteRoot
         }
         let servercmd = doc.firstValue(forKey: "servercmd") ?? "unison"
+        // Honor the profile's SSH customization so the probe authenticates
+        // exactly like the real sync (an `-i <key>` in sshargs is the
+        // common case — without it the probe fails publickey while the
+        // sync succeeds).
+        let sshcmd = doc.firstValue(forKey: "sshcmd")
+        let sshargs = doc.firstValue(forKey: "sshargs")
 
         guard let localVersion = parseVersionString(localBridgeVersion) else {
             return .probeFailed(reason: "couldn't parse local bridge version: \(localBridgeVersion)")
         }
 
-        guard let remoteVersion = probeRemoteVersion(sshRoot: sshRoot, servercmd: servercmd) else {
-            return .probeFailed(reason: "ssh probe of \(sshRoot.host) returned no parseable version")
+        let remoteVersion: String
+        switch probeRemoteVersion(sshcmd: sshcmd, sshargs: sshargs,
+                                  sshRoot: sshRoot, servercmd: servercmd) {
+        case .version(let v):
+            remoteVersion = v
+        case .sshFailed(let code, let stderr):
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .probeFailed(reason: "ssh to \(sshRoot.host) exited \(code)"
+                + (detail.isEmpty ? "" : ": \(detail.prefix(200))"))
+        case .launchFailed(let message):
+            return .probeFailed(reason: "couldn't launch ssh: \(message)")
+        case .unparseable(let output):
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .probeFailed(reason: "ssh ran but output had no version: \(trimmed.prefix(120))")
         }
 
         switch classify(local: localVersion, remote: remoteVersion) {
@@ -255,50 +274,83 @@ enum VersionCheck {
 
     // MARK: - SSH probe
 
-    /// Spawns `/usr/bin/ssh [-p port] [-o BatchMode=yes] [user@]host <servercmd> -version`,
-    /// captures stdout, parses out the version number. Returns nil on
-    /// any failure (timeout, non-zero exit, unparseable output).
+    /// Result of the SSH probe — distinguishes the failure modes so the
+    /// caller can log a precise reason (the old `String?` collapsed
+    /// "ssh failed" and "couldn't parse" into one misleading message).
+    enum ProbeResult {
+        case version(String)
+        case sshFailed(exitCode: Int32, stderr: String)
+        case launchFailed(String)
+        case unparseable(String)
+    }
+
+    /// Spawns `<sshcmd> [our -o opts] [sshargs…] [-p port] [user@]host -- <servercmd> -version`,
+    /// captures stdout, parses the version number.
     ///
     /// `BatchMode=yes` is the safety belt: if the remote requires a
-    /// password, SSH bails immediately rather than prompting. We'd
-    /// rather skip the check than double-prompt the user.
-    ///
-    /// Visible for tests (output-parser exercised separately).
-    static func probeRemoteVersion(sshRoot: SSHRoot, servercmd: String) -> String? {
+    /// password, SSH bails immediately rather than prompting. We'd rather
+    /// skip the check than double-prompt the user. Our `-o` options are
+    /// placed FIRST: ssh honors the first occurrence of a repeated option,
+    /// so they win over anything the profile's `sshargs` might set.
+    static func probeRemoteVersion(sshcmd: String?, sshargs: String?,
+                                   sshRoot: SSHRoot, servercmd: String) -> ProbeResult {
+        // A bare (non-absolute) sshcmd can't be resolved reliably from a
+        // GUI app's PATH, so fall back to the system ssh.
+        let sshExecutable = (sshcmd?.hasPrefix("/") == true) ? sshcmd! : "/usr/bin/ssh"
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.executableURL = URL(fileURLWithPath: sshExecutable)
+
         var args: [String] = ["-o", "BatchMode=yes",
                               "-o", "ConnectTimeout=5",
                               "-o", "StrictHostKeyChecking=accept-new"]
+        args.append(contentsOf: tokenizeSSHArgs(sshargs))
         if let port = sshRoot.port {
             args.append("-p")
             args.append(String(port))
         }
         args.append(sshRoot.user.map { "\($0)@\(sshRoot.host)" } ?? sshRoot.host)
-        // Use `--` to separate ssh's args from the remote command, so a
-        // servercmd path with a leading dash (unlikely but possible)
-        // doesn't get reinterpreted by ssh.
+        // `--` separates ssh's args from the remote command, so a servercmd
+        // path with a leading dash isn't reinterpreted by ssh.
         args.append("--")
         args.append(servercmd)
         args.append("-version")
         process.arguments = args
 
         let outPipe = Pipe()
+        let errPipe = Pipe()
         process.standardOutput = outPipe
-        // Discard stderr — we don't surface it; failure-mode logging
-        // happens at the .versionCheck category from the caller.
-        process.standardError = Pipe()
+        process.standardError = errPipe
 
         do {
             try process.run()
             process.waitUntilExit()
         } catch {
-            return nil
+            return .launchFailed(error.localizedDescription)
         }
-        guard process.terminationStatus == 0 else { return nil }
-        let data = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return parseVersionString(output)
+        // `-version` output is tiny, so reading after exit can't deadlock
+        // on a full pipe buffer.
+        let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+        let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+        let stdout = String(data: outData, encoding: .utf8) ?? ""
+        let stderr = String(data: errData, encoding: .utf8) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            return .sshFailed(exitCode: process.terminationStatus, stderr: stderr)
+        }
+        guard let version = parseVersionString(stdout) else {
+            return .unparseable(stdout)
+        }
+        return .version(version)
+    }
+
+    /// Split a Unison `sshargs` string into argv tokens (whitespace-
+    /// delimited; empty for nil/blank). Pure + tested. Caveat: a simple
+    /// split — an argument containing embedded spaces (e.g. a key path
+    /// with a space) isn't handled, which matches the common real-world
+    /// case where keys live at space-free paths.
+    static func tokenizeSSHArgs(_ sshargs: String?) -> [String] {
+        guard let sshargs else { return [] }
+        return sshargs.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
     }
 
     // MARK: - Version string parsing

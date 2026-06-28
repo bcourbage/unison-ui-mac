@@ -73,6 +73,26 @@ section at the bottom so this list stays scannable.
       not an in-progress `init2` — extending a real teardown to the scan
       phase is the actual work item.
 
+      **Findings (2026-06-27, v0.2.0):** two confirmations + a new constraint.
+      1. The warn dialog's **"Cancel sync" now shares this exact limitation.**
+         It used to make the OCaml engine `exit()` — quitting the whole app
+         (clean exit, no crash report). v0.2.0 changed it to answer the engine
+         "proceed" and tear the UI down to the picker, same as scan-phase
+         Stop. So the background scan runs to completion either way; neither
+         Stop nor warn-Cancel truly aborts a scan.
+      2. Setting the propagation abort flag (`unison_bridge_abort_sync`)
+         **during a scan is not a harmless no-op — it trips
+         `update.ml:1027 Assertion failed`** (surfaced as a "Unison error /
+         uncaught exception" fatal). So the abort flag must be gated on
+         `isSyncing` (transport only); a scan must NOT flag abort.
+      3. **New prerequisite for the real fix:** tearing down the connection
+         mid-`init2` makes OCaml raise, and `_ocaml_init2` uses plain
+         `caml_callback`, so an uncaught exception there aborts the process
+         (SIGABRT). A true scan teardown therefore *also* needs the phase
+         calls hardened to `caml_callback_exn` (catch + route to the
+         fatal / return-to-picker path) — do that first, then add the
+         connection teardown.
+
 
 ---
 

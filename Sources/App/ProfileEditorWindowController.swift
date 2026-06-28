@@ -402,7 +402,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         guard let newName = promptForName(
             messageText: "Duplicate profile “\(source)”",
             informativeText: "Enter a name for the new profile. The .prf " +
-                "contents will be copied verbatim — roots, ignore patterns, " +
+                "contents will be copied verbatim: roots, ignore patterns, " +
                 "all preferences.",
             initialValue: suggestion,
             confirmTitle: "Duplicate"
@@ -475,7 +475,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 alert.informativeText =
                     "Both of this profile's roots are remote (ssh:// or " +
                     "socket://). Archive files live on the local machine " +
-                    "that runs Unison — since this profile has no local " +
+                    "that runs Unison. Since this profile has no local " +
                     "root, there's nothing to reset from here. Run reset " +
                     "from a machine that hosts one of the replicas."
             }
@@ -584,7 +584,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 "The .prf file at \(url.path) will be moved to the Trash. " +
                 "\(archiveFiles.count) archive file\(plural) for this profile " +
                 "(ar*, fp*, etc.) will also be moved if the box below is " +
-                "checked — they're useless without the profile that owns " +
+                "checked. They're useless without the profile that owns " +
                 "them. Uncheck if you plan to restore the .prf from Trash " +
                 "and resume syncing where you left off."
         }
@@ -930,8 +930,8 @@ extension ProfileEditorWindowController: NSTableViewDelegate {
         if let btn = cell.subviews.compactMap({ $0 as? NSButton }).first {
             btn.tag = row
             let symbol = isHidden ? "eye.slash" : "eye"
-            let desc = isHidden ? "Hidden — click to show in picker"
-                                : "Visible — click to hide from picker"
+            let desc = isHidden ? "Hidden: click to show in picker"
+                                : "Visible: click to hide from picker"
             btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: desc)
             btn.toolTip = desc
             btn.contentTintColor = isHidden ? .tertiaryLabelColor : .secondaryLabelColor
