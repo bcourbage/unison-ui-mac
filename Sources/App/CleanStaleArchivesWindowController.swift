@@ -21,11 +21,36 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         /// The paired (other) root.
         let root2: String
         let files: [(url: URL, bytes: Int64)]
+        /// Modification time of the `ar` file (informational only).
+        let modified: Date?
+        /// Whether this row is checked by default. True only when the
+        /// archive is provably this machine's own dead state — owned by an
+        /// existing local profile (a superseded copy) or a local-only sync
+        /// (both roots this Mac). Cross-machine orphans start unchecked
+        /// because this Mac could be the *remote* for another machine's
+        /// (possibly infrequent) sync.
+        let defaultChecked: Bool
         var bytes: Int64 { files.reduce(0) { $0 + $1.bytes } }
         var fileNames: String { files.map { $0.url.lastPathComponent }.joined(separator: ", ") }
         var profileText: String {
             profileNames.isEmpty ? "(no profile)" : profileNames.joined(separator: ", ")
         }
+    }
+
+    /// Default-check only archives that are provably this machine's own
+    /// dead state. `owned` (a superseded copy of an existing local profile)
+    /// or `localOnly` (both roots are this Mac) qualify; cross-machine
+    /// orphans and anything uncertain do not — they might be a sync another
+    /// machine runs against this Mac, regardless of how rarely it runs.
+    static func defaultsToChecked(owned: Bool, uncertain: Bool, localOnly: Bool) -> Bool {
+        !uncertain && (owned || localOnly)
+    }
+
+    /// True when every root is this Mac's current hostname lineage (so no
+    /// other machine could own the archive). A former machine name (e.g.
+    /// `MacBookPro`) counts as NOT local-only — the safe side.
+    static func isLocalOnly(roots: [String], currentLabel: String) -> Bool {
+        roots.allSatisfy { ArchiveMatcher.host(ofComponent: $0).map(ArchiveMatcher.shortLabel) == currentLabel }
     }
 
     /// Called when the window closes so the opener can drop its reference.
@@ -44,12 +69,19 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     private let exportButton = NSButton(title: "Export CSV…", target: nil, action: nil)
     private let closeButton = NSButton(title: "Close", target: nil, action: nil)
     private let byteFmt = ByteCountFormatter()
+    private let dateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f
+    }()
 
     private enum Col {
         static let check = NSUserInterfaceItemIdentifier("check")
         static let files = NSUserInterfaceItemIdentifier("files")
         static let profile = NSUserInterfaceItemIdentifier("profile")
         static let size = NSUserInterfaceItemIdentifier("size")
+        static let modified = NSUserInterfaceItemIdentifier("modified")
         static let root1 = NSUserInterfaceItemIdentifier("root1")
         static let root2 = NSUserInterfaceItemIdentifier("root2")
     }
@@ -86,8 +118,11 @@ final class CleanStaleArchivesWindowController: NSWindowController,
 
         let header = NSTextField(wrappingLabelWithString:
             "These archives are not used by any current profile. Checked " +
-            "rows move to the Trash (recoverable). Live archives — what " +
-            "each profile's next sync uses — are never listed here.")
+            "rows move to the Trash (recoverable). Unchecked rows reference " +
+            "another machine and may belong to a sync that machine runs " +
+            "against this Mac (where this Mac is the remote side), so verify " +
+            "before removing them. Live archives (what each profile's next " +
+            "sync uses) are never listed here.")
         header.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         header.textColor = .secondaryLabelColor
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -107,6 +142,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         addColumn(Col.files, title: "Archive files", width: 220)
         addColumn(Col.profile, title: "Profile", width: 150)
         addColumn(Col.size, title: "Size", width: 80)
+        addColumn(Col.modified, title: "Last modified", width: 110)
         addColumn(Col.root1, title: "Root 1 (this Mac)", width: 240)
         addColumn(Col.root2, title: "Root 2", width: 240)
         tableView.dataSource = self
@@ -183,18 +219,20 @@ final class CleanStaleArchivesWindowController: NSWindowController,
 
     private func reload() {
         rows = scan()
-        checked = Array(repeating: true, count: rows.count)
+        // Default selection is topology-based, not time-based: only
+        // provably-own dead archives start checked (see Row.defaultChecked).
+        checked = rows.map { $0.defaultChecked }
         tableView.reloadData()
         let archiveCount = rows.count
         let fileCount = rows.reduce(0) { $0 + $1.files.count }
         let total = byteFmt.string(fromByteCount: rows.reduce(0) { $0 + $1.bytes })
-        let uncertainCount = rows.filter { $0.uncertain }.count
-        let uncertainNote = uncertainCount > 0
-            ? "  ·  \(uncertainCount) uncertain (marked ?)" : ""
+        let reviewCount = rows.filter { !$0.defaultChecked }.count
+        let reviewNote = reviewCount > 0
+            ? "  ·  \(reviewCount) left unchecked for review" : ""
         summaryLabel.stringValue = rows.isEmpty
             ? "No stale archives. Every archive belongs to a current profile."
             : "\(archiveCount) archive\(archiveCount == 1 ? "" : "s"), " +
-              "\(fileCount) file\(fileCount == 1 ? "" : "s"), \(total)\(uncertainNote)"
+              "\(fileCount) file\(fileCount == 1 ? "" : "s"), \(total)\(reviewNote)"
         selectAllCheckbox.isEnabled = !rows.isEmpty
         exportButton.isEnabled = !rows.isEmpty
         refreshSelectionUI()
@@ -206,6 +244,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let findings = ArchiveStaleScanner.findings(
             in: index, profiles: profiles(), localHostname: ArchiveHash.systemHostname)
         let fm = FileManager.default
+        let currentLabel = ArchiveMatcher.shortLabel(ArchiveHash.systemHostname)
         return findings
             .sorted { a, b in
                 let aOrphan = a.reason == .orphan, bOrphan = b.reason == .orphan
@@ -223,11 +262,18 @@ final class CleanStaleArchivesWindowController: NSWindowController,
                     let attrs = try? fm.attributesOfItem(atPath: url.path)
                     return (url, (attrs?[.size] as? NSNumber)?.int64Value ?? 0)
                 }
+                let modified = (try? fm.attributesOfItem(atPath: finding.entry.url.path))?[.modificationDate] as? Date
+                let localOnly = Self.isLocalOnly(roots: [r1, r2], currentLabel: currentLabel)
+                let defaultChecked = Self.defaultsToChecked(
+                    owned: !finding.profileNames.isEmpty,
+                    uncertain: finding.uncertain,
+                    localOnly: localOnly)
                 return Row(hash: finding.entry.hash,
                            reason: finding.reason,
                            profileNames: finding.profileNames,
                            uncertain: finding.uncertain,
-                           root1: r1, root2: r2, files: files)
+                           root1: r1, root2: r2, files: files,
+                           modified: modified, defaultChecked: defaultChecked)
             }
     }
 
@@ -420,6 +466,9 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             let cell = labelCell(byteFmt.string(fromByteCount: item.bytes), tooltip: nil)
             cell.textField?.alignment = .right
             return cell
+        case Col.modified:
+            let text = item.modified.map { dateFmt.string(from: $0) } ?? "unknown"
+            return labelCell(text, tooltip: "Informational only; not used to decide what is safe to remove.")
         case Col.root1:
             return labelCell(item.root1, tooltip: item.root1, truncateMiddle: true)
         case Col.root2:
