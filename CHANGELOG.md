@@ -9,6 +9,22 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.2.2] — 2026-06-29
+
+### Changed
+
+- **Clean Stale Archives now decides what to pre-select by topology, not by
+  age.** Only archives that are provably this Mac's own dead state are
+  checked by default: a superseded copy of a profile that still exists, or a
+  sync whose two roots are both this Mac. An archive that references another
+  machine is left unchecked for review, because this Mac could be the remote
+  side of a sync that machine runs, however infrequently. (Time-based
+  guessing would wrongly drop an infrequent remote sync's live archive.)
+  Anything with uncertain attribution is also left unchecked.
+
+- Added a **Last modified** column to the Clean Stale window. It is shown for
+  reference only and is never used to decide what is safe to remove.
+
 ## [0.2.1] — 2026-06-29
 
 ### Fixed
