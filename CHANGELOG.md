@@ -9,6 +9,39 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.2.1] — 2026-06-29
+
+### Fixed
+
+- **Reset Archives couldn't find a profile's archive after the Mac was
+  renamed.** The archive hash was built from the Bonjour `.local` host name
+  instead of POSIX `gethostname()` (what Unison itself uses), so it looked
+  for a file that was never written. It now uses the same host name Unison
+  does, and matches archives by reading their on-disk headers rather than by
+  a recomputed hash (which can't be derived for an ssh remote offline).
+
+- **Reset Archives missed half of a local-to-local profile's state.** Such a
+  profile keeps two local archives (one per replica); Reset now clears every
+  local archive for the profile instead of just one, and targets only the
+  live generation the next sync will actually use.
+
+- **Reset and Delete dialogs needed two Escape presses to cancel, and lost
+  the selected profile afterward.** A single Escape now cancels reliably, and
+  the previously selected profile stays selected.
+
+### Added
+
+- **Clean Stale Archives** (Settings, Maintenance tab): a resizable window
+  listing archive files that no current profile uses, with a checkbox per
+  row, a Select-all control, the owning profile name where it can be
+  determined, each replica root in its own column, and file sizes. Move the
+  checked archives to the Trash (recoverable) or export the list as CSV. Live
+  archives are never shown.
+
+- Each archive is integrity-checked (its filename must match a hash of its
+  own header) before being matched or trashed, and attributions that can't be
+  fully verified are flagged.
+
 ## [0.2.0] — 2026-06-27
 
 ### Fixed
