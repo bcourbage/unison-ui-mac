@@ -42,9 +42,14 @@ import CommonCrypto
 /// - Doesn't apply `rootalias` substitutions. If the user's .prf has
 ///   a `rootalias = …` rule, our hash will diverge for that profile.
 ///   Documented in the TODO; rare in practice.
-/// - Uses `ProcessInfo.processInfo.hostName` (equivalent to
-///   `gethostname()`). Respects `UNISONLOCALHOSTNAME` env var the
-///   same way upstream does.
+/// - Uses POSIX `gethostname(2)` (exactly what upstream's
+///   `Os.localCanonicalHostName` calls). Respects `UNISONLOCALHOSTNAME`
+///   env var the same way upstream does. NOTE: this is deliberately
+///   NOT `ProcessInfo.processInfo.hostName`, which on macOS returns the
+///   Bonjour `.local` name (e.g. "Heracles.local") rather than the bare
+///   kernel hostname set via `scutil --set HostName` (e.g. "Heracles").
+///   The two diverge whenever HostName has no domain, which silently
+///   broke archive lookup before this was corrected.
 /// - Local paths are expanded via `expandingTildeInPath` and otherwise
 ///   passed verbatim. Upstream's `Fspath.canonize` also resolves
 ///   symlinks; we don't, so a profile that uses a symlinked root
@@ -70,6 +75,27 @@ enum ArchiveHash {
         let hashInput: String
     }
 
+    /// All archive identities for a profile. Unison keeps a SEPARATE
+    /// archive per *local* root, each named with that root as `thisRoot`
+    /// but sharing the same `rootsName`. A normal local↔remote profile
+    /// has exactly one local root (one entry); a local↔local profile
+    /// has two (two entries, two hashes). Resetting/cleaning must cover
+    /// every entry or it leaves half the reconciliation state behind.
+    struct MultiResult: Equatable {
+        /// The sorted, comma-joined canonical roots string (shared).
+        let rootsName: String
+        /// One `Result` per local root; always ≥1 on success.
+        let entries: [Result]
+        /// True when EVERY root is local (no ssh/socket). Only then is
+        /// the hash computable exactly offline — a remote root's
+        /// canonical form (remote hostname + resolved path) is unknown
+        /// without connecting, so its hash can't be trusted. Header
+        /// matching (`ArchiveCleanup.indexArchives`) is used instead.
+        let allRootsLocal: Bool
+        /// Convenience: just the hashes, in entry order.
+        var hashes: [String] { entries.map(\.hash) }
+    }
+
     enum Failure: Error, Equatable {
         case profileFileMissing
         case noRoots
@@ -89,28 +115,52 @@ enum ArchiveHash {
         profile: String,
         hostname: String = Self.systemHostname
     ) -> Swift.Result<Result, Failure> {
+        computeAll(unisonDirectory: unisonDirectory,
+                   profile: profile,
+                   hostname: hostname).map { $0.entries[0] }
+    }
+
+    /// Like `compute`, but returns the archive identity for EVERY local
+    /// root, not just the first. Use this anywhere that deletes or scans
+    /// archive files: a local↔local profile has two local archives and
+    /// touching only one leaves an inconsistent half-reset behind.
+    static func computeAll(
+        unisonDirectory: String,
+        profile: String,
+        hostname: String = Self.systemHostname
+    ) -> Swift.Result<MultiResult, Failure> {
         let url = URL(fileURLWithPath: unisonDirectory)
             .appendingPathComponent("\(profile).prf")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             return .failure(.profileFileMissing)
         }
-        return computeFromProfileText(text, hostname: hostname)
+        return computeAllFromProfileText(text, hostname: hostname)
     }
 
-    /// Compute the hash from raw .prf text. Broken out so tests can
-    /// drive the function without writing temp files to disk.
+    /// Compute the (first local root's) hash from raw .prf text. Broken
+    /// out so tests can drive the function without writing temp files.
     static func computeFromProfileText(
         _ text: String,
         hostname: String
     ) -> Swift.Result<Result, Failure> {
+        computeAllFromProfileText(text, hostname: hostname).map { $0.entries[0] }
+    }
+
+    /// Compute the archive identity for every local root from raw .prf
+    /// text. The single-root callers (`compute`/`computeFromProfileText`)
+    /// just take the first entry.
+    static func computeAllFromProfileText(
+        _ text: String,
+        hostname: String
+    ) -> Swift.Result<MultiResult, Failure> {
         let doc = ProfileDocument.parse(text)
         let rootValues = doc.values(forKey: "root")
         guard !rootValues.isEmpty else { return .failure(.noRoots) }
 
         let canonicalForms = rootValues.map { canonicalize($0, hostname: hostname) }
-        guard let firstLocal = canonicalForms.first(where: { $0.isLocal }) else {
-            return .failure(.noLocalRoot)
-        }
+        let localForms = canonicalForms.filter { $0.isLocal }
+        guard !localForms.isEmpty else { return .failure(.noLocalRoot) }
+        let allRootsLocal = localForms.count == canonicalForms.count
 
         // rootsName ordering: upstream uses OCaml's `compare`, which on
         // strings is byte-wise lexicographic. Swift's default String
@@ -118,16 +168,19 @@ enum ArchiveHash {
         // for the ASCII characters that appear in canonical roots.
         let sorted = canonicalForms.map(\.canonical).sorted()
         let rootsName = sorted.joined(separator: ", ")
-        let thisRoot = firstLocal.canonical
 
-        let input = "\(thisRoot);\(rootsName);\(archiveFormat)"
-        let hash = md5Hex(input)
-        return .success(Result(
-            hash: hash,
-            thisRoot: thisRoot,
-            rootsName: rootsName,
-            hashInput: input
-        ))
+        // One archive per local root: same rootsName, different thisRoot.
+        let entries = localForms.map { local -> Result in
+            let thisRoot = local.canonical
+            let input = "\(thisRoot);\(rootsName);\(archiveFormat)"
+            return Result(hash: md5Hex(input),
+                          thisRoot: thisRoot,
+                          rootsName: rootsName,
+                          hashInput: input)
+        }
+        return .success(MultiResult(rootsName: rootsName,
+                                    entries: entries,
+                                    allRootsLocal: allRootsLocal))
     }
 
     // MARK: - Canonicalization
@@ -190,15 +243,31 @@ enum ArchiveHash {
     // MARK: - Hostname
 
     /// The hostname Unison hashes against. Matches upstream's
-    /// `Os.localCanonicalHostName`: env var override first, then
-    /// `gethostname()`. On macOS that's typically the .local name
-    /// (e.g. "MacBook.local"), without DNS canonicalization.
+    /// `Os.localCanonicalHostName`: env var override first, then POSIX
+    /// `gethostname(2)`. This is the bare kernel hostname (e.g.
+    /// "Heracles"), NOT the Bonjour `.local` name returned by
+    /// `ProcessInfo.processInfo.hostName` — using the latter produced
+    /// the wrong archive hash whenever HostName carried no domain.
     static var systemHostname: String {
         if let override = ProcessInfo.processInfo.environment["UNISONLOCALHOSTNAME"],
            !override.isEmpty {
             return override
         }
-        return ProcessInfo.processInfo.hostName
+        return posixHostname()
+    }
+
+    /// POSIX `gethostname(2)` — the exact call behind OCaml's
+    /// `Unix.gethostname()`, which Unison uses to name archive files.
+    /// `_SC_HOST_NAME_MAX` is the portable buffer size; we add room for
+    /// the NUL terminator. Falls back to `ProcessInfo.hostName` only if
+    /// the syscall fails (it effectively never does).
+    private static func posixHostname() -> String {
+        let cap = Int(sysconf(Int32(_SC_HOST_NAME_MAX))) + 1
+        var buffer = [CChar](repeating: 0, count: max(cap, 256))
+        guard gethostname(&buffer, buffer.count) == 0 else {
+            return ProcessInfo.processInfo.hostName
+        }
+        return String(cString: buffer)
     }
 
     // MARK: - MD5

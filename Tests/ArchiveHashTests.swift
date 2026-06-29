@@ -207,4 +207,76 @@ final class ArchiveHashTests: XCTestCase {
         let b = ArchiveHash.computeFromProfileText(text, hostname: "h")
         XCTAssertEqual(a, b)
     }
+
+    func test_computeAll_twoLocalRoots_yieldsTwoDistinctHashes() {
+        // A local↔local profile keeps a separate archive per local root,
+        // each with that root as `thisRoot` but a shared rootsName.
+        // computeAll must surface BOTH so reset/cleanup covers them.
+        let text = """
+            root = /tmp/a
+            root = /tmp/b
+            """
+        guard case .success(let multi) =
+                ArchiveHash.computeAllFromProfileText(text, hostname: "h") else {
+            return XCTFail("expected success")
+        }
+        XCTAssertEqual(multi.entries.count, 2)
+        XCTAssertEqual(Set(multi.hashes).count, 2, "hashes must differ per local root")
+        // Shared rootsName; thisRoot differs.
+        XCTAssertEqual(multi.entries[0].rootsName, multi.entries[1].rootsName)
+        XCTAssertEqual(multi.entries[0].thisRoot, "//h//tmp/a")
+        XCTAssertEqual(multi.entries[1].thisRoot, "//h//tmp/b")
+        // compute() (singular) returns the first entry — back-compat.
+        let single = ArchiveHash.computeFromProfileText(text, hostname: "h")
+        XCTAssertEqual(try? single.get(), multi.entries[0])
+    }
+
+    func test_computeAll_localRemoteProfile_yieldsSingleHash() {
+        // The common case: one local root, one ssh root → one archive
+        // family locally. No behavior change vs. the old single-hash path.
+        let text = """
+            root = /tmp/a
+            root = ssh://host//data
+            """
+        guard case .success(let multi) =
+                ArchiveHash.computeAllFromProfileText(text, hostname: "h") else {
+            return XCTFail("expected success")
+        }
+        XCTAssertEqual(multi.entries.count, 1)
+        XCTAssertEqual(multi.entries[0].thisRoot, "//h//tmp/a")
+    }
+
+    func test_systemHostname_matchesPosixGethostname_notProcessInfo() {
+        // Regression: the default hostname MUST be POSIX gethostname(2)
+        // (what Unison's Os.localCanonicalHostName uses to name archives),
+        // NOT ProcessInfo.hostName, which on macOS returns the Bonjour
+        // ".local" name and produced a hash matching no archive on disk.
+        // Compute gethostname independently here and require equality.
+        var buffer = [CChar](repeating: 0, count: 256)
+        XCTAssertEqual(gethostname(&buffer, buffer.count), 0)
+        let expected = String(cString: buffer)
+
+        // Only meaningful when the env override is absent.
+        if ProcessInfo.processInfo.environment["UNISONLOCALHOSTNAME"] == nil {
+            XCTAssertEqual(ArchiveHash.systemHostname, expected)
+            // And it must NOT carry the ".local" suffix that the wrong
+            // API appends when HostName has no domain.
+            XCTAssertFalse(
+                ArchiveHash.systemHostname.hasSuffix(".local")
+                    && !expected.hasSuffix(".local"),
+                "systemHostname leaked a .local suffix; using ProcessInfo.hostName again?"
+            )
+        }
+    }
+
+    func test_systemHostname_honorsEnvOverride() throws {
+        // UNISONLOCALHOSTNAME wins over gethostname, matching upstream.
+        // Can only assert when the override is actually set in the env.
+        if let override = ProcessInfo.processInfo.environment["UNISONLOCALHOSTNAME"],
+           !override.isEmpty {
+            XCTAssertEqual(ArchiveHash.systemHostname, override)
+        } else {
+            throw XCTSkip("UNISONLOCALHOSTNAME not set in this environment")
+        }
+    }
 }

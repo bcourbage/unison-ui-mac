@@ -283,11 +283,19 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             .filter { ($0 as NSString).pathExtension == "prf" }
             .map { ($0 as NSString).deletingPathExtension }
 
+        // Remember the selection by name (not row index — the list can
+        // reorder) so it survives the reload that fires on every
+        // windowDidBecomeKey, e.g. when a Reset/Delete alert dismisses.
+        let previouslySelected = selectedProfile()
+
         prefs = ProfilePreferences.load()
         // includeHidden: true — the editor's whole point is to manage
         // hidden state, so hidden rows are listed (dimmed).
         profiles = prefs.apply(to: available, includeHidden: true)
         tableView.reloadData()
+        if let name = previouslySelected, let idx = profiles.firstIndex(of: name) {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        }
         refreshButtonEnabled()
     }
 
@@ -302,6 +310,19 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         let row = tableView.selectedRow
         guard row >= 0, row < profiles.count else { return nil }
         return profiles[row]
+    }
+
+    /// Cycle the table view's first-responder status (resign + reassign)
+    /// before presenting a confirmation dialog — replicating what a mouse
+    /// click on a row does implicitly. Pure keyboard (arrow) navigation
+    /// leaves the table in a first-responder sub-state that, on repeated
+    /// dialog presentations, swallows the dialog's first Escape press (it
+    /// beeps; a second Esc is then needed). A clean reassignment clears
+    /// that state so a single Escape always cancels.
+    private func refreshTableFirstResponder() {
+        guard let window, window.firstResponder === tableView else { return }
+        window.makeFirstResponder(nil)
+        window.makeFirstResponder(tableView)
     }
 
     private func refreshButtonEnabled() {
@@ -451,8 +472,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // Compute the hash. Surface failures verbatim — these are the
         // user-actionable cases (profile file missing, no roots, no
         // local root) where we should NOT silently delete anything.
-        let result = ArchiveHash.compute(unisonDirectory: unisonDirectory,
-                                          profile: profile)
+        let result = ArchiveHash.computeAll(unisonDirectory: unisonDirectory,
+                                            profile: profile)
         switch result {
         case .failure(let why):
             let alert = NSAlert()
@@ -463,9 +484,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 alert.informativeText =
                     "Couldn't read \(unisonDirectory)/\(profile).prf. " +
                     "If you deleted the .prf manually, you can still " +
-                    "clean up its archives by looking up the hash with " +
-                    "`unison -showArchiveName` and removing the matching " +
-                    "ar*/fp*/lk* files from the Unison directory."
+                    "clean up its archives by looking up the name with " +
+                    "`unison -ui text -showArchiveName` and removing the " +
+                    "matching ar*/fp*/lk* files from the Unison directory."
             case .noRoots:
                 alert.informativeText =
                     "The profile has no `root = …` lines, so we can't " +
@@ -487,74 +508,189 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    /// Second-stage prompt: show the user the files we're about to
-    /// trash, with the archive hash + canonical roots for verification,
-    /// then perform the deletion via `NSFileManager.trashItem(at:)`.
-    private func confirmAndResetArchives(profile: String,
-                                         computed: ArchiveHash.Result) {
+    /// Result of locating a profile's local archive files.
+    private struct ArchiveLocation {
+        /// Files to trash (ar + any fp/lk/tm/sc siblings), deduped.
+        let files: [URL]
+        /// The roots Unison recorded for each distinct matched archive,
+        /// for display so the user verifies the right pair. Read from
+        /// the archive headers (ground truth), NOT recomputed — our
+        /// computed rootsName is wrong for ssh roots.
+        let rootsNames: [String]
+        /// True when more than one distinct archive still matches and we
+        /// couldn't attribute them offline (two ssh profiles sharing a
+        /// local root but pointing at different remotes). The caller
+        /// warns and lists all matches so the user decides.
+        let ambiguous: Bool
+    }
+
+    /// Locate a profile's local archive files by hostname-agnostic path
+    /// matching (see `ArchiveMatcher`). Matching on paths rather than the
+    /// recorded hostname means a profile's own archives are still found
+    /// after the machine's hostname drifts (e.g. `Heracles.local` →
+    /// `Heracles`), which also pulls in stale same-path copies so a Reset
+    /// clears them too. Two profiles sharing a local root stay distinct
+    /// because the *remote* path differs.
+    ///
+    /// `ambiguous` is set when matches span more than one distinct
+    /// root-pair (by path signature) — i.e. we'd be mixing archives from
+    /// genuinely different syncs. The caller surfaces this and the user
+    /// confirms. Current-vs-stale copies of the *same* pair share a
+    /// signature and are not ambiguous.
+    private func locateArchives(profile: String,
+                                computed: ArchiveHash.MultiResult) -> ArchiveLocation {
         let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
-        let files = cleanup.findFiles(matching: computed.hash)
+        let roots = profileRoots(profile)
+        // Live generation only — Reset clears what the next sync uses;
+        // stale hostname generations are left for "Clean stale archives".
+        let matched = ArchiveMatcher.liveArchives(forProfileRoots: roots,
+                                                  in: cleanup.indexArchives(),
+                                                  localHostname: ArchiveHash.systemHostname)
+
+        // Collapse to distinct archive files (ar + fp/lk/tm/sc siblings),
+        // deduped, in a stable order.
+        var byHash: [String: ArchiveCleanup.ArchiveEntry] = [:]
+        for entry in matched where byHash[entry.hash] == nil { byHash[entry.hash] = entry }
+
+        var seen = Set<String>()
+        var files: [URL] = []
+        for hash in byHash.keys.sorted() {
+            for url in cleanup.findFiles(matching: hash)
+            where seen.insert(url.path).inserted {
+                files.append(url)
+            }
+        }
+
+        let signatures = Set(byHash.values.map {
+            ArchiveMatcher.pathSignature(ofRootsName: $0.rootsName)
+        })
+        let rootsNames = Set(byHash.values.map(\.rootsName)).sorted()
+        return ArchiveLocation(files: files,
+                               rootsNames: rootsNames,
+                               ambiguous: signatures.count > 1)
+    }
+
+    /// The raw `root = …` values from a profile's `.prf`, in file order.
+    private func profileRoots(_ profile: String) -> [String] {
+        let url = profileURL(profile)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return ProfileDocument.parse(text).values(forKey: "root")
+    }
+
+    /// Second-stage prompt: show the user the files we're about to
+    /// trash, with the archive hash(es) + canonical roots for
+    /// verification, then perform the deletion via
+    /// `NSFileManager.trashItem(at:)`.
+    ///
+    /// `computed` carries one entry per *local* root. A local↔local
+    /// profile has two, so we gather and trash every local archive
+    /// family — trashing only one would leave an inconsistent
+    /// half-reset (one replica's archive gone, the other's intact).
+    private func confirmAndResetArchives(profile: String,
+                                         computed: ArchiveHash.MultiResult) {
+        // Clear any stale keyboard first-responder state on the table so a
+        // single Escape reliably cancels the alert (see the helper).
+        refreshTableFirstResponder()
+        let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
+        let location = locateArchives(profile: profile, computed: computed)
+        let files = location.files
 
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Reset archives for “\(profile)”?"
         if files.isEmpty {
+            // List the local roots we looked for. The computed rootsName
+            // is unreliable for ssh profiles, so lead with the local
+            // thisRoots, which are accurate.
             alert.informativeText =
-                "No archive files matching this profile's hash were " +
-                "found in \(unisonDirectory). The profile's archive " +
-                "either lives on the remote side, or has already been " +
-                "cleaned up.\n\nArchive hash: \(computed.hash)\n" +
-                "Canonical roots: \(computed.rootsName)"
+                "This profile has no live archive, so its next sync will " +
+                "already re-scan both replicas from scratch. There is " +
+                "nothing to reset.\n\n" +
+                "An older archive from a previous hostname may still exist " +
+                "on disk; remove it with Settings, Maintenance, Clean Stale " +
+                "Archives."
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return
         }
-        // Order matters: Cancel first → Return defaults to safe.
+
+        // Ground-truth roots read from the matched archive headers.
+        let rootsBlock = location.rootsNames
+            .map { "  • \($0)" }
+            .joined(separator: "\n")
+        let ambiguityNote = location.ambiguous
+            ? "\nMore than one profile shares this local root and the " +
+              "matches couldn't be told apart automatically. Confirm the " +
+              "roots above belong to this profile before resetting.\n"
+            : ""
+
         let fileList = files.map { "  • \($0.lastPathComponent)" }
             .joined(separator: "\n")
         alert.informativeText =
             "The following archive files will be moved to the Trash:\n\n" +
             "\(fileList)\n\n" +
+            "Synchronizing roots:\n\(rootsBlock)\n" +
+            "\(ambiguityNote)\n" +
             "The next sync of this profile will rebuild reconciliation " +
             "state from scratch (full re-scan of both replicas). For " +
             "large replicas this can take a long time.\n\n" +
-            "Archive hash: \(computed.hash)\n" +
-            "(Verify with `unison -showArchiveName \(profile)` if you " +
-            "want to double-check.)"
-        alert.addButton(withTitle: "Cancel")
+            "(Verify with `unison -ui text -showArchiveName \(profile)` " +
+            "if you want to double-check.)"
+        // Affirmative (destructive) button first → rightmost default
+        // (Return = Move to Trash; files go to Trash, recoverable).
+        // "Cancel" second owns Escape. Single-Esc reliability comes from
+        // refreshTableFirstResponder() above; the explicit Escape key
+        // equivalent is belt-and-suspenders.
         let trashBtn = alert.addButton(withTitle: "Move \(files.count) File\(files.count == 1 ? "" : "s") to Trash")
         trashBtn.hasDestructiveAction = true
+        let cancelBtn = alert.addButton(withTitle: "Cancel")
+        cancelBtn.keyEquivalent = "\u{1b}"
 
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performArchiveReset(profile: profile,
+                            files: files,
+                            ambiguous: location.ambiguous,
+                            cleanup: cleanup)
+    }
 
+    /// Trash the matched archive files (after the reset sheet is
+    /// confirmed) and surface any partial failure.
+    private func performArchiveReset(profile: String,
+                                     files: [URL],
+                                     ambiguous: Bool,
+                                     cleanup: ArchiveCleanup) {
         let outcome = cleanup.trash(files)
         TraceLog.shared.write(
-            "ProfileEditor: reset archives for '\(profile)' hash=\(computed.hash) " +
+            "ProfileEditor: reset archives for '\(profile)' " +
+            "files=\(files.map(\.lastPathComponent).joined(separator: ",")) " +
+            "ambiguous=\(ambiguous) " +
             "trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)"
         )
         for (url, err) in outcome.failed {
             TraceLog.shared.write("  failed: \(url.lastPathComponent) — \(err)")
         }
 
-        if !outcome.failed.isEmpty {
-            // Partial failure — surface so the user knows manual
-            // cleanup is needed for the rest.
-            let failedList = outcome.failed
-                .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
-                .joined(separator: "\n")
-            let fail = NSAlert()
-            fail.alertStyle = .critical
-            fail.messageText = "Some archive files couldn't be moved to Trash"
-            fail.informativeText =
-                "\(outcome.trashed.count) of \(files.count) succeeded.\n" +
-                "Failures:\n\(failedList)"
-            fail.addButton(withTitle: "OK")
-            fail.runModal()
-        }
+        guard !outcome.failed.isEmpty else { return }
+        // Partial failure — surface so the user knows manual cleanup is
+        // needed for the rest.
+        let failedList = outcome.failed
+            .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
+            .joined(separator: "\n")
+        let fail = NSAlert()
+        fail.alertStyle = .critical
+        fail.messageText = "Some archive files couldn't be moved to Trash"
+        fail.informativeText =
+            "\(outcome.trashed.count) of \(files.count) succeeded.\n" +
+            "Failures:\n\(failedList)"
+        fail.addButton(withTitle: "OK")
+        fail.runModal()
     }
 
     @objc private func deleteAction(_ sender: Any?) {
         guard let profile = selectedProfile() else { NSSound.beep(); return }
+        // Same single-Esc fix as Reset: clear stale table first-responder
+        // state before the app-modal confirmation.
+        refreshTableFirstResponder()
         let url = profileURL(profile)
 
         // Pre-compute the profile's archive files BEFORE asking. The .prf
@@ -564,10 +700,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // archive cleanup just isn't offered — the user can still hit
         // Reset Archives separately if needed.
         var archiveFiles: [URL] = []
-        if case .success(let computed) = ArchiveHash.compute(
+        var archivesAmbiguous = false
+        if case .success(let computed) = ArchiveHash.computeAll(
             unisonDirectory: unisonDirectory, profile: profile) {
-            archiveFiles = ArchiveCleanup(unisonDirectory: unisonDirectory)
-                .findFiles(matching: computed.hash)
+            let location = locateArchives(profile: profile, computed: computed)
+            archiveFiles = location.files
+            archivesAmbiguous = location.ambiguous
         }
 
         let alert = NSAlert()
@@ -580,24 +718,29 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 "use the eye icon next to the name instead."
         } else {
             let plural = archiveFiles.count == 1 ? "" : "s"
+            let ambiguityNote = archivesAmbiguous
+                ? " NOTE: more than one profile shares this local root, " +
+                  "so these archives couldn't be attributed with certainty; " +
+                  "the box is left unchecked for safety."
+                : ""
             alert.informativeText =
                 "The .prf file at \(url.path) will be moved to the Trash. " +
                 "\(archiveFiles.count) archive file\(plural) for this profile " +
                 "(ar*, fp*, etc.) will also be moved if the box below is " +
                 "checked. They're useless without the profile that owns " +
                 "them. Uncheck if you plan to restore the .prf from Trash " +
-                "and resume syncing where you left off."
+                "and resume syncing where you left off.\(ambiguityNote)"
         }
 
-        // Order matters here. NSAlert assigns the Return key to the FIRST
-        // added button — we want Cancel to be the default for safety
-        // (Return = "don't delete"). The "Cancel"-titled button also
-        // automatically gets the Escape key equivalent. We previously
-        // tried to override the default-button title after the fact, which
-        // gave us two buttons both labeled "Cancel"; that's the bug fix.
-        alert.addButton(withTitle: "Cancel")
+        // Affirmative (destructive) button first → rightmost default
+        // (Return). The .prf goes to Trash (recoverable), so a default
+        // affirmative is fine. Assign Escape to Cancel explicitly: NSAlert's
+        // automatic title-based assignment doesn't fire reliably here, which
+        // left the first Esc press beeping intermittently.
         let trashBtn = alert.addButton(withTitle: "Move to Trash")
         trashBtn.hasDestructiveAction = true
+        let cancelBtn = alert.addButton(withTitle: "Cancel")
+        cancelBtn.keyEquivalent = "\u{1b}"
 
         // Accessory checkbox: "Also delete N archive file(s)". Default-on
         // because orphan archives serve no purpose, but easy to uncheck.
@@ -608,12 +751,14 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             let cb = NSButton(checkboxWithTitle:
                 "Also move \(archiveFiles.count) archive file\(plural) to Trash",
                 target: nil, action: nil)
-            cb.state = .on
+            // Default-on, except when matches are ambiguous: then default
+            // off so a shared-root sibling's archive isn't trashed blindly.
+            cb.state = archivesAmbiguous ? .off : .on
             alert.accessoryView = cb
             archiveCheckbox = cb
         }
 
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let shouldCleanArchives = archiveCheckbox?.state == .on
         let fm = FileManager.default

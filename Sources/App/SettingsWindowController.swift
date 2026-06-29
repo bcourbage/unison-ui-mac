@@ -96,6 +96,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // MARK: - Section 7: Archive maintenance
+
+    private let cleanStaleButton =
+        NSButton(title: "Clean Stale Archives…", target: nil, action: nil)
+    /// Retains the review window while it's open.
+    private var staleWindowController: CleanStaleArchivesWindowController?
+
     // MARK: - Init
 
     init(unisonDirectory: String) {
@@ -271,6 +278,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         section6Row.orientation = .horizontal
         section6Row.spacing = 8
 
+        let section7Title = sectionHeader("Archive Maintenance")
+        let section7Desc = sectionDescription(
+            "Unison keeps a reconciliation archive for each profile. Old " +
+            "copies accumulate after a profile is deleted or this Mac is " +
+            "renamed. Scan for archives that no current profile uses and " +
+            "move them to the Trash (recoverable). Live archives are left " +
+            "untouched.")
+        cleanStaleButton.bezelStyle = .rounded
+        cleanStaleButton.target = self
+        cleanStaleButton.action = #selector(cleanStaleArchivesAction(_:))
+        let section7Row = NSStackView(views: [cleanStaleButton, NSView()])
+        section7Row.orientation = .horizontal
+        section7Row.spacing = 8
+
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
         // views, and animates the window to each pane's preferredContentSize
@@ -294,6 +315,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabVC.addTabViewItem(makePane(
             symbol: "doc.text", label: "Logging",
             views: [section6Title, section6Desc, modeRow, section6Row]))
+        tabVC.addTabViewItem(makePane(
+            symbol: "archivebox", label: "Maintenance",
+            views: [section7Title, section7Desc, section7Row]))
 
         window?.contentViewController = tabVC
         window?.toolbarStyle = .preference
@@ -500,6 +524,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func resetPickerLayoutAction(_ sender: Any?) {
         SettingsModel.resetProfilePickerLayout()
         reload()
+    }
+
+    // MARK: - Archive maintenance
+
+    /// Scan for archives no current profile uses (superseded older
+    /// generations + orphans from deleted profiles / former hostnames)
+    /// and offer to move them to the Trash. Reviewable + recoverable.
+    @objc private func cleanStaleArchivesAction(_ sender: Any?) {
+        if let existing = staleWindowController {
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        // The controller scans on init; skip showing an empty window.
+        let wc = CleanStaleArchivesWindowController(unisonDirectory: unisonDirectory)
+        guard wc.hasStaleArchives else {
+            let done = NSAlert()
+            done.messageText = "No stale archives found"
+            done.informativeText =
+                "Every archive belongs to a current profile. Nothing to " +
+                "clean up."
+            done.addButton(withTitle: "OK")
+            done.runModal()
+            return
+        }
+        wc.onClose = { [weak self] in self?.staleWindowController = nil }
+        staleWindowController = wc
+        wc.showWindow(nil)
+        wc.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func removeSuppressionAction(_ sender: Any?) {

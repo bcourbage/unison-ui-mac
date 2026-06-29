@@ -151,4 +151,82 @@ final class ArchiveCleanupTests: XCTestCase {
         XCTAssertTrue(result.trashed.isEmpty)
         XCTAssertTrue(result.failed.isEmpty)
     }
+
+    // MARK: - Header parsing / indexing
+
+    /// Write a realistic archive: a text header (format line + roots
+    /// line + written-at line) followed by binary body bytes that are
+    /// NOT valid UTF-8 — proving the lenient header parse survives. The
+    /// filename is the authentic `ar<MD5(thisRoot;rootsName;format)>`
+    /// unless `overrideName` forces a different (tampered) name.
+    @discardableResult
+    private func writeArchive(thisRoot: String,
+                              rootsName: String,
+                              format: Int = 23,
+                              overrideName: String? = nil) throws -> (url: URL, hash: String) {
+        let header = """
+            Unison archive format \(format)
+            Archive for root \(thisRoot) synchronizing roots \(rootsName)
+            Written at 2026-06-28 at 23:19:45 - Unicode case insensitive mode.
+
+            """
+        var data = Data(header.utf8)
+        data.append(contentsOf: [0xff, 0x00, 0xfe, 0x80, 0x81])  // invalid UTF-8 body
+        let hash = ArchiveHash.md5Hex("\(thisRoot);\(rootsName);\(format)")
+        let name = overrideName ?? "ar\(hash)"
+        let url = URL(fileURLWithPath: "\(tempDir!)/\(name)")
+        try data.write(to: url)
+        return (url, hash)
+    }
+
+    func test_parseArchiveHeader_extractsFormatAndRootsDespiteBinaryBody() throws {
+        let written = try writeArchive(
+            thisRoot: "//Heracles//Users/bcourbage",
+            rootsName: "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage")
+        let header = ArchiveCleanup.parseArchiveHeader(at: written.url)
+        XCTAssertEqual(header?.format, 23)
+        XCTAssertEqual(header?.thisRoot, "//Heracles//Users/bcourbage")
+        XCTAssertEqual(header?.rootsName,
+                       "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage")
+    }
+
+    func test_parseArchiveHeader_nonArchiveFile_returnsNil() throws {
+        let url = try touch("arNotReally")
+        XCTAssertNil(ArchiveCleanup.parseArchiveHeader(at: url))
+    }
+
+    func test_indexArchives_includesAuthenticAndIgnoresOthers() throws {
+        let a = try writeArchive(
+            thisRoot: "//Heracles//Users/bcourbage",
+            rootsName: "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage")
+        let b = try writeArchive(
+            thisRoot: "//Heracles//Users/bcourbage/Pictures",
+            rootsName: "//Heracles//Users/bcourbage/Pictures, //x//y")
+        _ = try touch("fp\(a.hash)")  // sibling, not an ar — ignored by index
+        _ = try touch("Sync.prf")
+        let entries = ArchiveCleanup(unisonDirectory: tempDir).indexArchives()
+        XCTAssertEqual(Set(entries.map(\.hash)), [a.hash, b.hash])
+    }
+
+    func test_indexArchives_excludesTamperedArchive() throws {
+        // Authentic header, but the filename hash doesn't match it (e.g.
+        // a hand-renamed or corrupt file). Must be excluded.
+        _ = try writeArchive(
+            thisRoot: "//Heracles//Users/bcourbage",
+            rootsName: "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage",
+            overrideName: "ar0000000000000000000000000000dead")
+        let entries = ArchiveCleanup(unisonDirectory: tempDir).indexArchives()
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func test_indexArchives_authenticUnderDifferentFormat() throws {
+        // The integrity check uses the header's own format, so an archive
+        // written under an older format still validates.
+        let a = try writeArchive(
+            thisRoot: "//Heracles//Users/bcourbage",
+            rootsName: "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage",
+            format: 22)
+        let entries = ArchiveCleanup(unisonDirectory: tempDir).indexArchives()
+        XCTAssertEqual(entries.map(\.hash), [a.hash])
+    }
 }
