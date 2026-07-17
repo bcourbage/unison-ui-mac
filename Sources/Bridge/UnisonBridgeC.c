@@ -7,11 +7,13 @@
 #include <caml/signals.h>
 #include <caml/threads.h>
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* =====================================================================
  * Threading model
@@ -31,9 +33,14 @@
  * lock serializes them. The extra workers are parked in a blocking
  * section, costing only their pthread stacks.
  *
- * The single-slot request design is sufficient because the public
- * entry points are called from the (serial) main queue. Multiple
- * concurrent callers serialize on `call_mutex` and that's fine.
+ * Callers are genuinely concurrent: public entry points are invoked both
+ * from the main thread (e.g. applicationWillTerminate) and from the
+ * `net.courbage.unison-ui.connect` dispatch queue (the prompt loop). They
+ * contend for the single request slot and serialize on `call_mutex`. Each
+ * caller waits on its OWN per-request condvar for completion, so a worker
+ * signalling one request can never wake — and be consumed by — a different
+ * caller. (An earlier design shared one condvar across two mutexes, which
+ * lost wakeups and deadlocked termination when a prompt loop was in flight.)
  */
 
 typedef void (*ocaml_thread_fn_t)(void *user);
@@ -42,32 +49,47 @@ typedef struct call_request {
     ocaml_thread_fn_t fn;
     void *user;
     bool done;
+    /* Per-request completion condvar. Only this request's caller waits on
+     * it, so the worker's signal can never be stolen by an unrelated
+     * waiter (the lost-wakeup bug that hung app termination). */
+    pthread_cond_t done_cond;
 } call_request_t;
 
+/* One mutex governs ALL shared handoff state (g_pending and every
+ * request's `done` flag). The previous design waited on a single condvar
+ * with two different mutexes, which is undefined behavior under POSIX and
+ * produced lost wakeups whenever two threads called in concurrently (e.g.
+ * the connect queue driving the prompt loop while the main thread ran
+ * applicationWillTerminate). */
 static pthread_mutex_t call_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  call_cond  = PTHREAD_COND_INITIALIZER;
-static pthread_mutex_t res_mutex  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  res_cond   = PTHREAD_COND_INITIALIZER;
+/* Signaled when a worker frees the single request slot — woken by queued
+ * callers waiting to install their request. */
+static pthread_cond_t  slot_cond  = PTHREAD_COND_INITIALIZER;
+/* Signaled when a request is installed — woken by parked workers. */
+static pthread_cond_t  work_cond  = PTHREAD_COND_INITIALIZER;
 
 static call_request_t *g_pending = NULL;
 
 static void run_on_ocaml_thread(ocaml_thread_fn_t fn, void *user) {
     call_request_t req = { .fn = fn, .user = user, .done = false };
+    pthread_cond_init(&req.done_cond, NULL);
 
     pthread_mutex_lock(&call_mutex);
     while (g_pending != NULL) {
-        /* A previous request is still in flight; wait our turn. */
-        pthread_cond_wait(&res_cond, &call_mutex);
+        /* A previous request holds the single slot; wait for it to free. */
+        pthread_cond_wait(&slot_cond, &call_mutex);
     }
     g_pending = &req;
-    pthread_cond_signal(&call_cond);
+    pthread_cond_signal(&work_cond);
+
+    /* Wait on our OWN condvar so a completion signal can't be consumed by
+     * another caller that is only waiting for a free slot. */
+    while (!req.done) {
+        pthread_cond_wait(&req.done_cond, &call_mutex);
+    }
     pthread_mutex_unlock(&call_mutex);
 
-    pthread_mutex_lock(&res_mutex);
-    while (!req.done) {
-        pthread_cond_wait(&res_cond, &res_mutex);
-    }
-    pthread_mutex_unlock(&res_mutex);
+    pthread_cond_destroy(&req.done_cond);
 }
 
 /* =====================================================================
@@ -83,23 +105,26 @@ CAMLprim value bridgeThreadWait(value ignore) {
 
         pthread_mutex_lock(&call_mutex);
         while (g_pending == NULL) {
-            pthread_cond_wait(&call_cond, &call_mutex);
+            pthread_cond_wait(&work_cond, &call_mutex);
         }
         call_request_t *req = g_pending;
         g_pending = NULL;
-        /* Wake the next caller (if any) before running the OCaml work so
-         * they can queue while we have the runtime lock. */
-        pthread_cond_signal(&res_cond);
+        /* Free the slot before running the OCaml work so the next caller
+         * can queue while we hold the runtime lock. */
+        pthread_cond_signal(&slot_cond);
         pthread_mutex_unlock(&call_mutex);
 
         caml_acquire_runtime_system();
 
         req->fn(req->user);
 
-        pthread_mutex_lock(&res_mutex);
+        /* Signal completion on the request's own condvar. Taking call_mutex
+         * here is safe while holding the runtime lock: it's a leaf lock with
+         * no OCaml allocation in the critical section. */
+        pthread_mutex_lock(&call_mutex);
         req->done = true;
-        pthread_cond_broadcast(&res_cond);
-        pthread_mutex_unlock(&res_mutex);
+        pthread_cond_signal(&req->done_cond);
+        pthread_mutex_unlock(&call_mutex);
     }
     CAMLreturn(Val_unit); /* unreachable */
 }
@@ -586,6 +611,13 @@ void unison_bridge_startup(int argc, char *argv[]) {
  * Safe to call multiple times; the per-collection clear helpers
  * (`release_preconn`, `clear_ri_roots`) are idempotent. NOT safe to call
  * before startup — would deadlock waiting for the OCaml worker.
+ *
+ * Because this runs on the main thread from applicationWillTerminate, it
+ * is TIME-BOXED: the root release is dispatched to a helper thread and we
+ * wait at most SHUTDOWN_TIMEOUT_SEC for it. If the bridge is wedged (an
+ * OCaml worker stuck mid-call), quit proceeds anyway instead of hanging
+ * the app. Losing the cosmetic root release in that case is harmless: the
+ * process is exiting and macOS reclaims everything.
  * ===================================================================== */
 
 static void _ocaml_shutdown(void *user) {
@@ -594,9 +626,68 @@ static void _ocaml_shutdown(void *user) {
     clear_ri_roots();
 }
 
+#define SHUTDOWN_TIMEOUT_SEC 2
+
+struct shutdown_ctl {
+    pthread_mutex_t mutex;
+    pthread_cond_t  cond;
+    bool            done;
+};
+
+static void *_shutdown_thread(void *arg) {
+    struct shutdown_ctl *ctl = arg;
+    run_on_ocaml_thread(_ocaml_shutdown, NULL);
+    pthread_mutex_lock(&ctl->mutex);
+    ctl->done = true;
+    pthread_cond_signal(&ctl->cond);
+    pthread_mutex_unlock(&ctl->mutex);
+    return NULL;
+}
+
 void unison_bridge_shutdown(void) {
     if (!g_started) return;
-    run_on_ocaml_thread(_ocaml_shutdown, NULL);
+
+    /* Heap-allocated so its lifetime can outlive this frame if we time out
+     * (the helper thread may still touch it). Freed only on the clean path,
+     * where the helper is provably done with it; deliberately leaked on the
+     * timeout path — a ~100-byte one-time leak at process exit, not a real
+     * leak the `make leaks` gate would ever hit on a healthy bridge. */
+    struct shutdown_ctl *ctl = calloc(1, sizeof(*ctl));
+    if (ctl == NULL) return;
+    pthread_mutex_init(&ctl->mutex, NULL);
+    pthread_cond_init(&ctl->cond, NULL);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, _shutdown_thread, ctl) != 0) {
+        /* Best-effort: skip the cosmetic root release rather than block. */
+        return;
+    }
+    pthread_detach(tid);
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += SHUTDOWN_TIMEOUT_SEC;
+
+    pthread_mutex_lock(&ctl->mutex);
+    int rc = 0;
+    while (!ctl->done && rc != ETIMEDOUT) {
+        rc = pthread_cond_timedwait(&ctl->cond, &ctl->mutex, &deadline);
+    }
+    bool done = ctl->done;
+    pthread_mutex_unlock(&ctl->mutex);
+
+    if (done) {
+        /* Helper has passed its unlock and touches ctl no more; safe to reap. */
+        pthread_cond_destroy(&ctl->cond);
+        pthread_mutex_destroy(&ctl->mutex);
+        free(ctl);
+    } else {
+        fprintf(stderr,
+                "unison-mac: bridge shutdown timed out after %ds; "
+                "exiting without cosmetic root release\n",
+                SHUTDOWN_TIMEOUT_SEC);
+        /* Intentionally leak ctl: the wedged helper may still reference it. */
+    }
 }
 
 /* =====================================================================
