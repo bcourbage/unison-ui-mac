@@ -89,7 +89,13 @@ apply-patches:
 		echo "Applying patch: 0001-uimacbridge-register-abortAll.patch"; \
 		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0001-uimacbridge-register-abortAll.patch; \
 	else \
-		echo "Local fork patches already applied to $(UNISON_SRC)/uimacbridge.ml"; \
+		echo "Patch already applied: 0001-uimacbridge-register-abortAll.patch"; \
+	fi; \
+	if ! grep -q 'Callback.register "closeConnection"' $(UNISON_SRC)/uimacbridge.ml; then \
+		echo "Applying patch: 0002-uimacbridge-register-closeConnection.patch"; \
+		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0002-uimacbridge-register-closeConnection.patch; \
+	else \
+		echo "Patch already applied: 0002-uimacbridge-register-closeConnection.patch"; \
 	fi
 
 # ----- OCaml blob -----

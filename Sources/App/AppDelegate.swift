@@ -310,6 +310,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onClose: { [weak self] in
                 guard let self else { return }
                 self.log.write("reconcile window closed — returning to picker")
+                // Leaving the profile ends the work unit: close the remote
+                // connection so ssh children don't accumulate for the life
+                // of the app. Guard on isSyncing — if the user chose "Close
+                // (let it run)" the background sync is still using the
+                // transport, so tearing it down now would kill it. Closing
+                // that connection once the background sync finishes is a
+                // later step; for now it falls back to app-exit reaping.
+                if self.reconcileWindowController?.isSyncing != true {
+                    self.closeConnectionOnLeave()
+                }
                 self.reconcileWindowController = nil
                 // Preserve which profile the user just worked with so
                 // it's the highlighted row when they return to the
@@ -433,6 +443,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func invalidateConnect() {
         connectGeneration += 1
         disarmConnectWatchdog()
+    }
+
+    /// Cleanly close the established remote connection when leaving a
+    /// profile. Runs on `connectQueue` (off-main) because the underlying
+    /// teardown waits on the ssh child. Safe/idempotent: a no-op for a
+    /// local-only profile or when nothing is connected.
+    ///
+    /// Caller must ensure the engine is quiescent (no scan/sync in
+    /// flight) before invoking — closing under an active transport would
+    /// tear it out. See `unison_bridge_close_connection`.
+    private func closeConnectionOnLeave() {
+        connectQueue.async {
+            let status = unison_bridge_close_connection()
+            // Off-main: log through the thread-safe TraceLog, not `self.log`
+            // (which would be a main-actor hop).
+            TraceLog.shared.write("closeConnection on leave -> status \(status)")
+        }
     }
 
     /// (Re)schedule the watchdog for `generation`. Replaces any existing

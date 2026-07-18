@@ -89,6 +89,19 @@ final class BridgeTests: XCTestCase {
         // registered" to stderr; the call still returns.
     }
 
+    func test_b_closeConnection_isRegisteredAndSafeNoOp() {
+        // With no remote connection established (no init1/init2 has run
+        // yet in alphabetical order), closing must be a clean no-op:
+        //   - status != -1 proves the `closeConnection` OCaml callback is
+        //     actually registered in the vendored blob (a stale blob would
+        //     return the -1 "not registered" sentinel).
+        //   - status == 0 is the "ok, nothing to close" result.
+        let status = unison_bridge_close_connection()
+        XCTAssertNotEqual(status, -1,
+            "closeConnection callback missing from blob — rebuild with patches/0002")
+        XCTAssertEqual(status, 0, "expected clean no-op close, got \(status)")
+    }
+
     // MARK: - End-to-end init1 + init2 against a controlled fixture
     //
     // Tests in this section depend on running AFTER test_b_* so the

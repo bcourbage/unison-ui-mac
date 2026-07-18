@@ -38,10 +38,10 @@ If the file for your architecture isn't here, you have two options:
 | Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (`v2.54.0-11-g745dccd`) |
 | Architecture | `arm64` (Apple Silicon) |
 | Built by | upstream's `make macui` after applying the patch in `patches/` |
-| Patches applied | `patches/0001-uimacbridge-register-abortAll.patch` (adds `Callback.register "abortAll"` for the mid-sync Stop button) |
-| SHA-256 | `bd47202eeb57b73486523612ad7e9da43df5f5f5e389f87b3ae1d4323931e9f7` |
+| Patches applied | `patches/0001-uimacbridge-register-abortAll.patch` (adds `Callback.register "abortAll"` for the mid-sync Stop button); `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6) |
+| SHA-256 | `96e00a3519f4ac7df37e48f17c39a24d4b1d0d0f1c276f19feebd44f02fe2113` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
-| Size | 5.1 MB |
+| Size | 5.2 MB |
 
 ## Provenance — what the current vendored manual is
 

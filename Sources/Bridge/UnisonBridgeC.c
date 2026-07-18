@@ -855,6 +855,25 @@ void unison_bridge_connection_cancel(void) {
     run_on_ocaml_thread(_ocaml_connection_cancel, NULL);
 }
 
+/* Close an established connection via the OCaml `closeConnection`
+ * callback (Remote.clientCloseRootConnection). See the header for the
+ * quiescent-only contract and return codes. */
+struct close_conn_io { int status; };
+
+static void _ocaml_close_connection(void *user) {
+    struct close_conn_io *io = user;
+    io->status = -1;                 /* callback not registered (old blob) */
+    const value *fn = caml_named_value("closeConnection");
+    if (fn == NULL) return;
+    io->status = Int_val(caml_callback(*fn, Val_unit));
+}
+
+int unison_bridge_close_connection(void) {
+    struct close_conn_io io = { .status = -1 };
+    run_on_ocaml_thread(_ocaml_close_connection, &io);
+    return io.status;
+}
+
 static void _ocaml_init2(void *user) {
     (void)user;
     const value *closure = caml_named_value("unisonInit2");

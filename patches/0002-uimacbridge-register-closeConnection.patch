@@ -1,0 +1,40 @@
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -699,6 +699,37 @@
+ let unisonAbortAll () = Abort.all ();;
+ Callback.register "abortAll" unisonAbortAll;;
+ 
++(* unison-ui-mac extension: cleanly close the established remote
++ * connection for the current profile.
++ *
++ * Uses the same ClientConn-registry teardown upstream itself uses in
++ * [Uicommon.doTransportFailCleanup]: [Remote.clientCloseRootConnection]
++ * closes the connection's channels, unregisters it, and runs the
++ * per-connection close handlers (one of which reaps the ssh child via
++ * [Terminal.close_session]). This is safe on an ESTABLISHED connection,
++ * unlike [Remote.openConnectionCancel] on a raw preconnection (which
++ * directly closes fds an Lwt thread may still await, tripping a wakeup).
++ *
++ * Only meaningful for a remote root; a local-only sync has no connection
++ * and [clientCloseRootConnection] is a harmless cleanup no-op there.
++ *
++ * Returns: 0 = ok (closed, or nothing to close), 2 = exception (logged).
++ *
++ * NOT in upstream uimac — local patch in this fork, applied after
++ * 0001-...-abortAll. May be proposed upstream later; see the GUI repo's
++ * vendoring notes. *)
++let unisonCloseConnection () =
++  try
++    (match Globals.rootsInCanonicalOrder () with
++     | [_; otherRoot] -> Remote.clientCloseRootConnection otherRoot
++     | _ -> ());
++    0
++  with e ->
++    Printf.eprintf "unison-mac: closeConnection: %s\n%!" (Printexc.to_string e);
++    2
++;;
++Callback.register "closeConnection" unisonCloseConnection;;
++
+ let unisonIgnorePath pathString =
+   Uicommon.addIgnorePattern (Uicommon.ignorePath (Path.fromString pathString));;
+ let unisonIgnoreExt pathString =
