@@ -312,12 +312,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.log.write("reconcile window closed — returning to picker")
                 // Leaving the profile ends the work unit: close the remote
                 // connection so ssh children don't accumulate for the life
-                // of the app. Guard on isSyncing — if the user chose "Close
-                // (let it run)" the background sync is still using the
-                // transport, so tearing it down now would kill it. Closing
-                // that connection once the background sync finishes is a
-                // later step; for now it falls back to app-exit reaping.
-                if self.reconcileWindowController?.isSyncing != true {
+                // of the app. If a sync is still running (the user chose
+                // "Close (let it run)" or "Abort & Close"), the transport is
+                // still in use — defer the close until the background sync
+                // signals completion rather than tearing it out now.
+                if self.reconcileWindowController?.isSyncing == true {
+                    self.scheduleConnectionCloseAfterSync()
+                } else {
                     self.closeConnectionOnLeave()
                 }
                 self.reconcileWindowController = nil
@@ -459,6 +460,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Off-main: log through the thread-safe TraceLog, not `self.log`
             // (which would be a main-actor hop).
             TraceLog.shared.write("closeConnection on leave -> status \(status)")
+        }
+    }
+
+    /// The reconcile window was closed while a sync was still running
+    /// ("Close (let it run)" or "Abort & Close"). Tearing the transport
+    /// out now would kill the in-flight sync, so instead close the
+    /// connection once the engine signals the sync is done. The window
+    /// that owned the sync-complete handler is gone, so we install an
+    /// app-level one; it fires once, closes the connection, then stands
+    /// itself down so a stray late completion can't re-fire.
+    ///
+    /// Known limitation (issue #6, step 3): if the user opens another
+    /// profile before this background sync finishes, that profile's
+    /// reconcile window reinstalls the sync-complete handler and this
+    /// deferred close is lost — the connection then falls back to
+    /// app-exit reaping. The proper fix is gating profile-reopen on an
+    /// engine-idle acknowledgement.
+    private func scheduleConnectionCloseAfterSync() {
+        log.write("sync still running on close — deferring connection close until it completes")
+        UnisonBridge.installSyncCompleteHandler { [weak self] in
+            guard let self else { return }
+            self.log.write("background sync complete — closing deferred connection")
+            self.closeConnectionOnLeave()
+            UnisonBridge.installSyncCompleteHandler { }   // one-shot: stand down
         }
     }
 
