@@ -67,6 +67,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// through. Non-nil iff a watchdog is currently armed.
     private var activeConnect: (profile: String, generation: Int)?
 
+    // MARK: - Connection lifecycle state (issue #6, step 2b)
+
+    /// True once the open profile is remote (init1 reported needs_prompt),
+    /// i.e. there is an SSH/OCaml connection whose lifecycle we manage.
+    /// False for local-only profiles (no connection to close/reopen).
+    private var currentProfileIsRemote = false
+
+    /// Whether we currently hold an established remote connection for the
+    /// open profile — true from `connection_end` until we close it, false
+    /// after a close or for a local profile. Drives whether Rescan reuses
+    /// the live connection (init2 only) or must reopen it (init1 → init2).
+    private var remoteConnectionOpen = false
+
+    /// Ground-truth auth-cost signal for the current connect: nil until a
+    /// connect is observed, `true` if we presented a password sheet,
+    /// `false` if the connection came up with no interactive prompt (key
+    /// or agent). Reset at the start of each fresh profile open.
+    private var connectInteractiveAuthObserved: Bool?
+
+    /// Backup auth-cost signal: set true when the `BatchMode=yes` version
+    /// probe authenticated non-interactively (outcome match / compatible /
+    /// mismatch — the probe SSH'd in without a password). Consulted only
+    /// when `connectInteractiveAuthObserved` is nil.
+    private var probeConfirmedNonInteractive = false
+
+    /// The close policy's decision: does reopening this profile's
+    /// connection require interactive credentials? Observed connect
+    /// dominates; the BatchMode probe is the backup; absent both signals
+    /// we default to "interactive" (conservative — never risk closing a
+    /// connection whose reopen would silently re-prompt).
+    private var requiresInteractiveAuth: Bool {
+        if let observed = connectInteractiveAuthObserved { return observed }
+        return !probeConfirmedNonInteractive
+    }
+
     /// How long the connect/scan may go WITHOUT PROGRESS before the
     /// watchdog declares a timeout. This is a *stall* timer, not a
     /// total-elapsed budget: every scan-status message from Unison
@@ -319,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.reconcileWindowController?.isSyncing == true {
                     self.scheduleConnectionCloseAfterSync()
                 } else {
-                    self.closeConnectionOnLeave()
+                    self.closeRemoteConnection(reason: "left profile")
                 }
                 self.reconcileWindowController = nil
                 // Preserve which profile the user just worked with so
@@ -333,6 +368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onCancelScan: { [weak self] in
                 self?.cancelConnectInProgress(reason: "user pressed Stop")
+            },
+            onSyncDidComplete: { [weak self] in
+                self?.handleSyncDidComplete()
             }
         )
         reconcile.showWindow(nil)
@@ -340,6 +378,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reconcile.beginInitialScan()
         reconcileWindowController = reconcile
         profileWindowController?.close()
+
+        // Fresh work unit: reset the per-profile connection-lifecycle
+        // signals so a prior profile's auth/connection state can't leak
+        // into this one's close policy.
+        currentProfileIsRemote = false
+        remoteConnectionOpen = false
+        connectInteractiveAuthObserved = nil
+        probeConfirmedNonInteractive = false
 
         // Kick off the SSH version check in the background. It probes
         // the remote with `BatchMode=yes` so it's silent if SSH keys
@@ -351,13 +397,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // established, the probe is typically done.
         runVersionCheckIfNeeded(profile: profile)
 
-        // Start a fresh connect attempt: bump the epoch + arm the
-        // watchdog. `generation` is captured by the handlers below so a
-        // late callback from a timed-out/superseded attempt is ignored.
+        // Start a fresh connect attempt (bump epoch + arm watchdog), then
+        // open the connection and scan.
         let generation = beginConnectAttempt(profile: profile)
+        beginConnectAndScan(profile: profile, generation: generation, reconcile: reconcile)
+    }
 
-        // Wire init1/init2 handlers, then kick off init1. Init2Complete will
-        // populate the reconcile window via endRescan/replaceItems.
+    /// Install the init1/init2 handlers for `generation` and kick off
+    /// init1, populating `reconcile` when the scan completes. Shared by
+    /// the first profile open and by a Rescan that must re-establish a
+    /// connection we closed on sync-end (issue #6, step 2b).
+    private func beginConnectAndScan(profile: String,
+                                     generation: Int,
+                                     reconcile: ReconcileWindowController?) {
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
             guard let self else { return }
             self.log.write("init1 complete (needs_prompt=\(needsPrompt))")
@@ -365,6 +417,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.log.write("init1 complete ignored — superseded/timed-out attempt")
                 return
             }
+            // needs_prompt distinguishes a remote root (a connection we
+            // manage) from a local-only sync (nothing to close/reopen).
+            self.currentProfileIsRemote = needsPrompt
             // init1 ran loadTheFile, so any one-shot `ignorearchives` is
             // now in Unison's in-memory prefs — safe to restore the .prf.
             self.restoreIgnoreArchivesPrfIfNeeded()
@@ -446,20 +501,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         disarmConnectWatchdog()
     }
 
-    /// Cleanly close the established remote connection when leaving a
-    /// profile. Runs on `connectQueue` (off-main) because the underlying
-    /// teardown waits on the ssh child. Safe/idempotent: a no-op for a
-    /// local-only profile or when nothing is connected.
+    /// Cleanly close the established remote connection. Runs on
+    /// `connectQueue` (off-main) because the underlying teardown waits on
+    /// the ssh child. Safe/idempotent: a no-op for a local-only profile
+    /// or when nothing is connected.
     ///
     /// Caller must ensure the engine is quiescent (no scan/sync in
     /// flight) before invoking — closing under an active transport would
     /// tear it out. See `unison_bridge_close_connection`.
-    private func closeConnectionOnLeave() {
+    private func closeRemoteConnection(reason: String) {
+        remoteConnectionOpen = false
         connectQueue.async {
             let status = unison_bridge_close_connection()
             // Off-main: log through the thread-safe TraceLog, not `self.log`
             // (which would be a main-actor hop).
-            TraceLog.shared.write("closeConnection on leave -> status \(status)")
+            TraceLog.shared.write("closeConnection (\(reason)) -> status \(status)")
+        }
+    }
+
+    /// A sync completed with the reconcile window still open (see
+    /// `ReconcileWindowController.onSyncDidComplete`). Apply the close
+    /// policy (issue #6, step 2b): for a non-interactive (key/agent)
+    /// profile, close the connection now — a later Rescan reopens
+    /// silently and can never reuse a connection that went stale while
+    /// idle. For an interactive (password) profile, hold it so a
+    /// same-session Rescan/re-sync doesn't re-prompt; it closes when the
+    /// user leaves the profile instead.
+    private func handleSyncDidComplete() {
+        guard remoteConnectionOpen else { return }   // local, or already closed
+        if requiresInteractiveAuth {
+            log.write("sync complete — holding interactive-auth connection until leave")
+        } else {
+            log.write("sync complete — closing non-interactive connection")
+            closeRemoteConnection(reason: "sync complete, non-interactive")
         }
     }
 
@@ -482,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UnisonBridge.installSyncCompleteHandler { [weak self] in
             guard let self else { return }
             self.log.write("background sync complete — closing deferred connection")
-            self.closeConnectionOnLeave()
+            self.closeRemoteConnection(reason: "background sync complete after leave")
             UnisonBridge.installSyncCompleteHandler { }   // one-shot: stand down
         }
     }
@@ -587,6 +661,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.disarmConnectWatchdog()
+                    // The remote connection is now established. If we reached
+                    // here without ever showing a password sheet, this profile
+                    // authenticates non-interactively (key/agent) — record it
+                    // so the close policy can safely close on sync-end.
+                    self.remoteConnectionOpen = true
+                    if self.connectInteractiveAuthObserved == nil {
+                        self.connectInteractiveAuthObserved = false
+                    }
                     self.connectQueue.async {
                         unison_bridge_connection_end()
                         unison_bridge_init2()
@@ -599,6 +681,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, self.isCurrentConnect(generation) else { return }
                 // Now waiting on the user — don't time out while the sheet is open.
                 self.disarmConnectWatchdog()
+                // We had to prompt: this profile needs interactive auth, so
+                // reopening would re-prompt. Hold the connection until leave
+                // rather than closing it on sync-end.
+                self.connectInteractiveAuthObserved = true
                 self.log.write("connection prompt: \(prompt)")
                 let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
                     guard let self, self.isCurrentConnect(generation) else { return }
@@ -624,18 +710,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Re-run init2 against the currently-open profile without re-running
-    /// init1 (the profile is already loaded, the SSH connection (if any)
-    /// is established). When init2Complete fires we ask the reconcile
-    /// window to replace its items in place.
+    /// Rescan the currently-open profile.
+    ///
+    /// If the remote connection is still open (interactive profile held,
+    /// or a not-yet-synced non-interactive one), reuse it: re-run init2
+    /// only — the profile is loaded and the connection is live. If we
+    /// closed it on sync-end (non-interactive, issue #6 step 2b), reopen
+    /// first by re-running the full init1 → connection → init2 flow, which
+    /// for a key/agent profile is silent. Local profiles have no
+    /// connection, so init2-only is always correct there.
     private func rescanCurrentProfile(_ profile: String) {
         guard let reconcile = reconcileWindowController else { return }
-        log.write("rescan: re-running init2 for profile '\(profile)'")
         reconcile.beginRescan()
-        // init2 BLOCKS too, so run it off-main under a fresh generation
-        // (so a late/superseded callback is ignored). NO watchdog: a rescan
-        // is pure update detection, which can legitimately run silent for a
-        // while on a large remote tree — watchdogging it would false-fire.
+
+        // Reopen path: remote profile whose connection we closed on
+        // sync-end. Re-establish it (init1 arms the connect watchdog so a
+        // wedged reopen is still recoverable), then init2 populates.
+        if currentProfileIsRemote && !remoteConnectionOpen {
+            log.write("rescan: connection was closed — reopening for '\(profile)'")
+            let generation = beginConnectAttempt(profile: profile)
+            beginConnectAndScan(profile: profile, generation: generation, reconcile: reconcile)
+            return
+        }
+
+        // Reuse path: connection live (or local profile). init2 BLOCKS too,
+        // so run it off-main under a fresh generation (so a late/superseded
+        // callback is ignored). NO watchdog: a rescan is pure update
+        // detection, which can legitimately run silent for a while on a
+        // large remote tree — watchdogging it would false-fire.
+        log.write("rescan: re-running init2 for profile '\(profile)'")
         let generation = newConnectGeneration()
         UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
             guard let self else { return }
@@ -887,6 +990,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            profile: String) {
         // Cache for the issue-report body (remote Unison version).
         lastVersionOutcome = (profile, outcome)
+
+        // Backup auth-cost signal (issue #6, step 2b): a successful probe
+        // (we got a remote version back) means SSH authenticated with
+        // `BatchMode=yes`, i.e. non-interactively. Only trust it for the
+        // profile still being opened, and only as a fallback — the
+        // observed connect (did we show a password sheet?) takes
+        // precedence in `requiresInteractiveAuth`.
+        if profile == lastAttemptedProfile {
+            switch outcome {
+            case .match, .compatibleMismatch, .mismatch:
+                probeConfirmedNonInteractive = true
+            case .noRemoteRoot, .probeFailed:
+                break
+            }
+        }
+
         switch outcome {
         case .match(let v):
             Log.versionCheck.info("version match: \(v, privacy: .public) on both sides")

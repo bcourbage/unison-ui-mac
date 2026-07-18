@@ -18,6 +18,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// sync) is in flight. The owner (AppDelegate) owns the connect
     /// lifecycle, so it does the actual abort + teardown.
     typealias CancelScanRequest = @MainActor () -> Void
+    /// Invoked once a sync fully completes (after OCaml's commitUpdates),
+    /// with the window still open. AppDelegate uses it to apply the
+    /// connection-close policy (close now for non-interactive profiles,
+    /// hold for interactive ones). Distinct from `onClose`, which fires
+    /// when the user leaves the profile.
+    typealias SyncCompleteHandler = @MainActor () -> Void
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -46,6 +52,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
     private let onCancelScan: CancelScanRequest
+    /// Optional; see `SyncCompleteHandler`. nil for callers that don't
+    /// manage a connection lifecycle (e.g. tests).
+    private let onSyncDidCompleteHandler: SyncCompleteHandler?
     /// True between `beginScanning` and `endRescan` — i.e. while the
     /// initial connect/scan (or a rescan) is in flight. Gates the Stop
     /// button so the user can abort a slow/wedged connection instead of
@@ -124,13 +133,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          mergeConfigured: Bool,
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest,
-         onCancelScan: @escaping CancelScanRequest) {
+         onCancelScan: @escaping CancelScanRequest,
+         onSyncDidComplete: SyncCompleteHandler? = nil) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         self.onCancelScan = onCancelScan
+        self.onSyncDidCompleteHandler = onSyncDidComplete
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -854,6 +865,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
 
         TraceLog.shared.write("ReconcileWindow: sync complete (failures: \(failures))")
+
+        // Let the owner apply its connection-close policy now that the
+        // sync (including OCaml's commitUpdates tail) is done and the
+        // engine is quiescent. Fires with the window still open.
+        onSyncDidCompleteHandler?()
     }
 
     /// Walk every row whose progress field doesn't already indicate
