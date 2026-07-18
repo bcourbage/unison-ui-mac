@@ -102,6 +102,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return !probeConfirmedNonInteractive
     }
 
+    // MARK: - Engine-idle gating (issue #6, step 3)
+
+    /// True while an `init1`/scan/backgrounded-sync is in flight on the
+    /// OCaml engine. Returning to the picker only bumps the connect
+    /// generation (which suppresses stale UI callbacks) — it does NOT
+    /// stop the worker. Opening a new profile while abandoned work is
+    /// still mutating OCaml globals (roots, archives) races it, so we
+    /// gate the next open on the engine actually going idle.
+    private var engineBusy = false
+
+    /// A profile open the user requested while `engineBusy`. Runs once the
+    /// engine goes idle (see `markEngineIdle`). Last request wins.
+    private var queuedConnect: (() -> Void)?
+
+    /// Mark the engine busy for the duration of an in-flight op. Paired
+    /// with `markEngineIdle`, called from the op's terminal callback or
+    /// teardown path (both fire even for superseded/abandoned work).
+    private func markEngineBusy(_ reason: String) {
+        engineBusy = true
+        log.write("engine busy: \(reason)")
+    }
+
+    /// Mark the engine idle. Idempotent. If a profile open was queued
+    /// while busy, run it now. Deliberately no timer-based fallback: any
+    /// timeout short enough to rescue a wedge is short enough to fire
+    /// mid-legitimate-long-scan and reintroduce the race. A genuinely
+    /// wedged engine keeps opens queued until the connect watchdog or a
+    /// force-quit (the wedge itself is steps 4–5).
+    private func markEngineIdle(_ reason: String) {
+        guard engineBusy || queuedConnect != nil else { return }
+        engineBusy = false
+        log.write("engine idle: \(reason)")
+        if let queued = queuedConnect {
+            queuedConnect = nil
+            log.write("engine idle — running queued profile open")
+            queued()
+        }
+    }
+
     /// How long the connect/scan may go WITHOUT PROGRESS before the
     /// watchdog declares a timeout. This is a *stall* timer, not a
     /// total-elapsed budget: every scan-status message from Unison
@@ -397,10 +436,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // established, the probe is typically done.
         runVersionCheckIfNeeded(profile: profile)
 
-        // Start a fresh connect attempt (bump epoch + arm watchdog), then
-        // open the connection and scan.
-        let generation = beginConnectAttempt(profile: profile)
-        beginConnectAndScan(profile: profile, generation: generation, reconcile: reconcile)
+        // Fresh epoch for this attempt. The connect proper (watchdog +
+        // init1) is deferred into `beginConnectAndScan` so a queued open
+        // doesn't arm a watchdog while it's only waiting.
+        let generation = newConnectGeneration()
+        let connect: () -> Void = { [weak self, weak reconcile] in
+            guard let self else { return }
+            self.beginConnectAndScan(profile: profile, generation: generation,
+                                     reconcile: reconcile)
+        }
+        // Engine-idle gate (issue #6, step 3): if the previous profile's
+        // scan or a backgrounded sync is still running on the OCaml worker,
+        // starting init1 now would race it on shared globals. Queue the
+        // open behind the running work; the reconcile window shows its
+        // usual connecting spinner meanwhile, and `markEngineIdle` runs
+        // this once the engine frees up.
+        if engineBusy {
+            log.write("engine busy — queueing open of '\(profile)' until previous op finishes")
+            reconcile.updateScanStatus("Waiting for the previous operation to finish…")
+            queuedConnect = connect
+        } else {
+            connect()
+        }
     }
 
     /// Install the init1/init2 handlers for `generation` and kick off
@@ -410,6 +467,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginConnectAndScan(profile: String,
                                      generation: Int,
                                      reconcile: ReconcileWindowController?) {
+        markEngineBusy("connect+scan '\(profile)'")
+        armConnectWatchdog(profile: profile, generation: generation)
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
             guard let self else { return }
             self.log.write("init1 complete (needs_prompt=\(needsPrompt))")
@@ -438,6 +497,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.log.write("init2 complete ignored — superseded/timed-out attempt")
                 return
             }
+            // Connect+scan done: engine is idle (awaiting the user). A
+            // superseded attempt is instead cleared by abortAllInFlight.
+            self.markEngineIdle("scan complete")
             // Scan resolved within the window — stand the watchdog down.
             self.disarmConnectWatchdog()
             self.log.write("init2 complete — \(items.count) reconcile items")
@@ -464,21 +526,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingPasswordSheet: PasswordSheet?
 
     // MARK: - Connect attempt lifecycle (epoch + watchdog)
-
-    /// Open a new connect attempt: bump the epoch and arm the watchdog.
-    /// The watchdog covers ONLY the connect phase (init1 + the credential
-    /// prompt fetch); it's disarmed before init2. Update detection can run
-    /// silently for a long time on a large remote tree, so watchdogging it
-    /// would false-fire — and the timeout poking the engine mid-scan is
-    /// unsafe (it can trip an `update.ml` assertion or an Lwt "wakeup").
-    /// A hung scan is instead handled by off-main + Stop.
-    /// Returns the new generation for the init1/init2 handlers to capture.
-    @discardableResult
-    private func beginConnectAttempt(profile: String) -> Int {
-        let generation = newConnectGeneration()
-        armConnectWatchdog(profile: profile, generation: generation)
-        return generation
-    }
+    //
+    // `beginConnectAndScan` arms the watchdog when a connect actually
+    // starts. The watchdog covers ONLY the connect phase (init1 + the
+    // credential prompt fetch); it's disarmed before init2. Update
+    // detection can run silently for a long time on a large remote tree,
+    // so watchdogging it would false-fire — and the timeout poking the
+    // engine mid-scan is unsafe (it can trip an `update.ml` assertion or
+    // an Lwt "wakeup"). A hung scan is instead handled by off-main + Stop.
 
     /// Bump the connect epoch WITHOUT arming the watchdog — for rescan,
     /// which is scan-only (no connect phase to guard).
@@ -545,19 +600,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// app-level one; it fires once, closes the connection, then stands
     /// itself down so a stray late completion can't re-fire.
     ///
-    /// Known limitation (issue #6, step 3): if the user opens another
-    /// profile before this background sync finishes, that profile's
-    /// reconcile window reinstalls the sync-complete handler and this
-    /// deferred close is lost — the connection then falls back to
-    /// app-exit reaping. The proper fix is gating profile-reopen on an
-    /// engine-idle acknowledgement.
+    /// The engine is marked busy for the duration (issue #6, step 3), so
+    /// picking another profile meanwhile is queued rather than started —
+    /// which is also what keeps a new reconcile window from reinstalling
+    /// the sync-complete handler and dropping this deferred close.
     private func scheduleConnectionCloseAfterSync() {
         log.write("sync still running on close — deferring connection close until it completes")
+        markEngineBusy("backgrounded sync")
         UnisonBridge.installSyncCompleteHandler { [weak self] in
             guard let self else { return }
             self.log.write("background sync complete — closing deferred connection")
             self.closeRemoteConnection(reason: "background sync complete after leave")
             UnisonBridge.installSyncCompleteHandler { }   // one-shot: stand down
+            self.markEngineIdle("backgrounded sync complete")
         }
     }
 
@@ -728,7 +783,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // wedged reopen is still recoverable), then init2 populates.
         if currentProfileIsRemote && !remoteConnectionOpen {
             log.write("rescan: connection was closed — reopening for '\(profile)'")
-            let generation = beginConnectAttempt(profile: profile)
+            // beginConnectAndScan arms the watchdog + marks the engine busy.
+            let generation = newConnectGeneration()
             beginConnectAndScan(profile: profile, generation: generation, reconcile: reconcile)
             return
         }
@@ -739,6 +795,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // detection, which can legitimately run silent for a while on a
         // large remote tree — watchdogging it would false-fire.
         log.write("rescan: re-running init2 for profile '\(profile)'")
+        markEngineBusy("rescan '\(profile)'")
         let generation = newConnectGeneration()
         UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
             guard let self else { return }
@@ -746,6 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.log.write("rescan: init2 complete ignored — superseded/timed-out")
                 return
             }
+            self.markEngineIdle("rescan complete")
             self.disarmConnectWatchdog()
             self.log.write("rescan: init2 complete — \(items.count) items")
             reconcile?.endRescan(newItems: items)
@@ -946,6 +1004,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the watchdog and bump the epoch so any straggler init1/init2
         // callback is ignored rather than re-driving a torn-down window.
         invalidateConnect()
+        // The attempt is being torn down, so its engine work no longer
+        // gates the next open (its now-superseded completion callback
+        // won't clear the flag itself). Runs any queued open.
+        markEngineIdle("attempt torn down: \(reason)")
         if let sheet = pendingPasswordSheet?.window, let parent = sheet.sheetParent {
             parent.endSheet(sheet)
         }
