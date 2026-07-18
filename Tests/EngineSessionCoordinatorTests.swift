@@ -1,185 +1,170 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// Deterministic lifecycle tests for the engine coordinator, driven
-/// through a fake driver — no AppKit, no bridge, no timing. These pin the
-/// abandonment / close-after-completion / close-failure behavior that the
-/// ad-hoc booleans got wrong (issue #6, steps 4–5 review).
+/// Deterministic lifecycle tests for the engine coordinator, asserting the
+/// effects each transition returns — no AppKit, no bridge, no timing.
+/// These pin the abandonment / close-after-completion / close-failure
+/// behavior the ad-hoc booleans got wrong (issue #6, steps 4–5 review).
 @MainActor
 final class EngineSessionCoordinatorTests: XCTestCase {
 
-    private final class FakeDriver: EngineSessionCoordinator.Driver {
-        typealias Token = EngineSessionCoordinator.Token
-        var opens: [(token: Token, profile: String)] = []
-        var rescans: [Token] = []
-        var closes: [Token] = []
-        var waiting: [String] = []
-        var restarts: [String] = []
+    private typealias C = EngineSessionCoordinator
+    private typealias Effect = EngineSessionCoordinator.Effect
 
-        func engineBeginOpen(token: Token, profile: String) { opens.append((token, profile)) }
-        func engineBeginRescanReuse(token: Token) { rescans.append(token) }
-        func engineCloseConnection(token: Token) { closes.append(token) }
-        func engineShowWaiting(profile: String) { waiting.append(profile) }
-        func engineRestartRequired(reason: String) { restarts.append(reason) }
+    /// Extract the token a `.beginOpen` / `.beginRescanReuse` effect carries.
+    private func startedToken(_ effects: [Effect]) -> C.Token? {
+        for e in effects {
+            switch e {
+            case .beginOpen(let t, _), .beginRescanReuse(let t): return t
+            default: continue
+            }
+        }
+        return nil
     }
 
-    private func makeCoordinator() -> (EngineSessionCoordinator, FakeDriver) {
-        let d = FakeDriver()
-        let c = EngineSessionCoordinator(driver: d)
-        return (c, d)
+    // Open a profile through to .ready with a non-interactive connection.
+    private func openToReady(_ c: C, _ profile: String = "A") -> C.Token {
+        let t = startedToken(c.requestOpen(profile: profile))!
+        _ = c.connectionOpened(t, interactive: false)
+        _ = c.scanCompleted(t)
+        return t
     }
 
-    // Leave during a scan, pick another profile: the second open must WAIT
-    // for the abandoned scan to actually finish, then its connection close,
-    // before starting. (The core false-idle bug.)
+    // Leave during a scan, pick another profile: the second open WAITS for
+    // the abandoned scan to finish, then its connection to close, before
+    // starting. (The core false-idle bug.)
     func test_abandonedScan_gatesNextOpen_untilScanAndCloseComplete() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)      // scanning(A), open
-        c.abandon(reason: "left during scan")          // abandoned, still scanning
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: false)      // scanning(A), open
+        XCTAssertEqual(c.abandon(reason: "left during scan"), [])  // no effect; deferred
 
-        XCTAssertNil(c.requestOpen(profile: "B"))       // queued, not started
-        XCTAssertEqual(d.waiting, ["B"])
-        XCTAssertEqual(d.opens.count, 1)
+        XCTAssertEqual(c.requestOpen(profile: "B"), [.showWaiting(profile: "B")])
 
-        c.scanCompleted(a)                              // abandoned scan finally ends
-        XCTAssertEqual(d.closes, [a])                   // close its connection first
-        XCTAssertEqual(d.opens.count, 1)                // B still not started
-
-        c.closeCompleted(a, status: 0)                  // close done → idle → start B
-        XCTAssertEqual(d.opens.count, 2)
-        XCTAssertEqual(d.opens.last?.profile, "B")
+        XCTAssertEqual(c.scanCompleted(a), [.closeConnection(token: a)])  // close first
+        // B still not started.
+        XCTAssertEqual(c.closeCompleted(a, status: 0), [.beginOpen(token: C.Token(raw: 2), profile: "B")])
     }
 
     // If the abandoned scan never terminates, the queued open must NEVER
-    // race it — the engine stays busy rather than faking idle.
+    // race it — the engine stays busy.
     func test_abandonedScan_neverCompletes_neverRacesQueuedOpen() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.abandon(reason: "left")
-        XCTAssertNil(c.requestOpen(profile: "B"))
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: false)
+        _ = c.abandon(reason: "left")
+        _ = c.requestOpen(profile: "B")     // queued
         // A never completes.
-        XCTAssertEqual(d.opens.count, 1)                // B never started
-        XCTAssertEqual(d.closes, [])
         XCTAssertFalse(c.isIdle)
+        if case .scanning(let t) = c.phase { XCTAssertEqual(t, a) } else { XCTFail("expected scanning(A)") }
     }
 
     // A close failure must not reach idle or start a queued open; it
-    // requires restart.
+    // requires restart and blocks new opens.
     func test_closeFailure_requiresRestart_andBlocksNewOpens() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.abandon(reason: "left")
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: false)
+        _ = c.abandon(reason: "left")
         _ = c.requestOpen(profile: "B")                 // queued
-        c.scanCompleted(a)                              // → closing
-        c.closeCompleted(a, status: 2)                  // close FAILED
-        XCTAssertEqual(d.restarts.count, 1)
-        XCTAssertEqual(d.opens.count, 1)                // B NOT started
-        XCTAssertNil(c.requestOpen(profile: "C"))       // refused
-        XCTAssertEqual(d.restarts.count, 2)
+        XCTAssertEqual(c.scanCompleted(a), [.closeConnection(token: a)])
+        XCTAssertEqual(c.closeCompleted(a, status: 2), [.restartRequired(reason: "close returned status 2")])
+        // B not started; new opens refused with restartRequired.
+        XCTAssertEqual(c.requestOpen(profile: "C"), [.restartRequired(reason: "close returned status 2")])
     }
 
     // "Close (let it run)" / "Abort & Close": leave while syncing → close
     // deferred until sync completion, then queued open starts.
     func test_leaveWhileSyncing_closesAfterSyncCompletes() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.scanCompleted(a)                              // ready
-        c.syncStarted(a)                                // syncing
-        c.abandon(reason: "let it run")                 // abandoned, still syncing
+        let c = C()
+        let a = openToReady(c)
+        _ = c.syncStarted(a)                            // syncing
+        _ = c.abandon(reason: "let it run")             // deferred
         _ = c.requestOpen(profile: "B")                 // queued
-        XCTAssertEqual(d.closes, [])
-        c.syncCompleted(a)                              // → close now
-        XCTAssertEqual(d.closes, [a])
-        XCTAssertEqual(d.opens.count, 1)
-        c.closeCompleted(a, status: 0)
-        XCTAssertEqual(d.opens.count, 2)                // B starts
+        XCTAssertEqual(c.syncCompleted(a), [.closeConnection(token: a)])
+        XCTAssertEqual(c.closeCompleted(a, status: 0), [.beginOpen(token: C.Token(raw: 2), profile: "B")])
     }
 
     // 2b policy: non-interactive → close on sync-end, window stays ready.
     func test_nonInteractive_closesOnSyncEnd_staysReady() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.scanCompleted(a)
-        c.syncStarted(a)
-        c.syncCompleted(a)                              // not abandoned, non-interactive
-        XCTAssertEqual(d.closes, [a])
+        let c = C()
+        let a = openToReady(c)
+        _ = c.syncStarted(a)
+        XCTAssertEqual(c.syncCompleted(a),
+                       [.presentSyncResults(token: a), .closeConnection(token: a)])
         XCTAssertEqual(c.phase, .ready(a))
-        c.closeCompleted(a, status: 0)
+        XCTAssertEqual(c.closeCompleted(a, status: 0), [])   // no queued open
         XCTAssertEqual(c.connection, .none)
-        XCTAssertEqual(c.phase, .ready(a))             // window still open
+        XCTAssertEqual(c.phase, .ready(a))                   // window still open
     }
 
     // 2b policy: interactive → hold through sync-end; close only on leave.
     func test_interactive_holdsThroughSyncEnd_closesOnLeave() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: true)
-        c.scanCompleted(a)
-        c.syncStarted(a)
-        c.syncCompleted(a)
-        XCTAssertEqual(d.closes, [])                    // held
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: true)
+        _ = c.scanCompleted(a)
+        _ = c.syncStarted(a)
+        XCTAssertEqual(c.syncCompleted(a), [.presentSyncResults(token: a)])  // held
         XCTAssertEqual(c.connection, .open(interactive: true))
-        c.abandon(reason: "leave")                      // from ready → close now
-        XCTAssertEqual(d.closes, [a])
-        c.closeCompleted(a, status: 0)
+        XCTAssertEqual(c.abandon(reason: "leave"), [.closeConnection(token: a)])
+        XCTAssertEqual(c.closeCompleted(a, status: 0), [])
         XCTAssertTrue(c.isIdle)
     }
 
     // Two picks while busy — last wins.
     func test_twoPicksWhileBusy_lastWins() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.abandon(reason: "left")
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: false)
+        _ = c.abandon(reason: "left")
         _ = c.requestOpen(profile: "B")
         _ = c.requestOpen(profile: "C")
-        XCTAssertEqual(d.waiting, ["B", "C"])
-        c.scanCompleted(a)
-        c.closeCompleted(a, status: 0)
-        XCTAssertEqual(d.opens.last?.profile, "C")
+        _ = c.scanCompleted(a)
+        XCTAssertEqual(c.closeCompleted(a, status: 0), [.beginOpen(token: C.Token(raw: 2), profile: "C")])
     }
 
-    // An abandoned/stale token is not "current" for UI, but its terminal
-    // callback still releases the lease.
+    // An abandoned/stale token isn't "current" for UI, but its terminal
+    // event still releases the lease.
     func test_isCurrent_falseAfterAbandon_butLeaseStillReleases() {
-        let (c, _) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
+        let c = C()
+        let a = startedToken(c.requestOpen(profile: "A"))!
+        _ = c.connectionOpened(a, interactive: false)
         XCTAssertTrue(c.isCurrent(a))
-        c.abandon(reason: "left")
+        _ = c.abandon(reason: "left")
         XCTAssertFalse(c.isCurrent(a))                 // UI suppressed
-        c.scanCompleted(a)                              // lease still released
-        c.closeCompleted(a, status: 0)
+        _ = c.scanCompleted(a)                          // lease still released
+        _ = c.closeCompleted(a, status: 0)
         XCTAssertTrue(c.isIdle)
+    }
+
+    // Stale terminal event (wrong token) is ignored.
+    func test_staleToken_ignored() {
+        let c = C()
+        let a = openToReady(c)
+        let bogus = C.Token(raw: 999)
+        XCTAssertEqual(c.scanCompleted(bogus), [])     // not active → ignored
+        XCTAssertEqual(c.phase, .ready(a))
     }
 
     // Rescan reuses a live connection (init2 only).
     func test_rescan_reusesLiveConnection() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.scanCompleted(a)                              // ready, open
-        c.requestRescan(profile: "A")
-        XCTAssertEqual(d.rescans.count, 1)
-        XCTAssertEqual(d.opens.count, 1)               // no reopen
+        let c = C()
+        let a = openToReady(c)
+        let effects = c.requestRescan(profile: "A")
+        XCTAssertEqual(effects.count, 1)
+        if case .beginRescanReuse = effects.first { } else { XCTFail("expected beginRescanReuse") }
+        _ = a
     }
 
     // Rescan after a non-interactive sync-end close reopens (full open).
     func test_rescan_reopensAfterCloseOnSyncEnd() {
-        let (c, d) = makeCoordinator()
-        let a = c.requestOpen(profile: "A")!
-        c.connectionOpened(a, interactive: false)
-        c.scanCompleted(a)
-        c.syncStarted(a)
-        c.syncCompleted(a)                              // close-on-sync-end
-        c.closeCompleted(a, status: 0)                 // connection none, ready
-        c.requestRescan(profile: "A")
-        XCTAssertEqual(d.rescans.count, 0)             // not reused
-        XCTAssertEqual(d.opens.count, 2)               // reopened
+        let c = C()
+        let a = openToReady(c)
+        _ = c.syncStarted(a)
+        _ = c.syncCompleted(a)                          // close-on-sync-end
+        _ = c.closeCompleted(a, status: 0)              // connection none, ready
+        let effects = c.requestRescan(profile: "A")
+        if case .beginOpen = effects.first { } else { XCTFail("expected beginOpen (reopen)") }
     }
 }

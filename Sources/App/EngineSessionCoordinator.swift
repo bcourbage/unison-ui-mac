@@ -9,22 +9,26 @@ import Foundation
 ///
 ///     UI abandoned  ≠  operation stopped  ≠  engine idle
 ///
-/// Only a *genuine terminal callback* (`scanCompleted` / `syncCompleted`
-/// / `closeCompleted`) releases the engine lease. `abandon(...)` — the
-/// user left the window, pressed Stop during a scan, or a watchdog fired
-/// — merely marks the in-flight op abandoned and defers the connection
-/// close until that op actually terminates. If it never terminates, the
+/// Only a *genuine terminal event* (`scanCompleted` / `syncCompleted` /
+/// `closeCompleted`) releases the engine lease. `abandon(...)` — the user
+/// left the window, pressed Stop during a scan, or a watchdog fired —
+/// merely marks the in-flight op abandoned and defers the connection close
+/// until that op actually terminates. If it never terminates the
 /// coordinator stays busy (a queued open keeps waiting) rather than
 /// pretending the engine went idle.
 ///
-/// Pure logic: all side effects go through `Driver`, so the machine is
-/// unit-testable with a fake driver (see EngineSessionCoordinatorTests).
+/// **Pure reducer.** Every event method fully mutates state and then
+/// returns a list of `Effect`s for the caller (AppDelegate) to perform.
+/// The coordinator never calls out mid-transition, so a reentrant driver
+/// callback can never observe a half-transitioned state. This makes the
+/// machine trivially unit-testable: assert `(phase, connection, effects)`.
 @MainActor
 final class EngineSessionCoordinator {
 
-    /// Opaque per-operation token. Carried through every bridge callback
-    /// so a stale/superseded completion is recognized and can still
-    /// release its own lease without corrupting a newer op.
+    /// Opaque per-operation token. The driver records the token when it
+    /// *starts* a bridge operation and passes that same token back on the
+    /// operation's completion — never "whatever token is active now", which
+    /// would misattribute a stale event to a newer session.
     struct Token: Hashable, CustomStringConvertible {
         let raw: UInt64
         var description: String { "op#\(raw)" }
@@ -53,27 +57,18 @@ final class EngineSessionCoordinator {
         case restartRequired(String)  // unrecoverable; needs quit/reopen
     }
 
-    /// Side effects the coordinator asks its owner (AppDelegate) to
-    /// perform. The coordinator never calls the bridge or AppKit directly.
-    @MainActor
-    protocol Driver: AnyObject {
-        /// Create/show the reconcile window in scanning state and run the
-        /// full connect+scan (init1 → prompts → init2) for `token`.
-        func engineBeginOpen(token: Token, profile: String)
-        /// Re-run init2 only, reusing the live connection, for `token`.
-        func engineBeginRescanReuse(token: Token)
-        /// Close the established connection off-main; report the result
-        /// back via `closeCompleted(token:status:)`.
-        func engineCloseConnection(token: Token)
-        /// A profile was picked while busy: show its window waiting for the
-        /// previous operation to finish.
-        func engineShowWaiting(profile: String)
-        /// The engine can't continue (close failed, or an abandoned op is
-        /// wedged) — tell the user to quit and reopen.
-        func engineRestartRequired(reason: String)
+    /// A side effect for the caller to perform *after* the coordinator has
+    /// finished mutating its state. Returned from event methods; never
+    /// executed by the coordinator itself.
+    enum Effect: Equatable {
+        case beginOpen(token: Token, profile: String)     // create window + init1→scan
+        case beginRescanReuse(token: Token)               // init2 only, live connection
+        case closeConnection(token: Token)                // off-main close; report closeCompleted
+        case showWaiting(profile: String)                 // queued: window waits
+        case presentScanResults(token: Token)             // populate the window's items
+        case presentSyncResults(token: Token)             // finalize the sync UI
+        case restartRequired(reason: String)              // tell the user to quit/reopen
     }
-
-    weak var driver: Driver?
 
     private(set) var phase: Phase = .idle
     private(set) var connection: ConnectionState = .none
@@ -85,14 +80,11 @@ final class EngineSessionCoordinator {
     private var queuedOpen: String?
     private var nextRaw: UInt64 = 0
 
-    init(driver: Driver? = nil) { self.driver = driver }
-
-    // MARK: - Queries (used by the driver to gate UI-result processing)
+    // MARK: - Queries
 
     /// True when `token` is the live op AND its window hasn't been
-    /// abandoned — i.e. UI results for it should still be shown. A stale
-    /// or abandoned token returns false: its terminal callback still
-    /// releases the lease, but its UI work is suppressed.
+    /// abandoned — i.e. status/progress for it should still be shown.
+    /// Terminal events use their returned effects instead of this.
     func isCurrent(_ token: Token) -> Bool {
         activeToken == token && !abandoned
     }
@@ -116,167 +108,154 @@ final class EngineSessionCoordinator {
 
     // MARK: - User intents
 
-    /// User picked a profile in the picker. Starts immediately if idle,
-    /// else queues behind the in-flight (possibly abandoned) op. Returns
-    /// the token if it started now, nil if queued/refused.
-    @discardableResult
-    func requestOpen(profile: String) -> Token? {
+    /// User picked a profile. Starts immediately if idle, else queues
+    /// behind the in-flight (possibly abandoned) op.
+    func requestOpen(profile: String) -> [Effect] {
         switch phase {
         case .idle:
             let token = mintToken()
             phase = .opening(token)
             abandoned = false
             connection = .none
-            driver?.engineBeginOpen(token: token, profile: profile)
-            return token
+            return [.beginOpen(token: token, profile: profile)]
         case .restartRequired(let reason):
-            // Don't start new work against a contaminated runtime.
-            driver?.engineRestartRequired(reason: reason)
-            return nil
+            return [.restartRequired(reason: reason)]
         default:
-            // Busy: an earlier op (typically abandoned) is still running.
             queuedOpen = profile          // last pick wins
-            driver?.engineShowWaiting(profile: profile)
-            return nil
+            return [.showWaiting(profile: profile)]
         }
     }
 
-    /// User asked to rescan the open profile. Reuses the live connection
-    /// if one is open, else re-establishes it (full open+scan).
-    func requestRescan(profile: String) {
-        guard case .ready(let prev) = phase else { return }  // only from ready
-        let token = mintToken()
+    /// User asked to rescan. Reuses the live connection if open, else
+    /// re-establishes it (full open+scan).
+    func requestRescan(profile: String) -> [Effect] {
+        guard case .ready(let prev) = phase else { return [] }
         switch connection {
         case .open:
+            let token = mintToken()
             phase = .scanning(token)
-            driver?.engineBeginRescanReuse(token: token)
+            return [.beginRescanReuse(token: token)]
         case .none:
-            // Connection was closed on sync-end (non-interactive): reopen.
+            let token = mintToken()
             phase = .opening(token)
-            driver?.engineBeginOpen(token: token, profile: profile)
-        case .closing, .closeFailed:
-            // A close is in flight or failed — don't scan over it.
-            phase = .ready(prev)  // stay put
-            if case .closeFailed(let r) = connection {
-                enterRestartRequired("previous close failed: \(r)")
-            }
+            return [.beginOpen(token: token, profile: profile)]
+        case .closeFailed(let r):
+            return enterRestartRequired("previous close failed: \(r)")
+        case .closing:
+            phase = .ready(prev)          // a close is mid-flight; stay put
+            return []
         }
     }
 
-    /// The user started a sync (Go).
-    func syncStarted(_ token: Token) {
-        guard case .ready(let t) = phase, t == token else { return }
+    /// User started a sync (Go).
+    func syncStarted(_ token: Token) -> [Effect] {
+        guard case .ready(let t) = phase, t == token else { return [] }
         phase = .syncing(token)
+        return []
     }
 
-    /// User left the profile / pressed Stop / a watchdog fired. Never
-    /// idles the engine: if an op is in flight it keeps its lease and the
-    /// connection close is deferred to that op's terminal callback.
-    func abandon(reason: String) {
+    /// User left the profile / pressed Stop / a watchdog fired. Never idles
+    /// the engine: an in-flight op keeps its lease and its connection close
+    /// is deferred to its terminal event.
+    func abandon(reason: String) -> [Effect] {
         switch phase {
         case .ready:
-            // Engine already idle (awaiting user) — safe to close now.
-            beginCloseThenIdle()
+            return beginCloseThenIdle()   // engine idle → safe to close now
         case .opening, .scanning, .syncing:
-            abandoned = true   // close + idle happen on the terminal callback
+            abandoned = true              // close + idle on the terminal event
+            return []
         case .closing, .idle, .restartRequired:
-            break              // nothing to abandon
+            return []
         }
     }
 
-    // MARK: - Engine terminal events (from bridge callbacks)
+    // MARK: - Engine terminal events (from bridge callbacks, token-bound)
 
-    /// Remote connection established (drivePromptLoop reached "no more
-    /// prompts"). `interactive` = a password sheet was shown this connect.
-    func connectionOpened(_ token: Token, interactive: Bool) {
-        guard activeToken == token else { return }
+    /// Remote connection established. `interactive` = a password sheet was
+    /// shown this connect.
+    func connectionOpened(_ token: Token, interactive: Bool) -> [Effect] {
+        guard activeToken == token else { return [] }
         connection = .open(interactive: interactive)
         if case .opening = phase { phase = .scanning(token) }
+        return []
     }
 
-    /// Scan (init2) finished — ALWAYS releases the scan lease, even for a
-    /// superseded/abandoned op (that's the whole point).
-    func scanCompleted(_ token: Token) {
-        guard activeToken == token else { return }
+    /// Scan (init2) finished — ALWAYS releases the scan lease, even for an
+    /// abandoned op (the whole point).
+    func scanCompleted(_ token: Token) -> [Effect] {
+        guard activeToken == token else { return [] }
         if abandoned {
-            beginCloseThenIdle()
-        } else {
-            phase = .ready(token)
+            return beginCloseThenIdle()
         }
+        phase = .ready(token)
+        return [.presentScanResults(token: token)]
     }
 
     /// Sync finished (after commitUpdates) — ALWAYS releases the lease.
-    func syncCompleted(_ token: Token) {
-        guard activeToken == token else { return }
+    func syncCompleted(_ token: Token) -> [Effect] {
+        guard activeToken == token else { return [] }
         if abandoned {
-            beginCloseThenIdle()      // let-it-run / abort&close → close after done
-            return
+            return beginCloseThenIdle()   // let-it-run / abort&close → close after done
         }
-        // Stay-open completion: apply the auth-cost close policy.
         phase = .ready(token)
-        switch connection {
-        case .open(interactive: false):
-            // Non-interactive: close now; a later Rescan reopens silently.
+        // Auth-cost close policy (2b): non-interactive closes now, window
+        // stays; interactive holds until leave.
+        if case .open(interactive: false) = connection {
             connection = .closing
-            driver?.engineCloseConnection(token: token)
-        case .open(interactive: true), .none, .closing, .closeFailed:
-            break  // interactive → hold until leave; local → nothing
+            return [.presentSyncResults(token: token), .closeConnection(token: token)]
         }
+        return [.presentSyncResults(token: token)]
     }
 
-    /// Result of an `engineCloseConnection` request.
-    func closeCompleted(_ token: Token, status: Int32) {
-        // A close belongs to whatever op requested it; tolerate a token
-        // that's no longer active (op already advanced) but only act on
-        // the current one.
+    /// Result of a `closeConnection` effect.
+    func closeCompleted(_ token: Token, status: Int32) -> [Effect] {
         if status == 0 {
             connection = .none
-            if case .closing = phase { finishToIdle() }
-            // else: sync-end close while .ready — connection cleared, window stays.
-        } else {
-            let msg = "close returned status \(status)"
-            connection = .closeFailed(msg)
-            if case .closing = phase {
-                // Can't safely reach idle; a fresh init1 would race residual
-                // engine state. Require restart.
-                enterRestartRequired(msg)
-            }
-            // else: stay .ready with a failed connection; leave/rescan handles it.
+            if case .closing = phase { return finishToIdle() }
+            return []                     // sync-end close while .ready — cleared, window stays
         }
+        let msg = "close returned status \(status)"
+        connection = .closeFailed(msg)
+        if case .closing = phase {
+            return enterRestartRequired(msg)   // can't safely idle over residual state
+        }
+        return []                          // .ready with a failed connection; leave/rescan handles it
     }
 
-    // MARK: - Internal transitions
+    // MARK: - Internal transitions (mutate, then return effects)
 
-    private func beginCloseThenIdle() {
-        guard let token = activeToken else { finishToIdle(); return }
+    private func beginCloseThenIdle() -> [Effect] {
+        guard let token = activeToken else { return finishToIdle() }
         switch connection {
         case .open:
             connection = .closing
             phase = .closing(token)
-            driver?.engineCloseConnection(token: token)
+            return [.closeConnection(token: token)]
         case .none:
-            finishToIdle()
+            return finishToIdle()
         case .closing:
-            phase = .closing(token)   // already closing; wait for closeCompleted
+            phase = .closing(token)       // already closing; wait for closeCompleted
+            return []
         case .closeFailed(let r):
-            enterRestartRequired("close failed: \(r)")
+            return enterRestartRequired("close failed: \(r)")
         }
     }
 
-    private func finishToIdle() {
+    private func finishToIdle() -> [Effect] {
         phase = .idle
         abandoned = false
         connection = .none
         if let profile = queuedOpen {
             queuedOpen = nil
-            _ = requestOpen(profile: profile)
+            return requestOpen(profile: profile)   // mutates to opening, returns .beginOpen
         }
+        return []
     }
 
-    private func enterRestartRequired(_ reason: String) {
+    private func enterRestartRequired(_ reason: String) -> [Effect] {
         phase = .restartRequired(reason)
         abandoned = false
         queuedOpen = nil
-        driver?.engineRestartRequired(reason: reason)
+        return [.restartRequired(reason: reason)]
     }
 }
