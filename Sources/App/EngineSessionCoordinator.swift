@@ -61,6 +61,18 @@ final class EngineSessionCoordinator {
     /// to the visible results window (non-interactive sync-end close).
     enum CloseOutcome: Equatable { case toIdle, backToReady }
 
+    /// Result of the connect phase. Deliberately NOT `ConnectionState`: a
+    /// connect that *failed* must go through `operationFailed`, so the
+    /// driver can't authorize a scan over a `.failed` connection.
+    enum ConnectResult: Equatable { case local, remote(interactive: Bool) }
+
+    /// How the user chose to leave a running sync.
+    enum SyncExitIntent: Equatable {
+        case stopAndKeepWindow   // abort, keep window, present terminal results
+        case abortAndClose       // abort, suppress results, close after unwind
+        case closeAndLetRun      // no abort, suppress results, close after completion
+    }
+
     enum Phase: Equatable {
         case idle
         case opening(SessionID, OperationID)   // init1 + credential prompt
@@ -81,6 +93,7 @@ final class EngineSessionCoordinator {
         case beginScan(SessionID, OperationID)               // init2 over live connection
         case beginSync(SessionID, OperationID)               // synchronize
         case closeConnection(SessionID, OperationID)         // off-main close → closeCompleted
+        case abortSync(SessionID, OperationID)               // cooperative Abort.all on the running sync
         case showWaiting(OpenRequestID, profile: String)     // queued behind a busy op
         case presentScanResults(SessionID)
         case presentSyncResults(SessionID)
@@ -132,6 +145,15 @@ final class EngineSessionCoordinator {
             return startFreshOpen(profile: profile)
         case .restartRequired(let reason):
             return [.restartRequired(reason: reason)]
+        case .closing(let s, let op, .backToReady):
+            // A non-interactive sync-end close is in flight but the user is
+            // moving on. Picking another profile means this session should
+            // end, not return to its results window — upgrade the outcome so
+            // the close idles and the queued open then starts.
+            let id = mintRequest()
+            queued = (id, profile)
+            phase = .closing(s, op, .toIdle)
+            return [.showWaiting(id, profile: profile)]
         default:
             let id = mintRequest()
             queued = (id, profile)          // last pick wins
@@ -154,9 +176,12 @@ final class EngineSessionCoordinator {
             phase = .scanning(s, op)
             return [.beginScan(s, op)]
         case .none:
+            guard let profile = currentProfile else {
+                return enterRestartRequired("ready session has no profile")
+            }
             let op = mintOp()
             phase = .opening(s, op)
-            return [.beginConnect(s, op, profile: currentProfile ?? "")]
+            return [.beginConnect(s, op, profile: profile)]
         case .failed(let r):
             return enterRestartRequired("previous close failed: \(r)")
         }
@@ -180,7 +205,31 @@ final class EngineSessionCoordinator {
         case .opening, .scanning, .syncing:
             abandoned = true
             return []
-        case .closing, .idle, .restartRequired:
+        case .closing(let s, let op, .backToReady):
+            // The sync-end close is still running; the window is going away.
+            // Upgrade it to end at idle instead of returning to a now-gone
+            // results window (which would strand an ownerless .ready).
+            phase = .closing(s, op, .toIdle)
+            abandoned = true
+            return []
+        case .closing(_, _, .toIdle), .idle, .restartRequired:
+            return []
+        }
+    }
+
+    /// The user chose how to leave a running sync (Stop / Abort & Close /
+    /// Close-and-let-run). Routes the abort through the coordinator so it,
+    /// not the window, is the single authority over engine actions.
+    func requestSyncExit(_ intent: SyncExitIntent) -> [Effect] {
+        guard case .syncing(let session, let op) = phase else { return [] }
+        switch intent {
+        case .stopAndKeepWindow:
+            return [.abortSync(session, op)]
+        case .abortAndClose:
+            abandoned = true
+            return [.abortSync(session, op)]
+        case .closeAndLetRun:
+            abandoned = true
             return []
         }
     }
@@ -190,9 +239,12 @@ final class EngineSessionCoordinator {
     /// Connect phase finished; `connection` is `.open(interactive:)` for a
     /// remote root or `.none` for a local one. Authorizes the scan.
     func connectFinished(_ session: SessionID, _ op: OperationID,
-                         connection: ConnectionState) -> [Effect] {
+                         result: ConnectResult) -> [Effect] {
         guard case .opening(session, op) = phase else { return [] }
-        self.connection = connection
+        switch result {
+        case .local:                  connection = .none
+        case .remote(let interactive): connection = .open(interactive: interactive)
+        }
         if abandoned { return beginClose(session, outcome: .toIdle) }
         let scanOp = mintOp()
         phase = .scanning(session, scanOp)

@@ -37,7 +37,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     private func openToReady(_ c: C, profile: String = "A",
                              interactive: Bool = false) -> (C.SessionID, C.OperationID) {
         let (s, connectOp) = beginConnect(c.requestOpen(profile: profile))!
-        let e1 = c.connectFinished(s, connectOp, connection: .open(interactive: interactive))
+        let e1 = c.connectFinished(s, connectOp, result: .remote(interactive: interactive))
         let (_, scanOp) = beginScan(e1)!
         _ = c.scanCompleted(s, scanOp)
         return (s, scanOp)
@@ -56,7 +56,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_connectFinished_authorizesScan() {
         let c = C()
         let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
-        let e = c.connectFinished(s, op, connection: .open(interactive: false))
+        let e = c.connectFinished(s, op, result: .remote(interactive: false))
         XCTAssertNotNil(beginScan(e))          // scan explicitly authorized via effect
     }
 
@@ -74,7 +74,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_abandonedScan_gatesQueuedOpen_untilScanAndCloseComplete() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
-        let scanOp = beginScan(c.connectFinished(s, connectOp, connection: .open(interactive: false)))!.1
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!.1
         XCTAssertEqual(c.abandon(reason: "left"), [])          // deferred, no effect
         XCTAssertNotNil(waitingID(c.requestOpen(profile: "B")))  // queued
         // Abandoned scan finally completes → close first, B still not started.
@@ -88,7 +88,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_abandonedScan_neverCompletes_neverStartsQueued() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
-        _ = c.connectFinished(s, connectOp, connection: .open(interactive: false))
+        _ = c.connectFinished(s, connectOp, result: .remote(interactive: false))
         _ = c.abandon(reason: "left")
         _ = c.requestOpen(profile: "B")
         XCTAssertFalse(c.isIdle)                                 // stays busy; B never races
@@ -97,7 +97,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_cancelQueuedOpen_preventsHiddenStart() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
-        let scanOp = beginScan(c.connectFinished(s, connectOp, connection: .open(interactive: false)))!.1
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!.1
         _ = c.abandon(reason: "left")
         let reqID = waitingID(c.requestOpen(profile: "B"))!
         _ = c.cancelQueuedOpen(reqID)                           // user closed the waiting window
@@ -191,7 +191,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c)                             // ready
         XCTAssertEqual(c.connectFinished(s, C.OperationID(raw: 999),
-                                         connection: .open(interactive: true)), [])
+                                         result: .remote(interactive: true)), [])
         XCTAssertEqual(c.connection, .open(interactive: false)) // not overwritten
     }
 
@@ -200,7 +200,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_scanFailure_quiescent_closesAndIdles() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
-        let scanOp = beginScan(c.connectFinished(s, connectOp, connection: .open(interactive: false)))!.1
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!.1
         let closed = closeOp(c.operationFailed(s, scanOp, reason: "scan failed", engineIsQuiescent: true))
         XCTAssertNotNil(closed)
         _ = c.closeCompleted(closed!.0, closed!.1, status: 0)
@@ -219,7 +219,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     func test_failureAfterAbandon_stillReleasesLease() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
-        let scanOp = beginScan(c.connectFinished(s, connectOp, connection: .open(interactive: false)))!.1
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!.1
         _ = c.abandon(reason: "left")
         _ = c.requestOpen(profile: "B")                          // queued
         let closed = closeOp(c.operationFailed(s, scanOp, reason: "scan failed", engineIsQuiescent: true))!
@@ -246,5 +246,73 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let syncOp = beginSync(c.requestSync())!.1
         _ = c.operationFailed(s, syncOp, reason: "wedged", engineIsQuiescent: false)
         XCTAssertTrue(hasRestart(c.requestOpen(profile: "X")))
+    }
+
+    // MARK: - Abandonment during a sync-end close (review round 3 blocker)
+
+    func test_leaveWhileSyncEndCloseInFlight_finishesToIdle() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!   // .closing(.backToReady) in flight
+        _ = c.abandon(reason: "closed window during sync-end close")
+        let e = c.closeCompleted(closed.0, closed.1, status: 0)
+        XCTAssertEqual(e, [])
+        XCTAssertTrue(c.isIdle)                             // idles, not stranded ownerless .ready
+    }
+
+    func test_openRequestedDuringSyncEndClose_startsAfterClose() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!   // .closing(.backToReady)
+        XCTAssertNotNil(waitingID(c.requestOpen(profile: "B")))   // queued + outcome upgraded
+        let e = c.closeCompleted(closed.0, closed.1, status: 0)
+        XCTAssertNotNil(beginConnect(e))                    // B starts after the close idles
+    }
+
+    // MARK: - Coordinator-authorized sync exit (review round 3 authority gap)
+
+    func test_syncExit_stopAndKeepWindow_abortsAndKeepsSession() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let syncOp = beginSync(c.requestSync())!.1
+        XCTAssertEqual(c.requestSyncExit(.stopAndKeepWindow), [.abortSync(s, syncOp)])
+        XCTAssertEqual(c.phase, .syncing(s, syncOp))        // still syncing until completion
+        XCTAssertTrue(c.syncCompleted(s, syncOp).contains(.presentSyncResults(s)))  // window kept
+    }
+
+    func test_syncExit_abortAndClose_abortsAndClosesAfterCompletion() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let syncOp = beginSync(c.requestSync())!.1
+        XCTAssertEqual(c.requestSyncExit(.abortAndClose), [.abortSync(s, syncOp)])
+        let closed = closeOp(c.syncCompleted(s, syncOp))!   // abandoned → close, no present
+        _ = c.closeCompleted(closed.0, closed.1, status: 0)
+        XCTAssertTrue(c.isIdle)
+    }
+
+    func test_syncExit_closeAndLetRun_noAbort_closesAfterCompletion() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let syncOp = beginSync(c.requestSync())!.1
+        XCTAssertEqual(c.requestSyncExit(.closeAndLetRun), [])   // no abort effect
+        let closed = closeOp(c.syncCompleted(s, syncOp))!       // abandoned → close after done
+        _ = c.closeCompleted(closed.0, closed.1, status: 0)
+        XCTAssertTrue(c.isIdle)
+    }
+
+    // MARK: - Local profile has no connection to close
+
+    func test_local_neverClosesConnection() {
+        let c = C()
+        let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
+        let scanOp = beginScan(c.connectFinished(s, op, result: .local))!.1
+        XCTAssertEqual(c.connection, .none)
+        _ = c.scanCompleted(s, scanOp)
+        let syncOp = beginSync(c.requestSync())!.1
+        XCTAssertEqual(c.syncCompleted(s, syncOp), [.presentSyncResults(s)])  // no close for local
+        XCTAssertEqual(c.abandon(reason: "leave"), [])          // none → straight idle
+        XCTAssertTrue(c.isIdle)
     }
 }
