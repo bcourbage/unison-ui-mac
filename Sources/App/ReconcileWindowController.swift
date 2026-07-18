@@ -81,6 +81,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
+
+    /// Sync-phase stall detector (issue #6, steps 4–5). A wedged transport
+    /// (connection died mid-sync) can't be rescued in-process — closing
+    /// the connection or killing ssh doesn't wake a blocked `select()`, so
+    /// the sync hangs indefinitely. Instead of a false rescue, we detect
+    /// the stall (no progress for `syncStallTimeout`) and tell the user to
+    /// quit + reopen, which is the actual recovery (clean since #5 and the
+    /// step 1–3 teardown). Reset on every progress event; a healthy
+    /// transfer always emits something well within the window.
+    private var syncStallTimer: DispatchWorkItem?
+    private let syncStallTimeout: TimeInterval = 45
+    /// Set once the stall hint has been shown, so per-progress resets and
+    /// completion can tell whether to clear the warning styling.
+    private var syncStalled = false
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
     /// True when the user pressed Stop during the current sync. Read at
@@ -484,6 +498,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         setSummary(summaryText())
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: starting sync")
+        noteSyncProgress()   // arm the stall detector for the transfer
         unison_bridge_synchronize()
     }
 
@@ -754,6 +769,51 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private func updateGlobalProgress(_ percent: Double) {
         guard isSyncing else { return }
         progressBar.doubleValue = max(0, min(100, percent))
+        noteSyncProgress()
+    }
+
+    /// (Re)arm the sync-stall detector. Called at sync start and on every
+    /// progress event, so only genuine silence (a wedged transport) trips
+    /// it. If a prior stall warning was showing and progress resumed,
+    /// clear it.
+    private func noteSyncProgress() {
+        guard isSyncing else { return }
+        if syncStalled {
+            syncStalled = false
+            statusIcon.isHidden = true
+            setSummary(summaryText())
+        }
+        syncStallTimer?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.handleSyncStall() }
+        syncStallTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + syncStallTimeout, execute: item)
+    }
+
+    private func cancelSyncStallDetector() {
+        syncStallTimer?.cancel()
+        syncStallTimer = nil
+        syncStalled = false
+    }
+
+    /// No sync progress for `syncStallTimeout`. The transport is almost
+    /// certainly wedged on a dead connection, which can't be broken
+    /// in-process. Surface a warning telling the user how to recover
+    /// (quit + reopen) rather than leaving them at an endless spinner.
+    private func handleSyncStall() {
+        guard isSyncing else { return }
+        syncStalled = true
+        Log.reconcile.notice("sync stalled — no progress for \(Int(self.syncStallTimeout))s; surfacing quit+reopen hint")
+        TraceLog.shared.write("ReconcileWindow: sync stalled \(Int(syncStallTimeout))s — connection likely wedged")
+        let config = NSImage.SymbolConfiguration(
+            pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
+            .applying(.init(paletteColors: [.systemOrange]))
+        statusIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                   accessibilityDescription: "stalled")?
+            .withSymbolConfiguration(config)
+        statusIcon.isHidden = false
+        setSummary("Sync appears stuck: no progress for \(Int(syncStallTimeout)) seconds. "
+                   + "The remote connection was likely lost. Quit Unison and reopen the "
+                   + "profile to recover (a wedged transfer can't be stopped from here).")
     }
 
     private func reloadRow(_ row: Int, progress: String, bytesTransferred: Int64) {
@@ -768,6 +828,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                                    reloadChildren: false)
         }
         TraceLog.shared.write("reloadRow[\(row)] \(path): progress='\(progress)' bytes=\(bytesTransferred)")
+        noteSyncProgress()
     }
 
     /// The outermost collapsed ancestor of a node — i.e. the visible row
@@ -797,6 +858,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     private func syncDidComplete() {
         isSyncing = false
+        cancelSyncStallDetector()
         progressBar.doubleValue = 100
         progressBar.isHidden = true
 
@@ -971,6 +1033,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// informative than a generic "Synchronization completed".
     func resetSyncUIAfterAbort(reason: String) {
         isSyncing = false
+        cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
         progressBar.doubleValue = 0
