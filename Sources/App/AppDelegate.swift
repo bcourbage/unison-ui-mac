@@ -126,17 +126,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastAttemptedProfile = profile
         profileBySession[s] = profile
 
-        let reconcile: ReconcileWindowController
+        // A queued "waiting" window (if any) must NOT be promoted into the live
+        // session: its action callbacks are inert placeholders and its close
+        // closure targets `cancelQueuedOpen`. Detach it (so closing it can't
+        // cancel this now-authorized request) and discard it, then build a
+        // fresh, fully-wired controller for the real session.
         if let waiting = waitingWindow {
-            // Promote the queued "waiting" window to this session.
-            reconcile = waiting.controller
+            waiting.controller.window?.delegate = nil
+            waiting.controller.close()
             waitingWindow = nil
-        } else {
-            let mergeConfigured = Self.readMergeConfigured(
-                unisonDirectory: unisonDirectory, profile: profile)
-            reconcile = makeReconcileWindow(session: s, profile: profile,
-                                            mergeConfigured: mergeConfigured)
         }
+        let mergeConfigured = Self.readMergeConfigured(
+            unisonDirectory: unisonDirectory, profile: profile)
+        let reconcile = makeReconcileWindow(session: s, profile: profile,
+                                            mergeConfigured: mergeConfigured)
         windowBySession[s] = reconcile
         reconcile.showWindow(nil)
         reconcile.window?.makeKeyAndOrderFront(nil)
@@ -153,23 +156,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mergeConfigured: mergeConfigured,
             onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
             onRescanRequested: { [weak self] in self?.run(self?.engine.requestRescan() ?? []) },
-            onCancelScan: { [weak self] in self?.run(self?.engine.abandon(reason: "Stop during scan") ?? []) },
+            // Stop during connect/scan: tear the window down to the picker now
+            // (leaving the lease with the in-flight op), rather than leaving it
+            // spinning on "Cancelling…" until the background op settles.
+            onCancelScan: { [weak self] in
+                self?.leaveSession(s, profile: profile, closeWindow: true,
+                                   reason: "Stop during connect/scan")
+            },
             onSyncStart: { [weak self] in self?.run(self?.engine.requestSync() ?? []) },
             onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) }
         )
     }
 
-    /// A reconcile window closed. Distinguish a live session (abandon) from
-    /// a queued waiting window (cancel the queued open).
+    /// The user closed a live session's reconcile window (the ✕ button or
+    /// ⌘W). Route it through the one session-teardown helper.
     private func handleWindowClosed(session s: SessionID, profile: String) {
-        if let waiting = waitingWindow, waiting.controller.window == nil || windowBySession[s] == nil {
-            // Waiting window closed before its open started.
-            run(engine.cancelQueuedOpen(waiting.id))
-            waitingWindow = nil
-        }
+        // The window is already mid-close (this fires from windowWillClose),
+        // so don't re-close it — just detach + abandon + show the picker.
+        leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
+    }
+
+    /// Single, idempotent session→picker teardown, shared by the user closing
+    /// the window (`handleWindowClosed`, `closeWindow: false`) and pressing
+    /// Stop during connect/scan (`onCancelScan`, `closeWindow: true`).
+    ///
+    /// Ordering matters: detach the window's delegate FIRST so closing it
+    /// can't re-enter `handleWindowClosed` (no double `abandon`), then drop
+    /// the session mapping, then hand `abandon` to the coordinator, then show
+    /// the picker. The pending connect/scan identity is deliberately NOT
+    /// cleared — the in-flight op still owns the engine lease and its terminal
+    /// callback (guarded by the coordinator's phase-exact checks) releases it.
+    /// Idempotent via the `windowBySession[s]` guard: a second call for an
+    /// already-torn-down session is a no-op.
+    private func leaveSession(_ s: SessionID, profile: String,
+                              closeWindow: Bool, reason: String) {
+        guard let w = windowBySession[s] else { return }
+        w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
-        run(engine.abandon(reason: "window closed"))
         profileBySession[s] = nil
+        if closeWindow { w.close() }
+        run(engine.abandon(reason: reason))
         showProfilePicker(select: profile)
     }
 
@@ -217,16 +243,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func driveShowWaiting(_ id: OpenRequestID, profile: String) {
+        // Replace any prior waiting window rather than reusing it: its close
+        // closure captured an OLDER OpenRequestID, so reusing the controller
+        // would target the wrong id in `cancelQueuedOpen`. Detach it first so
+        // discarding it can't cancel the NEW queued request, then build a
+        // fresh controller whose close closure captures THIS `id`.
         if let existing = waitingWindow {
-            existing.controller.updateScanStatus("Waiting for the previous operation to finish…")
-            waitingWindow = (id, existing.controller)   // last pick wins (same window)
-            return
+            existing.controller.window?.delegate = nil
+            existing.controller.close()
+            waitingWindow = nil
         }
         let mergeConfigured = Self.readMergeConfigured(
             unisonDirectory: unisonDirectory, profile: profile)
-        // A waiting window has no session yet; its callbacks are wired when
-        // it's promoted in driveShowSession. Until then only its close (→
-        // cancelQueuedOpen) matters.
+        // A waiting window has no session and never becomes one — driveShowSession
+        // discards it and builds a fresh session controller. So only its close
+        // (→ cancelQueuedOpen for THIS id) is meaningful; the action callbacks
+        // are deliberately inert.
         let controller = ReconcileWindowController(
             profile: profile,
             mergeConfigured: mergeConfigured,
@@ -325,6 +357,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The fresh open is then requested — the coordinator starts it
     /// immediately for a local profile, or queues it behind the connection
     /// close for a remote one and starts it once the close idles.
+    ///
+    /// Why `engineIsQuiescent: true` is sound here (verified against upstream
+    /// `uimacbridge.ml`, Unison 2.54.0): the recoverable fatals that reach
+    /// this path (archive inconsistency, orphan archives) are raised inside
+    /// `do_unisonInit1` / `do_unisonInit2`, which run under `doInOtherThread`'s
+    /// top-level `try … with Util.Fatal s -> fatalError s`. OCaml exception
+    /// propagation unwinds the *entire* operation stack before that handler
+    /// runs, and only from the handler does `fatalError → displayFatalError`
+    /// invoke our Swift callback. So by the time this code executes, the op
+    /// has provably unwound — the worker thread is exiting, not mid-operation.
+    /// The one surviving piece of state is the established connection (a global
+    /// in the ClientConn registry), which is now idle; the `.closeConnection`
+    /// effect tears it down via the upstream-safe `Remote.clientCloseRootConnection`,
+    /// serialized against the terminating worker by the OCaml runtime lock. The
+    /// coordinator additionally gates the reopen on that close returning status
+    /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
+    /// to restart-required instead of reusing the runtime.
     private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
         // Detach + close the stale window WITHOUT its onClose→abandon path;
         // we drive the coordinator explicitly below (and a replacement window
@@ -452,12 +501,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // completion, so we MUST tell the coordinator the op failed.
         //
         //  - Recovery chosen (delete-orphans-and-retry, or the separate
-        //    retry-ignoring-archives handler): the bridge classified this as
-        //    a clean, recoverable fatal, so we release the lease with the
-        //    unwind confirmed (engineIsQuiescent: true) and reopen the SAME
-        //    profile fresh (a full init1+init2). The subsequent connection
-        //    close is the confirmation; if it fails, the coordinator escalates
-        //    to restart-required on its own.
+        //    retry-ignoring-archives handler): these fatals are raised inside
+        //    do_unisonInit1/2 under doInOtherThread's top-level try/with, so the
+        //    operation stack has provably unwound before this callback runs
+        //    (see reopenCurrentProfileFresh for the full evidence). We release
+        //    the lease with the unwind confirmed (engineIsQuiescent: true) and
+        //    reopen the SAME profile fresh (a full init1+init2). The reopen is
+        //    gated on a clean connection close; a failed close escalates to
+        //    restart-required on its own.
         //  - Display-only fatal: we can't prove the OCaml runtime unwound
         //    cleanly, so fail with engineIsQuiescent: false — the coordinator
         //    enters restart-required rather than reuse a possibly contaminated
@@ -526,13 +577,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.log.write("connection: user cancelled prompt")
                         self.connectQueue.async { unison_bridge_connection_cancel() }
                         self.pendingConnect = nil
-                        // A cancelled half-open connect: engine unwinds cleanly
-                        // (cancel closed the preconnection), so quiescent = true.
-                        // With no connection yet open this idles the engine; then
-                        // tear the window back down to the picker (the user bailed).
+                        // Tear the window down BEFORE advancing the coordinator.
+                        // operationFailed can idle the engine and start a queued
+                        // open; if this window's delegate were still live, its
+                        // windowWillClose → handleWindowClosed → abandon would
+                        // then abandon that freshly-started session. So detach +
+                        // remove + close first, then report the failure.
+                        let profile = self.profileBySession[s]
+                        if let w = self.windowBySession[s] {
+                            w.window?.delegate = nil
+                            self.windowBySession[s] = nil
+                            self.profileBySession[s] = nil
+                            w.close()
+                        }
+                        // A cancelled half-open connect: cancel closed the
+                        // preconnection and no connection was ever established,
+                        // so the coordinator idles (quiescent = true, nothing to
+                        // close). The user bailed, so return to the picker.
                         self.run(self.engine.operationFailed(
                             s, op, reason: "user cancelled connection", engineIsQuiescent: true))
-                        self.windowBySession[s]?.close()
+                        self.showProfilePicker(select: profile)
                         return
                     }
                     self.connectQueue.async { unison_bridge_connection_reply(response) }

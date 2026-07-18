@@ -28,6 +28,9 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     private func waitingID(_ e: [Effect]) -> C.OpenRequestID? {
         for x in e { if case let .showWaiting(id, _) = x { return id } }; return nil
     }
+    private func showSession(_ e: [Effect]) -> C.SessionID? {
+        for x in e { if case let .showSession(s, _) = x { return s } }; return nil
+    }
     private func hasRestart(_ e: [Effect]) -> Bool {
         e.contains { if case .restartRequired = $0 { return true }; return false }
     }
@@ -259,6 +262,24 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let e = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertEqual(e, [])
         XCTAssertTrue(c.isIdle)                             // idles, not stranded ownerless .ready
+    }
+
+    /// A queued open starts as a DISTINCT fresh session, carrying its own
+    /// `.showSession` — never the abandoned session's id. This is the
+    /// coordinator-side guarantee the driver relies on to build a fresh,
+    /// fully-wired reconcile window instead of promoting the inert "waiting"
+    /// controller (the promotion bug fixed in driveShowSession). Covers the
+    /// leave-remote-then-pick-another race and the remote fatal-recovery reopen.
+    func test_queuedOpen_startsAsDistinctFreshSession() {
+        let c = C()
+        let (a, _) = openToReady(c, interactive: true)          // A: open, connection held
+        let closed = closeOp(c.abandon(reason: "leave"))!       // leaving A begins the close
+        XCTAssertNotNil(waitingID(c.requestOpen(profile: "B"))) // B queued behind the close
+        let e = c.closeCompleted(closed.0, closed.1, status: 0) // close done → B starts
+        let started = showSession(e)
+        XCTAssertNotNil(started)                                // B gets its own showSession…
+        XCTAssertNotEqual(started, a)                           // …with a NEW session id, not A's
+        XCTAssertEqual(beginConnect(e)?.0, started)             // and its connect is bound to it
     }
 
     func test_openRequestedDuringSyncEndClose_startsAfterClose() {
