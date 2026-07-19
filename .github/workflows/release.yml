@@ -80,6 +80,11 @@ jobs:
         with:
           ocaml-compiler: "5.5.0"
 
+      # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
+      # steps; add it so `ocamlc` resolves in every later step.
+      - name: Put the pinned OCaml switch on PATH
+        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
+
       - name: Verify pinned OCaml
         run: |
           ocamlc -version
