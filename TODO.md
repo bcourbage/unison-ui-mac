@@ -93,6 +93,19 @@ section at the bottom so this list stays scannable.
          fatal / return-to-picker path) — do that first, then add the
          connection teardown.
 
+- [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
+      `ServerAliveCountMax`) — as *mitigation* for wedged connections:
+      have ssh actively probe and disconnect a dead peer (~45s) instead
+      of a silent indefinite wedge. NOT a rescue of an already-blocked
+      transport — its effect on the blocked bridge is unproven (the
+      kill-ssh experiment suggests ssh's own exit may not wake Unison's
+      `select()`), so any adoption must be *validated against a
+      reproduced wedge*, not assumed. Add via `sshargs`/ssh_config.
+- [ ] **Secure credential caching (optional)** — Keychain and/or SSH
+      `ControlMaster` so password-auth profiles don't re-prompt on
+      reconnect-after-sleep (a held connection dies on sleep). Separate
+      future enhancement; no security shortcuts.
+
 
 ---
 
@@ -141,10 +154,11 @@ landed across the bring-up and follow-on sessions.*
       from scratch and **proposed upstream (PR #1198), where it was
       merged** (commit `2429c6c`) — so it is now present at the pinned
       base and the local `patches/0001-…` was **retired** (it added
-      nothing to the blob). `make apply-patches` now applies only the two
-      remaining vendor patches, `0002` (closeConnection) and `0003`
-      (close-and-drain), which stay local per the project's LLM-usage
-      posture.
+      nothing to the blob). The current local vendor patch set is
+      `0002` (closeConnection), `0003` (close-and-drain), and `0004`
+      (transport-child reaper); they stay local for now, though a
+      future maintainer-authored change could still be proposed
+      upstream on its own merits (as `abortAll` was).
 
 ### Reconcile window: visuals + interaction
 
@@ -449,9 +463,14 @@ landed across the bring-up and follow-on sessions.*
       add/remove but NOT on content edits); the manifest's `cmp -s`
       check avoids spurious regens on no-op directory touches.
 - [x] **Local fork patches infrastructure** — `patches/` directory +
-      `make apply-patches` that idempotently applies via grep
-      detection. Survives a fresh upstream `git clone`. Currently
-      one patch (`abortAll` callback registration).
+      `make apply-patches` (via `scripts/apply-unison-patches.sh`) with
+      complete-state detection: per patch it `git apply --check`s
+      forward (→ apply), else reverse (→ already applied), else fails
+      loudly on a partial/incompatible tree. Requires the documented
+      set. Survives a fresh upstream `git clone`. Current patches:
+      `0002` (closeConnection), `0003` (close-and-drain), `0004`
+      (transport-child reaper); `0001` (abortAll) retired after it
+      merged upstream (PR #1198).
 - [x] **Replace TraceLog with `os.Logger`** — `TraceLog.shared.write`
       forwards to `os.Logger` under subsystem
       `net.courbage.unison-ui-mac`, category `general`. The
@@ -628,9 +647,23 @@ landed across the bring-up and follow-on sessions.*
   it.
 - **The fork relationship with upstream Unison**: `unison-blob.o` is
   built from a local checkout of `bcpierce00/unison`, with our
-  `patches/` applied first (currently just the `abortAll` callback
-  registration). Patches stay local — never proposed back per the
-  LLM-usage stance. `make apply-patches` is idempotent and runs
+  `patches/` applied first — currently `0002` (closeConnection),
+  `0003` (close-and-drain), and `0004` (transport-child reaper). These
+  stay local for now; upstreaming any individual maintainer-authored
+  patch remains possible on its own merits (as `abortAll`/`0001` was,
+  merged via PR #1198 and then retired here). `make apply-patches`
+  uses complete-state `git apply --check` detection and runs
   automatically before `make blob`.
+- **Already-wedged sync cannot be interrupted in-process** under the
+  current single-process bridge/Lwt architecture: a transport blocked
+  in `select()` on a dead/frozen connection is not woken by closing the
+  fd or killing ssh from another thread (validated against a reproduced
+  wedge). The supported behavior is the 45s stall indication followed by
+  quit + reopen (clean since #5 + #7); PR #9 additionally guarantees the
+  registered SSH transport child receives `SIGKILL` during quit. In-place
+  cancellation would require a different architecture (process isolation
+  of the engine, or engine-level interruptibility) and should only be
+  revisited in that context — see the scan-phase true-cancellation task
+  below for the related, separately-feasible mid-scan teardown.
 
 </details>
