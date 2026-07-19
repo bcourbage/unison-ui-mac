@@ -5,7 +5,7 @@ index 2302b62..6a4807d 100644
 @@ -646,6 +646,42 @@ let clientCloseRootConnection = function
        | None -> ()
        end
- 
+
 +(* After a connection has been closed (by [clientCloseRootConnection] or by
 +   a failure), threads belonging to it that were in the middle of execution
 +   are just discarded. They are not gone, however: they resume the next time
@@ -43,7 +43,7 @@ index 2302b62..6a4807d 100644
 +  done
 +
  (****)
- 
+
  (* Implemented as a record to avoid polluting [Remote] namespace. If
 diff --git a/src/remote.mli b/src/remote.mli
 index 9d168c1..81e7b27 100644
@@ -52,7 +52,7 @@ index 9d168c1..81e7b27 100644
 @@ -67,6 +67,23 @@ val isRootConnected : Common.root -> bool
     to close). *)
  val clientCloseRootConnection : Common.root -> unit
- 
+
 +(* Advance pending teardown of threads belonging to closed (or failed)
 +   connections by driving the Lwt scheduler through a bounded number of
 +   yields ([rounds] iterations, typically [Transport.maxThreads ()]).
@@ -80,7 +80,7 @@ index 72e4714..12b66d9 100644
 @@ -247,6 +247,97 @@ type checkable = R1 | R2 | BACKUP1 | BACKUP2
  let checkable2string = function
    R1 -> "R1" | R2 -> "R2" | BACKUP1 -> "BACKUP1" | BACKUP2 -> "BACKUP2"
- 
+
 +(* Test repeated in-process connection lifecycle correctness: close a
 +   remote connection and open a new one in the same process, several
 +   times over. Graphical UIs do this when the user switches profiles (or
@@ -176,9 +176,9 @@ index 72e4714..12b66d9 100644
    Util.warnPrinter := None;
    Prefs.set Trace.logging false;
 @@ -269,6 +360,11 @@ let test() =
- 
+
    Util.msg "Running internal tests...\n";
- 
+
 +  (* Self-contained (server runs as a child process communicating over its
 +     stdio pipes, via a fake-ssh wrapper); does not touch the profile's
 +     roots. Restores any preferences it changes. Unix only. *)
@@ -192,7 +192,7 @@ index 42452ca..23e16fb 100644
 --- a/src/uicommon.ml
 +++ b/src/uicommon.ml
 @@ -772,19 +772,10 @@ let transportItems items pRiThisRound makeAction =
- 
+
         Not all threads are stuck or purged and will continue the next
         time [Lwt_unix.run] is called. Try to finish these threads now.
 -       This must be done in a loop since each failing thread may raise
@@ -213,5 +213,5 @@ index 42452ca..23e16fb 100644
 +       more than needed). *)
 +    Remote.drainDroppedConnectionThreads ~rounds:(Transport.maxThreads ())
    in
- 
+
    starting (); (* Count the dispense loop as one of the tasks to complete *)

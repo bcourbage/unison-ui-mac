@@ -48,7 +48,7 @@ If the file for your architecture isn't here, you have two options:
 | Field | Value |
 | --- | --- |
 | Upstream source | [`doc/unison-manual.tex`](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex) |
-| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (same as the blob) |
+| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (**not** the same as the blob's `91421d0…`; the blob is 19 commits newer). The rendered HTML still documents the `mergebatch` preference, which upstream later removed from `doc/unison-manual.tex` in `b088176` — a commit that is an ancestor of the blob's `91421d0` but a descendant of this manual's `745dccd`. Regenerate the manual to match the blob commit on the next vendor bump. |
 | Renderer | hevea 2.38 (`brew install hevea`) — upstream's own TeX→HTML tool, see their `doc/Makefile` |
 | Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`) |
 | Output | self-contained single-file HTML, UTF-8, inlined CSS, no companion assets |

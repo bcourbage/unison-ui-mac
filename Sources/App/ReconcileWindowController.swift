@@ -826,6 +826,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         syncStalled = true
         Log.reconcile.notice("sync stalled — no progress for \(Int(self.syncStallTimeout))s; surfacing quit+reopen hint")
         TraceLog.shared.write("ReconcileWindow: sync stalled \(Int(syncStallTimeout))s — connection likely wedged")
+        // setSummary() clears completion emphasis (hides + nils statusIcon), so
+        // it MUST run before we install the warning icon — otherwise the icon
+        // is set and then immediately cleared and the user sees text with no
+        // triangle.
+        setSummary("Sync appears stuck: no progress for \(Int(syncStallTimeout)) seconds. "
+                   + "The remote connection was likely lost. Quit Unison and reopen the "
+                   + "profile to recover (a wedged transfer can't be stopped from here).")
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
@@ -833,9 +840,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                                    accessibilityDescription: "stalled")?
             .withSymbolConfiguration(config)
         statusIcon.isHidden = false
-        setSummary("Sync appears stuck: no progress for \(Int(syncStallTimeout)) seconds. "
-                   + "The remote connection was likely lost. Quit Unison and reopen the "
-                   + "profile to recover (a wedged transfer can't be stopped from here).")
     }
 
     /// Forwarded by AppDelegate's permanent reload-row handler for the live

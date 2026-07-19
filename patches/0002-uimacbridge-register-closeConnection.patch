@@ -5,7 +5,7 @@ index caddeef..0dc8a7a 100644
 @@ -685,6 +685,57 @@ Callback.register "unisonSynchronize" unisonSynchronize;;
  let unisonAbortAll () = Abort.all ();;
  Callback.register "abortAll" unisonAbortAll;;
- 
+
 +(* unison-ui-mac extension: cleanly close the established remote
 + * connection for the current profile.
 + *

@@ -299,8 +299,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // keeps no parallel "restartRequired" boolean, and each window latches
         // its own display-gating flag in `showRestartRequired`.
         log.write("engine restart required: \(reason)")
-        for (_, w) in windowBySession { w.showRestartRequired(reason: reason) }
-        waitingWindow?.controller.showRestartRequired(reason: reason)
+        var shownSomewhere = false
+        for (_, w) in windowBySession { w.showRestartRequired(reason: reason); shownSomewhere = true }
+        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason); shownSomewhere = true }
+        // If no reconcile/waiting window exists — the user closed the window and
+        // is back at the picker (e.g. a background "Close and Let Run" sync then
+        // failed with uncertain quiescence) — the per-window latch above shows
+        // nothing, so a picker selection would appear to do nothing. Surface an
+        // application-level alert instead, while still allowing Quit.
+        if !shownSomewhere {
+            presentAppLevelRestartRequired(reason: reason)
+        }
+    }
+
+    /// True while the app-level restart-required alert is on screen, so
+    /// repeated `.restartRequired` effects (e.g. the user keeps picking
+    /// profiles) don't stack duplicate alerts.
+    private var restartAlertVisible = false
+
+    /// Application-level restart-required notice used when there is no
+    /// reconcile/waiting window to latch the message into. Anchored to the
+    /// picker when it's up, else app-modal. Offers Quit (the actual recovery)
+    /// and Later (dismiss) — Quit stays available either way.
+    private func presentAppLevelRestartRequired(reason: String) {
+        guard !restartAlertVisible else { return }
+        restartAlertVisible = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unison needs to be restarted"
+        alert.informativeText = reason.isEmpty
+            ? "Quit Unison and open it again to continue."
+            : "\(reason)\n\nQuit Unison and open it again to continue."
+        alert.addButton(withTitle: "Quit Unison")
+        alert.addButton(withTitle: "Later")
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
+            self?.restartAlertVisible = false
+            if resp == .alertFirstButtonReturn { NSApp.terminate(nil) }
+        }
+        if let anchor = profileWindowController?.window {
+            alert.beginSheetModal(for: anchor, completionHandler: handler)
+        } else {
+            handler(alert.runModal())
+        }
     }
 
     /// Apply scan-completion effects, threading the scanned items into the
