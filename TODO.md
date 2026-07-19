@@ -137,11 +137,14 @@ landed across the bring-up and follow-on sessions.*
       sync…" — keeps the window open so the user can inspect FAILED
       rows after the unwind. `windowShouldClose` mid-sync prompt grew
       a third option "Abort & Close" alongside "Keep Syncing" /
-      "Close (let it run)". Patch reproducibility via
-      `patches/0001-uimacbridge-register-abortAll.patch` +
-      `make apply-patches` (auto-runs before `make blob`,
-      idempotent). Stays local — never proposed back to
-      bcpierce00/unison per the project's LLM-usage posture.
+      "Close (let it run)". The `abortAll` callback was human-rewritten
+      from scratch and **proposed upstream (PR #1198), where it was
+      merged** (commit `2429c6c`) — so it is now present at the pinned
+      base and the local `patches/0001-…` was **retired** (it added
+      nothing to the blob). `make apply-patches` now applies only the two
+      remaining vendor patches, `0002` (closeConnection) and `0003`
+      (close-and-drain), which stay local per the project's LLM-usage
+      posture.
 
 ### Reconcile window: visuals + interaction
 

@@ -35,20 +35,20 @@ If the file for your architecture isn't here, you have two options:
 | --- | --- |
 | Upstream project | <https://github.com/bcpierce00/unison> |
 | Upstream version | **v2.54.0** |
-| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (`v2.54.0-11-g745dccd`) |
+| Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` (`v2.54.0-19-g91421d0`, on `origin/master`) |
 | Architecture | `arm64` (Apple Silicon) |
-| Built by | upstream's `make macui` after applying the patch in `patches/` |
-| Patches applied | `patches/0001-uimacbridge-register-abortAll.patch` (adds `Callback.register "abortAll"` for the mid-sync Stop button) |
-| SHA-256 | `bd47202eeb57b73486523612ad7e9da43df5f5f5e389f87b3ae1d4323931e9f7` |
+| Built by | upstream's `make macui` after applying the patches in `patches/` |
+| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is already present at the base commit above, so the patch added nothing to the blob (the previous `apply-patches` grep skipped it). Retiring it keeps the patch set to exactly the two that genuinely apply; it does not change the blob. |
+| SHA-256 | `6097fd67900db16cb1d9ba16acc6b4b75a67eca3e8ea0521a4ea39b2d2407eb2` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
-| Size | 5.1 MB |
+| Size | 5.2 MB (5460320 bytes) |
 
 ## Provenance — what the current vendored manual is
 
 | Field | Value |
 | --- | --- |
 | Upstream source | [`doc/unison-manual.tex`](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex) |
-| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (same as the blob) |
+| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (**not** the same as the blob's `91421d0…`; the blob is 19 commits newer). The rendered HTML still documents the `mergebatch` preference, which upstream later removed from `doc/unison-manual.tex` in `b088176` — a commit that is an ancestor of the blob's `91421d0` but a descendant of this manual's `745dccd`. Regenerate the manual to match the blob commit on the next vendor bump. |
 | Renderer | hevea 2.38 (`brew install hevea`) — upstream's own TeX→HTML tool, see their `doc/Makefile` |
 | Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`) |
 | Output | self-contained single-file HTML, UTF-8, inlined CSS, no companion assets |

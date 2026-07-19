@@ -101,8 +101,33 @@ void unison_bridge_init1(const char *profile_name);
  * bridge call. Copy if you need to retain it. */
 const char *unison_bridge_connection_prompt(void);
 void unison_bridge_connection_reply(const char *response);
-void unison_bridge_connection_end(void);
-void unison_bridge_connection_cancel(void);
+
+/* Finalize (end) or abort (cancel) the pending preconnection. Both are
+ * exception-safe and status-returning, and release the stashed preconnection
+ * on every terminal path so it is never leaked.
+ *   connection_end:    0 = connection established; -1 = nothing to finalize /
+ *                      callback missing; 2 = OCaml raised.
+ *   connection_cancel: 0 = cancelled (or nothing to cancel — idempotent);
+ *                      -1 = callback missing; 2 = OCaml raised.
+ * A nonzero result must be treated by the caller as a terminal failure (the
+ * connect op did not complete cleanly). */
+int unison_bridge_connection_end(void);
+int unison_bridge_connection_cancel(void);
+
+/* Cleanly close the ESTABLISHED remote connection for the current
+ * profile (closes the transport channels and reaps the ssh child), via
+ * the same ClientConn-registry teardown upstream uses after a transport
+ * failure. Safe on an established connection; a harmless no-op for a
+ * local-only profile or when nothing is connected. Idempotent.
+ *
+ * MUST only be called when the engine is quiescent (no scan/sync in
+ * flight) — closing under an active transport would tear it out. The
+ * caller waits on the OCaml worker (this can block on waitpid), so run
+ * it OFF the main thread.
+ *
+ * Returns: 0 = ok, 2 = OCaml raised (logged to stderr), -1 = the
+ * closeConnection callback isn't registered (blob predates the patch). */
+int unison_bridge_close_connection(void);
 
 /* === Init2 — reconcile updates between roots ===
  *

@@ -45,6 +45,92 @@ final class BridgeTests: XCTestCase {
         XCTAssertTrue(isDir.boolValue, "unison directory path is not a directory")
     }
 
+    // MARK: - Thread-local return storage (PR #7 review finding 2)
+    //
+    // get_version / unison_directory / connection_prompt return pointers into
+    // per-thread (`_Thread_local`) buffers. Content-equality alone can't prove
+    // this — every call returns the SAME string, so a shared process-global
+    // `static` would look fine. The decisive check is the buffer ADDRESS: a
+    // distinct thread must get a distinct return buffer; a shared static hands
+    // back the same address to every thread.
+
+    /// A distinct thread must receive a distinct return-buffer address, and
+    /// identical content. Would FAIL if the storage were a shared `static`.
+    func test_a_getVersion_returnBufferIsThreadLocal() {
+        guard let mainPtr = unison_bridge_get_version() else {
+            XCTFail("get_version returned NULL — runtime not initialized?"); return
+        }
+        let reference = String(cString: mainPtr)
+        let mainAddr = UnsafeRawPointer(mainPtr)
+
+        let done = expectation(description: "bg thread call")
+        var bgAddr: UnsafeRawPointer?
+        var bgContent: String?
+        let t = Thread {
+            if let p = unison_bridge_get_version() {
+                bgAddr = UnsafeRawPointer(p)
+                bgContent = String(cString: p)
+            }
+            done.fulfill()
+        }
+        t.start()
+        wait(for: [done], timeout: 5)
+
+        XCTAssertEqual(bgContent, reference, "content must be identical across threads")
+        XCTAssertNotNil(bgAddr)
+        XCTAssertNotEqual(mainAddr, bgAddr,
+            "get_version return buffer is shared across threads — not _Thread_local")
+    }
+
+    func test_a_unisonDirectory_returnBufferIsThreadLocal() {
+        guard let mainPtr = unison_bridge_unison_directory() else {
+            XCTFail("unison_directory returned NULL"); return
+        }
+        let reference = String(cString: mainPtr)
+        let mainAddr = UnsafeRawPointer(mainPtr)
+
+        let done = expectation(description: "bg thread call")
+        var bgAddr: UnsafeRawPointer?
+        var bgContent: String?
+        let t = Thread {
+            if let p = unison_bridge_unison_directory() {
+                bgAddr = UnsafeRawPointer(p)
+                bgContent = String(cString: p)
+            }
+            done.fulfill()
+        }
+        t.start()
+        wait(for: [done], timeout: 5)
+
+        XCTAssertEqual(bgContent, reference, "content must be identical across threads")
+        XCTAssertNotNil(bgAddr)
+        XCTAssertNotEqual(mainAddr, bgAddr,
+            "unison_directory return buffer is shared across threads — not _Thread_local")
+    }
+
+    /// Under heavy concurrency every caller must read back a complete, correct
+    /// copy — validates the copied CONTENTS, not merely a non-null pointer.
+    func test_a_readOnlyEntryPoints_concurrentCallersGetCorrectCopies() {
+        let versionRef = String(cString: unison_bridge_get_version()!)
+        let dirRef = String(cString: unison_bridge_unison_directory()!)
+
+        let lock = NSLock()
+        var mismatches = 0
+        DispatchQueue.concurrentPerform(iterations: 200) { i in
+            // Copy immediately into a Swift String (owns its own storage).
+            let v = unison_bridge_get_version().map { String(cString: $0) }
+            let d = unison_bridge_unison_directory().map { String(cString: $0) }
+            // connection_prompt has no preconnection here → must stay NULL,
+            // concurrently, without crashing.
+            let p = unison_bridge_connection_prompt()
+            if v != versionRef || d != dirRef || p != nil {
+                lock.lock(); mismatches += 1; lock.unlock()
+            }
+        }
+        XCTAssertEqual(mismatches, 0,
+            "concurrent callers saw corrupted/unstable return content")
+    }
+
     // MARK: - Per-row roots (require init1+init2 to have run)
 
     func test_b_riOps_failGracefullyWhenNoStateLoaded() {
@@ -87,6 +173,37 @@ final class BridgeTests: XCTestCase {
         // `abortAll` callback weren't registered in the local
         // upstream patch, the bridge would print "abortAll not
         // registered" to stderr; the call still returns.
+    }
+
+    func test_b_closeConnection_isRegisteredAndSafeNoOp() {
+        // With no remote connection established (no init1/init2 has run
+        // yet in alphabetical order), closing must be a clean no-op:
+        //   - status != -1 proves the `closeConnection` OCaml callback is
+        //     actually registered in the vendored blob (a stale blob would
+        //     return the -1 "not registered" sentinel).
+        //   - status == 0 is the "ok, nothing to close" result.
+        let status = unison_bridge_close_connection()
+        XCTAssertNotEqual(status, -1,
+            "closeConnection callback missing from blob — rebuild with patches/0002")
+        XCTAssertEqual(status, 0, "expected clean no-op close, got \(status)")
+    }
+
+    /// connection_end / connection_cancel are now status-returning (findings
+    /// 1 & 2). With no pending preconnection (no init1 with a prompt has run in
+    /// alphabetical order):
+    ///   - connection_end reports -1 ("nothing to finalize"), NOT a false 0.
+    ///   - connection_cancel reports 0 (cancelling nothing is an idempotent
+    ///     success), so an abandoned connect with no live preconnection resolves
+    ///     cleanly. The success (0) and OCaml-exception (2) real-preconnection
+    ///     paths are exercised by the live matrix, not this in-process unit.
+    func test_b_connectionEnd_noPreconn_reportsNothingToFinalize() {
+        XCTAssertEqual(unison_bridge_connection_end(), -1,
+            "connection_end with no preconnection must report -1, not a false success")
+    }
+
+    func test_b_connectionCancel_noPreconn_isIdempotentSuccess() {
+        XCTAssertEqual(unison_bridge_connection_cancel(), 0,
+            "cancelling with nothing pending must be a benign success (0)")
     }
 
     // MARK: - End-to-end init1 + init2 against a controlled fixture

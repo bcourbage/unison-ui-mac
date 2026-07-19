@@ -2,10 +2,9 @@ import AppKit
 import Darwin   // utsname / uname for arch detection in reportIssue body
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding {
 
     private var profileWindowController: ProfileWindowController?
-    private var reconcileWindowController: ReconcileWindowController?
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -49,23 +48,735 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// back to the main queue, so all UI work stays main-isolated.
     private let connectQueue = DispatchQueue(label: "net.courbage.unison-ui.connect")
 
-    /// Monotonic epoch for the current connect attempt. Bumped whenever
-    /// an attempt is superseded or torn down (timeout, user cancel,
-    /// fatal/warn abort) so a late callback from an abandoned attempt is
-    /// ignored rather than driving the flow against stale UI.
-    private var connectGeneration = 0
+    // MARK: - Engine session coordinator (issue #6 — sole lifecycle authority)
 
-    /// Fires if the initial connect+scan doesn't resolve (items, a
-    /// credential prompt, or an error) within `connectStallTimeout`. Without
-    /// it a wedged SSH would leave the window spinning forever with no
-    /// way out but force-quit. Lives on the main queue — which is now
-    /// free to fire it precisely because the connect is off-main.
+    /// The single authority for the engine lifecycle. AppDelegate is its
+    /// driver: it translates user intents into coordinator calls, runs the
+    /// returned effects (in order), and feeds token-bound bridge callbacks
+    /// back in. No lifecycle decision is made outside the coordinator.
+    private let engine = EngineSessionCoordinator()
+
+    private typealias SessionID = EngineSessionCoordinator.SessionID
+    private typealias OperationID = EngineSessionCoordinator.OperationID
+    private typealias OpenRequestID = EngineSessionCoordinator.OpenRequestID
+
+    /// Exact identity of each in-flight bridge op, recorded when the op is
+    /// STARTED (in response to a coordinator effect) and read back on its
+    /// completion callback. Never "whatever op is active now". Not cleared
+    /// on abandon — the terminal callback still owns the lease.
+    private var pendingConnect: (SessionID, OperationID)?
+    private var pendingScan: (SessionID, OperationID)?
+    private var pendingSync: (SessionID, OperationID)?
+    private var pendingClose: (SessionID, OperationID)?
+
+    /// Reconcile window per live session (keyed by SessionID, stable across
+    /// connect→scan→ready→sync→rescan). Plus the single queued "waiting"
+    /// window, promoted to `windowBySession` when its open starts.
+    private var windowBySession: [SessionID: ReconcileWindowController] = [:]
+    private var waitingWindow: (id: OpenRequestID, controller: ReconcileWindowController)?
+
+    /// The profile each live session is showing (for window (re)creation
+    /// and version-check). Cleared when the session ends.
+    private var profileBySession: [SessionID: String] = [:]
+
+    /// Whether a password sheet was shown during the current connect —
+    /// ground truth for `connectFinished`'s interactive flag.
+    private var sheetShownThisConnect = false
+
+    /// Run coordinator effects in the order returned (order matters:
+    /// showSession before beginConnect; presentSyncResults before
+    /// closeConnection; a successful close before the queued session start).
+    private func run(_ effects: [EngineSessionCoordinator.Effect]) {
+        for effect in effects { execute(effect) }
+        // The single funnel for EVERY coordinator mutation: `run(...)` wraps
+        // all of them, and `runScanEffects` routes its remainder through here
+        // too, so this notification fires on every engine-phase transition
+        // (even a no-effect one). Any open Settings / Profile Editor / Clean
+        // Stale window refreshes its destructive-action controls against the
+        // new idle state.
+        NotificationCenter.default.post(name: .engineActivityDidChange, object: self)
+    }
+
+    /// `EngineActivityProviding`: the app-side mirror of the coordinator's
+    /// destructive-mutation policy. Windows recheck this immediately before
+    /// mutating archive files.
+    var allowsDestructiveArchiveMutation: Bool {
+        engine.allowsDestructiveArchiveMutation
+    }
+
+    private func execute(_ effect: EngineSessionCoordinator.Effect) {
+        switch effect {
+        case .showSession(let s, let profile):
+            driveShowSession(s, profile: profile)
+        case .beginConnect(let s, let op, let profile):
+            driveBeginConnect(s, op, profile: profile)
+        case .beginScan(let s, let op):
+            driveBeginScan(s, op)
+        case .beginSync(let s, let op):
+            driveBeginSync(s, op)
+        case .closeConnection(let s, let op):
+            driveCloseConnection(s, op)
+        case .abortSync(let s, let op):
+            driveAbortSync(s, op)
+        case .showWaiting(let id, let profile):
+            driveShowWaiting(id, profile: profile)
+        case .presentScanResults:
+            // Handled by the init2 completion handler, which holds the items
+            // (see `runScanEffects(_:items:)`). No session-global work here.
+            break
+        case .presentSyncResults(let s):
+            windowBySession[s]?.finalizeSyncUI()
+        case .restartRequired(let reason):
+            driveRestartRequired(reason: reason)
+        }
+    }
+
+    // MARK: - Effect executors (the driver side of the coordinator)
+
+    /// Create (or promote the waiting window into) the session's reconcile
+    /// window in scanning state, wire its callbacks to coordinator intents,
+    /// and kick off the SSH version probe.
+    private func driveShowSession(_ s: SessionID, profile: String) {
+        lastAttemptedProfile = profile
+        profileBySession[s] = profile
+
+        // A queued "waiting" window (if any) must NOT be promoted into the live
+        // session: its action callbacks are inert placeholders and its close
+        // closure targets `cancelQueuedOpen`. Detach it (so closing it can't
+        // cancel this now-authorized request) and discard it, then build a
+        // fresh, fully-wired controller for the real session.
+        if let waiting = waitingWindow {
+            waiting.controller.window?.delegate = nil
+            waiting.controller.close()
+            waitingWindow = nil
+        }
+        let mergeConfigured = Self.readMergeConfigured(
+            unisonDirectory: unisonDirectory, profile: profile)
+        let reconcile = makeReconcileWindow(session: s, profile: profile,
+                                            mergeConfigured: mergeConfigured)
+        windowBySession[s] = reconcile
+        reconcile.showWindow(nil)
+        reconcile.window?.makeKeyAndOrderFront(nil)
+        reconcile.beginInitialScan()
+        profileWindowController?.close()
+
+        runVersionCheckIfNeeded(profile: profile)
+    }
+
+    private func makeReconcileWindow(session s: SessionID, profile: String,
+                                     mergeConfigured: Bool) -> ReconcileWindowController {
+        ReconcileWindowController(
+            profile: profile,
+            mergeConfigured: mergeConfigured,
+            onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
+            onRescanRequested: { [weak self] in self?.run(self?.engine.requestRescan() ?? []) },
+            // Stop during connect/scan: tear the window down to the picker now
+            // (leaving the lease with the in-flight op), rather than leaving it
+            // spinning on "Cancelling…" until the background op settles.
+            onCancelScan: { [weak self] in
+                self?.leaveSession(s, profile: profile, closeWindow: true,
+                                   reason: "Stop during connect/scan")
+            },
+            onSyncStart: { [weak self] in self?.run(self?.engine.requestSync() ?? []) },
+            onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) }
+        )
+    }
+
+    /// The user closed a live session's reconcile window (the ✕ button or
+    /// ⌘W). Route it through the one session-teardown helper.
+    private func handleWindowClosed(session s: SessionID, profile: String) {
+        // The window is already mid-close (this fires from windowWillClose),
+        // so don't re-close it — just detach + abandon + show the picker.
+        leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
+    }
+
+    /// Single, idempotent session→picker teardown, shared by the user closing
+    /// the window (`handleWindowClosed`, `closeWindow: false`) and pressing
+    /// Stop during connect/scan (`onCancelScan`, `closeWindow: true`).
+    ///
+    /// Ordering matters: detach the window's delegate FIRST so closing it
+    /// can't re-enter `handleWindowClosed` (no double `abandon`), then drop
+    /// the session mapping, then hand `abandon` to the coordinator, then show
+    /// the picker. The pending connect/scan identity is deliberately NOT
+    /// cleared — the in-flight op still owns the engine lease and its terminal
+    /// callback (guarded by the coordinator's phase-exact checks) releases it.
+    /// Idempotent via the `windowBySession[s]` guard: a second call for an
+    /// already-torn-down session is a no-op.
+    private func leaveSession(_ s: SessionID, profile: String,
+                              closeWindow: Bool, reason: String) {
+        guard let w = windowBySession[s] else { return }
+        w.window?.delegate = nil            // prevent windowWillClose → re-entry
+        windowBySession[s] = nil
+        profileBySession[s] = nil
+        if closeWindow { w.close() }
+        run(engine.abandon(reason: reason))
+        showProfilePicker(select: profile)
+    }
+
+    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String) {
+        pendingConnect = (s, op)
+        sheetShownThisConnect = false
+        // Show the scanning spinner for a reconnect (a rescan after we closed
+        // a non-interactive connection on sync-end). The first open already
+        // shows it via `beginInitialScan` in driveShowSession, so guard on the
+        // window's own flag to avoid re-labelling it.
+        if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
+        armConnectWatchdog()
+        connectQueue.async { profile.withCString { unison_bridge_init1($0) } }
+    }
+
+    private func driveBeginScan(_ s: SessionID, _ op: OperationID) {
+        pendingScan = (s, op)
+        // Show the scanning spinner for a rescan (the initial scan already
+        // shows it via beginInitialScan). Idempotent — guarded on isScanning.
+        if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
+        connectQueue.async { unison_bridge_init2() }
+    }
+
+    private func driveBeginSync(_ s: SessionID, _ op: OperationID) {
+        pendingSync = (s, op)
+        windowBySession[s]?.enterSyncingUI()   // syncing UI is the driver's job now
+        unison_bridge_synchronize()   // returns quickly; runs on its own OCaml thread
+    }
+
+    private func driveCloseConnection(_ s: SessionID, _ op: OperationID) {
+        pendingClose = (s, op)
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_close_connection()
+            TraceLog.shared.write("closeConnection (\(s)/\(op)) -> status \(status)")
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pendingClose = nil
+                self.run(self.engine.closeCompleted(s, op, status: status))
+            }
+        }
+    }
+
+    private func driveAbortSync(_ s: SessionID, _ op: OperationID) {
+        DispatchQueue.global().async { unison_bridge_abort_sync() }
+    }
+
+    private func driveShowWaiting(_ id: OpenRequestID, profile: String) {
+        // Replace any prior waiting window rather than reusing it: its close
+        // closure captured an OLDER OpenRequestID, so reusing the controller
+        // would target the wrong id in `cancelQueuedOpen`. Detach it first so
+        // discarding it can't cancel the NEW queued request, then build a
+        // fresh controller whose close closure captures THIS `id`.
+        if let existing = waitingWindow {
+            existing.controller.window?.delegate = nil
+            existing.controller.close()
+            waitingWindow = nil
+        }
+        let mergeConfigured = Self.readMergeConfigured(
+            unisonDirectory: unisonDirectory, profile: profile)
+        // A waiting window has no session and never becomes one — driveShowSession
+        // discards it and builds a fresh session controller. So only its close
+        // (→ cancelQueuedOpen for THIS id) is meaningful; the action callbacks
+        // are deliberately inert.
+        let controller = ReconcileWindowController(
+            profile: profile,
+            mergeConfigured: mergeConfigured,
+            onClose: { [weak self] in
+                guard let self, let w = self.waitingWindow, w.id == id else { return }
+                self.run(self.engine.cancelQueuedOpen(id))
+                self.waitingWindow = nil
+                self.showProfilePicker(select: profile)
+            },
+            onRescanRequested: {},
+            onCancelScan: {},
+            onSyncStart: {},
+            onSyncExit: { _ in }
+        )
+        waitingWindow = (id, controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.beginInitialScan()
+        controller.updateScanStatus("Waiting for the previous operation to finish…")
+        profileWindowController?.close()
+    }
+
+    private func driveRestartRequired(reason: String) {
+        // Presentation only. The coordinator's `.restartRequired` phase is the
+        // single source of truth (it refuses all new engine work); AppDelegate
+        // keeps no parallel "restartRequired" boolean, and each window latches
+        // its own display-gating flag in `showRestartRequired`.
+        log.write("engine restart required: \(reason)")
+        var shownSomewhere = false
+        for (_, w) in windowBySession { w.showRestartRequired(reason: reason); shownSomewhere = true }
+        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason); shownSomewhere = true }
+        // If no reconcile/waiting window exists — the user closed the window and
+        // is back at the picker (e.g. a background "Close and Let Run" sync then
+        // failed with uncertain quiescence) — the per-window latch above shows
+        // nothing, so a picker selection would appear to do nothing. Surface an
+        // application-level alert instead, while still allowing Quit.
+        if !shownSomewhere {
+            presentAppLevelRestartRequired(reason: reason)
+        }
+    }
+
+    /// True while the app-level restart-required alert is on screen, so
+    /// repeated `.restartRequired` effects (e.g. the user keeps picking
+    /// profiles) don't stack duplicate alerts.
+    private var restartAlertVisible = false
+
+    /// Application-level restart-required notice used when there is no
+    /// reconcile/waiting window to latch the message into. Anchored to the
+    /// picker when it's up, else app-modal. Offers Quit (the actual recovery)
+    /// and Later (dismiss) — Quit stays available either way.
+    private func presentAppLevelRestartRequired(reason: String) {
+        guard !restartAlertVisible else { return }
+        restartAlertVisible = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unison needs to be restarted"
+        alert.informativeText = reason.isEmpty
+            ? "Quit Unison and open it again to continue."
+            : "\(reason)\n\nQuit Unison and open it again to continue."
+        alert.addButton(withTitle: "Quit Unison")
+        alert.addButton(withTitle: "Later")
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
+            self?.restartAlertVisible = false
+            if resp == .alertFirstButtonReturn { NSApp.terminate(nil) }
+        }
+        if let anchor = profileWindowController?.window {
+            alert.beginSheetModal(for: anchor, completionHandler: handler)
+        } else {
+            handler(alert.runModal())
+        }
+    }
+
+    /// Apply scan-completion effects, threading the scanned items into the
+    /// `.presentScanResults` effect (which the generic runner can't carry).
+    private func runScanEffects(_ effects: [EngineSessionCoordinator.Effect],
+                                items: [StateItem]) {
+        // `.presentScanResults` carries the freshly-scanned row items, so it's
+        // handled here; every other effect goes through `run` — the single
+        // funnel that also fires the engine-activity notification. Routing the
+        // remainder (even when empty) through `run` means an abandoned
+        // local-only scan that transitions straight to idle with no effects
+        // still notifies the maintenance windows.
+        var rest: [EngineSessionCoordinator.Effect] = []
+        for effect in effects {
+            if case .presentScanResults(let s) = effect {
+                windowBySession[s]?.endRescan(newItems: items)
+            } else {
+                rest.append(effect)
+            }
+        }
+        run(rest)
+    }
+
+    // MARK: - Failure / recovery helpers (coordinator-routed)
+
+    /// The reconcile window of the session the coordinator currently owns
+    /// (nil when idle, closing-to-idle, or restart-required). Presentation
+    /// reference only — never a lifecycle signal.
+    private var currentReconcileWindow: ReconcileWindowController? {
+        engine.currentSession.flatMap { windowBySession[$0] }
+    }
+
+    /// Take (and clear) the single in-flight op's token, so a terminal
+    /// failure can be reported to the coordinator with the exact
+    /// `(SessionID, OperationID)` it was started with. At most one of
+    /// connect/scan/sync is pending at a time (each phase clears the prior
+    /// slot), so priority here is just defensive ordering. Clearing prevents
+    /// a dead op's token from leaking into a later failure report; the
+    /// coordinator's phase-exact guards would ignore a stale token anyway.
+    private func takeInFlightOp() -> (SessionID, OperationID)? {
+        if let p = pendingSync { pendingSync = nil; return p }
+        if let p = pendingScan { pendingScan = nil; return p }
+        if let p = pendingConnect {
+            pendingConnect = nil
+            disarmConnectWatchdog()
+            return p
+        }
+        return nil
+    }
+
+    /// Report a terminal failure of whatever op is in flight to the
+    /// coordinator. `engineIsQuiescent` is the caller's proof that the OCaml
+    /// worker actually unwound: true only when confirmed, false for
+    /// uncertain (fatal-display-only / wedge) cases so the coordinator
+    /// requires a restart rather than reusing a possibly contaminated runtime.
+    private func failCurrentOp(reason: String, engineIsQuiescent: Bool) {
+        guard let (s, op) = takeInFlightOp() else {
+            log.write("failCurrentOp: no op in flight (\(reason)) — nothing to fail")
+            return
+        }
+        run(engine.operationFailed(s, op, reason: reason,
+                                   engineIsQuiescent: engineIsQuiescent))
+    }
+
+    /// Reopen `profile` as a brand-new session (a full init1+init2), tearing
+    /// down whatever session is currently visible. Used by the recovery
+    /// paths (delete-orphans / ignore-archives) and the "Rescan Ignoring
+    /// Archives" menu action, all of which need init1 to re-read the profile
+    /// — a connection-reusing rescan wouldn't.
+    ///
+    /// Entirely coordinator-driven: if an op is in flight it's failed with
+    /// the unwind confirmed (so the connection closes and we reach idle);
+    /// otherwise the visible `.ready` session is abandoned (same effect).
+    /// The fresh open is then requested — the coordinator starts it
+    /// immediately for a local profile, or queues it behind the connection
+    /// close for a remote one and starts it once the close idles.
+    ///
+    /// Why `engineIsQuiescent: true` is sound here (verified against upstream
+    /// `uimacbridge.ml`, Unison 2.54.0): the recoverable fatals that reach
+    /// this path (archive inconsistency, orphan archives) are raised inside
+    /// `do_unisonInit1` / `do_unisonInit2`, which run under `doInOtherThread`'s
+    /// top-level `try … with Util.Fatal s -> fatalError s`. OCaml exception
+    /// propagation unwinds the *entire* operation stack before that handler
+    /// runs, and only from the handler does `fatalError → displayFatalError`
+    /// invoke our Swift callback. So by the time this code executes, the op
+    /// has provably unwound — the worker thread is exiting, not mid-operation.
+    /// The one surviving piece of state is the established connection (a global
+    /// in the ClientConn registry), which is now idle; the `.closeConnection`
+    /// effect tears it down via the upstream-safe `Remote.clientCloseRootConnection`,
+    /// serialized against the terminating worker by the OCaml runtime lock. The
+    /// coordinator additionally gates the reopen on that close returning status
+    /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
+    /// to restart-required instead of reusing the runtime.
+    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
+        // Detach + close the stale window WITHOUT its onClose→abandon path;
+        // we drive the coordinator explicitly below (and a replacement window
+        // opens synchronously in the same turn, so the app never sees a
+        // last-window-closed moment).
+        if let s = engine.currentSession, let w = windowBySession[s] {
+            w.window?.delegate = nil
+            w.close()
+            windowBySession[s] = nil
+            profileBySession[s] = nil
+        }
+        if let (s, op) = takeInFlightOp() {
+            run(engine.operationFailed(s, op, reason: failedReason,
+                                       engineIsQuiescent: true))
+        } else {
+            run(engine.abandon(reason: failedReason))
+        }
+        run(engine.requestOpen(profile: profile))
+    }
+
+    // MARK: - Permanent bridge handlers (installed once at launch)
+
+    private func installPermanentBridgeHandlers() {
+        // Finding 3: these five handlers must NOT add a second main-queue hop.
+        // Each `UnisonBridge` trampoline already performs exactly one ordered
+        // `DispatchQueue.main.async` handoff before invoking the handler, so the
+        // handler body already runs on the main thread, in the bridge's emit
+        // order. A second `DispatchQueue.main.async` here deferred the body one
+        // extra run-loop turn, which could REORDER it after a later event (e.g.
+        // a status arriving just before scan completion being applied after the
+        // scan result). `MainActor.assumeIsolated` runs the body inline on the
+        // already-current main turn — one ordered handoff, no reordering.
+        UnisonBridge.installStatusHandler { [weak self] msg in
+            TraceLog.shared.write("[ocaml→status] \(msg.prefix(200))")
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.noteConnectProgress()
+                if let s = self.engine.currentSession, self.engine.isVisible(s) {
+                    self.windowBySession[s]?.updateScanStatus(msg)
+                }
+            }
+        }
+        UnisonBridge.installProgressHandler { [weak self] fraction in
+            MainActor.assumeIsolated {
+                guard let self, let s = self.engine.currentSession else { return }
+                self.windowBySession[s]?.updateGlobalProgress(fraction)
+            }
+        }
+        UnisonBridge.installReloadRowHandler { [weak self] row, progress, bytes in
+            MainActor.assumeIsolated {
+                guard let self, let s = self.engine.currentSession else { return }
+                self.windowBySession[s]?.reloadRow(row, progress: progress, bytesTransferred: bytes)
+            }
+        }
+        UnisonBridge.installDiffHandler { [weak self] title, text in
+            MainActor.assumeIsolated {
+                guard let self, let s = self.engine.currentSession else { return }
+                self.windowBySession[s]?.showDiff(title: title, text: text)
+            }
+        }
+        UnisonBridge.installDiffErrHandler { [weak self] err in
+            MainActor.assumeIsolated {
+                guard let self, let s = self.engine.currentSession else { return }
+                self.windowBySession[s]?.showDiffError(err)
+            }
+        }
+        UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
+            guard let self else { return }
+            guard let (s, op) = self.pendingConnect else {
+                self.log.write("dropping init1 completion — no pending connect"); return
+            }
+            self.log.write("init1 complete (needs_prompt=\(needsPrompt)) \(s)/\(op)")
+            // init1 loaded the profile; restore any one-shot ignorearchives .prf.
+            self.restoreIgnoreArchivesPrfIfNeeded()
+            if needsPrompt {
+                self.drivePromptLoop(s, op)          // remote: connectFinished at "no more prompts"
+            } else {
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                self.run(self.engine.connectFinished(s, op, result: .local))
+            }
+        }
+        UnisonBridge.installInit2CompleteHandler { [weak self] items in
+            guard let self else { return }
+            guard let (s, op) = self.pendingScan else {
+                self.log.write("dropping init2 completion — no pending scan"); return
+            }
+            self.pendingScan = nil
+            self.disarmConnectWatchdog()
+            self.log.write("init2 complete — \(items.count) items \(s)/\(op)")
+            self.runScanEffects(self.engine.scanCompleted(s, op), items: items)
+            #if DEBUG
+            self.maybeRunAutotestHooks(reconcile: self.windowBySession[s], items: items)
+            #endif
+        }
+        UnisonBridge.installSyncCompleteHandler { [weak self] in
+            guard let self else { return }
+            guard let (s, op) = self.pendingSync else {
+                self.log.write("dropping sync completion — no pending sync"); return
+            }
+            self.pendingSync = nil
+            self.log.write("sync complete \(s)/\(op)")
+            self.run(self.engine.syncCompleted(s, op))
+        }
+
+        // Modal warning sheet. The OCaml worker parks on a condvar until the
+        // user dismisses; the engine is always answered "proceed" (never
+        // "exit", which would quit the app), so on cancel the op is still
+        // running and we route the bail through the coordinator — never a
+        // direct bridge abort.
+        UnisonBridge.installWarnHandler { [weak self] msg, cancelled in
+            guard let self else { return }
+            self.log.write("warn dismissed (cancelled=\(cancelled)): \(msg.prefix(120))")
+            guard cancelled else { return }
+            guard let s = self.engine.currentSession else { return }
+            if self.pendingSync != nil {
+                // A transport is in flight — Abort.check observes the abort
+                // and stops the sync. Route it exactly like the Stop button
+                // (coordinator `.abortSync`, window kept, results presented).
+                self.windowBySession[s]?.cancelSync()
+            } else {
+                // Scan/connect can't be aborted safely (flagging Abort mid-
+                // update-detection trips an update.ml assertion). Leave the
+                // profile: closing the window abandons the op via the
+                // coordinator, which defers the connection close until the
+                // background op actually terminates.
+                self.windowBySession[s]?.close()
+            }
+        }
+
+        // Modal fatal-error sheet. The bridge trampoline shows the alert
+        // (including any Retry / Delete-Orphans recovery buttons) and then
+        // calls us. The in-flight init1/init2/sync will NOT fire its normal
+        // completion, so we MUST tell the coordinator the op failed.
+        //
+        //  - Recovery chosen (delete-orphans-and-retry, or the separate
+        //    retry-ignoring-archives handler): these fatals are raised inside
+        //    do_unisonInit1/2 under doInOtherThread's top-level try/with, so the
+        //    operation stack has provably unwound before this callback runs
+        //    (see reopenCurrentProfileFresh for the full evidence). We release
+        //    the lease with the unwind confirmed (engineIsQuiescent: true) and
+        //    reopen the SAME profile fresh (a full init1+init2). The reopen is
+        //    gated on a clean connection close; a failed close escalates to
+        //    restart-required on its own.
+        //  - Display-only fatal: we can't prove the OCaml runtime unwound
+        //    cleanly, so fail with engineIsQuiescent: false — the coordinator
+        //    enters restart-required rather than reuse a possibly contaminated
+        //    runtime.
+        UnisonBridge.installFatalHandler { [weak self] msg, shouldRetry in
+            guard let self else { return }
+            self.log.write("fatal dismissed (retry=\(shouldRetry)): \(msg.prefix(120))")
+            if shouldRetry, let profile = self.lastAttemptedProfile {
+                self.reopenCurrentProfileFresh(
+                    profile, failedReason: "retrying after deleting orphan archives")
+            } else {
+                self.failCurrentOp(reason: "fatal error: \(msg.prefix(200))",
+                                   engineIsQuiescent: false)
+            }
+        }
+
+        // "Retry Ignoring Archives" on an archive-inconsistency fatal: inject
+        // a one-shot `ignorearchives` override into the .prf and reopen the
+        // same profile fresh so init1 reads it. Routes through the same
+        // coordinator-driven reopen as the other recovery paths.
+        UnisonBridge.fatalRetryIgnoreArchivesHandler = { [weak self] in
+            guard let self, let profile = self.lastAttemptedProfile else { return }
+            self.log.write("fatal recovery: retry ignoring archives for '\(profile)'")
+            self.rescanIgnoringArchives(profile: profile,
+                                        failedReason: "retrying with ignorearchives")
+        }
+    }
+
+    /// SSH credential prompt loop for connect op `(s, op)`. On "no more
+    /// prompts" the connection is established → `connectFinished`.
+    private func drivePromptLoop(_ s: SessionID, _ op: OperationID) {
+        guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+        armConnectWatchdog()
+        connectQueue.async { [weak self] in
+            let cstr = unison_bridge_connection_prompt()
+            guard let cstr else {
+                TraceLog.shared.write("connection: no more prompts — connection_end + init2")
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                    // Finding 1: keep pendingConnect + the watchdog ACTIVE until
+                    // connection_end actually returns (it can block on a wedged
+                    // transport). On return, re-verify the exact (s, op): a
+                    // watchdog timeout during the call invalidates the op, and a
+                    // late success after that must be ignored. A nonzero status
+                    // (OCaml raised / anomaly) routes through operationFailed
+                    // with quiescence UNproven, so the coordinator restarts.
+                    self.connectQueue.async { [weak self] in
+                        let status = unison_bridge_connection_end()
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else {
+                                // The op was invalidated (watchdog → restart-required)
+                                // while connection_end ran. Do NOT revive the
+                                // coordinator. But a status-0 return may have
+                                // established a real connection that is now
+                                // orphaned — enqueue a quiescent close-and-drain
+                                // cleanup, restricted to the invalidated/restart
+                                // path so it can never touch a newer session.
+                                self.log.write("connection_end (\(s)/\(op)) -> \(status) after invalidation — not reviving")
+                                if status == 0 {
+                                    self.cleanupOrphanedConnectionAfterInvalidation(s, op)
+                                }
+                                return
+                            }
+                            self.pendingConnect = nil
+                            self.disarmConnectWatchdog()
+                            if status == 0 {
+                                self.run(self.engine.connectFinished(
+                                    s, op, result: .remote(interactive: self.sheetShownThisConnect)))
+                            } else {
+                                self.log.write("connection_end (\(s)/\(op)) failed status \(status) — restart required")
+                                self.run(self.engine.operationFailed(
+                                    s, op, reason: "connection finalize failed (status \(status))",
+                                    engineIsQuiescent: false))
+                            }
+                        }
+                    }
+                }
+                return
+            }
+            let prompt = String(cString: cstr)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                // Finding 2: if the connect was abandoned before this prompt
+                // appeared, do NOT present a credential sheet over the picker.
+                // Cancel the preconnection (no UI) and report the acknowledged
+                // terminal result. Watchdog stays armed to cover a wedged cancel.
+                if !self.engine.isVisible(s) {
+                    self.log.write("connect \(s)/\(op) abandoned before credential prompt — cancelling, no UI")
+                    self.cancelPreconnection(s, op, reason: "connect abandoned before credential prompt")
+                    return
+                }
+                self.disarmConnectWatchdog()
+                self.sheetShownThisConnect = true
+                self.log.write("connection prompt: \(prompt)")
+                let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
+                    guard let self else { return }
+                    guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                    self.pendingPasswordSheet = nil
+                    guard let response else {
+                        self.log.write("connection: user cancelled prompt")
+                        // Tear the window down BEFORE advancing the coordinator
+                        // (its windowWillClose → abandon must not hit a
+                        // freshly-started queued session). Then cancel — but
+                        // RETAIN the op lease (pendingConnect + watchdog) until
+                        // connection_cancel actually returns: only an
+                        // acknowledged cancel declares the engine quiescent, and
+                        // a cancel failure requires restart (finding 2).
+                        let profile = self.profileBySession[s]
+                        if let w = self.windowBySession[s] {
+                            w.window?.delegate = nil
+                            self.windowBySession[s] = nil
+                            self.profileBySession[s] = nil
+                            w.close()
+                        }
+                        self.cancelPreconnection(s, op, reason: "user cancelled connection")
+                        self.showProfilePicker(select: profile)
+                        return
+                    }
+                    self.connectQueue.async { unison_bridge_connection_reply(response) }
+                    self.drivePromptLoop(s, op)
+                }
+                self.pendingPasswordSheet = sheet
+                if let parent = self.windowBySession[s]?.window ?? self.profileWindowController?.window {
+                    sheet.runAsSheet(over: parent)
+                }
+            }
+        }
+    }
+
+    /// Abort a half-open preconnection for connect op `(s, op)` and report the
+    /// acknowledged terminal result (finding 2). Retains the op lease
+    /// (pendingConnect + a re-armed watchdog) until `connection_cancel`
+    /// returns, so only an ACKNOWLEDGED cancel declares the engine quiescent; a
+    /// cancel failure — or a watchdog timeout during the call — routes to
+    /// restart-required instead. A late return after invalidation is ignored.
+    private func cancelPreconnection(_ s: SessionID, _ op: OperationID, reason: String) {
+        guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+        armConnectWatchdog()   // cover a wedged cancel
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_connection_cancel()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else {
+                    self.log.write("connection_cancel (\(s)/\(op)) -> \(status) after watchdog invalidation — ignored")
+                    return
+                }
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                if status == 0 {
+                    // Acknowledged: no connection was established, so the engine
+                    // is quiescent and operationFailed idles (nothing to close).
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: reason, engineIsQuiescent: true))
+                } else {
+                    self.log.write("connection_cancel (\(s)/\(op)) failed status \(status) — restart required")
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: "connection cancel failed (status \(status))",
+                        engineIsQuiescent: false))
+                }
+            }
+        }
+    }
+
+    /// A `connection_end` that returned status 0 AFTER its connect op was
+    /// invalidated (watchdog → restart-required) may have established a real
+    /// connection that no session now owns. Tear it down with a quiescent
+    /// close-and-drain off the main thread, and log the result. Restricted to
+    /// the invalidated/restart path: it only runs when NO session is live
+    /// (`currentSession == nil`, i.e. idle/restartRequired), so even if the
+    /// non-overlap invariant were ever broken it can never close a connection a
+    /// newer session is using.
+    private func cleanupOrphanedConnectionAfterInvalidation(_ s: SessionID, _ op: OperationID) {
+        // Phase-exact: only clean up when the coordinator is specifically in
+        // restartRequired (the state a watchdog-invalidated connect lands in).
+        // `currentSession == nil` alone would also match ordinary .idle, which
+        // is NOT an orphan state and where a stray close could disturb a
+        // just-promoted queued open.
+        guard engine.isRestartRequired else {
+            log.write("connection_end orphan cleanup (\(s)/\(op)) skipped — coordinator not in restartRequired")
+            return
+        }
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_close_connection()
+            DispatchQueue.main.async {
+                self?.log.write("connection_end orphan cleanup (\(s)/\(op)) -> close-and-drain status \(status)")
+            }
+        }
+    }
+
+    /// Fires if the connect phase (init1 + credential prompt) goes
+    /// `connectStallTimeout` without progress. On timeout the connect op is
+    /// failed with uncertain quiescence, so the coordinator requires a
+    /// restart. Lives on the main queue.
     private var connectWatchdog: DispatchWorkItem?
-
-    /// The (profile, generation) the live watchdog belongs to, so a
-    /// progress event can re-arm it without the caller threading those
-    /// through. Non-nil iff a watchdog is currently armed.
-    private var activeConnect: (profile: String, generation: Int)?
 
     /// How long the connect/scan may go WITHOUT PROGRESS before the
     /// watchdog declares a timeout. This is a *stall* timer, not a
@@ -105,71 +816,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SyncCompletionAnnouncer.installPresenter()
         SyncCompletionAnnouncer.requestAuthorizationIfEnabled()
 
-        UnisonBridge.installStatusHandler { [log] status in
-            log.write("[ocaml→status] \(status)")
-        }
-        UnisonBridge.installProgressHandler { [log] fraction in
-            log.write("[ocaml→progress] \(fraction)")
-        }
-        // Modal warning + fatal-error sheets. Install before any OCaml call
-        // that might warn — the OCaml worker thread blocks on user dismissal.
-        // On fatal (or on warn-cancel) the in-flight init1/init2 won't fire
-        // its completion handler; we have to reset the busy UI ourselves.
-        UnisonBridge.installWarnHandler { [weak self] msg, cancelled in
-            guard let self else { return }
-            self.log.write("warn dismissed (cancelled=\(cancelled)): \(msg.prefix(120))")
-            if cancelled {
-                // The engine was answered "proceed" (never "exit", which
-                // would quit the app), so the operation is still running.
-                // Only flag an abort if a TRANSPORT is in flight — Abort.check
-                // observes it there and stops the sync. Do NOT flag during a
-                // scan: update detection never consults Abort, and setting the
-                // flag mid-scan trips an assertion in update.ml (it's not a
-                // no-op, it's actively harmful). A scan instead just finishes
-                // in the background; its callback is generation-ignored.
-                // (See TODO: scan-phase cancel isn't a true abort.) Either
-                // way, tear the UI back down to the picker.
-                if self.reconcileWindowController?.isSyncing == true {
-                    DispatchQueue.global().async { unison_bridge_abort_sync() }
-                }
-                self.abortAllInFlight(reason: "cancelled at a warning")
-            }
-        }
-        UnisonBridge.installFatalHandler { [weak self] msg, shouldRetry in
-            guard let self else { return }
-            self.log.write("fatal dismissed (retry=\(shouldRetry)): \(msg.prefix(120))")
-            if shouldRetry, let profile = self.lastAttemptedProfile {
-                self.log.write("recovery: re-running profileSelected for '\(profile)'")
-                // Retry path: force the window closed so the deferred
-                // profileSelected can open a fresh one. Keeping the
-                // window in place would race the new init1+init2 calls
-                // against stale state.
-                self.abortAllInFlight(reason: "retrying after recovery",
-                                      forceClose: true)
-                // Tiny defer so the reconcile-window close has flushed
-                // before we re-open with the same profile.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    self?.profileSelected(profile)
-                }
-            } else {
-                self.abortAllInFlight(reason: "fatal error")
-            }
-        }
-
-        // "Retry Ignoring Archives" on the archive-inconsistency fatal:
-        // close the broken reconcile state and re-run the same profile
-        // with a one-shot `ignorearchives` override. Mirrors the
-        // delete-orphans retry path above, but routes through the
-        // .prf-injection helper instead of a plain re-open.
-        UnisonBridge.fatalRetryIgnoreArchivesHandler = { [weak self] in
-            guard let self, let profile = self.lastAttemptedProfile else { return }
-            self.log.write("fatal recovery: retry ignoring archives for '\(profile)'")
-            self.abortAllInFlight(reason: "retrying with ignorearchives",
-                                  forceClose: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.rescanIgnoringArchives(profile: profile)
-            }
-        }
+        // Install ALL bridge callbacks here, once, for the lifetime of the
+        // app: the permanent status/progress/row/diff/init/sync handlers
+        // (token-bound — each completion carries the op it belongs to) plus
+        // the modal warn/fatal sheets. Installed BEFORE
+        // unison_bridge_startup/init0 so the first OCaml status/warn can be
+        // delivered. No handler is ever reinstalled per window — the
+        // coordinator plus the session→window map decide which window (if
+        // any) a callback presents into. This is the atomic authority switch:
+        // one place installs the callbacks, one authority (the coordinator)
+        // decides every lifecycle transition.
+        installPermanentBridgeHandlers()
 
         // Spin up the OCaml runtime on its dedicated thread. This blocks
         // briefly (~hundreds of ms) — acceptable during launch.
@@ -248,13 +905,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Window management
 
     private func showProfilePicker(select: String? = nil) {
-        // If a reconcile window is up, close it first — the workflow is
-        // single-window: picker OR reconcile, not both.
-        if let reconcile = reconcileWindowController {
-            reconcile.window?.delegate = nil  // skip the onClose -> showPicker recursion
-            reconcile.close()
-            reconcileWindowController = nil
-        }
+        // Reconcile windows manage their own close (their onClose brings the
+        // picker back), and the coordinator owns any still-live background
+        // session, so the picker no longer force-closes a reconcile window
+        // here — doing so was part of the old single-window authority.
         let controller = profileWindowController
             ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile in
                 self?.profileSelected(profile)
@@ -275,177 +929,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// in its "scanning" state immediately, then drive init1 → (prompts) →
     /// init2 → populate. The user sees the destination window right away
     /// rather than waiting in the picker.
+    /// User picked a profile in the picker. Hand the intent to the
+    /// coordinator, which decides open-now vs queue and returns the effects
+    /// (window creation + connect, or a waiting window) we run.
     private func profileSelected(_ profile: String) {
-        log.write("AppDelegate: profile '\(profile)' picked — opening reconcile window in scanning state")
-        lastAttemptedProfile = profile
-
-        // Mirror OCaml status messages into the reconcile window's summary
-        // line so the user sees "Looking for changes ..." live. Also keep
-        // logging to TraceLog for dev visibility.
-        UnisonBridge.installStatusHandler { [weak self] msg in
-            TraceLog.shared.write("[ocaml→status] \(msg.prefix(200))")
-            // A status message means the connect/scan is making progress
-            // — reset the stall timer so a slow-but-live scan isn't
-            // mistaken for a hang.
-            self?.noteConnectProgress()
-            self?.reconcileWindowController?.updateScanStatus(msg)
-        }
-
-        // Inspect the .prf for a `merge` pref so the reconcile window
-        // knows whether to surface the Merge toolbar item / menu entry.
-        // The `merge` pref is a Pred (list of pathspec→cmd rules) — we
-        // treat the presence of any `merge = …` line as "configured".
-        // We don't follow `include` directives; a merge declared in an
-        // inherited profile would slip through, but that's rare and the
-        // worst case is just an unhelpful Merge button (existing
-        // behavior).
-        let mergeConfigured = Self.readMergeConfigured(
-            unisonDirectory: unisonDirectory, profile: profile
-        )
-        log.write("profile '\(profile)' mergeConfigured=\(mergeConfigured)")
-
-        let reconcile = ReconcileWindowController(
-            profile: profile,
-            mergeConfigured: mergeConfigured,
-            onClose: { [weak self] in
-                guard let self else { return }
-                self.log.write("reconcile window closed — returning to picker")
-                self.reconcileWindowController = nil
-                // Preserve which profile the user just worked with so
-                // it's the highlighted row when they return to the
-                // picker — saves a click if they want to re-run, or
-                // simply makes the context continuous.
-                self.showProfilePicker(select: profile)
-            },
-            onRescanRequested: { [weak self] in
-                self?.rescanCurrentProfile(profile)
-            },
-            onCancelScan: { [weak self] in
-                self?.cancelConnectInProgress(reason: "user pressed Stop")
-            }
-        )
-        reconcile.showWindow(nil)
-        reconcile.window?.makeKeyAndOrderFront(nil)
-        reconcile.beginInitialScan()
-        reconcileWindowController = reconcile
-        profileWindowController?.close()
-
-        // Kick off the SSH version check in the background. It probes
-        // the remote with `BatchMode=yes` so it's silent if SSH keys
-        // are configured normally — and bails out (no prompt, no
-        // alert) if not. Result lands on the main queue; we surface a
-        // warning alert ONLY on mismatch AND only if the user hasn't
-        // suppressed this particular triple before. Runs in parallel
-        // with init1/init2 — by the time Unison's own connection is
-        // established, the probe is typically done.
-        runVersionCheckIfNeeded(profile: profile)
-
-        // Start a fresh connect attempt: bump the epoch + arm the
-        // watchdog. `generation` is captured by the handlers below so a
-        // late callback from a timed-out/superseded attempt is ignored.
-        let generation = beginConnectAttempt(profile: profile)
-
-        // Wire init1/init2 handlers, then kick off init1. Init2Complete will
-        // populate the reconcile window via endRescan/replaceItems.
-        UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
-            guard let self else { return }
-            self.log.write("init1 complete (needs_prompt=\(needsPrompt))")
-            guard self.isCurrentConnect(generation) else {
-                self.log.write("init1 complete ignored — superseded/timed-out attempt")
-                return
-            }
-            // init1 ran loadTheFile, so any one-shot `ignorearchives` is
-            // now in Unison's in-memory prefs — safe to restore the .prf.
-            self.restoreIgnoreArchivesPrfIfNeeded()
-            if needsPrompt {
-                self.drivePromptLoop(profile: profile, generation: generation)
-            } else {
-                self.log.write("init1 ok — calling init2")
-                // Connect phase done — the scan (init2) is NOT watchdog'd.
-                self.disarmConnectWatchdog()
-                self.connectQueue.async { unison_bridge_init2() }
-            }
-        }
-        UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
-            guard let self else { return }
-            guard self.isCurrentConnect(generation) else {
-                self.log.write("init2 complete ignored — superseded/timed-out attempt")
-                return
-            }
-            // Scan resolved within the window — stand the watchdog down.
-            self.disarmConnectWatchdog()
-            self.log.write("init2 complete — \(items.count) reconcile items")
-            reconcile?.endRescan(newItems: items)
-            // Autotest hooks live here so they run after the items land.
-            // Compiled out in Release builds.
-            #if DEBUG
-            self.maybeRunAutotestHooks(reconcile: reconcile, items: items)
-            #endif
-        }
-
-        // init1 BLOCKS until OCaml resolves the connection — run it off
-        // the main thread (see `connectQueue`). The init1-complete
-        // callback hops back to main on its own.
-        connectQueue.async {
-            profile.withCString { unison_bridge_init1($0) }
-        }
+        log.write("AppDelegate: profile '\(profile)' picked")
+        run(engine.requestOpen(profile: profile))
     }
 
-    /// SSH credential prompt loop. Runs after init1Complete with
-    /// `needs_prompt = true`. Sheets are hosted by whichever window is
-    /// currently active in the workflow — typically the reconcile window,
-    /// since the picker has already closed by this point.
+    /// SSH credential prompt sheet, retained while open.
     private var pendingPasswordSheet: PasswordSheet?
 
-    // MARK: - Connect attempt lifecycle (epoch + watchdog)
+    // MARK: - Connect attempt lifecycle (watchdog)
+    //
+    // `driveBeginConnect` arms the watchdog when a connect actually starts.
+    // The watchdog covers ONLY the connect phase (init1 + the credential
+    // prompt fetch); it's disarmed before init2. Update detection can run
+    // silently for a long time on a large remote tree, so watchdogging it
+    // would false-fire, and the timeout poking the engine mid-scan is unsafe
+    // (it can trip an `update.ml` assertion or an Lwt "wakeup"). A hung scan
+    // is instead handled by off-main init2 + the Stop button.
 
-    /// Open a new connect attempt: bump the epoch and arm the watchdog.
-    /// The watchdog covers ONLY the connect phase (init1 + the credential
-    /// prompt fetch); it's disarmed before init2. Update detection can run
-    /// silently for a long time on a large remote tree, so watchdogging it
-    /// would false-fire — and the timeout poking the engine mid-scan is
-    /// unsafe (it can trip an `update.ml` assertion or an Lwt "wakeup").
-    /// A hung scan is instead handled by off-main + Stop.
-    /// Returns the new generation for the init1/init2 handlers to capture.
-    @discardableResult
-    private func beginConnectAttempt(profile: String) -> Int {
-        let generation = newConnectGeneration()
-        armConnectWatchdog(profile: profile, generation: generation)
-        return generation
-    }
-
-    /// Bump the connect epoch WITHOUT arming the watchdog — for rescan,
-    /// which is scan-only (no connect phase to guard).
-    private func newConnectGeneration() -> Int {
-        connectGeneration += 1
-        return connectGeneration
-    }
-
-    /// True when `generation` is still the live attempt. Handlers check
-    /// this before acting so a callback from a timed-out / cancelled /
-    /// superseded attempt is ignored.
-    private func isCurrentConnect(_ generation: Int) -> Bool {
-        generation == connectGeneration
-    }
-
-    /// Abandon the current attempt: bump the epoch (so in-flight
-    /// callbacks no-op) and stand the watchdog down.
-    private func invalidateConnect() {
-        connectGeneration += 1
-        disarmConnectWatchdog()
-    }
-
-    /// (Re)schedule the watchdog for `generation`. Replaces any existing
-    /// timer, so callers can use it both to reset the clock at each
-    /// blocking phase boundary (init1 → prompt fetch → init2) and as the
-    /// per-progress reset (`noteConnectProgress`).
-    private func armConnectWatchdog(profile: String, generation: Int) {
+    /// (Re)schedule the watchdog for the current connect op. Replaces any
+    /// existing timer, so callers can use it both to reset the clock at each
+    /// blocking phase boundary (init1 → prompt fetch) and as the per-progress
+    /// reset (`noteConnectProgress`).
+    private func armConnectWatchdog() {
         connectWatchdog?.cancel()
-        activeConnect = (profile, generation)
-        let item = DispatchWorkItem { [weak self] in
-            guard let self, self.isCurrentConnect(generation) else { return }
-            self.handleConnectTimeout(profile: profile, generation: generation)
-        }
+        guard let (s, op) = pendingConnect else { return }
+        let item = DispatchWorkItem { [weak self] in self?.handleConnectTimeout(s, op) }
         connectWatchdog = item
         DispatchQueue.main.asyncAfter(deadline: .now() + connectStallTimeout, execute: item)
     }
@@ -453,149 +965,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func disarmConnectWatchdog() {
         connectWatchdog?.cancel()
         connectWatchdog = nil
-        activeConnect = nil
     }
 
-    /// Reset the stall timer because the connect/scan reported progress.
-    /// Called on every scan-status message while a watchdog is armed, so
-    /// a long-but-progressing scan is never mistaken for a hang. No-op
-    /// when no attempt is in flight (e.g. status during a sync, or while
-    /// a credential sheet is open — both leave the watchdog disarmed).
+    /// Reset the stall timer on connect-phase progress (a status message).
+    /// No-op once the connect op is done (pendingConnect cleared).
     private func noteConnectProgress() {
-        guard let (profile, generation) = activeConnect,
-              isCurrentConnect(generation) else { return }
-        armConnectWatchdog(profile: profile, generation: generation)
+        guard pendingConnect != nil else { return }
+        armConnectWatchdog()
     }
 
-    /// The connect phase went `connectStallTimeout` seconds without
-    /// completing (init1 / the credential prompt fetch). Recover the UI by
-    /// returning to the picker. Only fires during the connect phase — the
-    /// watchdog is disarmed before the scan (see `beginConnectAttempt`).
-    private func handleConnectTimeout(profile: String, generation: Int) {
-        guard isCurrentConnect(generation) else { return }
-        log.write("connect watchdog: '\(profile)' stalled \(Int(connectStallTimeout))s in connect phase — tearing down")
-        // Invalidate first so any late init1/init2 callback (e.g. if the
-        // OS eventually fails the ssh) is ignored, including ones that
-        // could arrive while the alert below is modal.
-        invalidateConnect()
-        // Do NOT poke the engine here (no connection_cancel): cancelling a
-        // half-open OCaml connection has proven unsafe — it can raise an Lwt
-        // "wakeup" / trip an assertion. Recover the UI; a wedged ssh child is
-        // harmless and reaped at app exit.
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Couldn’t connect to the remote"
-        alert.informativeText =
-            "Unison stopped responding while connecting to “\(profile)” "
-            + "(no progress for \(Int(connectStallTimeout)) seconds). "
-            + "This usually means the SSH host is unreachable, the key in sshargs is wrong, "
-            + "or servercmd points at a unison that isn’t there. Check the profile’s root, "
-            + "sshargs, and servercmd, then try again."
-        alert.addButton(withTitle: "Back to Profiles")
-        alert.runModal()
-        // Close the spinning reconcile window; its onClose returns to the
-        // picker. forceClose because we're not in a sync (isSyncing=false)
-        // and want it gone regardless.
-        abortAllInFlight(reason: "connect timed out", forceClose: true)
-    }
-
-    /// User pressed Stop while the connect/scan was in flight. Mirrors the
-    /// timeout teardown minus the alert — they asked for it, no need to
-    /// explain. Best-effort cancel of the OCaml connection, then close the
-    /// window (→ picker). `abortAllInFlight` invalidates the attempt so a
-    /// late callback is ignored.
-    private func cancelConnectInProgress(reason: String) {
-        log.write("connect: \(reason) — returning to picker")
-        // Don't poke the engine: Stop can land during a scan, where
-        // connection_cancel/abort can trip an assertion or an Lwt "wakeup".
-        // Just tear the UI down to the picker (abortAllInFlight invalidates
-        // the attempt so a late callback is ignored); the background op
-        // settles on its own and any wedged ssh is reaped at exit. See TODO:
-        // a true scan teardown needs caml_callback_exn hardening first.
-        abortAllInFlight(reason: reason, forceClose: true)
-    }
-
-    private func drivePromptLoop(profile: String, generation: Int) {
-        guard isCurrentConnect(generation) else { return }
-        // Fetching the next prompt, replying, and ending the connection
-        // all BLOCK on the OCaml worker, so run them on connectQueue.
-        // Keep the watchdog armed across the (blocking) prompt fetch so a
-        // wedge there is still caught; disarm only once we're actually
-        // waiting on the user with a sheet open. The post-reply recursion
-        // re-arms it for the next fetch.
-        armConnectWatchdog(profile: profile, generation: generation)
-        connectQueue.async {
-            let cstr = unison_bridge_connection_prompt()
-            guard let cstr else {
-                // TraceLog.shared is thread-safe (the OCaml callbacks log
-                // through it off-main too); `self.log` would be a main-actor hop.
-                TraceLog.shared.write("connection: no more prompts — connection_end + init2")
-                // Connect phase done — disarm on main (the scan is NOT
-                // watchdog'd), then run connection_end + init2 on connectQueue.
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    self.disarmConnectWatchdog()
-                    self.connectQueue.async {
-                        unison_bridge_connection_end()
-                        unison_bridge_init2()
-                    }
-                }
-                return
-            }
-            let prompt = String(cString: cstr)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isCurrentConnect(generation) else { return }
-                // Now waiting on the user — don't time out while the sheet is open.
-                self.disarmConnectWatchdog()
-                self.log.write("connection prompt: \(prompt)")
-                let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
-                    guard let self, self.isCurrentConnect(generation) else { return }
-                    self.pendingPasswordSheet = nil
-                    guard let response else {
-                        self.log.write("connection: user cancelled")
-                        self.invalidateConnect()
-                        self.connectQueue.async { unison_bridge_connection_cancel() }
-                        // Cancelling drops us back to the picker — closing
-                        // reconcile triggers the onClose -> showProfilePicker path.
-                        self.reconcileWindowController?.close()
-                        return
-                    }
-                    self.connectQueue.async { unison_bridge_connection_reply(response) }
-                    // Next cycle re-arms the watchdog for the post-reply fetch.
-                    self.drivePromptLoop(profile: profile, generation: generation)
-                }
-                self.pendingPasswordSheet = sheet
-                if let parent = self.reconcileWindowController?.window ?? self.profileWindowController?.window {
-                    sheet.runAsSheet(over: parent)
-                }
-            }
-        }
-    }
-
-    /// Re-run init2 against the currently-open profile without re-running
-    /// init1 (the profile is already loaded, the SSH connection (if any)
-    /// is established). When init2Complete fires we ask the reconcile
-    /// window to replace its items in place.
-    private func rescanCurrentProfile(_ profile: String) {
-        guard let reconcile = reconcileWindowController else { return }
-        log.write("rescan: re-running init2 for profile '\(profile)'")
-        reconcile.beginRescan()
-        // init2 BLOCKS too, so run it off-main under a fresh generation
-        // (so a late/superseded callback is ignored). NO watchdog: a rescan
-        // is pure update detection, which can legitimately run silent for a
-        // while on a large remote tree — watchdogging it would false-fire.
-        let generation = newConnectGeneration()
-        UnisonBridge.installInit2CompleteHandler { [weak self, weak reconcile] items in
-            guard let self else { return }
-            guard self.isCurrentConnect(generation) else {
-                self.log.write("rescan: init2 complete ignored — superseded/timed-out")
-                return
-            }
-            self.disarmConnectWatchdog()
-            self.log.write("rescan: init2 complete — \(items.count) items")
-            reconcile?.endRescan(newItems: items)
-        }
-        connectQueue.async { unison_bridge_init2() }
+    /// The connect phase (init1 / credential prompt fetch) stalled. We
+    /// cannot prove the ssh child / init1 unwound, so fail the op with
+    /// UNCERTAIN quiescence — the coordinator enters restart-required
+    /// rather than reusing a possibly-wedged runtime.
+    private func handleConnectTimeout(_ s: SessionID, _ op: OperationID) {
+        guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+        log.write("connect watchdog: \(s)/\(op) stalled \(Int(connectStallTimeout))s — restart required")
+        disarmConnectWatchdog()
+        pendingConnect = nil
+        run(engine.operationFailed(
+            s, op,
+            reason: "Couldn’t connect to the remote (no progress for "
+                + "\(Int(connectStallTimeout)) seconds). The connection may be wedged — "
+                + "quit Unison and reopen the profile.",
+            engineIsQuiescent: false))
     }
 
     // MARK: - One-shot -ignorearchives recovery
@@ -609,7 +1002,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// sync still ignore the archive and rebuild it — but the profile on
     /// disk is left byte-for-byte unchanged. No OCaml bridge change is
     /// needed, which is why this is a `.prf` edit rather than a pref call.
-    private func rescanIgnoringArchives(profile: String) {
+    /// `failedReason` labels the coordinator transition that releases the
+    /// current session before the fresh reopen. It's carried through to
+    /// `reopenCurrentProfileFresh`, which fails an in-flight op (fatal-retry
+    /// path) or abandons a `.ready` one (menu path) as appropriate.
+    private func rescanIgnoringArchives(profile: String, failedReason: String) {
         let url = URL(fileURLWithPath: unisonDirectory)
             .appendingPathComponent("\(profile).prf")
         guard let original = try? String(contentsOf: url, encoding: .utf8) else {
@@ -628,8 +1025,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSSound.beep()
             return
         }
-        log.write("ignorearchives: injected into \(profile).prf — re-running profile")
-        profileSelected(profile)
+        log.write("ignorearchives: injected into \(profile).prf — reopening profile fresh")
+        // Reopen fresh so init1 re-reads the injected .prf; the injection is
+        // restored the instant init1 has consumed it (see the init1-complete
+        // handler → restoreIgnoreArchivesPrfIfNeeded).
+        reopenCurrentProfileFresh(profile, failedReason: failedReason)
     }
 
     /// Restore the `.prf` we injected into, if any. Idempotent — safe to
@@ -648,7 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Action-menu entry point: confirm, then run the one-shot rescan for
     /// the profile currently open in the reconcile window.
     @objc func rescanIgnoringArchivesMenu(_ sender: Any?) {
-        guard reconcileWindowController != nil,
+        guard currentReconcileWindow != nil,
               let profile = lastAttemptedProfile else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -662,7 +1062,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Rescan Ignoring Archives")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        rescanIgnoringArchives(profile: profile)
+        rescanIgnoringArchives(profile: profile,
+                               failedReason: "rescan ignoring archives")
     }
 
     /// Strip a stray one-shot `ignorearchives` injection from any `.prf`
@@ -705,8 +1106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (and a no-op) from the Profile Picker.
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
-            // Only meaningful with a reconcile window open on a profile.
-            return reconcileWindowController != nil && lastAttemptedProfile != nil
+            // Only meaningful with a reconcile window open on the live session.
+            return currentReconcileWindow != nil && lastAttemptedProfile != nil
         }
         if menuItem.action == #selector(showSettings(_:)) {
             // Grey out Settings while a profile is being edited (they're
@@ -761,50 +1162,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     // MARK: - Error recovery
-
-    /// Reset every active window's in-flight UI state. Called after a
-    /// fatal or warn-cancel alert is dismissed — OCaml's worker thread
-    /// is unwinding past the failure point, so no completion callback
-    /// will arrive on its own.
-    ///
-    /// **Reconcile-window strategy depends on phase:**
-    /// - **Reconcile phase** (`!isSyncing`): the user has no per-row
-    ///   detail to inspect yet (init1/init2 either never produced rows
-    ///   or aborted partway). Close the window so the picker comes
-    ///   back. The user can re-pick the profile to try again.
-    /// - **Sync phase** (`isSyncing`): rows have completed-or-FAILED
-    ///   progress text that's user-actionable info. Reset the sync UI
-    ///   in place (clear progress bar, flip `isSyncing` to false,
-    ///   update the summary line to "Sync interrupted") and keep the
-    ///   window open. The user can then inspect FAILED rows, retry,
-    ///   or close manually.
-    /// - **Force-close override** (`forceClose: true`): the retry path
-    ///   needs a fresh reconcile window (it calls `profileSelected`
-    ///   to re-run init1+init2). Close regardless of phase. The
-    ///   caller is responsible for the re-open after a short deferral.
-    ///
-    /// `reason` is appended to the in-place summary text so the user
-    /// sees why the abort happened ("fatal error" vs "you cancelled
-    /// the warning").
-    private func abortAllInFlight(reason: String, forceClose: Bool = false) {
-        // Whatever the reason, the current connect attempt is over: stop
-        // the watchdog and bump the epoch so any straggler init1/init2
-        // callback is ignored rather than re-driving a torn-down window.
-        invalidateConnect()
-        if let sheet = pendingPasswordSheet?.window, let parent = sheet.sheetParent {
-            parent.endSheet(sheet)
-        }
-        pendingPasswordSheet = nil
-        guard let reconcile = reconcileWindowController else { return }
-        if forceClose || !reconcile.isSyncing {
-            log.write("abortAllInFlight: closing reconcile window (forceClose=\(forceClose), reason=\(reason))")
-            reconcile.close()
-            // onClose handler will reopen the picker.
-        } else {
-            log.write("abortAllInFlight: sync was in-flight — resetting UI in place (reason=\(reason))")
-            reconcile.resetSyncUIAfterAbort(reason: reason)
-        }
-    }
+    //
+    // There is no `abortAllInFlight` anymore. Every failure/teardown path
+    // now routes through the coordinator: a terminal failure goes through
+    // `operationFailed` (see `failCurrentOp`), a recoverable fatal through
+    // `reopenCurrentProfileFresh`, and a user leaving through `abandon` (via
+    // the window's onClose). The coordinator — not an ad-hoc teardown helper
+    // — is the single authority that decides whether the engine idles,
+    // closes its connection, or requires a restart. The old helper's name
+    // ("abort ALL in flight") also falsely implied it terminated engine
+    // work, which it never did (the OCaml op kept running in the background).
 
     /// Spawn the SSH version probe for the given profile, surface a
     /// "version mismatch" alert if the result warrants it. No-op for
@@ -835,6 +1202,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            profile: String) {
         // Cache for the issue-report body (remote Unison version).
         lastVersionOutcome = (profile, outcome)
+
+        // The version probe no longer feeds the auth-cost decision. Interactive
+        // vs non-interactive is now determined solely by what the connect
+        // actually did — whether a password sheet was shown — and passed to
+        // the coordinator via `connectFinished(result: .remote(interactive:))`.
+        // The old `probeConfirmedNonInteractive` fallback flag is gone.
+
         switch outcome {
         case .match(let v):
             Log.versionCheck.info("version match: \(v, privacy: .public) on both sides")

@@ -18,6 +18,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// sync) is in flight. The owner (AppDelegate) owns the connect
     /// lifecycle, so it does the actual abort + teardown.
     typealias CancelScanRequest = @MainActor () -> Void
+    /// Invoked when the user presses Go. The window never calls the sync
+    /// bridge itself — it asks the engine coordinator (via AppDelegate) to
+    /// authorize the sync. The coordinator answers with a `.beginSync`
+    /// effect, whose driver calls `enterSyncingUI()` + the bridge. This
+    /// keeps the coordinator the single authority over engine actions.
+    typealias SyncStartRequest = @MainActor () -> Void
+    /// Invoked when the user chooses how to leave a running sync (Stop /
+    /// Abort & Close / Close & let it run). The window routes the choice
+    /// through the coordinator, which owns the abort + connection-close
+    /// decision — the window never calls `unison_bridge_abort_sync()`.
+    typealias SyncExitRequest = @MainActor (EngineSessionCoordinator.SyncExitIntent) -> Void
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -46,6 +57,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
     private let onCancelScan: CancelScanRequest
+    /// User pressed Go; see `SyncStartRequest`.
+    private let onSyncStart: SyncStartRequest
+    /// User chose how to leave a running sync; see `SyncExitRequest`.
+    private let onSyncExit: SyncExitRequest
+    /// Terminal restart-required latch. Set by `showRestartRequired`; once
+    /// set, all row/sync/rescan actions are disabled (the coordinator has
+    /// declared the engine unsafe for reuse — the user must quit + reopen).
+    private var restartRequired = false
     /// True between `beginScanning` and `endRescan` — i.e. while the
     /// initial connect/scan (or a rescan) is in flight. Gates the Stop
     /// button so the user can abort a slow/wedged connection instead of
@@ -72,10 +91,24 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let progressBar = NSProgressIndicator()
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
+
+    /// Sync-phase stall detector (issue #6, steps 4–5). A wedged transport
+    /// (connection died mid-sync) can't be rescued in-process — closing
+    /// the connection or killing ssh doesn't wake a blocked `select()`, so
+    /// the sync hangs indefinitely. Instead of a false rescue, we detect
+    /// the stall (no progress for `syncStallTimeout`) and tell the user to
+    /// quit + reopen, which is the actual recovery (clean since #5 and the
+    /// step 1–3 teardown). Reset on every progress event; a healthy
+    /// transfer always emits something well within the window.
+    private var syncStallTimer: DispatchWorkItem?
+    private let syncStallTimeout: TimeInterval = 45
+    /// Set once the stall hint has been shown, so per-progress resets and
+    /// completion can tell whether to clear the warning styling.
+    private var syncStalled = false
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
     /// True when the user pressed Stop during the current sync. Read at
-    /// `syncDidComplete` so the terminal summary reads "Synchronization
+    /// `finalizeSyncUI` so the terminal summary reads "Synchronization
     /// stopped" (orange) instead of "complete"/"completed with N errors".
     /// Reset at each `startSync`.
     private var userRequestedStop = false
@@ -124,13 +157,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          mergeConfigured: Bool,
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest,
-         onCancelScan: @escaping CancelScanRequest) {
+         onCancelScan: @escaping CancelScanRequest,
+         onSyncStart: @escaping SyncStartRequest,
+         onSyncExit: @escaping SyncExitRequest) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         self.onCancelScan = onCancelScan
+        self.onSyncStart = onSyncStart
+        self.onSyncExit = onSyncExit
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -211,13 +248,18 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                 // Keep Syncing
                 return false
             case .alertSecondButtonReturn:
-                // Abort & Close
+                // Abort & Close — the coordinator aborts the transport and
+                // closes the connection once the sync unwinds. We never call
+                // unison_bridge_abort_sync() directly.
                 Log.reconcile.notice("user closed mid-sync with Abort & Close")
-                unison_bridge_abort_sync()
+                userRequestedStop = true
+                onSyncExit(.abortAndClose)
                 return true
             case .alertThirdButtonReturn:
-                // Close (let it run)
+                // Close (let it run) — no abort; the coordinator closes the
+                // connection after the sync finishes naturally.
                 Log.reconcile.notice("user closed mid-sync without aborting")
+                onSyncExit(.closeAndLetRun)
                 return true
             default:
                 return false
@@ -400,26 +442,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             detailsScroll.heightAnchor.constraint(equalToConstant: 90),
         ])
 
-        UnisonBridge.installReloadRowHandler { [weak self] row, progress, bytes in
-            self?.reloadRow(row, progress: progress, bytesTransferred: bytes)
-        }
-        UnisonBridge.installSyncCompleteHandler { [weak self] in
-            self?.syncDidComplete()
-        }
-        UnisonBridge.installProgressHandler { [weak self] percent in
-            self?.updateGlobalProgress(percent)
-        }
-        // Diff handlers route Unison's displayDiff / displayDiffErr
-        // callbacks into the (lazily-created) DiffWindowController.
-        // We install on every reconcile open so the most recent
-        // window is the one that receives the result — old diff
-        // windows from prior reconciles keep their static content.
-        UnisonBridge.installDiffHandler { [weak self] title, text in
-            self?.diffWindowController?.showDiff(title: title, text: text)
-        }
-        UnisonBridge.installDiffErrHandler { [weak self] msg in
-            self?.diffWindowController?.showError(msg)
-        }
+        // Bridge callbacks are NOT installed here anymore. AppDelegate owns
+        // the single set of permanent, token-bound handlers (installed once
+        // at launch) and forwards presentation into the live session's
+        // window via `reloadRow` / `updateGlobalProgress` / `finalizeSyncUI`
+        // / `showDiff` / `showDiffError`. Per-window installation was the old
+        // dual-authority pattern: the most-recently-opened window silently
+        // stole the callbacks from any still-live session.
     }
 
     private func addColumn(_ col: Col, title: String, width: CGFloat, min: CGFloat, isPrimary: Bool = false) {
@@ -458,7 +487,22 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     // MARK: - Sync
 
+    /// Go button / Action-menu Go. Does NOT touch the sync bridge — asks the
+    /// engine coordinator (via AppDelegate) to authorize the sync. The
+    /// coordinator answers with a `.beginSync` effect, whose driver calls
+    /// `enterSyncingUI()` and `unison_bridge_synchronize()`. Keeping the
+    /// bridge call out of the window is what makes the coordinator the sole
+    /// authority over engine actions.
     func startSync() {
+        guard !isSyncing, !restartRequired else { return }
+        onSyncStart()
+    }
+
+    /// Enter the syncing UI. Called by the coordinator's `.beginSync` driver
+    /// (AppDelegate) once the sync is authorized — never directly by the Go
+    /// button. Sets up the progress bar + summary and arms the stall
+    /// detector; the driver issues the bridge call alongside this.
+    func enterSyncingUI() {
         guard !isSyncing else { return }
         isSyncing = true
         userRequestedStop = false   // fresh run
@@ -472,8 +516,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         phase = .syncing
         setSummary(summaryText())
         refreshToolbarEnabled()
-        TraceLog.shared.write("ReconcileWindow: starting sync")
-        unison_bridge_synchronize()
+        TraceLog.shared.write("ReconcileWindow: entering syncing UI")
+        noteSyncProgress()   // arm the stall detector for the transfer
     }
 
     /// Toolbar "Profiles" action — return to the picker.
@@ -492,7 +536,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///
     /// Doesn't close the window — keeping it open lets the user
     /// inspect FAILED rows in the Progress column after the abort
-    /// unwinds. `syncDidComplete` fires once OCaml has fully wound
+    /// unwinds. `finalizeSyncUI` fires once OCaml has fully wound
     /// down and resets the UI to "done" state.
     func cancelSync() {
         // Stop during the connect/scan phase (pre-sync): hand off to the
@@ -507,12 +551,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return
         }
         guard isSyncing else { NSSound.beep(); return }
-        userRequestedStop = true   // syncDidComplete reads this for the "stopped" summary
-        Log.reconcile.notice("user requested Stop — sending abort signal to OCaml")
-        TraceLog.shared.write("ReconcileWindow: user requested Stop — aborting in-flight sync")
+        userRequestedStop = true   // finalizeSyncUI reads this for the "stopped" summary
+        Log.reconcile.notice("user requested Stop — routing abort through the coordinator")
+        TraceLog.shared.write("ReconcileWindow: user requested Stop — coordinator abort (keep window)")
         setSummary("Aborting sync… in-progress transfers may finish before the abort takes effect")
-        unison_bridge_abort_sync()
-        // Don't close the window. syncDidComplete will fire once the
+        // The coordinator owns the abort. It emits `.abortSync`, whose
+        // driver calls the bridge. We never call unison_bridge_abort_sync().
+        onSyncExit(.stopAndKeepWindow)
+        // Don't close the window. finalizeSyncUI will fire once the
         // OCaml side has fully unwound, at which point the user can
         // close manually OR rescan.
     }
@@ -520,7 +566,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     // MARK: - Scanning (initial or rescan)
 
     func rescan() {
-        guard !isSyncing else { NSSound.beep(); return }
+        guard !isSyncing, !restartRequired else { NSSound.beep(); return }
         onRescanRequested()
     }
 
@@ -700,7 +746,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     /// Apply the green-✓ / red-⚠ completion treatment: leading glyph,
-    /// tinted bold summary text. Called from `syncDidComplete` after the
+    /// tinted bold summary text. Called from `finalizeSyncUI` after the
     /// summary text is set. The next `setSummary` (e.g. a rescan) clears
     /// it via `clearCompletionEmphasis`.
     private func applyCompletionEmphasis(failures: Int, stopped: Bool = false) {
@@ -740,12 +786,65 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         alert.runModal()
     }
 
-    private func updateGlobalProgress(_ percent: Double) {
+    /// Forwarded by AppDelegate's permanent progress handler for the live
+    /// session. Non-private: the window no longer installs its own handler.
+    func updateGlobalProgress(_ percent: Double) {
         guard isSyncing else { return }
         progressBar.doubleValue = max(0, min(100, percent))
+        noteSyncProgress()
     }
 
-    private func reloadRow(_ row: Int, progress: String, bytesTransferred: Int64) {
+    /// (Re)arm the sync-stall detector. Called at sync start and on every
+    /// progress event, so only genuine silence (a wedged transport) trips
+    /// it. If a prior stall warning was showing and progress resumed,
+    /// clear it.
+    private func noteSyncProgress() {
+        guard isSyncing else { return }
+        if syncStalled {
+            syncStalled = false
+            statusIcon.isHidden = true
+            setSummary(summaryText())
+        }
+        syncStallTimer?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.handleSyncStall() }
+        syncStallTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + syncStallTimeout, execute: item)
+    }
+
+    private func cancelSyncStallDetector() {
+        syncStallTimer?.cancel()
+        syncStallTimer = nil
+        syncStalled = false
+    }
+
+    /// No sync progress for `syncStallTimeout`. The transport is almost
+    /// certainly wedged on a dead connection, which can't be broken
+    /// in-process. Surface a warning telling the user how to recover
+    /// (quit + reopen) rather than leaving them at an endless spinner.
+    private func handleSyncStall() {
+        guard isSyncing else { return }
+        syncStalled = true
+        Log.reconcile.notice("sync stalled — no progress for \(Int(self.syncStallTimeout))s; surfacing quit+reopen hint")
+        TraceLog.shared.write("ReconcileWindow: sync stalled \(Int(syncStallTimeout))s — connection likely wedged")
+        // setSummary() clears completion emphasis (hides + nils statusIcon), so
+        // it MUST run before we install the warning icon — otherwise the icon
+        // is set and then immediately cleared and the user sees text with no
+        // triangle.
+        setSummary("Sync appears stuck: no progress for \(Int(syncStallTimeout)) seconds. "
+                   + "The remote connection was likely lost. Quit Unison and reopen the "
+                   + "profile to recover (a wedged transfer can't be stopped from here).")
+        let config = NSImage.SymbolConfiguration(
+            pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
+            .applying(.init(paletteColors: [.systemOrange]))
+        statusIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                   accessibilityDescription: "stalled")?
+            .withSymbolConfiguration(config)
+        statusIcon.isHidden = false
+    }
+
+    /// Forwarded by AppDelegate's permanent reload-row handler for the live
+    /// session. Non-private: the window no longer installs its own handler.
+    func reloadRow(_ row: Int, progress: String, bytesTransferred: Int64) {
         guard row >= 0, row < items.count else { return }
         let path = items[row].path
         items[row] = items[row].with(progress: progress, bytesTransferred: bytesTransferred)
@@ -757,6 +856,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                                    reloadChildren: false)
         }
         TraceLog.shared.write("reloadRow[\(row)] \(path): progress='\(progress)' bytes=\(bytesTransferred)")
+        noteSyncProgress()
     }
 
     /// The outermost collapsed ancestor of a node — i.e. the visible row
@@ -784,8 +884,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return nil
     }
 
-    private func syncDidComplete() {
+    /// Terminal sync-UI presentation. Called by the coordinator's
+    /// `.presentSyncResults` effect (via AppDelegate), never by a bridge
+    /// handler the window installed. The connection-close policy is the
+    /// coordinator's now, so this method no longer signals an owner: it
+    /// only paints the completed/failed/stopped state.
+    func finalizeSyncUI() {
         isSyncing = false
+        cancelSyncStallDetector()
         progressBar.doubleValue = 100
         progressBar.isHidden = true
 
@@ -854,6 +960,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
 
         TraceLog.shared.write("ReconcileWindow: sync complete (failures: \(failures))")
+        // No owner callback here: the connection-close policy (close now for
+        // non-interactive profiles, hold for interactive) lives in the
+        // coordinator's `syncCompleted` reducer, which already emitted the
+        // matching `.closeConnection` effect (if any) before this present.
     }
 
     /// Walk every row whose progress field doesn't already indicate
@@ -936,36 +1046,45 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return lines.last ?? "transfer error"
     }
 
-    /// Reset transient sync-UI state without closing the window. Called
-    /// from the AppDelegate's fatal/warn-cancel handlers when sync was
-    /// in flight (`isSyncing == true` at the time the alert fired).
-    ///
-    /// Keeping the window open after a sync fatal lets the user inspect
-    /// which rows succeeded (Progress = "done") vs which failed
-    /// (Progress = bold red "⚠ FAILED") before deciding to rescan or
-    /// return to the picker.
-    ///
-    /// We transition `phase` to `.done(failures: ...)` here so the
-    /// post-abort UI behaves the same as any other completed sync:
-    /// Go is disabled (running it again on a half-aborted state is
-    /// dicey — the user should rescan first), Stop is disabled
-    /// (nothing to abort), Rescan is enabled (the obvious next
-    /// step). The summary message is overridden with the explicit
-    /// "Sync interrupted — <reason>" string, since that's more
-    /// informative than a generic "Synchronization completed".
-    func resetSyncUIAfterAbort(reason: String) {
+    /// Terminal restart-required presentation. Called by the coordinator's
+    /// `.restartRequired` effect (via AppDelegate) when the engine can't be
+    /// proven safe for reuse (a wedged connect, an uncertain timeout, or a
+    /// display-only fatal). Freezes the window: the sync/scan spinners stop,
+    /// row/sync/rescan actions are disabled (`restartRequired` latch), and
+    /// the summary tells the user the one recovery — quit and reopen. Only
+    /// navigation (Profiles / Quit) stays live.
+    func showRestartRequired(reason: String) {
+        restartRequired = true
         isSyncing = false
+        isScanning = false
+        cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
-        progressBar.doubleValue = 0
         progressBar.isHidden = true
-        let failures = items
-            .filter { ProgressDescriptor.parse($0.progress).isFailure }
-            .count
-        phase = .done(failures: failures)
-        setSummary("Sync interrupted: \(reason)")
+        setSummary("Unison must be restarted to continue. Quit Unison and "
+                   + "reopen the profile. (\(reason))")
+        let config = NSImage.SymbolConfiguration(
+            pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
+            .applying(.init(paletteColors: [.systemOrange]))
+        statusIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                   accessibilityDescription: "restart required")?
+            .withSymbolConfiguration(config)
+        statusIcon.isHidden = false
         refreshToolbarEnabled()
-        TraceLog.shared.write("ReconcileWindow: resetSyncUIAfterAbort (\(reason))")
+        TraceLog.shared.write("ReconcileWindow: restart required (\(reason))")
+    }
+
+    /// Diff-result presentation, forwarded by AppDelegate's permanent diff
+    /// handler for the live session into this window's (lazily created)
+    /// diff window. The window no longer installs its own diff handler.
+    func showDiff(title: String, text: String) {
+        diffWindowController?.showDiff(title: title, text: text)
+    }
+
+    /// Diff-error presentation, forwarded by AppDelegate's permanent
+    /// diff-error handler for the live session.
+    func showDiffError(_ message: String) {
+        diffWindowController?.showError(message)
     }
 
     // MARK: - Direction overrides
@@ -1348,13 +1467,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         if menuItem.action == #selector(stopMenuAction(_:)) {
             // Stop is meaningful mid-sync OR mid connect/scan (abort a
             // slow/wedged connection without waiting for the watchdog).
+            // Disabled once the engine needs a restart.
+            if restartRequired { return false }
             if case .syncing = phase { return true }
             return isScanning
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
             // Rescan is the way out of .done back to .ready — we
-            // explicitly want it enabled post-sync. Only blocked
-            // during an active sync (OCaml runtime is occupied).
+            // explicitly want it enabled post-sync. Blocked during an
+            // active sync (OCaml runtime is occupied) and once a restart
+            // is required (the coordinator refuses new engine work).
+            if restartRequired { return false }
             if case .syncing = phase { return false }
             return true
         }
@@ -1462,12 +1585,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // Stop is meaningful while a sync is in flight OR while the
             // connect/scan is running — the latter lets the user abort a
             // slow/wedged connection rather than wait for the watchdog.
-            return syncing || isScanning
+            // Disabled once the engine needs a restart (nothing to abort).
+            return !restartRequired && (syncing || isScanning)
         case DirectionAction.rescanIdentifier:
             // Rescan is the way out of `.done` back to `.ready` —
-            // explicitly available after completion. Only blocked
-            // while OCaml is actively running a sync.
-            return !syncing
+            // explicitly available after completion. Blocked while OCaml is
+            // actively running a sync, and once a restart is required (the
+            // coordinator would refuse the new engine work anyway).
+            return !restartRequired && !syncing
         case DirectionAction.profilesIdentifier:
             // Always navigable back to the picker.
             return true
@@ -1552,6 +1677,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Read-only actions (Select Conflicts, navigation) bypass this
     /// gate and validate on their own data.
     private var isActionable: Bool {
+        guard !restartRequired else { return false }
         guard !items.isEmpty else { return false }
         switch phase {
         case .ready:           return true

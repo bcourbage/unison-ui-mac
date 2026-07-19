@@ -96,7 +96,29 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
         configure()
         reload()
+        // Deliver on `.main` and enter the main actor SYNCHRONOUSLY so the
+        // button re-gates against the engine state as it is at the moment of
+        // the transition, not after a later async hop.
+        engineActivityObserver = NotificationCenter.default.addObserver(
+            forName: .engineActivityDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshButtonEnabled()
+            }
+        }
     }
+
+    deinit {
+        if let engineActivityObserver {
+            NotificationCenter.default.removeObserver(engineActivityObserver)
+        }
+    }
+
+    /// Observer for engine activity changes, so Reset Archives re-gates live
+    /// if a background sync/scan starts or finishes while the editor is open.
+    /// `nonisolated(unsafe)`: written once on the main actor in `init`, read
+    /// only in the single-threaded `deinit`; `removeObserver` is thread-safe.
+    private nonisolated(unsafe) var engineActivityObserver: NSObjectProtocol?
 
     // MARK: - NSWindowDelegate
 
@@ -330,7 +352,13 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         editButton.isEnabled = hasSelection
         deleteButton.isEnabled = hasSelection
         duplicateButton.isEnabled = hasSelection
-        resetArchivesButton.isEnabled = hasSelection
+        // Reset Archives is pure archive mutation, so it follows the engine-
+        // idle policy in addition to needing a selection. Delete stays enabled
+        // (moving the .prf to Trash is safe); its optional archive-cleanup step
+        // rechecks the policy at the mutation site instead.
+        let engineIdle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
+        resetArchivesButton.isEnabled = hasSelection && engineIdle
+        resetArchivesButton.toolTip = engineIdle ? nil : ArchiveMutationGate.busyMessage
     }
 
     // MARK: - Actions
@@ -659,6 +687,15 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                                      files: [URL],
                                      ambiguous: Bool,
                                      cleanup: ArchiveCleanup) {
+        // Recheck the engine-idle policy immediately before mutating: the
+        // confirmation sheet may have been open while a background sync/scan
+        // started (TOCTOU). Refuse safely — the archives are untouched.
+        guard ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) else {
+            refreshButtonEnabled()
+            ArchiveMutationGate.presentBusyRefusal(
+                title: "Can’t reset archives right now", on: window)
+            return
+        }
         let outcome = cleanup.trash(files)
         TraceLog.shared.write(
             "ProfileEditor: reset archives for '\(profile)' " +
@@ -775,7 +812,28 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             // after the .prf delete succeeds so the user knows manual
             // cleanup is needed for the remainder — we never let an
             // archive-cleanup failure undo a successful profile delete.
-            if shouldCleanArchives && !archiveFiles.isEmpty {
+            //
+            // Recheck the engine-idle policy immediately before mutating: a
+            // background sync/scan may have started while the confirmation
+            // sheet was up (TOCTOU). If so, refuse ONLY the archive step (the
+            // .prf is already safely trashed) and tell the user the archives
+            // were left in place, recoverable via Clean Stale Archives.
+            if shouldCleanArchives && !archiveFiles.isEmpty
+                && !ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) {
+                let plural = archiveFiles.count == 1 ? "" : "s"
+                let busy = NSAlert()
+                busy.alertStyle = .informational
+                busy.messageText = "Profile deleted; archive file\(plural) left in place"
+                busy.informativeText =
+                    "The profile was moved to the Trash, but its " +
+                    "\(archiveFiles.count) archive file\(plural) couldn't be " +
+                    "removed because Unison is busy. " +
+                    ArchiveMutationGate.busyMessage +
+                    " You can remove them later with Settings, Maintenance, " +
+                    "Clean Stale Archives."
+                busy.addButton(withTitle: "OK")
+                busy.runModal()
+            } else if shouldCleanArchives && !archiveFiles.isEmpty {
                 let outcome = ArchiveCleanup(unisonDirectory: unisonDirectory)
                     .trash(archiveFiles)
                 TraceLog.shared.write(

@@ -60,6 +60,16 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     private var rows: [Row] = []
     /// Parallel to `rows`; whether each row is checked for deletion.
     private var checked: [Bool] = []
+    /// Observer for engine activity changes, so the Trash button re-gates
+    /// live if a background sync/scan starts or finishes while this window
+    /// is open. Removed in `deinit`. `nonisolated(unsafe)`: written once on
+    /// the main actor in `init`, read only in the single-threaded `deinit`;
+    /// `NotificationCenter.removeObserver` is itself thread-safe.
+    private nonisolated(unsafe) var engineActivityObserver: NSObjectProtocol?
+    /// Guards against acting on a pre-operation stale classification: any
+    /// engine activity since the last scan forces a re-scan before the Trash
+    /// button re-enables.
+    private var snapshotGuard = StaleSnapshotGuard()
 
     private let tableView = NSTableView()
     private let selectAllCheckbox = NSButton(
@@ -99,9 +109,41 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         window.center()
         configure()
         reload()
+        // Deliver on `.main` and enter the main actor SYNCHRONOUSLY: the
+        // notification carries no payload, so the handler must read the engine
+        // state right now, while it still reflects the transition that fired
+        // this callback. An async hop (Task) could run after a later busy→idle
+        // transition completes, letting StaleSnapshotGuard miss the busy phase.
+        engineActivityObserver = NotificationCenter.default.addObserver(
+            forName: .engineActivityDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.engineActivityChanged()
+            }
+        }
+    }
+
+    /// React to an engine-activity transition. Any activity dirties the stale
+    /// classification; once the engine is idle again with a dirty snapshot we
+    /// re-scan (so the user can never trash a pre-operation classification),
+    /// otherwise we just re-gate the button.
+    private func engineActivityChanged() {
+        let idle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
+        snapshotGuard.observedActivity(engineIdle: idle)
+        if snapshotGuard.shouldReload(engineIdle: idle) {
+            reload()   // re-scans; reload() calls didScan() to clear the guard
+        } else {
+            refreshSelectionUI()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    deinit {
+        if let engineActivityObserver {
+            NotificationCenter.default.removeObserver(engineActivityObserver)
+        }
+    }
 
     /// Whether the most recent scan found anything (lets the opener skip
     /// showing an empty window).
@@ -219,6 +261,11 @@ final class CleanStaleArchivesWindowController: NSWindowController,
 
     private func reload() {
         rows = scan()
+        // Record the scan against the staleness guard: a scan taken while the
+        // engine is busy is immediately dirty, so the button stays disabled
+        // until a clean re-scan happens at idle.
+        let idle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
+        snapshotGuard.didScan(engineIdle: idle)
         // Default selection is topology-based, not time-based: only
         // provably-own dead archives start checked (see Row.defaultChecked).
         checked = rows.map { $0.defaultChecked }
@@ -348,7 +395,13 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         for i in rows.indices where checked[i] { checkedFiles += rows[i].files.count }
         trashButton.title =
             "Move \(checkedFiles) File\(checkedFiles == 1 ? "" : "s") to Trash"
-        trashButton.isEnabled = checkedFiles > 0
+        // Gate on a non-empty selection, the engine-idle policy, AND a
+        // trustworthy (non-dirty) snapshot. The final `trashAction` rechecks,
+        // but disabling here gives the user immediate feedback that the action
+        // is unavailable while Unison runs or before a stale snapshot re-scans.
+        let engineIdle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
+        trashButton.isEnabled = checkedFiles > 0 && snapshotGuard.mayTrash(engineIdle: engineIdle)
+        trashButton.toolTip = engineIdle ? nil : ArchiveMutationGate.busyMessage
         if rows.isEmpty || checked.allSatisfy({ !$0 }) {
             selectAllCheckbox.state = .off
         } else if checked.allSatisfy({ $0 }) {
@@ -364,6 +417,36 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         var files: [URL] = []
         for i in rows.indices where checked[i] { files.append(contentsOf: rows[i].files.map(\.url)) }
         guard !files.isEmpty else { NSSound.beep(); return }
+        // Recheck the engine-idle policy AND the snapshot guard immediately
+        // before mutating: a background sync/scan may have started (or run and
+        // finished, changing the classification) since this window opened.
+        let idle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
+        guard snapshotGuard.mayTrash(engineIdle: idle) else {
+            // Dirty snapshot or busy engine: re-scan if we're idle again so the
+            // user sees the current classification, and refuse this action.
+            if snapshotGuard.shouldReload(engineIdle: idle) { reload() } else { refreshSelectionUI() }
+            ArchiveMutationGate.presentBusyRefusal(
+                title: "Can’t clean archives right now", on: window)
+            return
+        }
+        // Belt-and-suspenders: verify every selected file is STILL classified
+        // as stale in a fresh scan. If the classification changed out from
+        // under us, re-scan and refuse rather than trashing a file that may no
+        // longer be an orphan.
+        let currentStale = Set(scan().flatMap { $0.files.map(\.url.path) })
+        guard files.allSatisfy({ currentStale.contains($0.path) }) else {
+            reload()
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Archive list changed"
+            alert.informativeText =
+                "The set of stale archives changed since you reviewed it, so " +
+                "nothing was moved. The list has been refreshed; please review " +
+                "and try again."
+            alert.addButton(withTitle: "OK")
+            if let window { alert.beginSheetModal(for: window) { _ in } } else { alert.runModal() }
+            return
+        }
         let outcome = ArchiveCleanup(unisonDirectory: unisonDirectory).trash(files)
         TraceLog.shared.write(
             "CleanStale: trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)")

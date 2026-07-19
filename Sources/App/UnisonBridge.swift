@@ -1,18 +1,16 @@
 import Foundation
 import AppKit
 
-/// Swift-side façade around the C bridge to OCaml.
-///
-/// Today this only handles the `displayStatus` callback. As we replace more
-/// of the abort-stubbed callbacks in UnisonBridgeC.c, the handlers list will
-/// grow — keep them registered through a single chokepoint so we have one
-/// place to reason about thread-safety and lifetime.
+/// Swift-side façade around the C bridge to OCaml. All OCaml callbacks are
+/// registered through this single chokepoint. Each trampoline (below) copies
+/// any C-owned payload off OCaml's pointers and delivers the handler on the
+/// main queue, so handlers are free to touch UI inline — they never run on an
+/// arbitrary OCaml worker thread.
 enum UnisonBridge {
 
-    /// Closure invoked when OCaml calls the `displayStatus` callback.
-    /// Called on whatever thread OCaml is on — handlers that touch UI must
-    /// dispatch to the main thread themselves (this becomes worth automating
-    /// once we have a real GUI).
+    /// Closure invoked when OCaml calls the `displayStatus` callback. Delivered
+    /// on the main queue by `_swiftStatusTrampoline` (which copies the C string
+    /// first), so it is safe to touch UI directly.
     ///
     /// `nonisolated(unsafe)` because installation happens once at startup
     /// before the OCaml thread can call in; concurrent reads of a stable
