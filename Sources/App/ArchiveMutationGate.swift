@@ -23,6 +23,38 @@ protocol EngineActivityProviding: AnyObject {
     var allowsDestructiveArchiveMutation: Bool { get }
 }
 
+/// Tracks whether a stale-archive row snapshot is still trustworthy across
+/// engine-activity transitions. The Clean Stale window classifies archives as
+/// stale by reading the Unison directory; a sync/scan that runs afterward can
+/// change that classification (delete, rewrite, or re-attribute archives), so a
+/// snapshot taken before an operation must NOT be acted on after it. The
+/// snapshot is trustworthy only when it was scanned while idle AND no engine
+/// activity has happened since — otherwise it must be re-scanned first.
+///
+/// Pure value type so the busy→idle invalidation logic is unit-testable
+/// without any AppKit or engine.
+struct StaleSnapshotGuard {
+    /// True when the current snapshot can no longer be trusted (scanned during
+    /// activity, or activity occurred since the scan).
+    private(set) var dirty = false
+
+    /// Record that a fresh scan just happened. A scan taken while the engine
+    /// is busy is immediately dirty (the directory is being mutated under it).
+    mutating func didScan(engineIdle: Bool) { dirty = !engineIdle }
+
+    /// Observe an engine-activity transition. Any non-idle observation dirties
+    /// the snapshot; an idle observation alone never clears it (only a re-scan
+    /// via `didScan` does).
+    mutating func observedActivity(engineIdle: Bool) { if !engineIdle { dirty = true } }
+
+    /// May the current snapshot be trashed? Only when idle and clean.
+    func mayTrash(engineIdle: Bool) -> Bool { engineIdle && !dirty }
+
+    /// Should the rows be re-scanned now? True once the engine is idle again
+    /// but the snapshot is dirty from intervening activity.
+    func shouldReload(engineIdle: Bool) -> Bool { engineIdle && dirty }
+}
+
 /// The recheck every final destructive archive handler performs immediately
 /// before it moves/deletes/rewrites archive files. Disabled buttons and menu
 /// items are a courtesy, not a guarantee: a confirmation sheet can be opened

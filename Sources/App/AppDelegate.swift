@@ -88,10 +88,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// closeConnection; a successful close before the queued session start).
     private func run(_ effects: [EngineSessionCoordinator.Effect]) {
         for effect in effects { execute(effect) }
-        // Every engine-phase transition funnels through here (all coordinator
-        // mutations are wrapped in `run(...)`). Broadcast so any open Settings
-        // / Profile Editor / Clean Stale window refreshes its destructive-
-        // action controls against the new idle state.
+        // The single funnel for EVERY coordinator mutation: `run(...)` wraps
+        // all of them, and `runScanEffects` routes its remainder through here
+        // too, so this notification fires on every engine-phase transition
+        // (even a no-effect one). Any open Settings / Profile Editor / Clean
+        // Stale window refreshes its destructive-action controls against the
+        // new idle state.
         NotificationCenter.default.post(name: .engineActivityDidChange, object: self)
     }
 
@@ -347,13 +349,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// `.presentScanResults` effect (which the generic runner can't carry).
     private func runScanEffects(_ effects: [EngineSessionCoordinator.Effect],
                                 items: [StateItem]) {
+        // `.presentScanResults` carries the freshly-scanned row items, so it's
+        // handled here; every other effect goes through `run` — the single
+        // funnel that also fires the engine-activity notification. Routing the
+        // remainder (even when empty) through `run` means an abandoned
+        // local-only scan that transitions straight to idle with no effects
+        // still notifies the maintenance windows.
+        var rest: [EngineSessionCoordinator.Effect] = []
         for effect in effects {
             if case .presentScanResults(let s) = effect {
                 windowBySession[s]?.endRescan(newItems: items)
             } else {
-                execute(effect)
+                rest.append(effect)
             }
         }
+        run(rest)
     }
 
     // MARK: - Failure / recovery helpers (coordinator-routed)

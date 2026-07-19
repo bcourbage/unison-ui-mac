@@ -574,4 +574,47 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertFalse(ArchiveMutationGate.isAllowed(Stub(false)))
         XCTAssertTrue(ArchiveMutationGate.isAllowed(Stub(true)))
     }
+
+    // MARK: - Clean Stale snapshot invalidation (PR #7 review round 2, finding 1)
+
+    /// The exact scenario: scan while idle → engine activity occurs → return
+    /// idle → the pre-operation snapshot cannot be trashed until re-scanned.
+    func test_staleSnapshotGuard_activityInvalidatesPreOpSnapshot() {
+        var g = StaleSnapshotGuard()
+        g.didScan(engineIdle: true)                     // scanned while idle
+        XCTAssertTrue(g.mayTrash(engineIdle: true))     // trustworthy
+        XCTAssertFalse(g.shouldReload(engineIdle: true))
+        g.observedActivity(engineIdle: false)           // engine became busy
+        XCTAssertFalse(g.mayTrash(engineIdle: true))    // old snapshot NOT trashable, even back at idle
+        XCTAssertTrue(g.shouldReload(engineIdle: true)) // must re-scan first
+        g.didScan(engineIdle: true)                     // re-scan at idle
+        XCTAssertTrue(g.mayTrash(engineIdle: true))     // fresh snapshot trustworthy again
+        XCTAssertFalse(g.shouldReload(engineIdle: true))
+    }
+
+    /// A snapshot scanned while the engine is busy is immediately untrusted.
+    func test_staleSnapshotGuard_scanDuringBusyIsImmediatelyDirty() {
+        var g = StaleSnapshotGuard()
+        g.didScan(engineIdle: false)                    // opened/scanned while busy
+        XCTAssertFalse(g.mayTrash(engineIdle: true))    // not trustworthy even once idle
+        XCTAssertTrue(g.shouldReload(engineIdle: true)) // reload when idle returns
+    }
+
+    // MARK: - Every mutation notifies (PR #7 review round 2, finding 2)
+
+    /// An abandoned local-only scan transitions straight to idle returning NO
+    /// effects. That path runs through `runScanEffects`, so it must still fire
+    /// the engine-activity notification (the driver now routes the empty
+    /// remainder through `run`), else maintenance windows never re-enable.
+    func test_abandonedLocalOnlyScan_reachesIdle_withNoEffects() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "L"))!
+        let scanE = c.connectFinished(s, connectOp, result: .local)   // localOnly → .scanning
+        let (_, scanOp) = beginScan(scanE)!
+        _ = c.abandon(reason: "window closed")                        // abandoned mid-scan
+        let eff = c.scanCompleted(s, scanOp)
+        XCTAssertTrue(eff.isEmpty)                       // no effects — notification must not depend on them
+        XCTAssertTrue(c.isIdle)
+        XCTAssertTrue(c.allowsDestructiveArchiveMutation)
+    }
 }

@@ -26,17 +26,31 @@ set -eu
 ROOT=$1
 PATCHES=$2
 
+# The exact patch set this build expects. Missing any of these is a build
+# error, not a silent "apply whatever happens to be in patches/": a dropped
+# patch file would otherwise produce a quietly under-patched blob.
+REQUIRED_PATCHES="0002-uimacbridge-register-closeConnection.patch 0003-remote-close-and-drain.patch"
+
 if [ ! -f "$ROOT/src/uimacbridge.ml" ]; then
     echo "No upstream Unison checkout at $ROOT/src — skipping patch apply."
     echo "(Vendored blob in vendor/ already has the patches baked in.)"
     exit 0
 fi
 
-for pf in "$PATCHES"/*.patch; do
-    [ -e "$pf" ] || continue
-    name=$(basename "$pf")
+# Fail loudly if a required patch file is missing.
+for name in $REQUIRED_PATCHES; do
+    if [ ! -f "$PATCHES/$name" ]; then
+        echo "ERROR: required patch missing: $PATCHES/$name" >&2
+        echo "       The documented patch set is: $REQUIRED_PATCHES" >&2
+        echo "       Restore the missing file (e.g. from version control) before building." >&2
+        exit 1
+    fi
+done
+
+for name in $REQUIRED_PATCHES; do
+    abs="$PATCHES/$name"
     # Absolute path so the subshell `cd "$ROOT"` doesn't break a relative one.
-    case $pf in /*) abs=$pf ;; *) abs=$(pwd)/$pf ;; esac
+    case $abs in /*) : ;; *) abs=$(pwd)/$abs ;; esac
 
     if ( cd "$ROOT" && git apply --check --whitespace=nowarn -p1 "$abs" ) >/dev/null 2>&1; then
         echo "Applying patch: $name"
@@ -47,9 +61,10 @@ for pf in "$PATCHES"/*.patch; do
         echo "ERROR: $name is partially applied or incompatible with $ROOT." >&2
         echo "       It does not apply forward cleanly and does not reverse" >&2
         echo "       cleanly — the tree is in neither the pre- nor the post-patch" >&2
-        echo "       state. Refusing to build from a partial patch state. Reset" >&2
-        echo "       the checkout and retry, e.g.:" >&2
-        echo "         (cd $ROOT && git checkout -- src && git clean -fd src)" >&2
+        echo "       state. Refusing to build from a partial patch state." >&2
+        echo "       Inspect the tree to see what changed, then build from a" >&2
+        echo "       clean checkout or a fresh worktree at the documented base" >&2
+        echo "       commit (see vendor/README.md)." >&2
         exit 1
     fi
 done
