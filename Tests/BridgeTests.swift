@@ -320,4 +320,34 @@ final class BridgeStressTests: XCTestCase {
             }
         }
     }
+
+    /// Concurrent callers into the single-slot handoff. Regression guard for
+    /// the termination deadlock: the main thread (applicationWillTerminate)
+    /// and the connect queue (prompt loop) both call run_on_ocaml_thread at
+    /// once. The pre-fix bridge shared one condvar across two mutexes and
+    /// lost wakeups under exactly this contention, wedging the app on quit.
+    ///
+    /// This hammers a read-only entry point from many threads simultaneously;
+    /// with the bug it can hang (caught by the expectation timeout), with the
+    /// per-request-condvar fix every call must complete.
+    func test_concurrentCallers_allComplete() {
+        let callers = 16
+        let iterationsPerCaller = 200
+        let done = expectation(description: "all concurrent callers finish")
+        done.expectedFulfillmentCount = callers
+
+        for _ in 0..<callers {
+            DispatchQueue.global().async {
+                for _ in 0..<iterationsPerCaller {
+                    // Non-null result also confirms no wakeup was lost mid-call.
+                    XCTAssertNotNil(unison_bridge_get_version())
+                }
+                done.fulfill()
+            }
+        }
+
+        // Generous bound: 16×200 = 3200 handoffs complete in well under a
+        // second when healthy. A hang means the deadlock has regressed.
+        wait(for: [done], timeout: 30)
+    }
 }
