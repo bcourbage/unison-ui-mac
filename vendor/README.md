@@ -39,8 +39,8 @@ If the file for your architecture isn't here, you have two options:
 | Architecture | `arm64` (Apple Silicon) |
 | Toolchain | **OCaml 5.5.0** (pinned; enforced by `make check-ocaml-version`). CI/release link against the same 5.5.0 via `ocaml/setup-ocaml`. |
 | Built by | `make vendor-blob` → `make apply-patches` then `make -f Makefile.OCaml unison-blob.o` (the OCaml core object only; upstream's own `Unison.app` is not linked — patch 0004 references app-side C symbols it can't resolve). |
-| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8); `patches/0004-remote-transport-child-reaper.patch` (adds overridable `Remote.register/unregisterTransportChild` hooks that the macOS bridge installs to track the exact ssh child PID for a pure-C shutdown reaper — see `docs/ssh-reaper-design.md`; CLI/GTK builds keep the default no-ops). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is present at the base commit above. |
-| SHA-256 | `4292c9a36797bce5ab5b879e0d812711abb9e87b2182c5ed189394df908e826b` |
+| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8); `patches/0004-remote-transport-child-reaper.patch` (adds overridable `Remote.register/retireTransportChild` hooks: the macOS bridge tracks the exact ssh child PID at spawn and, at teardown, SIGKILLs+removes it under a mutex before reaping, backing a pure-C shutdown reaper — see `docs/ssh-reaper-design.md`; CLI/GTK builds keep the default no-ops). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is present at the base commit above. |
+| SHA-256 | `a57f5c4ec18d96277ac2cde58a7d8f703b012daffdefa42877638671eb062b03` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
 | Size | 5.5 MB (5462536 bytes) |
 | Reproducibility | Source, patch set (0002+0003+0004), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain — observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
@@ -131,7 +131,7 @@ After regenerating:
 ## Why not a git submodule of upstream?
 
 A submodule would let users pull a specific upstream commit but
-they'd still need `brew install ocaml` and the 5–10 min `make macui`
+they'd still need OCaml 5.5.0 (pinned) and the 5–10 min `make macui`
 on first build. The friction we're removing is the *time* of the
 OCaml compile, not the cloning. Vendoring the artifact is the only
 way to skip the compile step. The submodule approach is also more

@@ -1,97 +1,106 @@
 # SSH-reaper: exact-child-PID registry + pure-C shutdown reaper
 
-## Defect (recap)
+## Defect
 
-The embedded engine spawns one `ssh` child per remote connection
-(`remote.ml:buildShellConnection`). Normal OCaml termination runs the
-`at_exit`-registered `end_ssh`, which reaps it. But the AppKit host can
-terminate the process **without driving OCaml `at_exit`**:
+The embedded engine spawns one `ssh` child per remote connection (`remote.ml`,
+both the synchronous `buildShellConnection` and the async
+`openConnectionStart`/`End`/`Cancel` path the macOS GUI uses). Normal OCaml
+termination runs the `at_exit`-registered `end_ssh`, which reaps it. But the
+AppKit host can terminate the process **without driving OCaml `at_exit`**:
 `applicationWillTerminate → unison_bridge_shutdown` is a bounded C helper that
-only releases OCaml roots; it does not run `at_exit`. And a sync **wedged** on a
-frozen remote is blocked on the transport socket, not on stdio, so closing the
-stdio pipes does not wake the child. The `ssh` child then survives app exit as
-an orphan (observed alive t+19s…t+230s, ppid 1; died only when the remote was
-killed).
+does not run `at_exit`. And a sync **wedged** on a frozen remote is blocked on
+the transport socket, so closing fds does not make the child exit. The `ssh`
+child then survives app exit as an orphan (observed alive t+19s…t+230s, ppid 1;
+died only when the remote was killed).
 
-## Design (Option b from the reviewed assessment)
+## Contract (Option b — pure-C exact-child-PID registry)
 
-A **pure-C, mutex-protected, exact-child-PID registry**, consumed by C during
-`unison_bridge_shutdown`. Its guarantee depends on **no OCaml/Lwt progress at
-shutdown**.
+Its guarantee depends on **no OCaml/Lwt progress at shutdown**. Three C
+operations, all serialized by one leaf mutex:
 
-- OCaml `remote.ml` calls two overridable hooks (default no-ops, so CLI/GTK
-  builds link and behave unchanged): `registerTransportChild pid` immediately
-  after a successful spawn, `unregisterTransportChild pid` strictly before the
-  OCaml reap on every teardown path. The macOS bridge (`uimacbridge.ml`)
-  installs the real hooks, which call the C registry.
-- C keeps a fixed array of exact pids under a leaf mutex plus a `closing` flag.
-  `unison_bridge_reap_transport_children()` (called first thing in
-  `unison_bridge_shutdown`, pure C) atomically flips `closing` + detaches the
-  set under the mutex, then `SIGKILL`s the snapshot **outside** the mutex.
-- **No process enumeration** — no name/command/host/pgroup matching. Only exact
-  registered pids, and only while still un-reaped.
-- `SIGKILL` (not `SIGTERM`): a stopped/wedged child may defer or never act on
-  `SIGTERM`; `SIGKILL` cannot be caught, blocked, or deferred.
-- C does **not** `waitpid` at shutdown: the process is exiting, so `init` reaps
-  the transient zombies. This keeps shutdown non-blocking and avoids a
-  double-reap race with a concurrent OCaml `waitpid`.
+- **`track(pid)`** — OCaml records the exact pid immediately after spawn.
+  Deduplicated: a repeat `track` of the same pid is a no-op, so a single
+  `retire` fully removes it. If the registry is already `closing`, or full, the
+  pid can't be tracked and is `SIGKILL`ed at once (see cases below).
+- **`retire(pid)`** — OCaml's teardown calls this **before** it
+  `waitpid`/`close_session`s the child. Under the mutex, and **only while the
+  pid is still registered**, it `SIGKILL`s the exact pid and removes it. The
+  child is therefore already dead (or a not-yet-reaped zombie) at the moment it
+  leaves the registry. Idempotent: a second `retire` finds nothing and never
+  signals.
+- **`reap()`** — the pure-C shutdown pass. Under the mutex it sets `closing`,
+  `SIGKILL`s every still-registered pid, then clears the set.
+
+**Every `kill(2)` is issued while holding the mutex, before the pid is
+removed.** No process enumeration, no name/command/host/pgroup matching — exact
+registered pids only.
 
 ## Lifecycle invariant
 
-> **I:** a pid is in the registry from immediately after spawn until strictly
-> before its `waitpid`. `unregister` precedes `waitpid` on every path, and is
-> itself preceded by the child being placed on its death path (connection/stdio
-> closed). Registration happens under the C mutex; a register that arrives after
-> `closing` is refused and the child `SIGKILL`ed at once.
+> **I:** a pid is in the registry from immediately after `track` (spawn) until
+> `retire`/`reap` removes it. Removal happens **only** in the same critical
+> section that first `SIGKILL`s the pid. Therefore a registered pid always
+> denotes a still-reserved child (un-reaped: OCaml only `waitpid`s a child
+> *after* `retire` removed it), and a removed pid has already been sent
+> `SIGKILL`.
 
-## Adversarial proof: no window leaks a running child, no reused pid is killed
+There is deliberately **no** claim that closing stdio makes the child exit — a
+wedged (or merely slow) child can stay alive after fd closure, which is exactly
+why removal is coupled to `SIGKILL` rather than to "we asked it to stop".
 
-Consider child `C` at the instant the shutdown reaper runs its atomic
-detach+`closing` step. Cases:
+## Adversarial proof
 
-1. **Spawned, registered, no teardown started** (live sync, or wedged): `C ∈`
-   snapshot → `SIGKILL`. ✓ killed.
-2. **Teardown in progress on thread `T`** (`clientCloseRootConnection →
-   cleanup`), which does *(close connection/stdio) → unregister → waitpid*:
-   - reaper detaches **before** `T`'s unregister → `C ∈` snapshot → `SIGKILL`;
-     `T`'s later unregister is a no-op (set consumed), `T`'s `waitpid` reaps the
-     killed child. ✓ killed.
-   - reaper detaches **after** `T`'s unregister → `C ∉` snapshot, but `T`
-     unregistered ⟹ the connection/stdio were already closed ⟹ `C` is on its
-     death path. A child reaching normal `cleanup` is **responsive** (a wedged
-     connection never takes the normal-close path; its recovery is
-     quit→shutdown, i.e. case 1), so `C` dies from fd closure. ✓ dies anyway.
-3. **Just forked, not yet registered** (between `create_process` returning and
-   the very next `registerTransportChild` call — no blocking call in between):
-   `C ∉` snapshot. But `C` just forked with stdio connected to the app; the
-   imminent app exit closes those fds and `C` (not yet wedged — no bytes
-   exchanged) dies from EOF. ✓ dies anyway. Window shrunk to a few
-   non-blocking instructions.
-4. **Register races `closing`**: the register hook, under the mutex, sees
-   `closing` and refuses to store; it `SIGKILL`s the just-spawned pid at once. ✓
-   killed, cannot escape.
-5. **Already reaped** (teardown completed pre-shutdown): unregister-before-
-   waitpid removed `C` while it was still reserved; after `waitpid` the pid may
-   be reused, but `C ∉` registry, so the reaper never targets it. ✓ no
-   wrong-kill.
+Let `C` be a transport child at any instant.
 
-**PID-reuse safety:** a pid is in the registry only while un-reaped (reserved by
-the OS), because unregister strictly precedes `waitpid`. Any pid the reaper
-`SIGKILL`s therefore still denotes the exact child (or its not-yet-reaped
-zombie — a harmless no-op), never a reused unrelated process.
+**No live-untracked window.** `C` leaves the registry only via `retire`/`reap`,
+each of which `SIGKILL`s it in the same locked section that removes it. So the
+transition "in registry" → "not in registry" is simultaneous with "signalled
+with SIGKILL". There is no reachable state where `C` is running and absent from
+the registry: while registered it is covered by `reap`; once removed it has
+already been `SIGKILL`ed. (Contrast the earlier unregister-before-waitpid
+design, where a child could be removed while still alive and then be missed by
+a racing shutdown — that window is gone.)
 
-**Why not reap-first-then-unregister:** that would retain a pid after `waitpid`
-makes it reusable; a reaper racing between `waitpid` and unregister could
-`SIGKILL` a reused, unrelated pid. Rejected.
+**No PID-reuse signal.** A pid is `SIGKILL`ed only while it is present in the
+registry (in `retire`/`reap`), and it is present only while un-reaped: OCaml
+`waitpid`s a child strictly after `retire` has removed it under the mutex. So at
+the moment of any `kill(2)`, the pid still denotes the exact intended child (or
+its not-yet-reaped zombie — a harmless no-op). A concurrent OCaml `waitpid`
+cannot free the pid mid-signal, because the signal and the removal are one
+atomic mutex-held step, and OCaml cannot reach its `waitpid` until that step has
+completed. `reap` likewise signals under the mutex, so it cannot race a
+`retire` on the same pid.
 
-**Idempotent shutdown:** the atomic detach empties the set; a second reaper call
-(or a duplicate `unison_bridge_shutdown`) finds nothing → no-op.
+**Spawn racing shutdown (`track` after `closing`).** If `track` runs after
+`reap` set `closing`, the pid missed the shutdown pass, so `track` `SIGKILL`s it
+immediately under the mutex — it cannot escape. The tiny window between
+`create_process` returning and the very next `track` call (no blocking call
+between) is covered separately: such a child is freshly forked with stdio wired
+to the app and not yet wedged, so the imminent app exit closes its fds and it
+dies; it cannot be a wedged orphan.
+
+**Registry full.** If `MAX_TRANSPORT_CHILDREN` is exceeded, `track` cannot
+record the pid, so it `SIGKILL`s it rather than leave an untracked child
+running. (64 concurrent transport children is far beyond any real profile set.)
+
+**Stopped / wedged child.** `SIGKILL` (never `SIGTERM`) is used everywhere: a
+`SIGSTOP`ped or unresponsive child cannot catch, block, or indefinitely defer
+it. `reap` does not `waitpid` (the process is exiting; `init` reaps the
+transient zombies), so shutdown never blocks and there is no double-reap race.
+
+**Idempotency.** `reap` clears the set, so a second `reap` (or a duplicate
+`unison_bridge_shutdown`) is a no-op. `retire` on an already-removed pid is a
+no-op (and, crucially, does not signal — so it can't hit a reused pid).
 
 ## CLI/GTK safety
 
 `remote.ml` references the hooks only through `(int -> unit) ref` values that
 default to no-ops; it declares no bridge symbols. The `external`s and the
-`Remote.registerTransportChild := …` install live in `uimacbridge.ml`, compiled
-only into the macOS UI blob. CLI (`unison`, text UI) and GTK builds omit
+`Remote.{register,retire}TransportChild := …` installs live in `uimacbridge.ml`,
+compiled only into the macOS UI blob. CLI (`unison`, text UI) and GTK builds omit
 `uimacbridge`, so they link with no bridge symbols and keep exactly the previous
-`at_exit`-based behavior.
+`at_exit`/`close_session` behavior (verified: the text UI links with zero
+`unison_bridge_*` symbols). On the macOS GUI, `retire` `SIGKILL`s the child on
+normal teardown too; the pty is app-internal (no user terminal to restore), and
+the remote server exits on the resulting connection drop as it would on any
+close.

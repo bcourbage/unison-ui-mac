@@ -73,13 +73,18 @@ incompatible hosts rather than producing a bundle that won't launch.
   xcode-select --install
   ```
 - **Homebrew**: <https://brew.sh>
-- **Build tools via Homebrew**:
+- **Build tools**: `xcodegen` (via Homebrew) plus **OCaml 5.5.0**.
   ```sh
-  brew install ocaml xcodegen
+  brew install xcodegen
+  # OCaml 5.5.0 specifically — the vendored blob's runtime ABI is locked to
+  # it, so the app must link against 5.5.0 (`libasmrun`, `libthreadsnat`, …).
+  # The reproducible way is an opam switch:
+  opam switch create 5.5.0    # then: eval $(opam env)
   ```
-  Tested against OCaml 5.4.1; any 5.x release should work. OCaml is
-  needed for the runtime libraries we link (`libasmrun`, `libthreadsnat`,
-  etc.) — *not* to compile Unison itself.
+  A plain `brew install ocaml` works **only** while Homebrew's current
+  formula is exactly 5.5.0; `make` runs `check-ocaml-version` and fails fast
+  otherwise. OCaml is needed for the runtime libraries we link — *not* to
+  compile Unison itself.
 
 That's it. **No upstream Unison clone required** — a prebuilt
 `unison-blob.o` lives in `vendor/` (see
@@ -179,7 +184,7 @@ its approved list; future launches don't prompt.
 ```sh
 # 1. Get build prerequisites (one time)
 xcode-select --install
-brew install ocaml xcodegen
+brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0) — ABI-locked, enforced by check-ocaml-version
 
 # 2. Clone this repo
 cd ~/somewhere
@@ -296,7 +301,7 @@ again. To rejoin the auto-updating Homebrew track, reinstall the cask:
 
 Prerequisites are the same one-time tools as [Install from
 source](#install-from-source) (`xcode-select --install`,
-`brew install ocaml xcodegen`).
+`brew install xcodegen` plus OCaml 5.5.0 — see above).
 
 ## Uninstall
 
@@ -323,7 +328,7 @@ brew install --cask bcourbage/tap/unison-ui-mac
 
 ```sh
 xcode-select --install
-brew install ocaml xcodegen
+brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0) — ABI-locked, enforced by check-ocaml-version
 make install
 ```
 

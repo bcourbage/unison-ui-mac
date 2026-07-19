@@ -26,7 +26,7 @@ void unison_bridge_shutdown(void);
  * for the C shutdown path and for tests. See UnisonBridgeC.c and
  * docs/ssh-reaper-design.md. */
 void unison_bridge_track_child(pid_t pid);
-void unison_bridge_untrack_child(pid_t pid);
+void unison_bridge_retire_child(pid_t pid);
 int  unison_bridge_reap_transport_children(void);
 /* Declared unconditionally so every target/config sees the prototype; only
  * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls it, so

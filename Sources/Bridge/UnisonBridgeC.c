@@ -625,79 +625,94 @@ void unison_bridge_startup(int argc, char *argv[]) {
 /* === Transport-child (ssh) registry + pure-C shutdown reaper ===
  *
  * The embedded engine spawns one ssh child per remote connection
- * (remote.ml:buildShellConnection). On NORMAL OCaml termination its at_exit
- * `end_ssh` reaps it, but the AppKit host can terminate this process WITHOUT
- * running OCaml at_exit (unison_bridge_shutdown is a bounded C helper that
- * does not drive at_exit), and a sync wedged on a frozen remote is blocked on
- * the transport socket, not stdio, so pipe closure won't wake the child. It
- * then survives as an orphan.
+ * (remote.ml). On NORMAL OCaml termination its at_exit `end_ssh` reaps it, but
+ * the AppKit host can terminate this process WITHOUT running OCaml at_exit
+ * (unison_bridge_shutdown is a bounded C helper that does not drive at_exit),
+ * and a sync wedged on a frozen remote is blocked on the transport socket, so
+ * closing fds does not make the child exit. It then survives as an orphan.
  *
- * Guarantee (needs NO OCaml/Lwt progress at shutdown): OCaml populates this
- * C-owned registry with each transport child's EXACT pid right after spawn
- * (Remote.registerTransportChild) and removes it strictly before the OCaml
- * reap (Remote.unregisterTransportChild); a pure-C pass SIGKILLs whatever
- * remains during shutdown. No process enumeration, no name/command/pgroup
- * matching -- only exact registered pids, and only while still un-reaped (so a
- * pid can never denote a reused process). See docs/ssh-reaper-design.md for
- * the adversarial race proof. */
+ * Contract (needs NO OCaml/Lwt progress at shutdown):
+ *   - track(pid): OCaml records the exact pid right after spawn (deduplicated).
+ *   - retire(pid): OCaml's teardown, BEFORE it waitpid/close_sessions the
+ *     child, calls this. It SIGKILLs the exact pid AND removes it from the
+ *     registry ATOMICALLY under the mutex, and only while the pid is still
+ *     registered (hence still un-reaped and reserved by the OS). The child is
+ *     therefore already dead-or-zombie by the time OCaml waitpids it. This is
+ *     what closes the "unregistered-but-still-alive" window: a pid is never
+ *     removed while its process is still running.
+ *   - reap(): the pure-C shutdown pass SIGKILLs every still-registered pid.
+ *
+ * Every kill(2) is issued WHILE HOLDING the mutex, before the pid is removed.
+ * Because OCaml can only reap a child after retire() removed it (under the same
+ * mutex), no concurrent waitpid can reap+free a pid between our decision to
+ * signal it and the signal itself -> no PID-reuse race. No process
+ * enumeration; exact registered pids only. See docs/ssh-reaper-design.md. */
 #define MAX_TRANSPORT_CHILDREN 64
 static pthread_mutex_t g_child_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pid_t g_children[MAX_TRANSPORT_CHILDREN];
 static int   g_child_count = 0;
 static bool  g_children_closing = false;
 
-/* Register a just-spawned transport child by exact pid. If shutdown has
- * already begun (closing), the pid cannot be covered by the C pass that may
- * already have run, so kill it at once -- a spawn racing shutdown must not
- * escape. A full registry likewise cannot track the pid, so it is killed
- * rather than left untracked. */
+/* Caller must hold g_child_mutex. */
+static bool child_present_locked(pid_t pid) {
+    for (int i = 0; i < g_child_count; i++)
+        if (g_children[i] == pid) return true;
+    return false;
+}
+
+/* Register a just-spawned transport child by exact pid. Deduplicated: a second
+ * track of the same pid is a no-op, so one retire fully removes it. If shutdown
+ * has already begun, or the registry is full, the pid cannot be tracked, so it
+ * is SIGKILLed at once (under the mutex) -- a spawn racing shutdown must not
+ * escape, and an untrackable child must not be left running. */
 void unison_bridge_track_child(pid_t pid) {
     if (pid <= 0) return;
-    bool kill_now = false;
     pthread_mutex_lock(&g_child_mutex);
     if (g_children_closing) {
-        kill_now = true;
+        kill(pid, SIGKILL);
+    } else if (child_present_locked(pid)) {
+        /* dedup: already tracked */
     } else if (g_child_count < MAX_TRANSPORT_CHILDREN) {
         g_children[g_child_count++] = pid;
     } else {
-        kill_now = true;
+        kill(pid, SIGKILL);
     }
     pthread_mutex_unlock(&g_child_mutex);
-    if (kill_now) kill(pid, SIGKILL);
 }
 
-/* Unregister a transport child. MUST be called strictly BEFORE the OCaml reap
- * (waitpid), while the pid is still reserved by the OS, so the registry never
- * retains a pid that has become reusable. */
-void unison_bridge_untrack_child(pid_t pid) {
+/* Retire a transport child: SIGKILL the exact pid and remove ALL its registry
+ * entries, atomically under the mutex, ONLY if it is still registered (hence
+ * still reserved). Idempotent: a second retire of an already-retired pid finds
+ * nothing and never signals (so it can't hit a reused pid). The caller then
+ * waitpid/close_sessions the killed child. */
+void unison_bridge_retire_child(pid_t pid) {
     pthread_mutex_lock(&g_child_mutex);
-    for (int i = 0; i < g_child_count; i++) {
-        if (g_children[i] == pid) {
-            g_children[i] = g_children[--g_child_count];
-            break;
-        }
+    if (child_present_locked(pid)) {
+        kill(pid, SIGKILL);
+        int w = 0;
+        for (int r = 0; r < g_child_count; r++)
+            if (g_children[r] != pid) g_children[w++] = g_children[r];
+        g_child_count = w;
     }
     pthread_mutex_unlock(&g_child_mutex);
 }
 
-/* Pure-C shutdown reaper. Atomically flips `closing` + detaches the set under
- * the mutex, then SIGKILLs the snapshot OUTSIDE the mutex (kill(2) is never
- * held under the leaf mutex). Idempotent (a second call finds an empty set).
- * SIGKILL, not SIGTERM: a stopped/wedged child may defer or ignore SIGTERM;
- * SIGKILL cannot be caught, blocked, or deferred. Does NOT waitpid -- the
- * process is exiting so init reaps the transient zombies; this keeps shutdown
- * non-blocking and avoids a double-reap race with a concurrent OCaml waitpid.
- * Returns the number of pids signaled. */
+/* Pure-C shutdown reaper. Enters the `closing` state and SIGKILLs every
+ * still-registered pid WHILE HOLDING the mutex (so no concurrent retire+waitpid
+ * can free a pid out from under a signal), then clears the set and unlocks.
+ * Idempotent (a second call finds an empty set). SIGKILL, not SIGTERM: a
+ * stopped/wedged child may defer or ignore SIGTERM. Does NOT waitpid -- the
+ * process is exiting, so init reaps the transient zombies; this keeps shutdown
+ * non-blocking and avoids a double-reap race. Returns the number of pids
+ * signaled. */
 int unison_bridge_reap_transport_children(void) {
-    pid_t snapshot[MAX_TRANSPORT_CHILDREN];
     int n;
     pthread_mutex_lock(&g_child_mutex);
     g_children_closing = true;
     n = g_child_count;
-    for (int i = 0; i < n; i++) snapshot[i] = g_children[i];
+    for (int i = 0; i < n; i++) kill(g_children[i], SIGKILL);
     g_child_count = 0;
     pthread_mutex_unlock(&g_child_mutex);
-    for (int i = 0; i < n; i++) kill(snapshot[i], SIGKILL);
     return n;
 }
 
@@ -709,9 +724,9 @@ CAMLprim value unison_bridge_register_child(value pid_v) {
     unison_bridge_track_child((pid_t)Long_val(pid_v));
     CAMLreturn(Val_unit);
 }
-CAMLprim value unison_bridge_unregister_child(value pid_v) {
+CAMLprim value unison_bridge_retire_child_ml(value pid_v) {
     CAMLparam1(pid_v);
-    unison_bridge_untrack_child((pid_t)Long_val(pid_v));
+    unison_bridge_retire_child((pid_t)Long_val(pid_v));
     CAMLreturn(Val_unit);
 }
 

@@ -5,12 +5,15 @@ import Darwin
 /// Tests for the pure-C exact-child-PID transport reaper (SSH-reaper).
 ///
 /// These fork REAL child processes (`/bin/sleep`) and drive the C registry
-/// (`unison_bridge_track_child` / `_untrack_child` /
-/// `_reap_transport_children`) directly, asserting exact-PID scoping: only
-/// registered children are killed, unrelated children survive, a spawn racing
-/// shutdown cannot escape, and unregister-before-reap leaves a child untouched
-/// (the PID-reuse invariant). `unison_bridge_reset_child_registry_for_test`
-/// (DEBUG-only) restores a known baseline between cases.
+/// (`unison_bridge_track_child` / `_retire_child` / `_reap_transport_children`)
+/// directly. The contract under test:
+///   - `track` records the exact pid (deduplicated);
+///   - `retire` SIGKILLs the exact pid AND removes it atomically under the
+///     mutex — the child is dead before it leaves the registry, so there is no
+///     window where a live child is untracked, and no reused pid is signalled;
+///   - `reap` (shutdown) SIGKILLs every still-registered pid.
+/// `unison_bridge_reset_child_registry_for_test` (Debug-only) restores a known
+/// baseline between cases.
 final class TransportChildReaperTests: XCTestCase {
 
     /// Children spawned by a test, killed+reaped in tearDown so nothing leaks.
@@ -57,34 +60,54 @@ final class TransportChildReaperTests: XCTestCase {
         var st: Int32 = 0
         let r = waitpid(pid, &st, 0)
         if let i = spawned.firstIndex(of: pid) { spawned.remove(at: i) }
-        // WIFSIGNALED && WTERMSIG == SIGKILL
-        let signaled = (st & 0x7f) != 0 && (st & 0x7f) != 0x7f
-        return r == pid && signaled && (st & 0x7f) == SIGKILL
+        let signaled = (st & 0x7f) != 0 && (st & 0x7f) != 0x7f   // WIFSIGNALED
+        return r == pid && signaled && (st & 0x7f) == SIGKILL    // WTERMSIG == SIGKILL
     }
 
     // MARK: tests
 
-    func test_registerUnregister_normalLifecycle_notKilled() {
+    /// retire SIGKILLs the exact child AND removes it, so the reaper then finds
+    /// nothing. (kill-before-removal; the removed pid is a killed child.)
+    func test_retire_killsExactChild_andRemovesIt() {
         let pid = spawnSleeper()
         unison_bridge_track_child(pid)
-        unison_bridge_untrack_child(pid)          // normal teardown removes it
-        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
-        XCTAssertTrue(isAlive(pid), "untracked child must not be killed")
+        unison_bridge_retire_child(pid)
+        XCTAssertTrue(reapAndWasKilled(pid), "retire must SIGKILL the child")
+        XCTAssertEqual(unison_bridge_reap_transport_children(), 0,
+                       "retired pid must be gone from the registry")
     }
 
-    func test_unregister_idempotent() {
+    /// Duplicate track followed by ONE retire must leave no stale entry.
+    func test_duplicateTrack_singleRetire_noStaleEntry() {
         let pid = spawnSleeper()
         unison_bridge_track_child(pid)
-        unison_bridge_untrack_child(pid)
-        unison_bridge_untrack_child(pid)          // duplicate: no-op, no crash
-        unison_bridge_untrack_child(999_999)      // never-registered: no-op
-        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
-        XCTAssertTrue(isAlive(pid))
+        unison_bridge_track_child(pid)          // dedup: second track is a no-op
+        unison_bridge_retire_child(pid)         // one retire fully removes it
+        XCTAssertTrue(reapAndWasKilled(pid))
+        XCTAssertEqual(unison_bridge_reap_transport_children(), 0,
+                       "no stale duplicate must remain after one retire")
     }
 
-    func test_reap_withNoChildren_isNoOp() {
+    /// retire is idempotent and never signals a pid it no longer tracks (so it
+    /// can't hit a reused pid). Second retire is a pure no-op.
+    func test_retire_idempotent_doesNotSignalUntrackedPid() {
+        let pid = spawnSleeper()
+        unison_bridge_track_child(pid)
+        unison_bridge_retire_child(pid)         // kills + removes
+        unison_bridge_retire_child(pid)         // no-op: not registered
+        XCTAssertTrue(reapAndWasKilled(pid))
         XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
-        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)  // idempotent
+    }
+
+    /// Models shutdown racing retirement: once retire has removed a pid, a
+    /// subsequent reap does not target it (no double-handling), and the child
+    /// is already dead from retire.
+    func test_retireThenReap_reaperDoesNotDoubleTarget() {
+        let pid = spawnSleeper()
+        unison_bridge_track_child(pid)
+        unison_bridge_retire_child(pid)
+        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
+        XCTAssertTrue(reapAndWasKilled(pid))
     }
 
     func test_reap_killsExactRegisteredChild() {
@@ -97,14 +120,19 @@ final class TransportChildReaperTests: XCTestCase {
     func test_reap_leavesUnrelatedChildUntouched() {
         let tracked = spawnSleeper()
         let unrelated = spawnSleeper()
-        unison_bridge_track_child(tracked)        // only this one is registered
+        unison_bridge_track_child(tracked)      // only this one is registered
         XCTAssertEqual(unison_bridge_reap_transport_children(), 1)
         XCTAssertTrue(reapAndWasKilled(tracked), "registered child SIGKILLed")
         XCTAssertTrue(isAlive(unrelated), "unrelated child must survive (exact-PID scoping)")
     }
 
-    func test_lateRegistration_racingShutdown_cannotEscape() {
-        // Shutdown reaper runs first (sets closing state) with nothing tracked.
+    func test_reap_withNoChildren_isNoOp_andIdempotent() {
+        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
+        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
+    }
+
+    func test_lateRegistration_afterShutdown_cannotEscape() {
+        // Shutdown reaper runs first (sets closing) with nothing tracked.
         XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
         // A child spawned + registered AFTER shutdown began must be killed
         // immediately by track itself, not left running.
@@ -112,17 +140,5 @@ final class TransportChildReaperTests: XCTestCase {
         unison_bridge_track_child(pid)
         XCTAssertTrue(reapAndWasKilled(pid),
                       "a spawn racing shutdown must be terminated on register")
-    }
-
-    func test_untrackBeforeReap_noUntrackedLiveWindow_pidReuseSafe() {
-        // The lifecycle rule is unregister strictly BEFORE waitpid, so once a
-        // PID leaves the registry the reaper can never target it (and thus can
-        // never SIGKILL a reused PID). Model it: track → untrack (pre-waitpid)
-        // → reap must not target the child.
-        let pid = spawnSleeper()
-        unison_bridge_track_child(pid)
-        unison_bridge_untrack_child(pid)
-        XCTAssertEqual(unison_bridge_reap_transport_children(), 0)
-        XCTAssertTrue(isAlive(pid), "unregistered PID must never be targeted by the reaper")
     }
 }
