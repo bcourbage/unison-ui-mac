@@ -79,30 +79,12 @@ all: build
 # Only meaningful when an upstream clone is present; the vendored
 # blob already has these patches baked in.
 .PHONY: apply-patches
+# Complete-state patch detection lives in scripts/apply-unison-patches.sh:
+# per patch it forward-dry-runs (apply), else reverse-dry-runs (already
+# applied), else fails loudly (partial/incompatible). A single grep on one
+# symbol can't tell a half-applied multi-file patch from a fully applied one.
 apply-patches:
-	@if [ ! -f "$(UNISON_SRC)/uimacbridge.ml" ]; then \
-		echo "No upstream Unison checkout at $(UNISON_SRC) — skipping patch apply."; \
-		echo "(Vendored blob in vendor/ already has the patches baked in.)"; \
-		exit 0; \
-	fi; \
-	if ! grep -q 'Callback.register "abortAll"' $(UNISON_SRC)/uimacbridge.ml; then \
-		echo "Applying patch: 0001-uimacbridge-register-abortAll.patch"; \
-		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0001-uimacbridge-register-abortAll.patch; \
-	else \
-		echo "Patch already applied: 0001-uimacbridge-register-abortAll.patch"; \
-	fi; \
-	if ! grep -q 'Callback.register "closeConnection"' $(UNISON_SRC)/uimacbridge.ml; then \
-		echo "Applying patch: 0002-uimacbridge-register-closeConnection.patch"; \
-		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0002-uimacbridge-register-closeConnection.patch; \
-	else \
-		echo "Patch already applied: 0002-uimacbridge-register-closeConnection.patch"; \
-	fi; \
-	if ! grep -q 'drainDroppedConnectionThreads' $(UNISON_SRC)/remote.ml; then \
-		echo "Applying patch: 0003-remote-close-and-drain.patch"; \
-		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0003-remote-close-and-drain.patch; \
-	else \
-		echo "Patch already applied: 0003-remote-close-and-drain.patch"; \
-	fi
+	@scripts/apply-unison-patches.sh "$(UNISON_SRC)/.." "$(CURDIR)/patches"
 
 # ----- OCaml blob -----
 #
