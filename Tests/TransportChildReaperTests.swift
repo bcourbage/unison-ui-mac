@@ -101,7 +101,7 @@ final class TransportChildReaperTests: XCTestCase {
 
     /// Models shutdown racing retirement: once retire has removed a pid, a
     /// subsequent reap does not target it (no double-handling), and the child
-    /// is already dead from retire.
+    /// has already been sent SIGKILL by retire and is irrevocably terminating.
     func test_retireThenReap_reaperDoesNotDoubleTarget() {
         let pid = spawnSleeper()
         unison_bridge_track_child(pid)
