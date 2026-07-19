@@ -121,7 +121,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let closed = closeOp(e)!
         XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
         XCTAssertEqual(c.phase, .ready(s))                      // window stays
-        XCTAssertEqual(c.connection, .none)
+        XCTAssertEqual(c.connection, .disconnected)            // remote closed on sync-end
     }
 
     func test_interactive_holdsThroughSyncEnd_closesOnLeave() {
@@ -329,11 +329,158 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
         let scanOp = beginScan(c.connectFinished(s, op, result: .local))!.1
-        XCTAssertEqual(c.connection, .none)
+        XCTAssertEqual(c.connection, .localOnly)
         _ = c.scanCompleted(s, scanOp)
         let syncOp = beginSync(c.requestSync())!.1
         XCTAssertEqual(c.syncCompleted(s, syncOp), [.presentSyncResults(s)])  // no close for local
         XCTAssertEqual(c.abandon(reason: "leave"), [])          // none → straight idle
         XCTAssertTrue(c.isIdle)
+    }
+
+    // MARK: - Rescan requested during a sync-end close (finding 4)
+
+    /// A Rescan clicked while a non-interactive sync-end close is still in
+    /// flight must be deferred, not discarded, and start the reconnect the
+    /// instant the close completes successfully.
+    func test_rescanDuringBackToReadyClose_reconnectsAfterSuccessfulClose() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)         // non-interactive
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!       // phase = .closing(.backToReady)
+        // Rescan while the close is in flight: deferred (no effect now), NOT discarded.
+        XCTAssertEqual(c.requestRescan(), [])
+        // Close returns 0 → the deferred rescan reconnects the same session now.
+        let e = c.closeCompleted(closed.0, closed.1, status: 0)
+        let recon = beginConnect(e)
+        XCTAssertNotNil(recon, "deferred rescan must reconnect after the close")
+        XCTAssertEqual(recon?.0, s)
+        if case .opening(s, _) = c.phase {} else { XCTFail("must be reconnecting (.opening)") }
+    }
+
+    /// A close FAILURE while a rescan is queued still transitions to
+    /// restartRequired (the queued rescan is dropped).
+    func test_rescanDuringBackToReadyClose_closeFailureStillRestarts() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        XCTAssertEqual(c.requestRescan(), [])                   // deferred
+        let e = c.closeCompleted(closed.0, closed.1, status: 2) // close fails
+        XCTAssertTrue(hasRestart(e))
+        if case .restartRequired = c.phase {} else { XCTFail("close failure must restart") }
+    }
+
+    // MARK: - Connection contract: no sync over a closed remote (finding 5)
+
+    /// After a non-interactive sync-end close the remote connection is
+    /// `.disconnected`; Go must NOT authorize a sync over it.
+    func test_sync_refusedWhenRemoteDisconnected() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
+        XCTAssertEqual(c.phase, .ready(s))
+        XCTAssertEqual(c.connection, .disconnected)
+        XCTAssertEqual(c.requestSync(), [], "no sync may be authorized over a closed connection")
+        if case .ready(s) = c.phase {} else { XCTFail("phase must stay .ready") }
+    }
+
+    /// Sync IS allowed over a live remote (`.open`) and a local session
+    /// (`.localOnly`).
+    func test_sync_allowedWhenOpenOrLocal() {
+        let c1 = C(); _ = openToReady(c1, interactive: true)
+        XCTAssertNotNil(beginSync(c1.requestSync()), "open remote can sync")
+
+        let c2 = C()
+        let (s2, op2) = beginConnect(c2.requestOpen(profile: "L"))!
+        let scanOp = beginScan(c2.connectFinished(s2, op2, result: .local))!.1
+        _ = c2.scanCompleted(s2, scanOp)
+        XCTAssertNotNil(beginSync(c2.requestSync()), "local session can sync")
+    }
+
+    /// Rescan over a `.disconnected` remote reconnects (beginConnect), never a
+    /// bare beginScan over a dead connection.
+    func test_rescan_reconnectsWhenRemoteDisconnected() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        _ = c.closeCompleted(closed.0, closed.1, status: 0)     // .ready + .disconnected
+        let e = c.requestRescan()
+        XCTAssertNotNil(beginConnect(e), "rescan over a disconnected remote must reconnect")
+        XCTAssertNil(beginScan(e))
+    }
+
+    /// Local Rescan is a direct scan (init2) — it must NOT rerun init1/connect.
+    func test_localRescan_directScan_noInit1Rerun() {
+        let c = C()
+        let (s, op) = beginConnect(c.requestOpen(profile: "L"))!
+        let scanOp = beginScan(c.connectFinished(s, op, result: .local))!.1
+        _ = c.scanCompleted(s, scanOp)                          // .ready + .localOnly
+        let e = c.requestRescan()
+        XCTAssertNotNil(beginScan(e), "local rescan must be a direct scan")
+        XCTAssertNil(beginConnect(e), "local rescan must NOT rerun init1/connect")
+        if case .scanning(s, _) = c.phase {} else { XCTFail("phase must be .scanning") }
+    }
+
+    /// Orphan-connection cleanup after a watchdog-invalidated connect is
+    /// authorized ONLY in `restartRequired`, not in ordinary idle or a live
+    /// session — even though idle also has `currentSession == nil` (the reason
+    /// the guard uses `isRestartRequired`, not that proxy).
+    func test_orphanCleanupAuthorization_restartRequiredOnly() {
+        let c = C()
+        // idle: currentSession == nil BUT not restartRequired → NOT authorized
+        XCTAssertNil(c.currentSession)
+        XCTAssertFalse(c.isRestartRequired)
+
+        // live .ready session: currentSession != nil, not restartRequired
+        let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
+        let scanOp = beginScan(c.connectFinished(s, op, result: .remote(interactive: false)))!.1
+        _ = c.scanCompleted(s, scanOp)
+        XCTAssertNotNil(c.currentSession)
+        XCTAssertFalse(c.isRestartRequired)
+
+        // a non-quiescent failure of an in-flight op (watchdog-style) → restartRequired
+        let syncOp = beginSync(c.requestSync())!.1
+        XCTAssertTrue(hasRestart(c.operationFailed(s, syncOp, reason: "watchdog",
+                                                   engineIsQuiescent: false)))
+        XCTAssertTrue(c.isRestartRequired, "cleanup authorized in restartRequired")
+        XCTAssertNil(c.currentSession, "restartRequired also has currentSession==nil — isRestartRequired disambiguates it from idle")
+    }
+
+    // MARK: - Callback-identity invariant: stale / duplicate terminal events (finding 5)
+
+    /// A duplicate delivery of the SAME connect op must not re-transition.
+    func test_duplicateConnectFinished_isNoOp() {
+        let c = C()
+        let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
+        _ = c.connectFinished(s, op, result: .remote(interactive: false))   // → .scanning
+        XCTAssertEqual(c.connectFinished(s, op, result: .remote(interactive: false)), [])
+    }
+
+    /// A completion carrying a stale/wrong op token is a no-op; the real op
+    /// still completes.
+    func test_staleScanCompleted_wrongOp_isNoOp() {
+        let c = C()
+        let (s, op) = beginConnect(c.requestOpen(profile: "A"))!
+        let scanOp = beginScan(c.connectFinished(s, op, result: .remote(interactive: false)))!.1
+        let bogus = C.OperationID(raw: 999_999)
+        XCTAssertEqual(c.scanCompleted(s, bogus), [])          // wrong op → dropped
+        XCTAssertEqual(c.scanCompleted(s, scanOp), [.presentScanResults(s)])  // real op wins
+    }
+
+    /// A stale close completion (wrong op) must not touch the current
+    /// connection.
+    func test_staleCloseCompleted_wrongOp_isNoOp() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let bogus = C.OperationID(raw: 888_888)
+        XCTAssertEqual(c.closeCompleted(s, bogus, status: 0), [])   // wrong op → dropped
+        // the real close still completes
+        XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
+        XCTAssertEqual(c.phase, .ready(s))
     }
 }

@@ -102,6 +102,24 @@ final class BridgeTests: XCTestCase {
         XCTAssertEqual(status, 0, "expected clean no-op close, got \(status)")
     }
 
+    /// connection_end / connection_cancel are now status-returning (findings
+    /// 1 & 2). With no pending preconnection (no init1 with a prompt has run in
+    /// alphabetical order):
+    ///   - connection_end reports -1 ("nothing to finalize"), NOT a false 0.
+    ///   - connection_cancel reports 0 (cancelling nothing is an idempotent
+    ///     success), so an abandoned connect with no live preconnection resolves
+    ///     cleanly. The success (0) and OCaml-exception (2) real-preconnection
+    ///     paths are exercised by the live matrix, not this in-process unit.
+    func test_b_connectionEnd_noPreconn_reportsNothingToFinalize() {
+        XCTAssertEqual(unison_bridge_connection_end(), -1,
+            "connection_end with no preconnection must report -1, not a false success")
+    }
+
+    func test_b_connectionCancel_noPreconn_isIdempotentSuccess() {
+        XCTAssertEqual(unison_bridge_connection_cancel(), 0,
+            "cancelling with nothing pending must be a benign success (0)")
+    }
+
     // MARK: - End-to-end init1 + init2 against a controlled fixture
     //
     // Tests in this section depend on running AFTER test_b_* so the

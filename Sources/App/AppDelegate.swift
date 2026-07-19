@@ -397,9 +397,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Permanent bridge handlers (installed once at launch)
 
     private func installPermanentBridgeHandlers() {
+        // Finding 3: these five handlers must NOT add a second main-queue hop.
+        // Each `UnisonBridge` trampoline already performs exactly one ordered
+        // `DispatchQueue.main.async` handoff before invoking the handler, so the
+        // handler body already runs on the main thread, in the bridge's emit
+        // order. A second `DispatchQueue.main.async` here deferred the body one
+        // extra run-loop turn, which could REORDER it after a later event (e.g.
+        // a status arriving just before scan completion being applied after the
+        // scan result). `MainActor.assumeIsolated` runs the body inline on the
+        // already-current main turn — one ordered handoff, no reordering.
         UnisonBridge.installStatusHandler { [weak self] msg in
             TraceLog.shared.write("[ocaml→status] \(msg.prefix(200))")
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.noteConnectProgress()
                 if let s = self.engine.currentSession, self.engine.isVisible(s) {
@@ -408,25 +417,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         UnisonBridge.installProgressHandler { [weak self] fraction in
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 guard let self, let s = self.engine.currentSession else { return }
                 self.windowBySession[s]?.updateGlobalProgress(fraction)
             }
         }
         UnisonBridge.installReloadRowHandler { [weak self] row, progress, bytes in
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 guard let self, let s = self.engine.currentSession else { return }
                 self.windowBySession[s]?.reloadRow(row, progress: progress, bytesTransferred: bytes)
             }
         }
         UnisonBridge.installDiffHandler { [weak self] title, text in
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 guard let self, let s = self.engine.currentSession else { return }
                 self.windowBySession[s]?.showDiff(title: title, text: text)
             }
         }
         UnisonBridge.installDiffErrHandler { [weak self] err in
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 guard let self, let s = self.engine.currentSession else { return }
                 self.windowBySession[s]?.showDiffError(err)
             }
@@ -549,14 +558,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
-                    self.disarmConnectWatchdog()
-                    self.pendingConnect = nil
+                    // Finding 1: keep pendingConnect + the watchdog ACTIVE until
+                    // connection_end actually returns (it can block on a wedged
+                    // transport). On return, re-verify the exact (s, op): a
+                    // watchdog timeout during the call invalidates the op, and a
+                    // late success after that must be ignored. A nonzero status
+                    // (OCaml raised / anomaly) routes through operationFailed
+                    // with quiescence UNproven, so the coordinator restarts.
                     self.connectQueue.async { [weak self] in
-                        unison_bridge_connection_end()
+                        let status = unison_bridge_connection_end()
                         DispatchQueue.main.async {
                             guard let self else { return }
-                            self.run(self.engine.connectFinished(
-                                s, op, result: .remote(interactive: self.sheetShownThisConnect)))
+                            guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else {
+                                // The op was invalidated (watchdog → restart-required)
+                                // while connection_end ran. Do NOT revive the
+                                // coordinator. But a status-0 return may have
+                                // established a real connection that is now
+                                // orphaned — enqueue a quiescent close-and-drain
+                                // cleanup, restricted to the invalidated/restart
+                                // path so it can never touch a newer session.
+                                self.log.write("connection_end (\(s)/\(op)) -> \(status) after invalidation — not reviving")
+                                if status == 0 {
+                                    self.cleanupOrphanedConnectionAfterInvalidation(s, op)
+                                }
+                                return
+                            }
+                            self.pendingConnect = nil
+                            self.disarmConnectWatchdog()
+                            if status == 0 {
+                                self.run(self.engine.connectFinished(
+                                    s, op, result: .remote(interactive: self.sheetShownThisConnect)))
+                            } else {
+                                self.log.write("connection_end (\(s)/\(op)) failed status \(status) — restart required")
+                                self.run(self.engine.operationFailed(
+                                    s, op, reason: "connection finalize failed (status \(status))",
+                                    engineIsQuiescent: false))
+                            }
                         }
                     }
                 }
@@ -566,6 +603,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                // Finding 2: if the connect was abandoned before this prompt
+                // appeared, do NOT present a credential sheet over the picker.
+                // Cancel the preconnection (no UI) and report the acknowledged
+                // terminal result. Watchdog stays armed to cover a wedged cancel.
+                if !self.engine.isVisible(s) {
+                    self.log.write("connect \(s)/\(op) abandoned before credential prompt — cancelling, no UI")
+                    self.cancelPreconnection(s, op, reason: "connect abandoned before credential prompt")
+                    return
+                }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
                 self.log.write("connection prompt: \(prompt)")
@@ -575,14 +621,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.pendingPasswordSheet = nil
                     guard let response else {
                         self.log.write("connection: user cancelled prompt")
-                        self.connectQueue.async { unison_bridge_connection_cancel() }
-                        self.pendingConnect = nil
-                        // Tear the window down BEFORE advancing the coordinator.
-                        // operationFailed can idle the engine and start a queued
-                        // open; if this window's delegate were still live, its
-                        // windowWillClose → handleWindowClosed → abandon would
-                        // then abandon that freshly-started session. So detach +
-                        // remove + close first, then report the failure.
+                        // Tear the window down BEFORE advancing the coordinator
+                        // (its windowWillClose → abandon must not hit a
+                        // freshly-started queued session). Then cancel — but
+                        // RETAIN the op lease (pendingConnect + watchdog) until
+                        // connection_cancel actually returns: only an
+                        // acknowledged cancel declares the engine quiescent, and
+                        // a cancel failure requires restart (finding 2).
                         let profile = self.profileBySession[s]
                         if let w = self.windowBySession[s] {
                             w.window?.delegate = nil
@@ -590,12 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.profileBySession[s] = nil
                             w.close()
                         }
-                        // A cancelled half-open connect: cancel closed the
-                        // preconnection and no connection was ever established,
-                        // so the coordinator idles (quiescent = true, nothing to
-                        // close). The user bailed, so return to the picker.
-                        self.run(self.engine.operationFailed(
-                            s, op, reason: "user cancelled connection", engineIsQuiescent: true))
+                        self.cancelPreconnection(s, op, reason: "user cancelled connection")
                         self.showProfilePicker(select: profile)
                         return
                     }
@@ -606,6 +646,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let parent = self.windowBySession[s]?.window ?? self.profileWindowController?.window {
                     sheet.runAsSheet(over: parent)
                 }
+            }
+        }
+    }
+
+    /// Abort a half-open preconnection for connect op `(s, op)` and report the
+    /// acknowledged terminal result (finding 2). Retains the op lease
+    /// (pendingConnect + a re-armed watchdog) until `connection_cancel`
+    /// returns, so only an ACKNOWLEDGED cancel declares the engine quiescent; a
+    /// cancel failure — or a watchdog timeout during the call — routes to
+    /// restart-required instead. A late return after invalidation is ignored.
+    private func cancelPreconnection(_ s: SessionID, _ op: OperationID, reason: String) {
+        guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+        armConnectWatchdog()   // cover a wedged cancel
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_connection_cancel()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else {
+                    self.log.write("connection_cancel (\(s)/\(op)) -> \(status) after watchdog invalidation — ignored")
+                    return
+                }
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                if status == 0 {
+                    // Acknowledged: no connection was established, so the engine
+                    // is quiescent and operationFailed idles (nothing to close).
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: reason, engineIsQuiescent: true))
+                } else {
+                    self.log.write("connection_cancel (\(s)/\(op)) failed status \(status) — restart required")
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: "connection cancel failed (status \(status))",
+                        engineIsQuiescent: false))
+                }
+            }
+        }
+    }
+
+    /// A `connection_end` that returned status 0 AFTER its connect op was
+    /// invalidated (watchdog → restart-required) may have established a real
+    /// connection that no session now owns. Tear it down with a quiescent
+    /// close-and-drain off the main thread, and log the result. Restricted to
+    /// the invalidated/restart path: it only runs when NO session is live
+    /// (`currentSession == nil`, i.e. idle/restartRequired), so even if the
+    /// non-overlap invariant were ever broken it can never close a connection a
+    /// newer session is using.
+    private func cleanupOrphanedConnectionAfterInvalidation(_ s: SessionID, _ op: OperationID) {
+        // Phase-exact: only clean up when the coordinator is specifically in
+        // restartRequired (the state a watchdog-invalidated connect lands in).
+        // `currentSession == nil` alone would also match ordinary .idle, which
+        // is NOT an orphan state and where a stray close could disturb a
+        // just-promoted queued open.
+        guard engine.isRestartRequired else {
+            log.write("connection_end orphan cleanup (\(s)/\(op)) skipped — coordinator not in restartRequired")
+            return
+        }
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_close_connection()
+            DispatchQueue.main.async {
+                self?.log.write("connection_end orphan cleanup (\(s)/\(op)) -> close-and-drain status \(status)")
             }
         }
     }

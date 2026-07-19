@@ -49,10 +49,21 @@ final class EngineSessionCoordinator {
         var description: String { "openReq#\(raw)" }
     }
 
-    /// Established-connection state. A close is asynchronous and can fail;
-    /// `.failed` is terminal-unsafe (the engine must be restarted).
+    /// Connection state of the current session. The old `.none` conflated two
+    /// very different situations — a local↔local session (no remote connection
+    /// ever) and a remote session whose connection has been closed — which let
+    /// `requestSync()` authorize a sync over a dead remote connection. They are
+    /// now distinct (finding 5):
+    ///  - `.localOnly`    — local↔local profile; scan/sync need no connection.
+    ///  - `.disconnected` — remote session with no live connection: either not
+    ///                      yet connected, or closed after a sync-end/leave. A
+    ///                      remote sync must NOT be authorized here; a rescan
+    ///                      reconnects first.
+    ///  - `.open`         — remote connection established.
+    ///  - `.failed`       — a close failed; terminal-unsafe, engine must restart.
     enum ConnectionState: Equatable {
-        case none
+        case localOnly
+        case disconnected
         case open(interactive: Bool)
         case failed(String)
     }
@@ -101,11 +112,35 @@ final class EngineSessionCoordinator {
     }
 
     private(set) var phase: Phase = .idle
-    private(set) var connection: ConnectionState = .none
+    private(set) var connection: ConnectionState = .disconnected
 
     private var abandoned = false
     private var currentProfile: String?
     private var queued: (id: OpenRequestID, profile: String)?
+
+    /// A rescan requested while a non-interactive sync-end close is still in
+    /// flight (`.closing(..., .backToReady)`). It cannot start until the close
+    /// returns (the connection is being torn down); recorded here and consumed
+    /// by `closeCompleted` so the reconnect/scan starts immediately after a
+    /// successful close (finding 4). Not a parallel lifecycle state in the
+    /// window controller — one flag, owned solely by the coordinator.
+    private var rescanAfterClose: SessionID?
+
+    // Callback-identity invariant (finding 5). The bridge callbacks do NOT
+    // carry op tokens. Correct attribution therefore rests on a strict
+    // NON-OVERLAP invariant the driver enforces: at most one connect / scan /
+    // sync bridge op is ever in flight at a time (the driver's mutually
+    // exclusive pendingConnect/pendingScan/pendingSync slots), and a new op of
+    // a kind is only started after the previous terminal event. The driver
+    // records the `(SessionID, OperationID)` it started an op with and passes
+    // that same token back on completion; every terminal event here is guarded
+    // on *exact phase + session + op*, so a stale or duplicate delivery is a
+    // no-op. The reducer's token rejection (stale/duplicate terminal events) is
+    // unit-tested. The driver-side non-overlap itself is NOT covered by a
+    // permanent driver test harness — it rests on the driver's mutually
+    // exclusive pending slots (code structure) and is exercised by live
+    // testing. If overlap were ever introduced, tokens would have to be threaded
+    // through the bridge instead.
 
     private var nextSession: UInt64 = 0
     private var nextOp: UInt64 = 0
@@ -130,6 +165,15 @@ final class EngineSessionCoordinator {
     }
 
     var isIdle: Bool { phase == .idle }
+
+    /// True only in the terminal `restartRequired` phase. Used by the driver
+    /// to authorize orphan-connection cleanup after a watchdog-invalidated
+    /// connect: `currentSession == nil` alone would also be true in ordinary
+    /// `.idle`, which is NOT an orphan-cleanup state.
+    var isRestartRequired: Bool {
+        if case .restartRequired = phase { return true }
+        return false
+    }
 
     private func mintSession() -> SessionID { nextSession += 1; return SessionID(raw: nextSession) }
     private func mintOp() -> OperationID { nextOp += 1; return OperationID(raw: nextOp) }
@@ -169,13 +213,24 @@ final class EngineSessionCoordinator {
 
     /// User asked to rescan the visible profile.
     func requestRescan() -> [Effect] {
+        // Finding 4: a rescan requested while a non-interactive sync-end close
+        // is still in flight must not be silently discarded. Record the intent;
+        // `closeCompleted` starts the reconnect/scan once the close returns.
+        if case .closing(let s, _, .backToReady) = phase {
+            rescanAfterClose = s
+            return []
+        }
         guard case .ready(let s) = phase else { return [] }
         switch connection {
-        case .open:
+        case .open, .localOnly:
+            // A live remote connection or a local session can be rescanned
+            // directly (init2) — no reconnect, no init1 rerun. A local
+            // session has no connection to re-establish.
             let op = mintOp()
             phase = .scanning(s, op)
             return [.beginScan(s, op)]
-        case .none:
+        case .disconnected:
+            // Remote connection is closed — reconnect (init1) before scanning.
             guard let profile = currentProfile else {
                 return enterRestartRequired("ready session has no profile")
             }
@@ -191,9 +246,19 @@ final class EngineSessionCoordinator {
     /// must call the bridge only in response to that effect.
     func requestSync() -> [Effect] {
         guard case .ready(let s) = phase else { return [] }
-        let op = mintOp()
-        phase = .syncing(s, op)
-        return [.beginSync(s, op)]
+        // Finding 5: never authorize a remote sync over a closed connection.
+        switch connection {
+        case .open, .localOnly:
+            let op = mintOp()
+            phase = .syncing(s, op)
+            return [.beginSync(s, op)]
+        case .disconnected:
+            // Remote connection was closed (e.g. after a non-interactive
+            // sync-end close). Refuse — the user must Rescan (reconnect) first.
+            return []
+        case .failed(let r):
+            return enterRestartRequired("cannot sync: previous close failed: \(r)")
+        }
     }
 
     /// User left / pressed Stop / a watchdog fired. Never idles the engine
@@ -237,12 +302,12 @@ final class EngineSessionCoordinator {
     // MARK: - Engine terminal events (token-bound, phase-exact)
 
     /// Connect phase finished; `connection` is `.open(interactive:)` for a
-    /// remote root or `.none` for a local one. Authorizes the scan.
+    /// remote root or `.localOnly` for a local one. Authorizes the scan.
     func connectFinished(_ session: SessionID, _ op: OperationID,
                          result: ConnectResult) -> [Effect] {
         guard case .opening(session, op) = phase else { return [] }
         switch result {
-        case .local:                  connection = .none
+        case .local:                  connection = .localOnly
         case .remote(let interactive): connection = .open(interactive: interactive)
         }
         if abandoned { return beginClose(session, outcome: .toIdle) }
@@ -276,15 +341,34 @@ final class EngineSessionCoordinator {
     func closeCompleted(_ session: SessionID, _ op: OperationID, status: Int32) -> [Effect] {
         guard case .closing(session, op, let outcome) = phase else { return [] }
         if status == 0 {
-            connection = .none
+            connection = .disconnected
             switch outcome {
-            case .toIdle:      return finishToIdle()
-            case .backToReady: phase = .ready(session); return []
+            case .toIdle:
+                rescanAfterClose = nil
+                return finishToIdle()
+            case .backToReady:
+                // Finding 4: a rescan requested during this close (recorded in
+                // `rescanAfterClose`) starts now — reconnect over the
+                // just-closed connection, then scan.
+                if rescanAfterClose == session {
+                    rescanAfterClose = nil
+                    guard let profile = currentProfile else {
+                        return enterRestartRequired("close-then-rescan: session has no profile")
+                    }
+                    let op2 = mintOp()
+                    phase = .opening(session, op2)
+                    return [.beginConnect(session, op2, profile: profile)]
+                }
+                phase = .ready(session)
+                return []
             }
         }
         // Any close failure leaves the engine unsafe for reuse — surface it
-        // immediately regardless of why the close was started.
+        // immediately regardless of why the close was started (finding 4: a
+        // close failure still transitions to restartRequired even with a
+        // rescan queued).
         connection = .failed("status \(status)")
+        rescanAfterClose = nil
         return enterRestartRequired("connection close failed (status \(status))")
     }
 
@@ -320,7 +404,7 @@ final class EngineSessionCoordinator {
         let op = mintOp()
         phase = .opening(s, op)
         abandoned = false
-        connection = .none
+        connection = .disconnected
         currentProfile = profile
         return [.showSession(s, profile: profile), .beginConnect(s, op, profile: profile)]
     }
@@ -331,7 +415,8 @@ final class EngineSessionCoordinator {
             let op = mintOp()
             phase = .closing(session, op, outcome)
             return [.closeConnection(session, op)]
-        case .none:
+        case .localOnly, .disconnected:
+            // No live connection to close — go straight to the outcome.
             switch outcome {
             case .toIdle:      return finishToIdle()
             case .backToReady: phase = .ready(session); return []
@@ -344,8 +429,9 @@ final class EngineSessionCoordinator {
     private func finishToIdle() -> [Effect] {
         phase = .idle
         abandoned = false
-        connection = .none
+        connection = .disconnected
         currentProfile = nil
+        rescanAfterClose = nil
         if let q = queued {
             queued = nil
             return startFreshOpen(profile: q.profile)
@@ -357,6 +443,7 @@ final class EngineSessionCoordinator {
         phase = .restartRequired(reason)
         abandoned = false
         queued = nil
+        rescanAfterClose = nil
         return [.restartRequired(reason: reason)]
     }
 }

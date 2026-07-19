@@ -828,31 +828,48 @@ void unison_bridge_connection_reply(const char *response) {
     run_on_ocaml_thread(_ocaml_connection_reply, &io);
 }
 
+/* connection_end / connection_cancel are now status-returning and
+ * exception-safe (findings 1 & 2). Both use caml_callback_exn and treat an
+ * OCaml exception as a failure the Swift driver routes to a restart-required
+ * transition, and both release g_preconn on EVERY terminal path (success,
+ * exception, or missing callback) so a half-open preconnection is never leaked.
+ * Status: 0 = success; UNISON_CONN_ERR_NONE (-1) = nothing to finalize/cancel
+ * or callback missing; UNISON_CONN_ERR_EXN (2) = OCaml raised. */
+struct conn_fin_io { int status; };
+
 static void _ocaml_connection_end(void *user) {
-    (void)user;
-    if (!g_has_preconn) return;
+    struct conn_fin_io *io = user;
+    if (!g_has_preconn) { io->status = -1; return; }
     const value *fn = caml_named_value("openConnectionEnd");
-    if (fn == NULL) return;
-    (void)caml_callback(*fn, g_preconn);
-    release_preconn();
+    if (fn == NULL) { release_preconn(); io->status = -1; return; }
+    value r = caml_callback_exn(*fn, g_preconn);
+    release_preconn();                       /* release on every terminal path */
+    io->status = Is_exception_result(r) ? 2 : 0;
 }
 
-void unison_bridge_connection_end(void) {
-    run_on_ocaml_thread(_ocaml_connection_end, NULL);
+int unison_bridge_connection_end(void) {
+    struct conn_fin_io io = { .status = -1 };
+    run_on_ocaml_thread(_ocaml_connection_end, &io);
+    return io.status;
 }
 
 static void _ocaml_connection_cancel(void *user) {
-    (void)user;
-    if (!g_has_preconn) return;
+    struct conn_fin_io *io = user;
+    /* Nothing to cancel is a benign, idempotent success (the preconnection is
+     * already gone) — status 0, so an abandoned connect with no live
+     * preconnection still resolves cleanly. */
+    if (!g_has_preconn) { io->status = 0; return; }
     const value *fn = caml_named_value("openConnectionCancel");
-    if (fn != NULL) {
-        (void)caml_callback(*fn, g_preconn);
-    }
-    release_preconn();
+    if (fn == NULL) { release_preconn(); io->status = -1; return; }
+    value r = caml_callback_exn(*fn, g_preconn);
+    release_preconn();                       /* release on every terminal path */
+    io->status = Is_exception_result(r) ? 2 : 0;
 }
 
-void unison_bridge_connection_cancel(void) {
-    run_on_ocaml_thread(_ocaml_connection_cancel, NULL);
+int unison_bridge_connection_cancel(void) {
+    struct conn_fin_io io = { .status = 0 };
+    run_on_ocaml_thread(_ocaml_connection_cancel, &io);
+    return io.status;
 }
 
 /* Close an established connection via the OCaml `closeConnection`
