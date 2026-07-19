@@ -716,7 +716,11 @@ static void _ocaml_get_version(void *user) {
 }
 
 const char *unison_bridge_get_version(void) {
-    static struct get_version_io io;
+    /* _Thread_local so concurrent callers each get their own return buffer
+     * (the worker writes through &io on the OCaml thread, but run_on_ocaml_thread
+     * blocks THIS thread until it completes, so the storage this caller reads
+     * is its own). Matches the ri_* helpers below. */
+    static _Thread_local struct get_version_io io;
     run_on_ocaml_thread(_ocaml_get_version, &io);
     return io.buf[0] ? io.buf : NULL;
 }
@@ -738,7 +742,8 @@ static void _ocaml_unison_directory(void *user) {
 }
 
 const char *unison_bridge_unison_directory(void) {
-    static struct unison_directory_io io;
+    /* _Thread_local: per-caller return storage (see unison_bridge_get_version). */
+    static _Thread_local struct unison_directory_io io;
     run_on_ocaml_thread(_ocaml_unison_directory, &io);
     return io.buf[0] ? io.buf : NULL;
 }
@@ -807,7 +812,8 @@ static void _ocaml_connection_prompt(void *user) {
 }
 
 const char *unison_bridge_connection_prompt(void) {
-    static struct prompt_io io;
+    /* _Thread_local: per-caller return storage (see unison_bridge_get_version). */
+    static _Thread_local struct prompt_io io;
     run_on_ocaml_thread(_ocaml_connection_prompt, &io);
     return io.has_prompt ? io.prompt : NULL;
 }

@@ -45,6 +45,92 @@ final class BridgeTests: XCTestCase {
         XCTAssertTrue(isDir.boolValue, "unison directory path is not a directory")
     }
 
+    // MARK: - Thread-local return storage (PR #7 review finding 2)
+    //
+    // get_version / unison_directory / connection_prompt return pointers into
+    // per-thread (`_Thread_local`) buffers. Content-equality alone can't prove
+    // this — every call returns the SAME string, so a shared process-global
+    // `static` would look fine. The decisive check is the buffer ADDRESS: a
+    // distinct thread must get a distinct return buffer; a shared static hands
+    // back the same address to every thread.
+
+    /// A distinct thread must receive a distinct return-buffer address, and
+    /// identical content. Would FAIL if the storage were a shared `static`.
+    func test_a_getVersion_returnBufferIsThreadLocal() {
+        guard let mainPtr = unison_bridge_get_version() else {
+            XCTFail("get_version returned NULL — runtime not initialized?"); return
+        }
+        let reference = String(cString: mainPtr)
+        let mainAddr = UnsafeRawPointer(mainPtr)
+
+        let done = expectation(description: "bg thread call")
+        var bgAddr: UnsafeRawPointer?
+        var bgContent: String?
+        let t = Thread {
+            if let p = unison_bridge_get_version() {
+                bgAddr = UnsafeRawPointer(p)
+                bgContent = String(cString: p)
+            }
+            done.fulfill()
+        }
+        t.start()
+        wait(for: [done], timeout: 5)
+
+        XCTAssertEqual(bgContent, reference, "content must be identical across threads")
+        XCTAssertNotNil(bgAddr)
+        XCTAssertNotEqual(mainAddr, bgAddr,
+            "get_version return buffer is shared across threads — not _Thread_local")
+    }
+
+    func test_a_unisonDirectory_returnBufferIsThreadLocal() {
+        guard let mainPtr = unison_bridge_unison_directory() else {
+            XCTFail("unison_directory returned NULL"); return
+        }
+        let reference = String(cString: mainPtr)
+        let mainAddr = UnsafeRawPointer(mainPtr)
+
+        let done = expectation(description: "bg thread call")
+        var bgAddr: UnsafeRawPointer?
+        var bgContent: String?
+        let t = Thread {
+            if let p = unison_bridge_unison_directory() {
+                bgAddr = UnsafeRawPointer(p)
+                bgContent = String(cString: p)
+            }
+            done.fulfill()
+        }
+        t.start()
+        wait(for: [done], timeout: 5)
+
+        XCTAssertEqual(bgContent, reference, "content must be identical across threads")
+        XCTAssertNotNil(bgAddr)
+        XCTAssertNotEqual(mainAddr, bgAddr,
+            "unison_directory return buffer is shared across threads — not _Thread_local")
+    }
+
+    /// Under heavy concurrency every caller must read back a complete, correct
+    /// copy — validates the copied CONTENTS, not merely a non-null pointer.
+    func test_a_readOnlyEntryPoints_concurrentCallersGetCorrectCopies() {
+        let versionRef = String(cString: unison_bridge_get_version()!)
+        let dirRef = String(cString: unison_bridge_unison_directory()!)
+
+        let lock = NSLock()
+        var mismatches = 0
+        DispatchQueue.concurrentPerform(iterations: 200) { i in
+            // Copy immediately into a Swift String (owns its own storage).
+            let v = unison_bridge_get_version().map { String(cString: $0) }
+            let d = unison_bridge_unison_directory().map { String(cString: $0) }
+            // connection_prompt has no preconnection here → must stay NULL,
+            // concurrently, without crashing.
+            let p = unison_bridge_connection_prompt()
+            if v != versionRef || d != dirRef || p != nil {
+                lock.lock(); mismatches += 1; lock.unlock()
+            }
+        }
+        XCTAssertEqual(mismatches, 0,
+            "concurrent callers saw corrupted/unstable return content")
+    }
+
     // MARK: - Per-row roots (require init1+init2 to have run)
 
     func test_b_riOps_failGracefullyWhenNoStateLoaded() {
