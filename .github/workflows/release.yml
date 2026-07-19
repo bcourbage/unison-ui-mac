@@ -72,24 +72,23 @@ jobs:
           swift --version
           uname -m
 
-      # Same cache shape + key as ci.yml so the two workflows share the
-      # restored OCaml install.
-      - name: Cache Homebrew OCaml install
-        id: brew-cache
-        uses: actions/cache@v5
+      # Pinned OCaml 5.5.0 via opam — the release binary must link against the
+      # same runtime the vendored blob was compiled with (ABI is version-locked).
+      # Do not replace with an unversioned `brew install ocaml`.
+      - name: Set up OCaml 5.5.0 (pinned)
+        uses: ocaml/setup-ocaml@v3
         with:
-          path: |
-            /opt/homebrew/Cellar/ocaml
-            /opt/homebrew/opt/ocaml
-            /opt/homebrew/bin/ocaml*
-            /opt/homebrew/lib/ocaml
-          key: ${{ runner.os }}-ocaml-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-ocaml-
+          ocaml-compiler: "5.5.0"
 
-      - name: Install OCaml (if not cached)
-        if: steps.brew-cache.outputs.cache-hit != 'true'
-        run: brew install ocaml
+      # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
+      # steps; add it so `ocamlc` resolves in every later step.
+      - name: Put the pinned OCaml switch on PATH
+        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
+
+      - name: Verify pinned OCaml
+        run: |
+          ocamlc -version
+          test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install xcodegen
         run: brew install xcodegen

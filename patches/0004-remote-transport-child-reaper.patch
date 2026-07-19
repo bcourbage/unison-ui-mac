@@ -1,0 +1,134 @@
+diff --git a/src/remote.ml b/src/remote.ml
+index 6a4807d..dcd77c6 100644
+--- a/src/remote.ml
++++ b/src/remote.ml
+@@ -1844,6 +1844,23 @@ let buildSocketConnection host port =
+   buildConnectSocket host port >>= fun socket ->
+   initConnection socket socket
+
++(* Overridable hooks for tracking the exact transport (ssh) child PID.
++   Default no-ops so generic builds (CLI/GTK, no macOS bridge) link and behave
++   exactly as before. The macOS bridge installs real implementations backed by
++   a C-side, mutex-protected exact-PID registry that a pure-C shutdown path
++   reaps -- needed because the AppKit host can terminate the process without
++   running OCaml at_exit (so end_ssh never fires) and a wedged sync's ssh child
++   is blocked on the socket, so closing fds does not make it exit.
++
++   [registerTransportChild pid] records the child right after spawn.
++   [retireTransportChild pid] is called by teardown BEFORE it waitpid/
++   close_sessions the child: the bridge SIGKILLs the exact pid and removes it
++   from the registry atomically, so the child is already dead when it leaves
++   the registry (no live-untracked window) and no reused pid is ever signalled.
++   See docs/ssh-reaper-design.md in unison-ui-mac. *)
++let registerTransportChild : (int -> unit) ref = ref (fun _ -> ())
++let retireTransportChild : (int -> unit) ref = ref (fun _ -> ())
++
+ let buildShellConnection shell host userOpt portOpt rootName termInteract =
+   let remoteCmd =
+     (if Prefs.read serverCmd="" then Uutil.myName
+@@ -1927,6 +1944,10 @@ let buildShellConnection shell host userOpt portOpt rootName termInteract =
+         let pid = Util.blockSignals [Sys.sigint] (fun () ->
+           System.create_process shellCmd argsarray i1 o2 Unix.stderr) in
+         let end_ssh () =
++          (* Retire (SIGKILL + remove under the registry mutex) before reaping.
++             Default no-op in CLI/GTK builds, where this at_exit handler keeps
++             its own SIGTERM-grace-then-SIGKILL below. *)
++          !retireTransportChild pid;
+           let kill_noerr si = try Unix.kill pid si
+             with Unix.Unix_error _ -> () | Invalid_argument _ -> () in
+           match Unix.waitpid [WNOHANG] pid with
+@@ -1941,6 +1962,11 @@ let buildShellConnection shell host userOpt portOpt rootName termInteract =
+     | Some callBack ->
+         Terminal.create_session shellCmd argsarray i1 o2 Unix.stderr)
+   in
++  (* Track the exact transport child PID immediately after spawn, before any
++     handshake or blocking, so the shutdown reaper can terminate a wedged
++     connection's ssh child. Covers both spawn paths (termPid is the child /
++     session PID in each). *)
++  !registerTransportChild termPid;
+   Unix.close i1; Unix.close o2;
+   let writeSilentNoexn fd s pos len =
+     ignore (try if len > 0 then Unix.write fd s pos len else 0
+@@ -1988,6 +2014,11 @@ let buildShellConnection shell host userOpt portOpt rootName termInteract =
+       debug (fun () ->
+         if s <> "" then Util.msg "Received from remote shell process:\n%s\n" s);
+       Lwt.return ());
++    (* Retire (SIGKILL + remove under the registry mutex) strictly before the
++       reap. This guarantees the child is dead before we drop it from the
++       registry, so there is no window where a still-live child is untracked,
++       and no reused PID can be signalled. Default no-op in CLI/GTK builds. *)
++    !retireTransportChild termPid;
+     if term = None then
+       try ignore (Terminal.safe_waitpid termPid) with Unix.Unix_error _ -> ()
+     else
+@@ -2146,6 +2177,9 @@ let openConnectionStart clroot =
+                    shellCmd (String.concat ", " args));
+           let (term,pid) =
+             Terminal.create_session shellCmd argsarray i1 o2 Unix.stderr in
++          (* Track the exact transport child PID immediately after spawn (this
++             is the async/preconnection path used by the macOS GUI bridge). *)
++          !registerTransportChild pid;
+           (* after terminal interact, remember to close i1 and o2 *)
+           Some(i1,i2,o1,o2,s,term,clroot,pid)
+
+@@ -2166,6 +2200,11 @@ let openConnectionReply = function
+ let openConnectionEnd (i1,i2,o1,o2,s,fdopt,clroot,pid) =
+       Unix.close i1; Unix.close o2;
+       let cleanup () =
++        (* Retire (SIGKILL + remove atomically under the registry mutex)
++           before reaping: the child is dead before it leaves the registry, so
++           no live-untracked window and no reused-PID signal. Default no-op in
++           CLI/GTK builds. *)
++        !retireTransportChild pid;
+         try Terminal.close_session pid with Unix.Unix_error _ -> ()
+       in
+       Lwt_unix.run
+@@ -2180,6 +2219,8 @@ let openConnectionCancel (i1,i2,o1,o2,s,fdopt,clroot,pid) =
+   (try Lwt_unix.close i2 with Unix.Unix_error _ -> ());
+   (try Lwt_unix.close o1 with Unix.Unix_error _ -> ());
+   (try Unix.close o2 with Unix.Unix_error _ -> ());
++  (* Retire (SIGKILL + remove under the registry mutex) before reaping. *)
++  !retireTransportChild pid;
+   (try Terminal.close_session pid with Unix.Unix_error _ -> ())
+
+ (****************************************************************************)
+diff --git a/src/remote.mli b/src/remote.mli
+index 81e7b27..046b09c 100644
+--- a/src/remote.mli
++++ b/src/remote.mli
+@@ -189,3 +189,14 @@ val resourceWithConnCleanup :
+    the connection between client and server closes. This cleanup is also
+    run when "closing" a local sync when there is no actual connection. *)
+ val lwtRegionWithConnCleanup : int -> Lwt_util.region ref
++
++(* Overridable hooks for tracking the exact transport (ssh) child PID, so an
++   embedding host that terminates without running OCaml at_exit can still reap
++   a wedged connection's child. Default no-ops; the macOS bridge installs real
++   implementations. [register] is called immediately after spawn; [retire] is
++   called by teardown BEFORE waitpid/close_session and (in the bridge) SIGKILLs
++   the exact pid and removes it from the registry atomically, so the child is
++   dead before it leaves the registry. See remote.ml and unison-ui-mac's
++   docs/ssh-reaper-design.md. *)
++val registerTransportChild : (int -> unit) ref
++val retireTransportChild : (int -> unit) ref
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index 0dc8a7a..0897df5 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -12,6 +12,16 @@ let unisonNonGuiStartup() = begin
+ end;;
+ Callback.register "unisonNonGuiStartup" unisonNonGuiStartup;;
+
++(* Install the exact transport-child (ssh) PID tracking hooks. These populate
++   a C-side, mutex-protected registry that a pure-C shutdown path reaps, so a
++   wedged connection's ssh child cannot survive app exit (the AppKit host
++   terminates without running OCaml at_exit). Only the macOS bridge references
++   these C symbols; generic remote.ml keeps its default no-op hooks. *)
++external unisonRegisterTransportChild : int -> unit = "unison_bridge_register_child";;
++external unisonRetireTransportChild : int -> unit = "unison_bridge_retire_child_ml";;
++Remote.registerTransportChild := unisonRegisterTransportChild;;
++Remote.retireTransportChild := unisonRetireTransportChild;;
++
+ type stateItem = { mutable ri : reconItem;
+                    mutable bytesTransferred : Uutil.Filesize.t;
+                    mutable bytesToTransfer : Uutil.Filesize.t;

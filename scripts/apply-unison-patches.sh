@@ -29,7 +29,7 @@ PATCHES=$2
 # The exact patch set this build expects. Missing any of these is a build
 # error, not a silent "apply whatever happens to be in patches/": a dropped
 # patch file would otherwise produce a quietly under-patched blob.
-REQUIRED_PATCHES="0002-uimacbridge-register-closeConnection.patch 0003-remote-close-and-drain.patch"
+REQUIRED_PATCHES="0002-uimacbridge-register-closeConnection.patch 0003-remote-close-and-drain.patch 0004-remote-transport-child-reaper.patch"
 
 if [ ! -f "$ROOT/src/uimacbridge.ml" ]; then
     echo "No upstream Unison checkout at $ROOT/src — skipping patch apply."

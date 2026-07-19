@@ -6,8 +6,8 @@ project, both committed so that everyday `make build` (and end-user
 
 1. **`unison-blob-<version>-<arch>.o`** — the compiled OCaml core the
    Swift app links against. Building from source takes 5–10 minutes
-   and requires a sibling checkout of `bcpierce00/unison` plus
-   `brew install ocaml`. Regenerated via `make vendor-blob`.
+   and requires a sibling checkout of `bcpierce00/unison` plus a pinned
+   OCaml 5.5.0 toolchain (see Toolchain row below). Regenerated via `make vendor-blob`.
 2. **`unison-manual-<version>.html`** — the Unison reference manual
    rendered to HTML, shipped inside the `.app` bundle as
    Help → "Unison File Synchronizer Manual". Generated from
@@ -37,11 +37,13 @@ If the file for your architecture isn't here, you have two options:
 | Upstream version | **v2.54.0** |
 | Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` (`v2.54.0-19-g91421d0`, on `origin/master`) |
 | Architecture | `arm64` (Apple Silicon) |
-| Built by | upstream's `make macui` after applying the patches in `patches/` |
-| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is already present at the base commit above, so the patch added nothing to the blob (the previous `apply-patches` grep skipped it). Retiring it keeps the patch set to exactly the two that genuinely apply; it does not change the blob. |
-| SHA-256 | `6097fd67900db16cb1d9ba16acc6b4b75a67eca3e8ea0521a4ea39b2d2407eb2` |
+| Toolchain | **OCaml 5.5.0** (pinned; enforced by `make check-ocaml-version`). CI/release link against the same 5.5.0 via `ocaml/setup-ocaml`. |
+| Built by | `make vendor-blob` → `make apply-patches` then `make -f Makefile.OCaml unison-blob.o` (the OCaml core object only; upstream's own `Unison.app` is not linked — patch 0004 references app-side C symbols it can't resolve). |
+| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8); `patches/0004-remote-transport-child-reaper.patch` (adds overridable `Remote.register/retireTransportChild` hooks: the macOS bridge tracks the exact ssh child PID at spawn and, at teardown, SIGKILLs+removes it under a mutex before reaping, backing a pure-C shutdown reaper — see `docs/ssh-reaper-design.md`; CLI/GTK builds keep the default no-ops). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is present at the base commit above. |
+| SHA-256 | `a57f5c4ec18d96277ac2cde58a7d8f703b012daffdefa42877638671eb062b03` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
-| Size | 5.2 MB (5460320 bytes) |
+| Size | 5.5 MB (5462536 bytes) |
+| Reproducibility | Source, patch set (0002+0003+0004), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain — observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
 
 ## Provenance — what the current vendored manual is
 
@@ -74,11 +76,15 @@ corresponding source for this binary is:
 - The build script: upstream's own Makefile invoked via
   [`make vendor-blob`](../Makefile) in this repo.
 
-Together these reconstruct the binary byte-for-byte (modulo
-non-determinism in the OCaml compiler's output, which is a known
-upstream property and not something we introduce). No portion of the
-blob is original work of this project; the patches are minimal
-Callback registrations that don't carry significant authorship.
+Together these reconstruct a functionally-equivalent binary from pinned
+inputs (same source commit, same patch set, same OCaml 5.5.0 toolchain,
+same build command). It is **not** guaranteed byte-for-byte identical:
+the OCaml compiler / `ld -r` output is not deterministic on this
+toolchain (observed differing checksums between two same-source builds),
+which is an upstream/toolchain property, not something we introduce. No
+portion of the blob is original work of this project; the patches are
+minimal `Callback`/hook registrations that don't carry significant
+authorship.
 
 ### `unison-manual-*.html` (rendered manual)
 
@@ -100,7 +106,7 @@ in lockstep so the embedded engine and the bundled manual match:
 ```sh
 # Prerequisites (one-time):
 #   - Apple Silicon or Intel Mac
-#   - brew install ocaml hevea
+#   - OCaml 5.5.0 (pinned; opam switch or a 5.5.0 Homebrew formula) + `brew install hevea`
 #   - A sibling clone of upstream:
 git clone https://github.com/bcpierce00/unison.git ../unison
 cd ../unison && git checkout <commit>   # or a tag
@@ -125,7 +131,7 @@ After regenerating:
 ## Why not a git submodule of upstream?
 
 A submodule would let users pull a specific upstream commit but
-they'd still need `brew install ocaml` and the 5–10 min `make macui`
+they'd still need OCaml 5.5.0 (pinned) and the 5–10 min `make macui`
 on first build. The friction we're removing is the *time* of the
 OCaml compile, not the cloning. Vendoring the artifact is the only
 way to skip the compile step. The submodule approach is also more

@@ -9,9 +9,16 @@
 #   - `vendor/unison-blob-2.54.0-arm64.o` is committed, so `make build`
 #     just compiles Swift + links. The 5–10 min OCaml compile only
 #     happens via `make vendor-blob`, which is a maintainer workflow.
-#   - We do still need `brew install ocaml` because the Swift app links
+#   - We do still need an OCaml install because the Swift app links
 #     against libasmrun.a / libthreadsnat.a / libunixnat.a /
-#     libcamlstrnat.a from the OCaml install, and includes its headers.
+#     libcamlstrnat.a from it, and includes its headers.
+#
+# OCaml is PINNED to 5.5.0 via opam (ocaml/setup-ocaml), NOT `brew install
+# ocaml` (which follows the latest formula). The vendored blob's runtime ABI
+# is version-locked, so linking must use the same 5.5.0 runtime; a silent
+# Homebrew bump to a newer OCaml would break the link. `make build` derives
+# OCAMLLIBDIR from `ocamlc -where` (the opam switch) and runs
+# `check-ocaml-version` as a fail-fast guard.
 #
 # Trigger surface:
 #   - push to main (post-merge confidence + green badge for README)
@@ -51,25 +58,24 @@ jobs:
           swift --version
           uname -m
 
-      # Cache /opt/homebrew so subsequent runs skip the ~3-minute
-      # `brew install ocaml`. Key on the workflow file hash so any
-      # bump (OCaml version, added deps) busts the cache.
-      - name: Cache Homebrew OCaml install
-        id: brew-cache
-        uses: actions/cache@v5
+      # Pinned OCaml 5.5.0 via opam (setup-ocaml manages its own caching).
+      # This is the runtime the vendored blob is linked against; do not
+      # replace with an unversioned `brew install ocaml`.
+      - name: Set up OCaml 5.5.0 (pinned)
+        uses: ocaml/setup-ocaml@v3
         with:
-          path: |
-            /opt/homebrew/Cellar/ocaml
-            /opt/homebrew/opt/ocaml
-            /opt/homebrew/bin/ocaml*
-            /opt/homebrew/lib/ocaml
-          key: ${{ runner.os }}-ocaml-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-ocaml-
+          ocaml-compiler: "5.5.0"
 
-      - name: Install OCaml (if not cached)
-        if: steps.brew-cache.outputs.cache-hit != 'true'
-        run: brew install ocaml
+      # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
+      # steps; add it so `ocamlc` (and thus `make`'s `ocamlc -where` /
+      # check-ocaml-version) resolves in every later step.
+      - name: Put the pinned OCaml switch on PATH
+        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
+
+      - name: Verify pinned OCaml
+        run: |
+          ocamlc -version
+          test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install xcodegen
         # xcodegen regenerates the .xcodeproj from project.yml. The
