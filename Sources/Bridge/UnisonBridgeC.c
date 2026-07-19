@@ -636,10 +636,12 @@ void unison_bridge_startup(int argc, char *argv[]) {
  *   - retire(pid): OCaml's teardown, BEFORE it waitpid/close_sessions the
  *     child, calls this. It SIGKILLs the exact pid AND removes it from the
  *     registry ATOMICALLY under the mutex, and only while the pid is still
- *     registered (hence still un-reaped and reserved by the OS). The child is
- *     therefore already dead-or-zombie by the time OCaml waitpids it. This is
- *     what closes the "unregistered-but-still-alive" window: a pid is never
- *     removed while its process is still running.
+ *     registered (hence still un-reaped and reserved by the OS). SIGKILL is
+ *     ISSUED before the pid is removed: the child is thereafter irrevocably
+ *     terminating (SIGKILL cannot be caught/blocked), though it may not have
+ *     exited the instant kill() returns; its pid stays reserved until the
+ *     following waitpid. This closes the "unregistered-but-still-alive"
+ *     window -- a pid is never removed before it has been signalled.
  *   - reap(): the pure-C shutdown pass SIGKILLs every still-registered pid.
  *
  * Every kill(2) is issued WHILE HOLDING the mutex, before the pid is removed.

@@ -141,4 +141,47 @@ final class TransportChildReaperTests: XCTestCase {
         XCTAssertTrue(reapAndWasKilled(pid),
                       "a spawn racing shutdown must be terminated on register")
     }
+
+    /// Genuinely concurrent shutdown-vs-retire on the SAME tracked child.
+    /// `retire(pid)` and `reap()` run on two threads with a synchronized start
+    /// and race for the registry mutex. Whichever wins SIGKILLs the child; the
+    /// loser finds it already gone and does nothing (no double-kill, no
+    /// reused-pid signal, no hang). The assertions are on OUTCOMES, not timing,
+    /// and hold for either ordering; many iterations shake out hangs/leaks.
+    func test_concurrentRetireAndReap_sameChild_isSafe() {
+        for _ in 0..<50 {
+            unison_bridge_reset_child_registry_for_test()
+            let tracked = spawnSleeper()
+            let unrelated = spawnSleeper()          // never registered
+            unison_bridge_track_child(tracked)
+
+            let start = DispatchSemaphore(value: 0)
+            let group = DispatchGroup()
+            for op in 0..<2 {
+                group.enter()
+                DispatchQueue.global().async {
+                    start.wait()                     // release both together
+                    if op == 0 { unison_bridge_retire_child(tracked) }
+                    else       { _ = unison_bridge_reap_transport_children() }
+                    group.leave()
+                }
+            }
+            start.signal(); start.signal()
+            XCTAssertEqual(group.wait(timeout: .now() + 10), .success,
+                           "concurrent retire/reap hung")
+
+            // The tracked child was SIGKILLed exactly once (by whichever won)
+            // and is reapable; the registry is empty; the unrelated child lives.
+            XCTAssertTrue(reapAndWasKilled(tracked),
+                          "tracked child must be SIGKILLed under either ordering")
+            XCTAssertEqual(unison_bridge_reap_transport_children(), 0,
+                           "registry must be empty after concurrent retire+reap")
+            XCTAssertTrue(isAlive(unrelated), "unrelated child must survive")
+
+            kill(unrelated, SIGKILL)
+            var st: Int32 = 0
+            _ = waitpid(unrelated, &st, 0)
+            if let i = spawned.firstIndex(of: unrelated) { spawned.remove(at: i) }
+        }
+    }
 }

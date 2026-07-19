@@ -89,8 +89,10 @@ incompatible hosts rather than producing a bundle that won't launch.
 That's it. **No upstream Unison clone required** — a prebuilt
 `unison-blob.o` lives in `vendor/` (see
 [vendor/README.md](vendor/README.md) for provenance). The build
-compiles Swift + C, links against the vendored blob + the OCaml runtime
-from Homebrew, and finishes in a few seconds rather than the 5–10 min
+compiles Swift + C, links against the vendored blob + the OCaml 5.5.0
+runtime from your selected toolchain (the preferred, reproducible one is
+the opam 5.5.0 switch above; a Homebrew `ocaml` also works only while it
+is exactly 5.5.0), and finishes in a few seconds rather than the 5–10 min
 that a from-source upstream build would take. Maintainer-only target
 `make vendor-blob` rebuilds the vendored blob when upstream Unison
 bumps version.

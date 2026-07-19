@@ -21,8 +21,9 @@ void unison_bridge_startup(int argc, char *argv[]);
 void unison_bridge_shutdown(void);
 
 /* Transport-child (ssh) registry + pure-C shutdown reaper. OCaml populates the
- * registry via track/untrack (exact pid, right after spawn / strictly before
- * reap); `unison_bridge_shutdown` calls the reaper first thing. Exposed here
+ * registry via track/retire (exact pid: track right after spawn; retire
+ * strictly before the reap, where it SIGKILLs + removes the child under the
+ * mutex); `unison_bridge_shutdown` calls the reaper first thing. Exposed here
  * for the C shutdown path and for tests. See UnisonBridgeC.c and
  * docs/ssh-reaper-design.md. */
 void unison_bridge_track_child(pid_t pid);

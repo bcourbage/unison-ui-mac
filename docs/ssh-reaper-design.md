@@ -25,9 +25,11 @@ operations, all serialized by one leaf mutex:
 - **`retire(pid)`** — OCaml's teardown calls this **before** it
   `waitpid`/`close_session`s the child. Under the mutex, and **only while the
   pid is still registered**, it `SIGKILL`s the exact pid and removes it. The
-  child is therefore already dead (or a not-yet-reaped zombie) at the moment it
-  leaves the registry. Idempotent: a second `retire` finds nothing and never
-  signals.
+  precise guarantee is not that the child has *exited* by the time `kill()`
+  returns, but that **SIGKILL has been issued before the pid is removed**: the
+  child is thereafter irrevocably terminating (SIGKILL can't be caught or
+  blocked), and its pid stays reserved until the following `waitpid`. Idempotent:
+  a second `retire` finds nothing and never signals.
 - **`reap()`** — the pure-C shutdown pass. Under the mutex it sets `closing`,
   `SIGKILL`s every still-registered pid, then clears the set.
 
