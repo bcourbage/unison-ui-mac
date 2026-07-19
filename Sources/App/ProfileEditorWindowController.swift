@@ -96,9 +96,16 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
         configure()
         reload()
+        // Deliver on `.main` and enter the main actor SYNCHRONOUSLY so the
+        // button re-gates against the engine state as it is at the moment of
+        // the transition, not after a later async hop.
         engineActivityObserver = NotificationCenter.default.addObserver(
             forName: .engineActivityDidChange, object: nil, queue: .main
-        ) { [weak self] _ in self?.refreshButtonEnabled() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshButtonEnabled()
+            }
+        }
     }
 
     deinit {

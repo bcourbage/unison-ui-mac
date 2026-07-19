@@ -109,9 +109,18 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         window.center()
         configure()
         reload()
+        // Deliver on `.main` and enter the main actor SYNCHRONOUSLY: the
+        // notification carries no payload, so the handler must read the engine
+        // state right now, while it still reflects the transition that fired
+        // this callback. An async hop (Task) could run after a later busy→idle
+        // transition completes, letting StaleSnapshotGuard miss the busy phase.
         engineActivityObserver = NotificationCenter.default.addObserver(
             forName: .engineActivityDidChange, object: nil, queue: .main
-        ) { [weak self] _ in self?.engineActivityChanged() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.engineActivityChanged()
+            }
+        }
     }
 
     /// React to an engine-activity transition. Any activity dirties the stale
