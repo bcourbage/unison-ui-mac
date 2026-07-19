@@ -2,7 +2,7 @@ import AppKit
 import Darwin   // utsname / uname for arch detection in reportIssue body
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding {
 
     private var profileWindowController: ProfileWindowController?
     /// "Profile Editor" manager window (lists every .prf, supports
@@ -88,6 +88,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// closeConnection; a successful close before the queued session start).
     private func run(_ effects: [EngineSessionCoordinator.Effect]) {
         for effect in effects { execute(effect) }
+        // Every engine-phase transition funnels through here (all coordinator
+        // mutations are wrapped in `run(...)`). Broadcast so any open Settings
+        // / Profile Editor / Clean Stale window refreshes its destructive-
+        // action controls against the new idle state.
+        NotificationCenter.default.post(name: .engineActivityDidChange, object: self)
+    }
+
+    /// `EngineActivityProviding`: the app-side mirror of the coordinator's
+    /// destructive-mutation policy. Windows recheck this immediately before
+    /// mutating archive files.
+    var allowsDestructiveArchiveMutation: Bool {
+        engine.allowsDestructiveArchiveMutation
     }
 
     private func execute(_ effect: EngineSessionCoordinator.Effect) {

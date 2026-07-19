@@ -483,4 +483,95 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
         XCTAssertEqual(c.phase, .ready(s))
     }
+
+    // MARK: - Destructive archive-mutation policy (PR #7 review finding 1)
+    //
+    // `allowsDestructiveArchiveMutation` is the single coordinator-owned
+    // authority for Clean Stale Archives / Reset Archives / delete-with-
+    // archives. It must be true in exactly `.idle` and false in every other
+    // phase — a background scan/sync can still be reading archive files, a
+    // close is still tearing down, and `.restartRequired` is an uncertain
+    // runtime state a restart must clear first.
+
+    func test_archivePolicy_idle_allows() {
+        let c = C()
+        XCTAssertTrue(c.isIdle)
+        XCTAssertTrue(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_archivePolicy_opening_forbids() {
+        let c = C()
+        _ = c.requestOpen(profile: "A")                         // .opening
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_archivePolicy_scanning_forbids() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        _ = c.connectFinished(s, connectOp, result: .remote(interactive: false)) // .scanning
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_archivePolicy_ready_forbids() {
+        let c = C()
+        openToReady(c)                                          // .ready
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_archivePolicy_syncing_forbids() {
+        let c = C()
+        openToReady(c)
+        _ = beginSync(c.requestSync())!                         // .syncing
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_archivePolicy_closing_forbids_thenIdleAllows() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let e1 = c.connectFinished(s, connectOp, result: .remote(interactive: false))
+        let (_, scanOp) = beginScan(e1)!
+        // A quiescent scan failure closes the connection → .closing.
+        let closed = closeOp(c.operationFailed(s, scanOp, reason: "x",
+                                               engineIsQuiescent: true))!
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)      // .closing forbids
+        _ = c.closeCompleted(closed.0, closed.1, status: 0)
+        XCTAssertTrue(c.isIdle)
+        XCTAssertTrue(c.allowsDestructiveArchiveMutation)       // back to allowed
+    }
+
+    func test_archivePolicy_restartRequired_forbids() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let e1 = c.connectFinished(s, connectOp, result: .remote(interactive: false))
+        let (_, scanOp) = beginScan(e1)!
+        // A non-quiescent failure can't prove the runtime unwound → restart.
+        _ = c.operationFailed(s, scanOp, reason: "wedged", engineIsQuiescent: false)
+        XCTAssertTrue(c.isRestartRequired)
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    /// The confirmation-sheet TOCTOU case: the policy says yes when the sheet
+    /// opens (idle), a background operation starts before the user confirms,
+    /// and the recheck at mutation time must now refuse. This is why the final
+    /// handler rechecks the live policy rather than trusting a snapshot.
+    func test_archivePolicy_TOCTOU_busyBeforeConfirm_refuses() {
+        let c = C()
+        let snapshotAtSheetOpen = c.allowsDestructiveArchiveMutation
+        XCTAssertTrue(snapshotAtSheetOpen)                      // idle when sheet opened
+        _ = c.requestOpen(profile: "A")                        // engine becomes busy
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)      // live recheck refuses
+    }
+
+    /// The app-side gate helper fails safe: no provider (no authority to
+    /// confirm idle) → refuse; a busy provider → refuse; an idle provider →
+    /// allow. Mirrors what every final destructive handler evaluates.
+    func test_archiveMutationGate_providerContract() {
+        final class Stub: EngineActivityProviding {
+            var allowsDestructiveArchiveMutation: Bool
+            init(_ v: Bool) { allowsDestructiveArchiveMutation = v }
+        }
+        XCTAssertFalse(ArchiveMutationGate.isAllowed(nil))
+        XCTAssertFalse(ArchiveMutationGate.isAllowed(Stub(false)))
+        XCTAssertTrue(ArchiveMutationGate.isAllowed(Stub(true)))
+    }
 }

@@ -166,6 +166,21 @@ final class EngineSessionCoordinator {
 
     var isIdle: Bool { phase == .idle }
 
+    /// The single coordinator-owned policy for destructive engine/archive
+    /// maintenance (Clean Stale Archives, Reset Archives, deleting a
+    /// profile's archives, or anything else that moves/deletes/rewrites
+    /// Unison archive files). Such mutation touches the very `ar*`/`fp*`/`lk*`
+    /// files a live operation reads or writes, so it is allowed ONLY when the
+    /// engine owns no session at all — exactly `.idle`. Every other phase
+    /// (`.opening`/`.scanning`/`.ready`/`.syncing`/`.closing`/`.restartRequired`)
+    /// forbids it: a background sync/scan can still be reading archives, a
+    /// close is still tearing the connection down, and `.restartRequired`
+    /// means the runtime is in an uncertain state that a restart must clear
+    /// first. Drivers gate UI on this AND recheck it immediately before the
+    /// mutation (disabled controls alone can't close the confirm-sheet TOCTOU
+    /// window — the engine can become busy while a sheet is up).
+    var allowsDestructiveArchiveMutation: Bool { phase == .idle }
+
     /// True only in the terminal `restartRequired` phase. Used by the driver
     /// to authorize orphan-connection cleanup after a watchdog-invalidated
     /// connect: `currentSession == nil` alone would also be true in ordinary
