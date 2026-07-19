@@ -35,13 +35,13 @@ If the file for your architecture isn't here, you have two options:
 | --- | --- |
 | Upstream project | <https://github.com/bcpierce00/unison> |
 | Upstream version | **v2.54.0** |
-| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (`v2.54.0-11-g745dccd`) |
+| Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` (`v2.54.0-19-g91421d0`, on `origin/master`) |
 | Architecture | `arm64` (Apple Silicon) |
-| Built by | upstream's `make macui` after applying the patch in `patches/` |
-| Patches applied | `patches/0001-uimacbridge-register-abortAll.patch` (adds `Callback.register "abortAll"` for the mid-sync Stop button); `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6) |
-| SHA-256 | `96e00a3519f4ac7df37e48f17c39a24d4b1d0d0f1c276f19feebd44f02fe2113` |
+| Built by | upstream's `make macui` after applying the patches in `patches/` |
+| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8). `patches/0001-uimacbridge-register-abortAll.patch` is now merged upstream (PR #1198) and is already present at the base commit above, so `apply-patches` reports it "already applied". |
+| SHA-256 | `6097fd67900db16cb1d9ba16acc6b4b75a67eca3e8ea0521a4ea39b2d2407eb2` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
-| Size | 5.2 MB |
+| Size | 5.2 MB (5460320 bytes) |
 
 ## Provenance — what the current vendored manual is
 

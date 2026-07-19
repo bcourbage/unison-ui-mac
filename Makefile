@@ -96,6 +96,12 @@ apply-patches:
 		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0002-uimacbridge-register-closeConnection.patch; \
 	else \
 		echo "Patch already applied: 0002-uimacbridge-register-closeConnection.patch"; \
+	fi; \
+	if ! grep -q 'drainDroppedConnectionThreads' $(UNISON_SRC)/remote.ml; then \
+		echo "Applying patch: 0003-remote-close-and-drain.patch"; \
+		cd $(UNISON_SRC)/.. && patch -p1 < $(CURDIR)/patches/0003-remote-close-and-drain.patch; \
+	else \
+		echo "Patch already applied: 0003-remote-close-and-drain.patch"; \
 	fi
 
 # ----- OCaml blob -----
