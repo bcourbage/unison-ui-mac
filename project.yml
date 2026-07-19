@@ -98,6 +98,8 @@ targets:
         # NOTE: not inheriting — Xcode's Debug config defines DEBUG=1, which
         # activates CAMLassert macros that reference caml_failed_assert (only
         # present in OCaml's debug runtime libasmrund.a, which we don't link).
+        # We therefore can't use DEBUG to gate test-only C; UNISON_DEBUG_HOOKS
+        # (Debug-config only, below) plays that role for the reaper test reset.
         GCC_PREPROCESSOR_DEFINITIONS:
           - CAML_NAME_SPACE=1
         LIBRARY_SEARCH_PATHS:
@@ -110,6 +112,11 @@ targets:
           - -lunixnat
           - -lcamlstrnat
           - -lpthread
+      configs:
+        Debug:
+          GCC_PREPROCESSOR_DEFINITIONS:
+            - CAML_NAME_SPACE=1
+            - UNISON_DEBUG_HOOKS=1
 
   unison-ui-macTests:
     type: bundle.unit-test

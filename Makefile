@@ -29,6 +29,31 @@ ARCH := $(shell uname -m)
 VENDORED_BLOB := $(CURDIR)/vendor/unison-blob-$(UNISON_VERSION)-$(ARCH).o
 UPSTREAM_BLOB := $(UNISON_SRC)/unison-blob.o
 
+# ----- Pinned OCaml toolchain -----
+#
+# The vendored blob is compiled OCaml, and its runtime ABI is version-locked:
+# the app must LINK it against the SAME OCaml major.minor runtime (libasmrun.a,
+# libcamlstrnat.a from $(OCAMLLIBDIR) = $(shell ocamlc -where)). A silent
+# Homebrew upgrade to a newer OCaml would break linking (undefined caml_*
+# symbols) or, on a rebuild, produce a different blob. So the blob rebuild AND
+# app linking pin this exact version; CI/release install it via opam (see the
+# workflows) rather than following an unversioned `brew install ocaml`.
+# `check-ocaml-version` fails loudly on a mismatch.
+OCAML_PINNED_VERSION := 5.5.0
+
+.PHONY: check-ocaml-version
+check-ocaml-version:
+	@have="$$(ocamlc -version 2>/dev/null)"; \
+	if [ "$$have" != "$(OCAML_PINNED_VERSION)" ]; then \
+		echo "ERROR: OCaml $(OCAML_PINNED_VERSION) is required (found '$$have')." >&2; \
+		echo "       The vendored blob's runtime ABI is version-locked to it; building or" >&2; \
+		echo "       linking against a different OCaml is unsupported. Select OCaml" >&2; \
+		echo "       $(OCAML_PINNED_VERSION) (an opam switch, or a pinned Homebrew formula) —" >&2; \
+		echo "       see vendor/README.md — then retry." >&2; \
+		exit 1; \
+	fi; \
+	echo "OCaml toolchain OK: $$have (pinned $(OCAML_PINNED_VERSION))"
+
 # The rendered Unison reference manual that ships in the .app bundle as
 # Help → "Unison File Synchronizer Manual". Generated from upstream's
 # `doc/unison-manual.tex` via hevea (the same TeX→HTML converter
@@ -108,7 +133,7 @@ endif
 # Always uses $(UPSTREAM_BLOB) as the source — overriding BLOB= would
 # defeat the purpose of vendoring.
 .PHONY: vendor-blob
-vendor-blob:
+vendor-blob: check-ocaml-version
 	@if [ ! -d "$(UNISON_SRC)" ]; then \
 		echo "ERROR: upstream Unison checkout not found at $(UNISON_SRC)" >&2; \
 		echo "Clone it first:" >&2; \
@@ -116,7 +141,13 @@ vendor-blob:
 		exit 1; \
 	fi
 	$(MAKE) apply-patches
-	$(MAKE) -C $(UNISON_SRC)/.. macui
+	# Build ONLY the OCaml core object (unison-blob.o), not upstream's
+	# reference Unison.app. Patch 0004 makes uimacbridge.ml reference the
+	# app-side C reaper symbols (unison_bridge_register_child/…), which the
+	# blob links against fine (undefined here, resolved when OUR app links)
+	# but which upstream's own `macui` app link cannot resolve. We only need
+	# the blob object, so build that target directly via Makefile.OCaml.
+	cd $(UNISON_SRC) && $(MAKE) Makefile.cfg && $(MAKE) -f Makefile.OCaml unison-blob.o
 	@mkdir -p $(dir $(VENDORED_BLOB))
 	cp $(UPSTREAM_BLOB) $(VENDORED_BLOB)
 	@echo ""
@@ -209,7 +240,7 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 
 # ----- Build via xcodebuild -----
 .PHONY: build
-build: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
@@ -231,7 +262,7 @@ run: build
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
 # identically.
 .PHONY: test
-test: $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \

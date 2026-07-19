@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,19 @@ void unison_bridge_startup(int argc, char *argv[]);
  * Must be called AFTER unison_bridge_startup — would deadlock
  * otherwise (no OCaml worker to dispatch onto). */
 void unison_bridge_shutdown(void);
+
+/* Transport-child (ssh) registry + pure-C shutdown reaper. OCaml populates the
+ * registry via track/untrack (exact pid, right after spawn / strictly before
+ * reap); `unison_bridge_shutdown` calls the reaper first thing. Exposed here
+ * for the C shutdown path and for tests. See UnisonBridgeC.c and
+ * docs/ssh-reaper-design.md. */
+void unison_bridge_track_child(pid_t pid);
+void unison_bridge_untrack_child(pid_t pid);
+int  unison_bridge_reap_transport_children(void);
+/* Declared unconditionally so every target/config sees the prototype; only
+ * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls it, so
+ * a Release build links fine with no definition and the symbol is absent. */
+void unison_bridge_reset_child_registry_for_test(void);
 
 const char *unison_bridge_get_version(void);
 
