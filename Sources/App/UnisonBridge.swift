@@ -127,6 +127,30 @@ enum UnisonBridge {
         unison_bridge_set_sync_complete_handler(_swiftSyncCompleteTrampoline)
     }
 
+    /// Convert a C completion payload into `(ok, rows)`, rejecting malformed
+    /// success shapes rather than treating them as an empty successful snapshot:
+    /// a negative count, or a positive count with a null `rows` pointer, means
+    /// the results are actually unavailable (`ok=false`). Internal so it can be
+    /// unit-tested directly (the trampoline is otherwise a private thunk).
+    static func convertSyncCompletion(
+        ok: Bool, count: Int32, rows: UnsafePointer<unison_sync_row_t>?
+    ) -> (ok: Bool, rows: [SyncSnapshotRow]) {
+        guard ok else { return (false, []) }
+        if count < 0 || (count > 0 && rows == nil) { return (false, []) }
+        var converted: [SyncSnapshotRow] = []
+        if let rows, count > 0 {
+            converted.reserveCapacity(Int(count))
+            for i in 0..<Int(count) {
+                let r = rows[i]
+                converted.append(SyncSnapshotRow(
+                    progress: r.progress.map { String(cString: $0) } ?? "",
+                    details: r.details.map { String(cString: $0) } ?? "",
+                    bytesTransferred: r.bytes_transferred))
+            }
+        }
+        return (true, converted)
+    }
+
     static func installDiffHandler(_ handler: @escaping (String, String) -> Void) {
         diffHandler = handler
         unison_bridge_set_diff_handler(_swiftDiffTrampoline)
@@ -249,26 +273,7 @@ private func _swiftReloadRowTrampoline(row: Int32, state: UnsafePointer<unison_r
 private func _swiftSyncCompleteTrampoline(
     ok: Bool, count: Int32, rows: UnsafePointer<unison_sync_row_t>?
 ) {
-    var effectiveOk = ok
-    var converted: [SyncSnapshotRow] = []
-    if ok {
-        // Reject malformed success shapes rather than treat them as an empty
-        // successful snapshot: a negative count, or a positive count with a null
-        // rows pointer, means results are actually unavailable.
-        if count < 0 || (count > 0 && rows == nil) {
-            effectiveOk = false
-        } else if let rows, count > 0 {
-            converted.reserveCapacity(Int(count))
-            for i in 0..<Int(count) {
-                let r = rows[i]
-                converted.append(SyncSnapshotRow(
-                    progress: r.progress.map { String(cString: $0) } ?? "",
-                    details: r.details.map { String(cString: $0) } ?? "",
-                    bytesTransferred: r.bytes_transferred))
-            }
-        }
-    }
-    let deliverOk = effectiveOk
+    let (deliverOk, converted) = UnisonBridge.convertSyncCompletion(ok: ok, count: count, rows: rows)
     DispatchQueue.main.async {
         UnisonBridge.syncCompleteHandler?(deliverOk, converted)
     }

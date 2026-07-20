@@ -874,21 +874,65 @@ final class BridgeTests: XCTestCase {
         UnisonBridge.installSyncCompleteHandler { _, _ in }   // restore benign
     }
 
-    func test_g_syncSnapshot_accessorRaiseAfterFirstRow_unavailableNoPartial() throws {
+    func test_g_syncSnapshot_accessorRaiseEachFieldAfterFirstRow_unavailableNoPartial() throws {
         let fixture = try IntegrationFixture(name: "syncsnapaccessor")
         try fixture.populate(aFiles: ["a.txt": "x\n", "c.txt": "z\n"],
                              bFiles: ["b.txt": "y\n", "c.txt": "zz\n"])
         let items = scanFixtureItems(fixture)
         XCTAssertGreaterThan(items.count, 1)
-        // Raise the DETAILS accessor at row 1 — after row 0 was fully marshalled.
-        unison_bridge_test_fail_snapshot_accessor_at(1, 1)
-        let (ok, rows) = runSyncSnapshotOnce()
-        XCTAssertFalse(ok, "an accessor raise → results unavailable")
-        XCTAssertEqual(rows.count, 0, "no partial rows published")
-        // Runtime still usable: a clean run now succeeds.
-        let (ok2, rows2) = runSyncSnapshotOnce()
-        XCTAssertTrue(ok2)
-        XCTAssertEqual(rows2.count, items.count)
+        // Raise each accessor field in turn AT ROW 1 (after row 0 was fully
+        // marshalled): 0 = progress, 1 = details, 2 = bytes.
+        for field: Int32 in 0...2 {
+            unison_bridge_test_fail_snapshot_accessor_at(1, field)
+            let (ok, rows) = runSyncSnapshotOnce()
+            XCTAssertFalse(ok, "field \(field) raise → results unavailable")
+            XCTAssertEqual(rows.count, 0, "field \(field): no partial rows published")
+            // Runtime still usable: a clean run now succeeds.
+            let (ok2, rows2) = runSyncSnapshotOnce()
+            XCTAssertTrue(ok2, "field \(field): clean snapshot after the failure")
+            XCTAssertEqual(rows2.count, items.count)
+        }
+        UnisonBridge.installSyncCompleteHandler { _, _ in }
+    }
+
+    /// The REAL public completion path end-to-end: `unison_bridge_synchronize()`
+    /// → vendored `unisonSynchronize` → `do_unisonSynchronize` → `syncComplete
+    /// !theState` (patch 0005) → C marshaller → Swift handler. Uses conflict-free
+    /// one-sided files so the sync propagates cleanly, and asserts the files
+    /// actually moved between roots.
+    func test_h_realSync_propagatesFiles_andDeliversSnapshot() throws {
+        let fixture = try IntegrationFixture(name: "realsync")
+        try fixture.populate(aFiles: ["only-a.txt": "AAA\n"],
+                             bFiles: ["only-b.txt": "BBB\n"])
+        let scanned = scanFixtureItems(fixture)
+        XCTAssertGreaterThan(scanned.count, 0)
+
+        let done = expectation(description: "real syncComplete delivered")
+        var deliveries = 0
+        var captured: (ok: Bool, rows: [SyncSnapshotRow]) = (false, [])
+        UnisonBridge.installSyncCompleteHandler { ok, rows in
+            deliveries += 1
+            captured = (ok, rows)
+            done.fulfill()
+        }
+        // Invoke the REAL OCaml caller (NOT the test seam).
+        XCTAssertEqual(unison_bridge_synchronize(), UNISON_BRIDGE_OK,
+                       "synchronize dispatch should launch cleanly")
+        wait(for: [done], timeout: 30.0)
+
+        XCTAssertEqual(deliveries, 1, "exactly one completion arrives")
+        XCTAssertTrue(captured.ok, "completion is ok=true")
+        XCTAssertEqual(captured.rows.count, scanned.count,
+                       "snapshot count matches the scanned rows")
+        for r in captured.rows { XCTAssertFalse(r.details.isEmpty, "details populated") }
+        XCTAssertTrue(captured.rows.contains { $0.progress == "done" },
+                      "a propagated one-sided row reports done")
+
+        let fm = FileManager.default
+        XCTAssertTrue(fm.fileExists(atPath: fixture.bRoot.appendingPathComponent("only-a.txt").path),
+                      "A's file was propagated to B")
+        XCTAssertTrue(fm.fileExists(atPath: fixture.aRoot.appendingPathComponent("only-b.txt").path),
+                      "B's file was propagated to A")
         UnisonBridge.installSyncCompleteHandler { _, _ in }
     }
 

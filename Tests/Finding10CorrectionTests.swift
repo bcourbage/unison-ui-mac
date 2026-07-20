@@ -54,4 +54,20 @@ final class Finding10CorrectionTests: XCTestCase {
         XCTAssertEqual(ok.tint, .systemGreen)
         XCTAssertEqual(ok.accessibilityLabel, "Synchronization completed")
     }
+
+    // MARK: - Swift malformed-success guard (ABI)
+
+    func test_convertSyncCompletion_rejectsMalformedSuccessShapes() {
+        // Positive count with a NULL rows pointer is NOT an empty success —
+        // it's unavailable results.
+        XCTAssertFalse(UnisonBridge.convertSyncCompletion(ok: true, count: 3, rows: nil).ok)
+        // Negative count is also malformed → unavailable.
+        XCTAssertFalse(UnisonBridge.convertSyncCompletion(ok: true, count: -1, rows: nil).ok)
+        // ok=false is unavailable regardless of count.
+        XCTAssertFalse(UnisonBridge.convertSyncCompletion(ok: false, count: 5, rows: nil).ok)
+        // A genuine empty success (ok=true, count 0, null rows) stays ok=true.
+        let empty = UnisonBridge.convertSyncCompletion(ok: true, count: 0, rows: nil)
+        XCTAssertTrue(empty.ok)
+        XCTAssertTrue(empty.rows.isEmpty)
+    }
 }

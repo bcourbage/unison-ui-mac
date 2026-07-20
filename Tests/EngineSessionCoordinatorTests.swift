@@ -177,15 +177,20 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.syncCompleted(s, syncOp, results: .unavailable(reason: "y")), [])
     }
 
-    func test_syncCompleted_wrongOperationID_rejected() {
+    func test_syncCompleted_wrongOperationID_rejected_leaveRealOpPending() {
         let c = C()
         let (s, _) = openToReady(c, interactive: true)
-        _ = beginSync(c.requestSync())!.1                    // the real sync op is pending
+        let syncOp = beginSync(c.requestSync())!.1           // the real sync op is pending
         // A completion carrying a DIFFERENT operation id than the pending sync
-        // matches no `.syncing(s, op)` phase and is dropped — it must not
-        // present results or release the (still-pending) real op's lease.
+        // matches no `.syncing(s, op)` phase and is dropped.
         let wrongOp = C.OperationID(raw: 999_999)
         XCTAssertEqual(c.syncCompleted(s, wrongOp, results: .available([])), [])
+        // The real op's phase/lease is untouched — still syncing, not released.
+        XCTAssertEqual(c.phase, .syncing(s, syncOp))
+        // ...and the genuine completion still lands normally afterward.
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])),
+                       [.presentSyncResults(s, [])])
+        XCTAssertEqual(c.phase, .ready(s))
     }
 
     func test_interactive_holdsThroughSyncEnd_closesOnLeave() {
