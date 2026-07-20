@@ -43,7 +43,7 @@ If the file for your architecture isn't here, you have two options:
 | SHA-256 | `2f345306314305d8e921fea587d913b628b86872553bc3776047ef58fe1dfc89` (was `a57f5c4ec18d96277ac2cde58a7d8f703b012daffdefa42877638671eb062b03` before patch 0005) |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
 | Size | 5.5 MB (5462568 bytes) |
-| Reproducibility | Source, patch set (0002+0003+0004), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain — observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
+| Reproducibility | Source, patch set (0002+0003+0004+0005), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain — observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
 
 ## Provenance — what the current vendored manual is
 
