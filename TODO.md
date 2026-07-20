@@ -136,6 +136,37 @@ section at the bottom so this list stays scannable.
       Release redaction is relied upon by os_log semantics, not asserted at
       runtime.
 
+      **Finding #11 (2026-07-20):** profile save/rename is failure-safe,
+      retry-consistent, and race-safe. A pure `ProfileSaveTransaction` (behind a
+      `ProfileFileOps` protocol; real `SystemFileOps`) backs up the existing
+      profile before overwriting via a temp + atomic move over `.bak` (a backup
+      failure never destroys the prior `.bak`); a rename installs the new-named
+      file first and removes the old only after, so the original stays
+      recoverable until the replacement is durable, and it backs up the
+      immediately-pre-save source content under the new name (refusing up front
+      if `<newName>.prf.bak` already exists). New profiles and renames install
+      the destination with ATOMIC NO-REPLACE semantics (`installExclusive` → a
+      unique per-call `mkstemp` staging file, then `renamex_np(RENAME_EXCL)`),
+      closing the TOCTOU race after the `exists` pre-check and never clobbering a
+      destination that appeared mid-flight; concurrent callers use independent
+      private staging and cannot cross-write. `SystemFileOps.move` uses POSIX
+      `rename(2)` (atomic replace, never momentarily absent). Failures are
+      reported honestly: a rollback that itself fails throws `.rollbackFailed`
+      naming the true residue, and a temp-cleanup failure throws `.cleanupFailed`
+      naming the residual temp — never a false "nothing changed". Crash scope is
+      precise: each step is crash-atomic, but the multi-step rename is not one
+      crash-atomic transaction (a hard crash between steps leaves a well-defined
+      recoverable intermediate); in-process failures are all-or-nothing via the
+      rollbacks. `ProfileFormWindowController` updates identity
+      (`initialProfileName`) + prefs only after the transaction commits, so a
+      failure leaves a coherent, retryable state. **Coverage:** per-stage fault
+      injection via an in-memory `FakeFileOps` + real-`SystemFileOps` tests
+      (atomic no-replace refuses an existing destination; concurrent contenders →
+      exactly one winner whose destination holds complete bytes; destination-race
+      refused; honest rollback/cleanup residue; no staging residue after success
+      or collision). Pure/unit-level; the AppKit save button is not driven by a
+      UI harness.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
