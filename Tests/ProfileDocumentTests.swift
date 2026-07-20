@@ -82,11 +82,14 @@ final class ProfileDocumentTests: XCTestCase {
         ])
     }
 
-    func test_parse_malformedLine_becomesCommentRatherThanLost() {
-        // A line that's not blank, not a comment, and has no `=` is
-        // treated as a comment on parse so save doesn't drop user content.
+    func test_parse_malformedLine_preservedVerbatimAsRaw() {
+        // Finding #7: a line that's not blank, not a comment, not a directive,
+        // and has no `=` is preserved VERBATIM as `.raw` (previously it was
+        // turned into a comment, which silently disabled real directives). It
+        // must survive a round-trip byte-for-byte, never `# `-prefixed.
         let doc = ProfileDocument.parse("this is not valid\n")
-        XCTAssertEqual(doc.entries.first, .comment("this is not valid"))
+        XCTAssertEqual(doc.entries.first, .raw("this is not valid"))
+        XCTAssertEqual(doc.serialized, "this is not valid\n")
     }
 
     // MARK: - Mutations
@@ -136,7 +139,8 @@ final class ProfileDocumentTests: XCTestCase {
             case .blank:                       return "blank"
             case .comment(let c):              return "# \(c)"
             case .keyValue(let k, let v):      return "\(k)=\(v)"
-            case .include(let n):              return "include \(n)"
+            case .directive(let d):            return "\(d.kind.keyword) \(d.argument)"
+            case .raw(let s):                  return "raw \(s)"
             }
         }
         XCTAssertEqual(kinds, [

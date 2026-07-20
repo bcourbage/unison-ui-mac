@@ -57,6 +57,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     // Built in configure() (needs the list of existing profiles).
     private var includesView: IncludeListView!
+    /// Finding #7: set by every genuine Includes-editor change (add/remove/name/
+    /// Top-Bottom/comment), reset after form population. Drives the no-op include
+    /// decision explicitly, so an untouched Includes section is always treated as
+    /// unchanged even when its displayed form is lossy.
+    private var includesDirty = false
 
     // Catch-all for unknown keys / advanced prefs
     private let advancedView = ListFieldView(
@@ -454,7 +459,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             label: "Included profiles",
             help: "Pull in another prefs file's settings. \"Top\" applies before this profile, so this profile wins single-value conflicts. \"Bottom\" applies after, so the included file wins.",
             existingNames: existingProfileNames())
-        includesView.onChange = { [weak self] in self?.refreshIncludesBanner() }
+        includesView.onChange = { [weak self] in
+            self?.includesDirty = true       // a genuine user edit (add/remove/name/pos/comment)
+            self?.refreshIncludesBanner()
+        }
 
         // ----- Sidebar sections (controls rehoused) -----
         sectionViews = [
@@ -753,6 +761,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         includesView.entries =
             prfDocument.topIncludes.map { (name: Self.displayIncludeName($0.name), top: true, comment: $0.comment) }
             + prfDocument.bottomIncludes.map { (name: Self.displayIncludeName($0.name), top: false, comment: $0.comment) }
+        // Populating the combo programmatically doesn't fire `onChange`, but
+        // reset the dirty flag explicitly so a fresh form is never seen as edited.
+        includesDirty = false
         refreshIncludesBanner()
     }
 
@@ -1036,15 +1047,37 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // end-of-document would land *below* a just-placed bottom include,
         // flipping their order (the reported "include jumps above my
         // Advanced item" bug). Top includes still land before the first pref.
-        let inc = includesView.entries
-            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
-        doc.setIncludes(
-            top: inc.filter { $0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
-            bottom: inc.filter { !$0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
+        //
+        // Finding #7: only rebuild the includes when the user actually changed
+        // them. If unchanged, leave every include lexeme, pass-through directive,
+        // raw line, comment, and position exactly as loaded. `.refuseUnmanaged`
+        // is handled (and refused) in `saveAction` before any mutation; treat it
+        // as a no-op here defensively (and `setIncludes` itself refuses too).
+        switch includeSaveDecision() {
+        case .unchanged, .refuseUnmanaged:
+            break
+        case .applyTopBottom:
+            let edited = includesView.entries
+                .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+            doc.setIncludes(
+                top: edited.filter { $0.top }
+                    .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
+                bottom: edited.filter { !$0.top }
+                    .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
+        }
 
         return doc
+    }
+
+    /// The Finding #7 include-save decision. No-op detection uses the explicit
+    /// editor dirty flag (`includesDirty`), NOT a lossy display-projection
+    /// comparison — an untouched Includes section is always `.unchanged`. Used by
+    /// `saveAction` (to refuse before any filesystem work) and by
+    /// `formIntoDocument` (to skip or apply the rebuild).
+    private func includeSaveDecision() -> ProfileDocument.IncludeSaveDecision {
+        ProfileDocument.includeSaveDecision(
+            includesEdited: includesDirty,
+            hasUnmanagedOrderedEntries: prfDocument.hasUnmanagedOrderedEntries)
     }
 
     /// Add the "pop-out" button to the title bar's upper-right corner as a
@@ -1274,6 +1307,19 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Names with spaces are fine: ProfileDocument escapes them on write
         // (`include File\ System\ Ignores`), which Unison reads back as one
         // word. No validation needed here.
+
+        // Finding #7: if the user changed the includes AND this profile contains
+        // unmanaged ordered content — pass-through directives (`source`/
+        // `include?`/`source?`) OR any line the editor doesn't recognize — refuse
+        // the save BEFORE touching the filesystem. Rebuilding includes could
+        // reorder that content and silently change how preferences override each
+        // other.
+        if includeSaveDecision() == .refuseUnmanaged {
+            showAlert(text: "Includes can't be edited here",
+                      info: "This profile contains ordered lines the Includes section doesn't manage — for example source, include?, or source? directives, or other custom lines. Changing includes here could reorder them and alter how settings override each other. Use “Open .prf” to edit this profile in your text editor, then reload.",
+                      style: .warning)
+            return
+        }
 
         let doc = formIntoDocument()
         let text = doc.serialized
