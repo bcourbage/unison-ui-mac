@@ -243,6 +243,23 @@ section at the bottom so this list stays scannable.
       REMOTE (ssh) sync is still not driven by an automated harness; the
       local-replica real path and the marshaller are covered.
 
+      **L2 (2026-07-20):** the one-shot `-ignorearchives` crash cleanup is now
+      anchored to the EXACT app-owned suffix. Injection and cleanup share one
+      definition (`AppDelegate.ignoreArchivesInjectedSuffix` =
+      `"\n<marker>\nignorearchives = true\n"`) so they can't drift. The pure
+      `contentByStrippingInjectedSuffix(_:)` removes the block ONLY when the
+      file ENDS WITH that exact suffix (restoring the preceding bytes verbatim)
+      and returns nil ("no mutation") otherwise — it no longer substring-scans
+      for the marker or an isolated marker line, so a user's own comment or
+      `ignorearchives` line is never touched, and absent-suffix files are not
+      rewritten at all. Covered by pure tests: intended suffix removed; exact
+      restore for no-trailing-newline / LF-blank-line / CRLF originals; marker
+      substring in a user comment preserved; exact marker+user-pref NOT at EOF
+      preserved; no-marker → no mutation; idempotent second pass. (L3 vendored-
+      blob provenance enforcement remains explicitly DEFERRED until the next
+      engine rebuild / upstream bump; the current blob is manually verified at
+      `2f345306…` and release builds do not regenerate it.)
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
