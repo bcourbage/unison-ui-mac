@@ -422,64 +422,130 @@ CAMLprim value reloadTable(value row) {
  * NO partial rows — never interpreted as "no failures". This snapshot is a
  * read-only completion result, kept entirely separate from `g_ri_roots` (the
  * scan-state publication). Swift copies all strings before this returns. */
-CAMLprim value syncComplete(value state) {
-    CAMLparam1(state);
+#if UNISON_DEBUG_HOOKS
+/* Finding #10 fault injection: force a specific (row, field) accessor in the
+ * snapshot marshaller to behave as if it raised. field: 0=progress 1=details
+ * 2=bytes. row < 0 disables. One-shot cleared after it fires. */
+static atomic_int g_test_snapshot_fail_row   = -1;
+static atomic_int g_test_snapshot_fail_field = -1;
+void unison_bridge_test_fail_snapshot_accessor_at(int row, int field) {
+    atomic_store(&g_test_snapshot_fail_field, field);
+    atomic_store(&g_test_snapshot_fail_row, row);
+}
+static bool test_snapshot_should_fail(size_t row, int field) {
+    if (atomic_load(&g_test_snapshot_fail_row) != (int)row) return false;
+    if (atomic_load(&g_test_snapshot_fail_field) != field) return false;
+    atomic_store(&g_test_snapshot_fail_row, -1);   /* one-shot */
+    return true;
+}
+#endif
+
+/* Shared snapshot marshaller (Finding #10). `row_at(i)` returns the i-th
+ * stateItem as a GC-rooted `value` (the caller keeps the backing array rooted).
+ * Builds the COMPLETE C snapshot before publishing; any accessor raise, OOM, or
+ * injected fault frees the partial candidate and delivers exactly one
+ * `ok=false` result (no partial rows). On success delivers `ok=true` exactly
+ * once. `item` is CAMLlocal-rooted across the allocating accessor calls. */
+static void deliver_sync_snapshot(size_t n, value (^row_at)(size_t)) {
+    CAMLparam0();
     CAMLlocal1(item);
 
-    if (g_sync_complete_handler == NULL) {
-        CAMLreturn(Val_unit);
-    }
+    if (g_sync_complete_handler == NULL) { CAMLreturn0; }
 
     const value *fn_progress = caml_named_value("unisonRiToProgress");
     const value *fn_details  = caml_named_value("unisonRiToDetails");
     const value *fn_bytes    = caml_named_value("unisonRiToBytesTransferred");
     if (fn_progress == NULL || fn_details == NULL || fn_bytes == NULL) {
-        fprintf(stderr, "unison-mac: syncComplete: a result accessor is not "
+        fprintf(stderr, "unison-mac: sync snapshot: a result accessor is not "
                         "registered (stale blob?) — results unavailable\n");
         g_sync_complete_handler(false, 0, NULL);
-        CAMLreturn(Val_unit);
+        CAMLreturn0;
     }
 
-    const size_t n = (size_t)Wosize_val(state);
     unison_sync_row_t *out = NULL;
     if (n > 0) {
         out = calloc(n, sizeof(*out));
         if (out == NULL) {
-            fprintf(stderr, "unison-mac: syncComplete: OOM allocating %zu result "
-                            "rows — results unavailable\n", n);
+            fprintf(stderr, "unison-mac: sync snapshot: OOM allocating %zu rows — "
+                            "results unavailable\n", n);
             g_sync_complete_handler(false, 0, NULL);
-            CAMLreturn(Val_unit);
+            CAMLreturn0;
         }
     }
 
     bool raised = false, oom = false;
     size_t built = 0;
     for (size_t i = 0; i < n; i++) {
-        item = Field(state, i);   /* CAMLlocal-rooted across the allocating calls */
+        item = row_at(i);   /* rooted across the allocating calls below */
         built = i + 1;
         value v;
+#if UNISON_DEBUG_HOOKS
+        if (test_snapshot_should_fail(i, 0)) { raised = true; break; }
+#endif
         v = bridge_call1_exn(fn_progress, item, &raised); if (raised) break;
         out[i].progress = bridge_strdup(String_val(v));   if (!out[i].progress) { oom = true; break; }
+#if UNISON_DEBUG_HOOKS
+        if (test_snapshot_should_fail(i, 1)) { raised = true; break; }
+#endif
         v = bridge_call1_exn(fn_details, item, &raised);  if (raised) break;
         out[i].details = bridge_strdup(String_val(v));    if (!out[i].details) { oom = true; break; }
+#if UNISON_DEBUG_HOOKS
+        if (test_snapshot_should_fail(i, 2)) { raised = true; break; }
+#endif
         v = bridge_call1_exn(fn_bytes, item, &raised);    if (raised) break;
         out[i].bytes_transferred = (int64_t)Double_val(v);
     }
 
     if (raised || oom) {
-        fprintf(stderr, "unison-mac: syncComplete: snapshot marshalling failed "
-                        "(%s) — results unavailable, no partial rows\n",
+        fprintf(stderr, "unison-mac: sync snapshot: marshalling failed (%s) — "
+                        "results unavailable, no partial rows\n",
                         raised ? "accessor raised" : "allocation");
         free_sync_rows(out, built);
         g_sync_complete_handler(false, 0, NULL);
-        CAMLreturn(Val_unit);
+        CAMLreturn0;
     }
 
-    /* Success — deliver the complete snapshot exactly once. */
     g_sync_complete_handler(true, (int)n, out);
     free_sync_rows(out, n);
+    CAMLreturn0;
+}
+
+CAMLprim value syncComplete(value state) {
+    CAMLparam1(state);
+    /* Defensive ABI guards. The typed OCaml `stateItem array` boundary already
+     * guarantees a boxed (tag-0) block array, so these are unreachable in
+     * practice — but keep them so a malformed value can never reach
+     * Wosize_val/Field, and the size_t→int width is bounded before delivery. */
+    if (!Is_block(state) || Tag_val(state) != 0) {
+        fprintf(stderr, "unison-mac: syncComplete: value is not an array — unavailable\n");
+        if (g_sync_complete_handler) g_sync_complete_handler(false, 0, NULL);
+        CAMLreturn(Val_unit);
+    }
+    const size_t n = (size_t)Wosize_val(state);
+    if (n > (size_t)INT32_MAX) {
+        fprintf(stderr, "unison-mac: syncComplete: implausible row count %zu — unavailable\n", n);
+        if (g_sync_complete_handler) g_sync_complete_handler(false, 0, NULL);
+        CAMLreturn(Val_unit);
+    }
+    deliver_sync_snapshot(n, ^(size_t i){ return Field(state, i); });
     CAMLreturn(Val_unit);
 }
+
+#if UNISON_DEBUG_HOOKS
+/* Exercise the REAL snapshot marshaller over the currently-rooted scan rows
+ * (g_ri_roots) — the same accessor→strdup→deliver path syncComplete uses — so
+ * a test proves the bridge boundary without a synthetic OCaml array or a live
+ * sync, and without another vendored-blob change. The marshaller calls
+ * `caml_callback`, so it MUST run on the OCaml runtime thread (with the lock),
+ * exactly as OCaml invokes the real `syncComplete`. */
+static void _ocaml_run_sync_snapshot(void *user) {
+    (void)user;
+    deliver_sync_snapshot((size_t)g_ri_count, ^(size_t i){ return g_ri_roots[i]; });
+}
+void unison_bridge_test_run_sync_snapshot(void) {
+    run_on_ocaml_thread(_ocaml_run_sync_snapshot, NULL);
+}
+#endif
 
 /* Preconnection from unisonInit1Complete, kept alive across credential calls.
  * `g_has_preconn` guards both presence-of-value and root-registration so we

@@ -249,19 +249,28 @@ private func _swiftReloadRowTrampoline(row: Int32, state: UnsafePointer<unison_r
 private func _swiftSyncCompleteTrampoline(
     ok: Bool, count: Int32, rows: UnsafePointer<unison_sync_row_t>?
 ) {
+    var effectiveOk = ok
     var converted: [SyncSnapshotRow] = []
-    if ok, let rows, count > 0 {
-        converted.reserveCapacity(Int(count))
-        for i in 0..<Int(count) {
-            let r = rows[i]
-            converted.append(SyncSnapshotRow(
-                progress: r.progress.map { String(cString: $0) } ?? "",
-                details: r.details.map { String(cString: $0) } ?? "",
-                bytesTransferred: r.bytes_transferred))
+    if ok {
+        // Reject malformed success shapes rather than treat them as an empty
+        // successful snapshot: a negative count, or a positive count with a null
+        // rows pointer, means results are actually unavailable.
+        if count < 0 || (count > 0 && rows == nil) {
+            effectiveOk = false
+        } else if let rows, count > 0 {
+            converted.reserveCapacity(Int(count))
+            for i in 0..<Int(count) {
+                let r = rows[i]
+                converted.append(SyncSnapshotRow(
+                    progress: r.progress.map { String(cString: $0) } ?? "",
+                    details: r.details.map { String(cString: $0) } ?? "",
+                    bytesTransferred: r.bytes_transferred))
+            }
         }
     }
+    let deliverOk = effectiveOk
     DispatchQueue.main.async {
-        UnisonBridge.syncCompleteHandler?(ok, converted)
+        UnisonBridge.syncCompleteHandler?(deliverOk, converted)
     }
 }
 

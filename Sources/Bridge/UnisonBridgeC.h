@@ -70,6 +70,15 @@ void unison_bridge_test_suppress_consumer(int on);
  * that). Debug-only symbol — absent from Release. */
 void unison_bridge_test_reset_ri_get_details_count(void);
 int  unison_bridge_test_ri_get_details_count(void);
+/* Test-only (Finding #10): run the REAL sync-completion snapshot marshaller
+ * over the currently-rooted scan rows (g_ri_roots), exercising the actual
+ * accessor→strdup→handler bridge boundary without a live sync. */
+void unison_bridge_test_run_sync_snapshot(void);
+/* Test-only (Finding #10): force the (row, field) accessor in the snapshot
+ * marshaller to raise. field: 0=progress 1=details 2=bytes. row < 0 disables.
+ * One-shot. Pairs with `unison_bridge_test_fail_strdup_at` for allocation
+ * failure after N rows. Debug-only symbols — absent from Release. */
+void unison_bridge_test_fail_snapshot_accessor_at(int row, int field);
 
 /* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
 #define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */

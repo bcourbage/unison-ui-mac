@@ -843,6 +843,72 @@ final class BridgeTests: XCTestCase {
         // single g_ri_roots[row]) and the independent per-row tests above — NOT
         // by a live readback here, so no such assertion is made.
     }
+
+    // MARK: - Finding #10: real sync-completion snapshot bridge boundary
+
+    /// Run the REAL snapshot marshaller (over the just-scanned rooted rows) once
+    /// and return the delivered (ok, rows). Exercises OCaml accessors → C strdup
+    /// → Swift handler — the actual completion path, not `SyncCompletionModel`.
+    private func runSyncSnapshotOnce() -> (ok: Bool, rows: [SyncSnapshotRow]) {
+        let exp = expectation(description: "sync snapshot delivered")
+        var result: (Bool, [SyncSnapshotRow]) = (false, [])
+        UnisonBridge.installSyncCompleteHandler { ok, rows in result = (ok, rows); exp.fulfill() }
+        unison_bridge_test_run_sync_snapshot()
+        wait(for: [exp], timeout: 5.0)
+        return result
+    }
+
+    func test_g_syncSnapshot_realBoundary_okExactRowsPlausibleFields() throws {
+        let fixture = try IntegrationFixture(name: "syncsnap")
+        try fixture.populate(aFiles: ["a.txt": "x\n", "both.txt": "a\n"],
+                             bFiles: ["b.txt": "y\n", "both.txt": "b\n"])
+        let items = scanFixtureItems(fixture)
+        XCTAssertGreaterThan(items.count, 0)
+        let (ok, rows) = runSyncSnapshotOnce()
+        XCTAssertTrue(ok, "real marshaller must deliver ok=true")
+        XCTAssertEqual(rows.count, items.count, "exact row count")
+        for r in rows {
+            // `unisonRiToDetails` always emits at least the row's path.
+            XCTAssertFalse(r.details.isEmpty, "details is populated")
+        }
+        UnisonBridge.installSyncCompleteHandler { _, _ in }   // restore benign
+    }
+
+    func test_g_syncSnapshot_accessorRaiseAfterFirstRow_unavailableNoPartial() throws {
+        let fixture = try IntegrationFixture(name: "syncsnapaccessor")
+        try fixture.populate(aFiles: ["a.txt": "x\n", "c.txt": "z\n"],
+                             bFiles: ["b.txt": "y\n", "c.txt": "zz\n"])
+        let items = scanFixtureItems(fixture)
+        XCTAssertGreaterThan(items.count, 1)
+        // Raise the DETAILS accessor at row 1 — after row 0 was fully marshalled.
+        unison_bridge_test_fail_snapshot_accessor_at(1, 1)
+        let (ok, rows) = runSyncSnapshotOnce()
+        XCTAssertFalse(ok, "an accessor raise → results unavailable")
+        XCTAssertEqual(rows.count, 0, "no partial rows published")
+        // Runtime still usable: a clean run now succeeds.
+        let (ok2, rows2) = runSyncSnapshotOnce()
+        XCTAssertTrue(ok2)
+        XCTAssertEqual(rows2.count, items.count)
+        UnisonBridge.installSyncCompleteHandler { _, _ in }
+    }
+
+    func test_g_syncSnapshot_allocFailureAfterFirstRow_unavailableNoPartial() throws {
+        let fixture = try IntegrationFixture(name: "syncsnapalloc")
+        try fixture.populate(aFiles: ["a.txt": "x\n", "c.txt": "z\n"],
+                             bFiles: ["b.txt": "y\n", "c.txt": "zz\n"])
+        let items = scanFixtureItems(fixture)
+        XCTAssertGreaterThan(items.count, 1)
+        // Per row the marshaller does 2 strdups (progress, details); K=3 fails
+        // row 1's progress — after row 0 was fully built.
+        unison_bridge_test_fail_strdup_at(3)
+        let (ok, rows) = runSyncSnapshotOnce()
+        XCTAssertFalse(ok, "a string-copy failure → results unavailable")
+        XCTAssertEqual(rows.count, 0, "no partial rows published")
+        let (ok2, rows2) = runSyncSnapshotOnce()
+        XCTAssertTrue(ok2, "runtime usable after the injected failure")
+        XCTAssertEqual(rows2.count, items.count)
+        UnisonBridge.installSyncCompleteHandler { _, _ in }
+    }
 }
 
 // MARK: - Integration fixture helper

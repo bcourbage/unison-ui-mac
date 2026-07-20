@@ -807,13 +807,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// tinted bold summary text. Called from `finalizeSyncUI` after the
     /// summary text is set. The next `setSummary` (e.g. a rescan) clears
     /// it via `clearCompletionEmphasis`.
-    private func applyCompletionEmphasis(failures: Int, stopped: Bool = false) {
-        let emphasis = ReconcileSummary.completionEmphasis(failures: failures, stopped: stopped)
+    private func applyCompletionEmphasis(failures: Int, stopped: Bool = false,
+                                         resultsUnavailable: Bool = false) {
+        let emphasis = ReconcileSummary.completionEmphasis(
+            failures: failures, stopped: stopped, resultsUnavailable: resultsUnavailable)
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [emphasis.tint]))
         statusIcon.image = NSImage(systemSymbolName: emphasis.symbolName,
-                                   accessibilityDescription: emphasis.symbolName)?
+                                   accessibilityDescription: emphasis.accessibilityLabel)?
             .withSymbolConfiguration(config)
         statusIcon.isHidden = false
         summaryLabel.textColor = emphasis.tint
@@ -1054,7 +1056,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         phase = .done(failures: 0)
         setSummary("Synchronization finished, but its per-file results could not "
                    + "be displayed. Rescan before synchronizing again.")
-        applyCompletionEmphasis(failures: 0, stopped: false)
+        applyCompletionEmphasis(failures: 0, stopped: false, resultsUnavailable: true)
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: sync results unavailable — \(reason)")
     }
@@ -1739,13 +1741,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }()
         switch identifier {
         case DirectionAction.goIdentifier:
-            // Go: same gate as direction overrides. Disabled during
-            // sync, after sync completes, and when items is empty. Also
-            // explicitly disabled while sync results are unavailable — the
-            // displayed rows aren't trustworthy, so never re-sync from them
-            // (Rescan is the way forward). Redundant with the `.done` phase but
-            // stated for safety.
-            return isActionable && !syncResultsUnavailable
+            // Go: same gate as direction overrides. Disabled during sync, after
+            // sync completes, when items is empty, and when results are
+            // unavailable (`isActionable` now folds in `resultsUnavailable`).
+            return isActionable
         case DirectionAction.stopIdentifier:
             // Stop is meaningful while a sync is in flight OR while the
             // connect/scan is running — the latter lets the user abort a
@@ -1857,7 +1856,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             isSyncing: isSyncing,
             isScanning: isScanning,
             phase: gatePhase,
-            hasItems: !items.isEmpty)
+            hasItems: !items.isEmpty,
+            resultsUnavailable: syncResultsUnavailable)
     }
 
     private var isActionable: Bool { actionGate.isActionable }

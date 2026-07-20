@@ -177,6 +177,17 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.syncCompleted(s, syncOp, results: .unavailable(reason: "y")), [])
     }
 
+    func test_syncCompleted_wrongOperationID_rejected() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        _ = beginSync(c.requestSync())!.1                    // the real sync op is pending
+        // A completion carrying a DIFFERENT operation id than the pending sync
+        // matches no `.syncing(s, op)` phase and is dropped — it must not
+        // present results or release the (still-pending) real op's lease.
+        let wrongOp = C.OperationID(raw: 999_999)
+        XCTAssertEqual(c.syncCompleted(s, wrongOp, results: .available([])), [])
+    }
+
     func test_interactive_holdsThroughSyncEnd_closesOnLeave() {
         let c = C()
         let (s, _) = openToReady(c, interactive: true)

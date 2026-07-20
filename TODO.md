@@ -96,6 +96,22 @@ section at the bottom so this list stays scannable.
       unavailable/abandoned/non-interactive-close/duplicate-reject. Debug getter
       counter is Debug-only (absent from Release, verified via `nm`). NOT
       field-proven against a live remote sync.
+      **Correction pass (2026-07-20):** results-unavailable is now a first-class
+      `ReconcileActionGate` state — every engine-reaching action (Direction/
+      Revert, Ignore, Diff incl. `canDiff`, Details, Go/Sync) is blocked at both
+      validation and method boundaries; only Rescan/Profiles/Quit remain.
+      `finalizeSyncUnavailable` uses a dedicated orange-warning emphasis +
+      accessibility label (not the green success check). C `syncComplete`
+      marshalling factored into a shared `deliver_sync_snapshot` reused by a
+      Debug seam (`unison_bridge_test_run_sync_snapshot`) that runs the REAL
+      accessor→strdup→handler path over scanned rows on the OCaml thread; ABI
+      guards added (`Is_block`/tag + `size_t`→int bound; Swift trampoline rejects
+      ok+count>0+null-rows). Tests now include the REAL bridge boundary
+      (ok/exact-count/plausible fields) + accessor-raise + alloc-failure-after-
+      first-row (each → one unavailable, zero partial rows, runtime usable) +
+      wrong-OperationID rejection + gate-matrix + presentation descriptor. Blob
+      unchanged (`2f345306`). Controller UI wiring + live remote sync still not
+      exercised by a harness.
 
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
