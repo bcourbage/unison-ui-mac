@@ -50,8 +50,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Sentinel comment bracketing our injected line, so a stray copy
     /// (e.g. left by a crash mid-rescan) can be detected + stripped on
     /// next launch without touching a user's own `ignorearchives` line.
-    private static let ignoreArchivesMarker =
+    nonisolated static let ignoreArchivesMarker =
         "# unison-ui-mac: one-shot -ignorearchives (auto-removed)"
+
+    /// The EXACT block appended to a `.prf` for a one-shot rescan. Injection
+    /// (`rescanIgnoringArchives`) and crash cleanup
+    /// (`contentByStrippingInjectedSuffix`) BOTH derive from this single
+    /// definition so they can never drift. It is an app-owned suffix — a
+    /// leading `\n` separates it from the user's content, and a trailing `\n`
+    /// terminates the injected pref line.
+    nonisolated static var ignoreArchivesInjectedSuffix: String {
+        "\n\(ignoreArchivesMarker)\nignorearchives = true\n"
+    }
+
+    /// Pure crash-recovery transform. If `content` ends with EXACTLY the
+    /// app-owned injected suffix, return the content with precisely those
+    /// characters removed (the preceding UTF-8 content restored unchanged,
+    /// character-for-character — including LF/CRLF and trailing-newline
+    /// structure; this operates on the decoded Swift string, not raw bytes).
+    /// Otherwise return nil — meaning "no mutation required". Deliberately
+    /// anchored to the end of the document: it never scans for the marker
+    /// substring or an isolated marker line elsewhere, so a user's own comment
+    /// or `ignorearchives` line — even one identical to the marker — is never
+    /// touched unless it IS the trailing app-owned block.
+    nonisolated static func contentByStrippingInjectedSuffix(_ content: String) -> String? {
+        guard content.hasSuffix(ignoreArchivesInjectedSuffix) else { return nil }
+        return String(content.dropLast(ignoreArchivesInjectedSuffix.count))
+    }
 
     private let log = TraceLog.shared
 
@@ -1335,7 +1360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// restore the original `.prf` the instant init1 has consumed it. The
     /// in-memory pref outlives the file edit — init2 and the subsequent
     /// sync still ignore the archive and rebuild it — but the profile on
-    /// disk is left byte-for-byte unchanged. No OCaml bridge change is
+    /// disk is left character-for-character unchanged. No OCaml bridge change is
     /// needed, which is why this is a `.prf` edit rather than a pref call.
     /// `failedReason` labels the coordinator transition that releases the
     /// current session before the fresh reopen. It's carried through to
@@ -1350,8 +1375,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return
         }
         ignoreArchivesRestore = (url, original)
-        let injected = original
-            + "\n\(Self.ignoreArchivesMarker)\nignorearchives = true\n"
+        // Same single definition the crash-cleanup transform strips, so the two
+        // can never drift.
+        let injected = original + Self.ignoreArchivesInjectedSuffix
         do {
             try injected.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -1401,35 +1427,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                                failedReason: "rescan ignoring archives")
     }
 
-    /// Strip a stray one-shot `ignorearchives` injection from any `.prf`
-    /// carrying our sentinel marker (never a user's own `ignorearchives`
-    /// line). Defensive cleanup at launch in case a crash mid-rescan left
-    /// the file edited.
+    /// Strip a stray one-shot `ignorearchives` injection left in a `.prf` by a
+    /// crash mid-rescan. Thin filesystem wrapper over the pure
+    /// `contentByStrippingInjectedSuffix`: it rewrites a profile ONLY when the
+    /// file ends with EXACTLY the app-owned injected suffix (helper returns the
+    /// restored content); when the helper returns nil ("no mutation required")
+    /// it performs no write at all. It never scans for the marker substring or
+    /// an isolated marker line, so a user's own comment or `ignorearchives`
+    /// line is never touched.
     private static func cleanupStrayIgnoreArchivesMarkers(in unisonDirectory: String) {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return }
         for name in names where name.hasSuffix(".prf") {
             let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(name)
             guard let content = try? String(contentsOf: url, encoding: .utf8),
-                  content.contains(ignoreArchivesMarker) else { continue }
-            let lines = content.components(separatedBy: "\n")
-            var kept: [String] = []
-            var i = 0
-            while i < lines.count {
-                if lines[i].contains(ignoreArchivesMarker) {
-                    if i + 1 < lines.count,
-                       lines[i + 1].trimmingCharacters(in: .whitespaces) == "ignorearchives = true" {
-                        i += 2   // drop marker + the injected pref line
-                    } else {
-                        i += 1   // drop marker only
-                    }
-                    continue
-                }
-                kept.append(lines[i])
-                i += 1
+                  let restored = contentByStrippingInjectedSuffix(content) else { continue }
+            do {
+                try restored.write(to: url, atomically: true, encoding: .utf8)
+                TraceLog.shared.write("ignorearchives: cleaned stray injected suffix from \(name)")
+            } catch {
+                TraceLog.shared.write(
+                    "ignorearchives: cleanup FAILED for \(name): \(error.localizedDescription)")
             }
-            try? kept.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-            TraceLog.shared.write("ignorearchives: cleaned stray marker from \(name)")
         }
     }
 
