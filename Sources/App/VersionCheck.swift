@@ -176,8 +176,11 @@ enum VersionCheck {
                 localBridgeVersion: localBridgeVersion,
                 deadline: deadline,
                 executor: executor,
-                isCancelled: { handle.isCancelled }
+                canceller: handle.canceller
             )
+            // The probe body (including any teardown) has returned; unblock a
+            // shutdown that is waiting for deterministic teardown.
+            handle.markFinished()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     // Drop the result if the probe was cancelled (abandoned /
@@ -201,7 +204,7 @@ enum VersionCheck {
         localBridgeVersion: String,
         deadline: TimeInterval = VersionCheck.defaultDeadline,
         executor: VersionProbeExecutor = SubprocessProbeExecutor(),
-        isCancelled: @escaping () -> Bool = { false }
+        canceller: ProbeCanceller = ProbeCanceller()
     ) -> Outcome {
         let url = URL(fileURLWithPath: unisonDirectory)
             .appendingPathComponent("\(profile).prf")
@@ -232,7 +235,7 @@ enum VersionCheck {
         }
         let config = buildConfig(sshcmd: sshcmd, sshargs: sshargs,
                                  sshRoot: sshRoot, servercmd: servercmd)
-        let raw = executor.execute(config, deadline: deadline, isCancelled: isCancelled)
+        let raw = executor.execute(config, deadline: deadline, canceller: canceller)
 
         let remoteVersion: String
         switch classifyRaw(raw) {
@@ -328,10 +331,13 @@ enum VersionCheck {
     enum RawExecResult: Equatable {
         /// Process exited on its own within the deadline.
         case exited(status: Int32, stdout: String, stderr: String)
-        /// The overall wall-clock deadline elapsed; the child was terminated
-        /// and reaped.
+        /// The wall-clock deadline (measured from just after launch) elapsed;
+        /// the ssh child was SIGTERM'd, then SIGKILL'd, and best-effort reaped
+        /// (its ProxyCommand/remote descendants are not guaranteed reaped).
         case timedOut
-        /// Cancellation was requested; the child was terminated and reaped.
+        /// Cancellation was requested; the ssh child was SIGTERM'd (synchronously
+        /// at cancel time), then SIGKILL'd if needed, and best-effort reaped
+        /// (same descendant caveat as `timedOut`).
         case cancelled
         /// The process could not be launched at all.
         case launchFailed(String)
@@ -357,12 +363,14 @@ enum VersionCheck {
     protocol VersionProbeExecutor: Sendable {
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
-                     isCancelled: @escaping () -> Bool) -> RawExecResult
+                     canceller: ProbeCanceller) -> RawExecResult
     }
 
-    /// Default wall-clock deadline for the WHOLE probe (launch + I/O + exit).
-    /// `ConnectTimeout=5` bounds only TCP/SSH connect; a wedged ProxyCommand or
-    /// a hung remote `servercmd -version` needs this outer bound (Finding #12).
+    /// Default wall-clock deadline for the probe's REMOTE work (I/O + remote
+    /// exit), measured from just after the local `ssh` spawn returns — it does
+    /// not include the (synchronous, fast) local launch. `ConnectTimeout=5`
+    /// bounds only TCP/SSH connect; a wedged ProxyCommand or a hung remote
+    /// `servercmd -version` needs this outer bound (Finding #12).
     static let defaultDeadline: TimeInterval = 20
     /// Grace between SIGTERM and SIGKILL when tearing a child down.
     static let terminateGrace: TimeInterval = 2
@@ -437,7 +445,11 @@ enum VersionCheck {
 
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
-                     isCancelled: @escaping () -> Bool) -> RawExecResult {
+                     canceller: ProbeCanceller) -> RawExecResult {
+            // Cancellation BEFORE launch: never spawn a child we've already
+            // been told to abandon.
+            if canceller.isCancelled { return .cancelled }
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: config.executable)
             process.arguments = config.arguments
@@ -449,7 +461,7 @@ enum VersionCheck {
                 return .launchFailed(error.localizedDescription)
             }
 
-            // Wait for natural exit on a background thread; the main flow polls
+            // Wait for natural exit on a background thread; the main flow waits
             // for exit / cancellation / deadline so it can never block forever.
             let exited = DispatchSemaphore(value: 0)
             DispatchQueue.global(qos: .userInitiated).async {
@@ -458,8 +470,14 @@ enum VersionCheck {
             }
 
             func reapExactChild() {
-                // SIGTERM, then SIGKILL after a grace period, waiting so the
-                // child is actually reaped (no zombie, no orphaned transport).
+                // SIGTERM, then SIGKILL after a grace period. We wait so the
+                // ssh child itself is best-effort reaped (no zombie). NOTE: this
+                // reaps ONLY the direct ssh child; a ProxyCommand or the remote
+                // `servercmd` are ssh's own descendants and are not guaranteed
+                // reaped here (ssh forwards the signal, but we don't wait on
+                // them). The final SIGKILL wait result is intentionally not
+                // asserted: if even SIGKILL+grace hasn't reaped, we return
+                // rather than block forever.
                 process.terminate()
                 if exited.wait(timeout: .now() + grace) == .timedOut {
                     kill(process.processIdentifier, SIGKILL)
@@ -471,11 +489,32 @@ enum VersionCheck {
                 try? errPipe.fileHandleForReading.close()
             }
 
+            // Register a DETERMINISTIC teardown: the instant cancel() runs
+            // (including on the main thread from applicationWillTerminate), the
+            // child is SIGTERM'd synchronously — not on a later poll tick. If a
+            // cancel raced Process.run(), registerTeardown fires it right now.
+            canceller.registerTeardown { process.terminate() }
+
+            // Cancellation that arrived DURING/just-after launch: tear down now.
+            if canceller.isCancelled {
+                reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+            }
+
+            // Deadline is measured from HERE — just after the local spawn
+            // returned. It bounds remote I/O + exit, NOT the (synchronous,
+            // fast) local launch, which already happened above.
             let deadlineAt = DispatchTime.now() + deadline
             while true {
+                // Cancellation FIRST: a SIGTERM'd child will also signal
+                // `exited`, and we must report .cancelled (not .exited with a
+                // signal status) when the reason we stopped was a cancel.
+                if canceller.isCancelled {
+                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+                }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
                     // Natural exit. `-version` output is tiny, so reading now
                     // can't deadlock on a full pipe buffer.
+                    canceller.clearTeardown()
                     let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
                     let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
                     closePipes()
@@ -484,21 +523,87 @@ enum VersionCheck {
                         stdout: String(data: outData, encoding: .utf8) ?? "",
                         stderr: String(data: errData, encoding: .utf8) ?? "")
                 }
-                if isCancelled() { reapExactChild(); closePipes(); return .cancelled }
-                if DispatchTime.now() >= deadlineAt { reapExactChild(); closePipes(); return .timedOut }
+                if DispatchTime.now() >= deadlineAt {
+                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .timedOut
+                }
             }
         }
     }
 
-    /// A running probe. `cancel()` is safe from any thread and any number of
-    /// times; it requests teardown of the in-flight subprocess and suppresses
-    /// delivery of the now-abandoned result. `@unchecked Sendable`: all mutable
-    /// state is guarded by the lock.
-    final class Handle: @unchecked Sendable {
+    /// Bridges cancellation from a `Handle` to the executor. Unlike a bare
+    /// `() -> Bool` poll, it can fire a teardown action SYNCHRONOUSLY the
+    /// instant `cancel()` runs — so a cancel (including from
+    /// `applicationWillTerminate`) tears the child down deterministically,
+    /// rather than being "noticed on the next background poll tick". It also
+    /// exposes a semaphore-backed wait so the executor never busy-spins.
+    /// `@unchecked Sendable`: all mutable state is lock-guarded.
+    final class ProbeCanceller: @unchecked Sendable {
         private let lock = NSLock()
         private var _cancelled = false
+        private var _teardown: (() -> Void)?
+        private let signal = DispatchSemaphore(value: 0)
+        private var signalled = false
+
         var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return _cancelled }
-        func cancel() { lock.lock(); _cancelled = true; lock.unlock() }
+
+        /// Register the action that tears the child down (SIGTERM). Fired
+        /// synchronously HERE if cancellation already happened (so a cancel
+        /// that raced `Process.run()` still tears down), otherwise stored and
+        /// fired by `cancel()`.
+        func registerTeardown(_ action: @escaping () -> Void) {
+            lock.lock()
+            if _cancelled { lock.unlock(); action(); return }
+            _teardown = action
+            lock.unlock()
+        }
+
+        /// Drop the teardown once the child has been reaped, so a later cancel
+        /// can't signal a dead/reused pid.
+        func clearTeardown() { lock.lock(); _teardown = nil; lock.unlock() }
+
+        /// Block until cancellation or `timeout`. Wakes IMMEDIATELY on cancel
+        /// (semaphore), never polls. Returns true iff cancelled.
+        func waitForCancellation(timeout: DispatchTime) -> Bool {
+            if isCancelled { return true }
+            _ = signal.wait(timeout: timeout)
+            return isCancelled
+        }
+
+        /// Idempotent. Marks cancelled, wakes any waiter, and fires the
+        /// registered teardown synchronously (outside the lock, since it may
+        /// block on the child's reap).
+        func cancel() {
+            lock.lock()
+            if _cancelled { lock.unlock(); return }
+            _cancelled = true
+            let teardown = _teardown
+            _teardown = nil
+            if !signalled { signalled = true; signal.signal() }
+            lock.unlock()
+            teardown?()
+        }
+    }
+
+    /// A running probe. `cancel()` is safe from any thread and any number of
+    /// times; it deterministically requests teardown of the in-flight
+    /// subprocess and suppresses delivery of the now-abandoned result.
+    /// `waitUntilFinished` lets shutdown block (bounded) until the probe's
+    /// teardown actually completes. `@unchecked Sendable`: state is either the
+    /// lock-guarded canceller or a semaphore.
+    final class Handle: @unchecked Sendable {
+        let canceller = ProbeCanceller()
+        private let finished = DispatchSemaphore(value: 0)
+        var isCancelled: Bool { canceller.isCancelled }
+        func cancel() { canceller.cancel() }
+        /// Signalled once by `run` when the probe body (including any teardown)
+        /// has returned.
+        func markFinished() { finished.signal() }
+        /// Bounded wait for the probe body to finish — used at shutdown so the
+        /// child is reaped, not merely signalled. True iff it finished in time.
+        @discardableResult
+        func waitUntilFinished(timeout: DispatchTime) -> Bool {
+            finished.wait(timeout: timeout) == .success
+        }
     }
 
     /// Split a Unison `sshargs` string into argv tokens (whitespace-

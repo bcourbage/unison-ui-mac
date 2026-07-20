@@ -167,6 +167,32 @@ section at the bottom so this list stays scannable.
       completion/timeout + real-subprocess terminate/reap/launch-fail against
       `/bin/sleep`,`/bin/echo`); NOT field-proven against a live wedged remote.
 
+      **Lifecycle-correction pass (2026-07-20, review of Findings #8/#12):**
+      centralized probe lifecycle ownership and made termination deterministic.
+      (1) The probe is now cancelled inside `leaveSession` (the common
+      session-leave path), so BOTH window-close AND the programmatic Stop-
+      during-scan path tear it down — previously Stop-during-scan detached the
+      window delegate before closing, so `handleWindowClosed` (which held the
+      cancel) never fired and the probe leaked. (2) `runVersionCheckIfNeeded`
+      supersedes the old probe BEFORE the `unison_bridge_get_version()` guard,
+      so a failed version lookup on a replacement open still invalidates the
+      previous session's probe. (3) The executor checks cancellation BEFORE
+      launch (never spawns an already-abandoned child) and immediately AFTER
+      `Process.run()`. (4) Cancellation is DETERMINISTIC: a new `ProbeCanceller`
+      fires a registered teardown (SIGTERM) SYNCHRONOUSLY inside `cancel()`
+      (not on a later background poll tick), and `applicationWillTerminate`
+      waits (bounded) on `Handle.waitUntilFinished` so the app doesn't exit
+      mid-teardown. (5) Active-probe state is cleared on completion only when
+      the delivering probe is still current (a newer probe is never clobbered).
+      (6) Corrected teardown CLAIMS: the deadline is measured from just after
+      launch (not "launch + I/O + exit"); the final SIGKILL reap-wait result is
+      not asserted; and terminating ssh does NOT guarantee its ProxyCommand /
+      remote descendants are reaped. (7) Added lifecycle tests: cancel-before-
+      launch never launches; teardown fires synchronously on cancel; late
+      registration fires immediately; cancel is idempotent (teardown once);
+      wait wakes on cancel / times out otherwise; shutdown `waitUntilFinished`
+      completes after cancel. Full suite 576 tests, 0 failures.
+
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:
       have ssh actively probe and disconnect a dead peer (~45s) instead

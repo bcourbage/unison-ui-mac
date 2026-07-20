@@ -30,18 +30,16 @@ final class VersionProbeTests: XCTestCase {
     private struct StubExecutor: V.VersionProbeExecutor {
         let result: V.RawExecResult
         func execute(_ config: V.ProbeConfig, deadline: TimeInterval,
-                     isCancelled: @escaping () -> Bool) -> V.RawExecResult { result }
+                     canceller: V.ProbeCanceller) -> V.RawExecResult { result }
     }
 
-    /// Waits until cancellation is requested (then reports `.cancelled`), or
-    /// gives up after a bounded spin so a test can never hang.
+    /// Blocks until cancellation is requested (waking IMMEDIATELY via the
+    /// canceller's semaphore, not a spin), then reports `.cancelled`; gives up
+    /// after a bounded wait so a test can never hang.
     private struct BlockingExecutor: V.VersionProbeExecutor {
         func execute(_ config: V.ProbeConfig, deadline: TimeInterval,
-                     isCancelled: @escaping () -> Bool) -> V.RawExecResult {
-            for _ in 0..<400 {
-                if isCancelled() { return .cancelled }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
+                     canceller: V.ProbeCanceller) -> V.RawExecResult {
+            if canceller.waitForCancellation(timeout: .now() + 4) { return .cancelled }
             return .timedOut
         }
     }
@@ -192,7 +190,7 @@ final class VersionProbeTests: XCTestCase {
         let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5)
         let cfg = V.ProbeConfig(executable: "/bin/sleep", arguments: ["5"], host: "local")
         let start = Date()
-        let result = exec.execute(cfg, deadline: 0.3, isCancelled: { false })
+        let result = exec.execute(cfg, deadline: 0.3, canceller: V.ProbeCanceller())
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertEqual(result, .timedOut)
         // If terminate/reap didn't work we'd wait the full 5s.
@@ -202,7 +200,7 @@ final class VersionProbeTests: XCTestCase {
     func test_realExecutor_launchFailure() {
         let exec = V.SubprocessProbeExecutor()
         let cfg = V.ProbeConfig(executable: "/nonexistent/ssh", arguments: [], host: "local")
-        if case .launchFailed = exec.execute(cfg, deadline: 5, isCancelled: { false }) {} else {
+        if case .launchFailed = exec.execute(cfg, deadline: 5, canceller: V.ProbeCanceller()) {} else {
             XCTFail("expected launchFailed")
         }
     }
@@ -210,7 +208,7 @@ final class VersionProbeTests: XCTestCase {
     func test_realExecutor_cleanExitCapturesStdout() {
         let exec = V.SubprocessProbeExecutor()
         let cfg = V.ProbeConfig(executable: "/bin/echo", arguments: ["unison version 2.54.0"], host: "local")
-        let r = exec.execute(cfg, deadline: 5, isCancelled: { false })
+        let r = exec.execute(cfg, deadline: 5, canceller: V.ProbeCanceller())
         guard case .exited(let status, let stdout, _) = r else { return XCTFail("expected exited, got \(r)") }
         XCTAssertEqual(status, 0)
         XCTAssertEqual(V.classifyRaw(.exited(status: status, stdout: stdout, stderr: "")), .version("2.54.0"))
@@ -219,12 +217,83 @@ final class VersionProbeTests: XCTestCase {
     func test_realExecutor_cancellationTerminatesPromptly() {
         let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5)
         let cfg = V.ProbeConfig(executable: "/bin/sleep", arguments: ["5"], host: "local")
-        let cancel = V.Handle()
+        let canceller = V.ProbeCanceller()
         // Cancel almost immediately from another thread.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { cancel.cancel() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { canceller.cancel() }
         let start = Date()
-        let result = exec.execute(cfg, deadline: 30, isCancelled: { cancel.isCancelled })
+        let result = exec.execute(cfg, deadline: 30, canceller: canceller)
         XCTAssertEqual(result, .cancelled)
         XCTAssertLessThan(Date().timeIntervalSince(start), 3.0)
+    }
+
+    // MARK: - Lifecycle corrections (PR #18 review)
+
+    /// Cancel-before-launch: a canceller already cancelled must make the
+    /// executor return `.cancelled` WITHOUT launching. Proven by pointing at a
+    /// nonexistent executable: if it tried to launch we'd see `.launchFailed`.
+    func test_realExecutor_cancelBeforeLaunch_neverLaunches() {
+        let exec = V.SubprocessProbeExecutor()
+        let cfg = V.ProbeConfig(executable: "/nonexistent/ssh", arguments: [], host: "local")
+        let canceller = V.ProbeCanceller()
+        canceller.cancel()
+        XCTAssertEqual(exec.execute(cfg, deadline: 5, canceller: canceller), .cancelled,
+                       "a pre-cancelled probe must not launch (would be .launchFailed)")
+    }
+
+    /// Deterministic teardown: `cancel()` fires the registered teardown
+    /// SYNCHRONOUSLY on the calling thread (not on a later poll tick).
+    func test_probeCanceller_teardownFiresSynchronouslyOnCancel() {
+        let canceller = V.ProbeCanceller()
+        var torn = false
+        canceller.registerTeardown { torn = true }
+        XCTAssertFalse(torn)
+        canceller.cancel()
+        XCTAssertTrue(torn, "teardown must fire synchronously inside cancel()")
+    }
+
+    /// A teardown registered AFTER cancel already happened fires immediately
+    /// (covers a cancel that raced Process.run()).
+    func test_probeCanceller_lateTeardownRegistrationFiresImmediately() {
+        let canceller = V.ProbeCanceller()
+        canceller.cancel()
+        var torn = false
+        canceller.registerTeardown { torn = true }
+        XCTAssertTrue(torn, "registering a teardown after cancel must fire it now")
+    }
+
+    /// cancel() is idempotent: the teardown fires exactly once.
+    func test_probeCanceller_cancelIsIdempotent_teardownOnce() {
+        let canceller = V.ProbeCanceller()
+        var count = 0
+        canceller.registerTeardown { count += 1 }
+        canceller.cancel(); canceller.cancel(); canceller.cancel()
+        XCTAssertEqual(count, 1)
+    }
+
+    /// waitForCancellation wakes immediately on cancel and times out otherwise.
+    func test_probeCanceller_waitWakesOnCancel_andTimesOut() {
+        let c1 = V.ProbeCanceller()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { c1.cancel() }
+        XCTAssertTrue(c1.waitForCancellation(timeout: .now() + 2))
+
+        let c2 = V.ProbeCanceller()
+        XCTAssertFalse(c2.waitForCancellation(timeout: .now() + 0.1),
+                       "no cancel -> wait returns false after the timeout")
+    }
+
+    /// Shutdown teardown: after cancel, the Handle's `waitUntilFinished`
+    /// returns true within the grace budget (the probe body actually
+    /// completed its teardown), so a quitting app doesn't exit mid-teardown.
+    func test_run_shutdownWaitUntilFinished_completesAfterCancel() throws {
+        try sshProfile()
+        let exp = expectation(description: "must NOT deliver after cancel")
+        exp.isInverted = true
+        let handle = V.run(profile: "p", unisonDirectory: dir, localBridgeVersion: "2.54.0",
+                           executor: BlockingExecutor(),
+                           isCurrent: { true }) { _ in exp.fulfill() }
+        handle.cancel()
+        XCTAssertTrue(handle.waitUntilFinished(timeout: .now() + 3),
+                      "probe body must finish (teardown complete) shortly after cancel")
+        wait(for: [exp], timeout: 0.5)
     }
 }

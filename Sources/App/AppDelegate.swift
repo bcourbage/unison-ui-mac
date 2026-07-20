@@ -224,15 +224,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// The user closed a live session's reconcile window (the ✕ button or
     /// ⌘W). Route it through the one session-teardown helper.
     private func handleWindowClosed(session s: SessionID, profile: String) {
-        // Abandon this session's version probe (if any) so a slow result can't
-        // surface an alert after the window is gone.
-        if versionProbeSession == s {
-            activeVersionProbe?.cancel()
-            activeVersionProbe = nil
-            versionProbeSession = nil
-        }
         // The window is already mid-close (this fires from windowWillClose),
-        // so don't re-close it — just detach + abandon + show the picker.
+        // so don't re-close it — just detach + abandon + show the picker. The
+        // version probe is cancelled inside leaveSession (the common path), so
+        // BOTH this and the programmatic Stop-during-scan path tear it down.
         leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
     }
 
@@ -251,6 +246,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func leaveSession(_ s: SessionID, profile: String,
                               closeWindow: Bool, reason: String) {
         guard let w = windowBySession[s] else { return }
+        // Cancel THIS session's in-flight version probe here, in the common
+        // session-leave path. Both entry points route through leaveSession:
+        // the user closing the window (handleWindowClosed) and pressing Stop
+        // during connect/scan (onCancelScan). Because leaveSession detaches the
+        // window delegate before closing (so windowWillClose/handleWindowClosed
+        // never re-fires), cancelling here is the only place that also covers
+        // the programmatic Stop path — otherwise its probe would leak.
+        if versionProbeSession == s {
+            activeVersionProbe?.cancel()
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
@@ -1133,8 +1140,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// release-gate `make leaks` runs.
     func applicationWillTerminate(_ notification: Notification) {
         log.write("applicationWillTerminate — releasing bridge roots")
-        // Cancel any in-flight version probe so its subprocess is torn down.
-        activeVersionProbe?.cancel()
+        // Cancel any in-flight version probe. cancel() fires the child's
+        // SIGTERM SYNCHRONOUSLY (deterministic teardown, not a flag noticed on
+        // a later poll tick), then wait a bounded interval for the probe body
+        // to finish its reap so we don't exit while the ssh child is still
+        // being torn down. Bound = the executor's SIGTERM+SIGKILL grace budget
+        // plus a small margin; if it somehow overruns we proceed anyway rather
+        // than hang the quit.
+        if let probe = activeVersionProbe {
+            probe.cancel()
+            probe.waitUntilFinished(
+                timeout: .now() + (VersionCheck.terminateGrace * 2) + 0.5)
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
         unison_bridge_shutdown()
     }
 
@@ -1424,13 +1443,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// running*. That's fine — init1/init2 are async on the OCaml
     /// side and don't block on the main queue.
     private func runVersionCheckIfNeeded(profile: String, session: SessionID) {
+        // Supersede any earlier probe FIRST — before any early return. A new
+        // open must always invalidate the previous session's probe, even if we
+        // then can't start a new one (e.g. the version lookup below fails).
+        // Clearing versionProbeSession also makes the old probe's `isCurrent`
+        // guard fail, so its late result is dropped, not applied to us.
+        activeVersionProbe?.cancel()
+        activeVersionProbe = nil
+        versionProbeSession = nil
+
         guard let localBridgeVersion = unison_bridge_get_version().map({ String(cString: $0) }) else {
             Log.versionCheck.warning("version check: unison_bridge_get_version returned nil")
             return
         }
-        // Cancel any earlier probe (this is a new/replacement open) so its slow
-        // result can't surface, then mint this probe's identity (the session).
-        activeVersionProbe?.cancel()
+        // Mint this probe's identity (the session) only once we're committed to
+        // launching it.
         versionProbeSession = session
         Log.versionCheck.info("starting version check for profile '\(profile, privacy: .public)'")
         activeVersionProbe = VersionCheck.run(
@@ -1441,7 +1468,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // a reopened profile mints a new session, superseding this probe.
             isCurrent: { [weak self] in self?.versionProbeSession == session }
         ) { [weak self] outcome in
-            self?.handleVersionCheckOutcome(outcome, profile: profile)
+            guard let self else { return }
+            self.handleVersionCheckOutcome(outcome, profile: profile)
+            // This probe delivered; clear the active-probe state, but ONLY if it
+            // is still the current probe. Delivery already required
+            // `versionProbeSession == session`, but re-check defensively so a
+            // newer probe that superseded us is never clobbered.
+            if self.versionProbeSession == session {
+                self.activeVersionProbe = nil
+                self.versionProbeSession = nil
+            }
         }
     }
 
