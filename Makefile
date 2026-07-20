@@ -238,6 +238,32 @@ xcodeproj: $(XCODEPROJ)
 $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 	xcodegen generate
 
+# ----- Local code-signing identity (TCC-stable dev builds) -----
+# An ad-hoc signature ("-", the project.yml default) carries no certificate,
+# so macOS derives the app's TCC "designated requirement" from its cdhash —
+# which changes on every rebuild. Each freshly built app then looks brand new
+# to TCC and re-prompts for every permission (Notifications, Documents access,
+# ...) on launch. Signing with a real Apple Development certificate instead
+# yields a stable requirement (bundle id + certificate leaf), so a permission
+# you grant once survives all later rebuilds — no more per-launch prompts.
+#
+# Auto-detect: on a dev Mac that has an "Apple Development" identity in its
+# keychain (and is NOT in CI), sign with it; otherwise fall back to ad-hoc so
+# CI — which has no such identity — builds byte-for-byte as before. Forwarding
+# CODE_SIGN_IDENTITY=- is equivalent to the project.yml default, so the CI path
+# is unchanged. Override explicitly with `make build SIGN_IDENTITY=...`.
+SIGN_IDENTITY ?= $(shell if [ -z "$$CI" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then echo "Apple Development"; else echo "-"; fi)
+
+# Manual signing with a real certificate also requires a development team.
+# Auto-derive it (the OU field of the Apple Development cert) only when we're
+# actually signing with that cert; the ad-hoc/CI path passes no team. Override
+# with `make build DEV_TEAM=XXXXXXXXXX` if auto-detection ever misses.
+SIGN_ARGS := CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)"
+ifneq ($(SIGN_IDENTITY),-)
+DEV_TEAM ?= $(shell security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -oE 'OU ?= ?[A-Z0-9]+' | head -1 | grep -oE '[A-Z0-9]+$$')
+SIGN_ARGS += DEVELOPMENT_TEAM=$(DEV_TEAM)
+endif
+
 # ----- Build via xcodebuild -----
 .PHONY: build
 build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
@@ -250,6 +276,7 @@ build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
+		$(SIGN_ARGS) \
 		build
 
 .PHONY: run
@@ -273,6 +300,7 @@ test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
+		$(SIGN_ARGS) \
 		test
 
 .PHONY: app
