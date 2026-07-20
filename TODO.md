@@ -193,6 +193,20 @@ section at the bottom so this list stays scannable.
       wait wakes on cancel / times out otherwise; shutdown `waitUntilFinished`
       completes after cancel. Full suite 576 tests, 0 failures.
 
+      **argv-ordering correction (2026-07-20):** `buildConfig` put `--` AFTER
+      the destination (`ssh … dest -- servercmd -version`). OpenSSH treats
+      every token after the destination as the remote command, so the remote
+      shell was asked to run `-- servercmd -version` — wrong. `--` now comes
+      BEFORE the destination (`ssh … -- dest servercmd -version`): it ends
+      ssh's own option parsing and protects an option-like destination, and the
+      remote command is exactly `servercmd -version`. Corrected the unit-test
+      suffix assertion and the misleading comment, and added an end-to-end argv
+      test that runs the real `SubprocessProbeExecutor` against a temporary
+      fake ssh which parses local options, rejects a stray leading remote `--`,
+      requires the remote command to be exactly `servercmd -version`, and (as a
+      guard proof) rejects the old ordering. Lifecycle design unchanged. Full
+      suite 577 tests, 0 failures.
+
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:
       have ssh actively probe and disconnect a dead peer (~45s) instead

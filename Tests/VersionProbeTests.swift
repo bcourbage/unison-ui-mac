@@ -56,12 +56,90 @@ final class VersionProbeTests: XCTestCase {
         let sIdx = cfg.arguments.firstIndex(of: "StrictHostKeyChecking=yes")!
         let argsIdx = cfg.arguments.firstIndex(of: "-i")!
         XCTAssertLessThan(sIdx, argsIdx, "our -o options must precede profile sshargs")
-        // Honors port, sshargs, servercmd, user@host, and the `--` separator.
+        // Honors port, sshargs, servercmd, user@host.
         XCTAssertTrue(cfg.arguments.contains("2222"))
         XCTAssertTrue(cfg.arguments.contains("/k/id"))
         XCTAssertTrue(cfg.arguments.contains("me@h"))
-        XCTAssertEqual(cfg.arguments.suffix(3), ["--", "unison", "-version"])
+        // `--` must come immediately BEFORE the destination (ends ssh's own
+        // option parsing); the remote command AFTER the destination must be
+        // exactly `servercmd -version` — no stray `--`.
+        let args = cfg.arguments
+        let dashIdx = args.firstIndex(of: "--")!
+        let destIdx = args.firstIndex(of: "me@h")!
+        XCTAssertEqual(dashIdx + 1, destIdx, "-- must immediately precede the destination")
+        XCTAssertEqual(Array(args[(destIdx + 1)...]), ["unison", "-version"],
+                       "remote command must be exactly servercmd -version, no leading --")
+        XCTAssertFalse(Array(args[(destIdx + 1)...]).contains("--"),
+                       "no `--` may appear in the remote command")
         XCTAssertEqual(cfg.executable, "/usr/bin/ssh")   // bare sshcmd falls back
+    }
+
+    /// End-to-end argv check through the REAL SubprocessProbeExecutor using a
+    /// temporary fake SSH-compatible executable. The fake parses ssh-style
+    /// local options, extracts the destination, and rejects a remote command
+    /// with a stray leading `--`. It returns a parseable version only when the
+    /// remote command is exactly `servercmd -version`. This FAILS under the old
+    /// `destination -- servercmd -version` ordering (the fake sees a leading
+    /// `--` remote command and exits nonzero).
+    func test_realExecutor_fakeSSH_remoteCommandIsExactlyServercmdVersion() throws {
+        let fake = "\(dir!)/fake-ssh"
+        let script = """
+        #!/bin/sh
+        # Emulate ssh argument parsing: consume local options, take the first
+        # non-option token as the destination, and treat the REST as the remote
+        # command (verbatim, exactly like real ssh).
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -o) shift 2 ;;
+            -p) shift 2 ;;
+            -i) shift 2 ;;
+            --) shift; break ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        # $1 = destination; the rest = remote command.
+        shift            # drop destination
+        if [ "$1" = "--" ]; then
+          echo "fake-ssh: remote command has a stray leading -- : $*" >&2
+          exit 2
+        fi
+        if [ "$1" = "servercmd" ] && [ "$2" = "-version" ] && [ $# -eq 2 ]; then
+          echo "unison version 2.54.0 (ocaml 5.5.0)"
+          exit 0
+        fi
+        echo "fake-ssh: unexpected remote command: $*" >&2
+        exit 3
+        """
+        try script.write(toFile: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake)
+
+        let cfg = V.buildConfig(sshcmd: fake, sshargs: nil,
+                                sshRoot: V.SSHRoot(user: "me", host: "h", port: nil),
+                                servercmd: "servercmd")
+        let raw = V.SubprocessProbeExecutor().execute(
+            cfg, deadline: 5, canceller: V.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else {
+            return XCTFail("expected .exited, got \(raw)")
+        }
+        XCTAssertEqual(status, 0, "fake ssh must accept the argv; stderr: \(stderr)")
+        XCTAssertEqual(V.classifyRaw(.exited(status: status, stdout: stdout, stderr: stderr)),
+                       .version("2.54.0"))
+
+        // Guard proof: the SAME fake REJECTS the old ordering
+        // (`destination -- servercmd -version`), so this test genuinely fails
+        // under the pre-fix argv and isn't a tautology.
+        let oldOrder = V.ProbeConfig(
+            executable: fake,
+            arguments: ["-o", "BatchMode=yes", "me@h", "--", "servercmd", "-version"],
+            host: "h")
+        let oldRaw = V.SubprocessProbeExecutor().execute(
+            oldOrder, deadline: 5, canceller: V.ProbeCanceller())
+        guard case .exited(let oldStatus, _, _) = oldRaw else {
+            return XCTFail("expected .exited for old-order argv, got \(oldRaw)")
+        }
+        XCTAssertNotEqual(oldStatus, 0,
+                          "the old `destination -- servercmd -version` ordering must be rejected")
     }
 
     func test_buildConfig_absoluteSshcmdHonored() {

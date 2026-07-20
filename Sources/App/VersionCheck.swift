@@ -396,10 +396,17 @@ enum VersionCheck {
         if let port = sshRoot.port {
             args.append("-p"); args.append(String(port))
         }
-        args.append(sshRoot.user.map { "\($0)@\(sshRoot.host)" } ?? sshRoot.host)
-        // `--` separates ssh's args from the remote command, so a servercmd
-        // path with a leading dash isn't reinterpreted by ssh.
+        // `--` ends SSH's OWN option parsing and must come BEFORE the
+        // destination: ssh treats the first non-option token as the
+        // destination and EVERYTHING after it as the remote command, verbatim.
+        // Putting `--` after the destination (the previous ordering) made the
+        // remote command literally `-- servercmd -version`, i.e. ssh asked the
+        // remote shell to run `--` — wrong. With `--` before the destination,
+        // ssh's options stop there, the next token is the destination, and the
+        // remote command is exactly `servercmd -version`. (`--` also protects a
+        // destination that begins with `-` from being read as an ssh option.)
         args.append("--")
+        args.append(sshRoot.user.map { "\($0)@\(sshRoot.host)" } ?? sshRoot.host)
         args.append(servercmd)
         args.append("-version")
         return ProbeConfig(executable: sshExecutable, arguments: args, host: sshRoot.host)
