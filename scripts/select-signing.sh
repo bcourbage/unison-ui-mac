@@ -7,8 +7,17 @@
 #   - The resolver's own POLICY-driven ad-hoc fallback ("-" on line 1) is a
 #     normal decision and passes through with exit 0.
 #   - An UNEXPECTED resolver failure — nonzero exit, or malformed output (an
-#     empty identity line) — is FATAL: this script exits nonzero so the build
-#     stops loudly instead of silently continuing with empty signing settings.
+#     empty identity line, OR more than the two contracted lines) — is FATAL:
+#     this script exits nonzero so the build stops loudly instead of silently
+#     continuing with empty (or wrongly-parsed) signing settings.
+#
+# The resolver contract is EXACTLY two lines: identity on line 1, team on
+# line 2 (team may be empty — that is the legitimate no-team / ad-hoc shape).
+# We deliberately do NOT read just the first two lines and discard the rest:
+# extra content means the resolver emitted something we don't understand (a
+# stray diagnostic on stdout, a multi-line/newline-bearing identity, a policy
+# drift), and silently keeping only lines 1–2 could mask it. Extra content is
+# therefore fatal, while an empty second line stays valid.
 #
 # Output (stdout): line 1 = identity, line 2 = team (may be empty).
 # The resolver to run can be overridden with SIGN_RESOLVER (used by tests).
@@ -22,6 +31,16 @@ out="$("$resolver")"
 status=$?
 if [ "$status" -ne 0 ]; then
     echo "select-signing: signing resolver failed (exit $status); aborting build" >&2
+    exit 1
+fi
+
+# Reject unexpected extra content. `$(...)` already stripped trailing
+# newlines, so a well-formed "identity\nteam\n" arrives as at most two lines
+# (one line for the ad-hoc "-" with an empty team). Three or more lines means
+# the resolver said more than the contract allows.
+line_count="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+if [ "$line_count" -gt 2 ]; then
+    echo "select-signing: malformed resolver output ($line_count lines; expected identity + optional team); aborting build" >&2
     exit 1
 fi
 

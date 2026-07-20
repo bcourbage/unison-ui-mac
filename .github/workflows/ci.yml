@@ -84,6 +84,16 @@ jobs:
         # tool than fight Make.
         run: brew install xcodegen
 
+      - name: Check signing resolver matrix
+        # Pure-shell gate (no Xcode/OCaml needed): the 28-case matrix in
+        # scripts/test-resolve-signing.sh exercises resolve-signing.sh and
+        # the select-signing.sh Makefile adapter — manual-override pairing,
+        # keychain verification, hostile identity values, and the fail-loud
+        # contract on resolver error / malformed output. Runs before Build
+        # so a regression in the signing policy fails fast and independently
+        # of the (much slower) app build.
+        run: make check-signing
+
       - name: Build
         # `make build` regenerates the xcodeproj, builds the app for
         # Debug, and stops short of running tests. Catches Swift

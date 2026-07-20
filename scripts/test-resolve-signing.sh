@@ -203,6 +203,50 @@ o="$(SIGN_RESOLVER="$tmp/stub_ok.sh" sh "$selector")"
 check "selector: well-formed identity" "$(id_of "$o")" "IDVAL"
 check "selector: well-formed team"     "$(team_of "$o")" "TEAMVAL"
 
+# 19. selector FAILS LOUDLY on unexpected extra content (a third line). The
+#     old code read only lines 1-2 and silently dropped the rest; that could
+#     mask a resolver emitting a stray diagnostic or a multi-line identity.
+cat > "$tmp/stub_extra.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n%s\n' "IDVAL" "TEAMVAL" "UNEXPECTED"
+EOF
+chmod +x "$tmp/stub_extra.sh"
+SIGN_RESOLVER="$tmp/stub_extra.sh" sh "$selector" >/dev/null 2>&1
+check "selector: extra third line is fatal" "$?" "1"
+
+# 20. a newline embedded in the identity (identity spread across two lines,
+#     team pushed to a third) is likewise rejected, not partially accepted.
+cat > "$tmp/stub_nl.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n%s\n' "ID" "PART2" "TEAMVAL"
+EOF
+chmod +x "$tmp/stub_nl.sh"
+SIGN_RESOLVER="$tmp/stub_nl.sh" sh "$selector" >/dev/null 2>&1
+check "selector: identity-with-newline (3 lines) is fatal" "$?" "1"
+
+# 21. the LEGITIMATE ad-hoc shape is preserved: identity "-" on line 1, an
+#     empty team on line 2. This must still pass with exit 0 after hardening.
+cat > "$tmp/stub_adhoc.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n' "-" ""
+EOF
+chmod +x "$tmp/stub_adhoc.sh"
+o="$(SIGN_RESOLVER="$tmp/stub_adhoc.sh" sh "$selector"; echo "rc=$?")"
+check "selector: ad-hoc identity preserved" "$(id_of "$o")" "-"
+check "selector: ad-hoc empty team preserved" "$(team_of "$o")" ""
+check "selector: ad-hoc exits 0" "$(printf '%s\n' "$o" | sed -n 's/^rc=//p')" "0"
+
+# 22. a well-formed identity with a genuinely empty team (non-ad-hoc) also
+#     stays valid — the empty second line is contractual, not malformed.
+cat > "$tmp/stub_noteam.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n' "IDVAL" ""
+EOF
+chmod +x "$tmp/stub_noteam.sh"
+o="$(SIGN_RESOLVER="$tmp/stub_noteam.sh" sh "$selector")"
+check "selector: empty team preserved" "$(id_of "$o")" "IDVAL"
+check "selector: empty team is empty"  "$(team_of "$o")" ""
+
 echo "-----------------------------------------------"
 echo "resolve-signing matrix: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
