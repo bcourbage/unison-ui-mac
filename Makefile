@@ -258,8 +258,22 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 #     artifact. Both shipping paths ad-hoc-sign anyway (install.sh
 #     `codesign --sign -`; release.yml on a certless runner).
 # Manual overrides (Debug/`make test` only): `SIGN_IDENTITY=-` forces ad-hoc; a
-# custom identity must be supplied together with a matching `DEV_TEAM`. These
-# are passed straight through to the resolver.
+# custom identity must be supplied together with a matching `DEV_TEAM`, and the
+# pair is VERIFIED against a single valid keychain record before use (an
+# unverifiable/mismatched pair falls back to ad-hoc).
+#
+# SAFETY: overrides and CONFIG reach the resolver through the ENVIRONMENT (the
+# `export` below), never interpolated into recipe text, and the recipe reads the
+# resolver's two-line output with plain line parsing — no `eval`. So an identity
+# name containing spaces, apostrophes, `$`, `;`, quotes, etc. can neither break
+# parsing nor execute during the build. Auto-detected values are a hex hash + an
+# alnum team (no metacharacters at all); a cert name is only ever used when the
+# operator supplies it as a verified manual override. `select-signing.sh` turns a
+# resolver error or malformed output into a hard build failure (distinct from the
+# resolver's normal policy-driven ad-hoc fallback). Note: values passed as a
+# `make` command-line assignment (`make build SIGN_IDENTITY=…`) are subject to
+# make's own `$(…)` expansion — an inherent make behavior, not specific to
+# signing; set overrides via the environment if they contain make metacharacters.
 #
 # NOTE: this covers Makefile-driven `build`/`test` only. A direct Xcode.app
 # build still uses the generated project's ad-hoc default. Persistence of a
@@ -267,12 +281,16 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 # change, the designated requirement does not); it is NOT guaranteed across
 # alternating Debug (dev-signed) and Release (ad-hoc) launches of the same
 # bundle id, which present different requirements.
-RESOLVE_SIGNING := CONFIG='$(CONFIG)' SIGN_IDENTITY='$(SIGN_IDENTITY)' DEV_TEAM='$(DEV_TEAM)' ./scripts/resolve-signing.sh
+export SIGN_IDENTITY
+export DEV_TEAM
+export CONFIG
 
 # ----- Build via xcodebuild -----
 .PHONY: build
 build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
-	@eval "$$($(RESOLVE_SIGNING))"; \
+	@vals="$$(./scripts/select-signing.sh)" || exit $$?; \
+	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
+	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
@@ -282,7 +300,7 @@ build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		CODE_SIGN_IDENTITY="$$RESOLVED_IDENTITY" $${RESOLVED_TEAM:+DEVELOPMENT_TEAM="$$RESOLVED_TEAM"} \
+		CODE_SIGN_IDENTITY="$$id" $${team:+DEVELOPMENT_TEAM="$$team"} \
 		build
 
 .PHONY: run
@@ -293,10 +311,12 @@ run: build
 # `assert()` / preconditions that catch bugs which Release would optimize
 # away, and they build faster on iteration. The user-facing CONFIG knob
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
-# identically (the resolver is always invoked with CONFIG=Debug here).
+# identically (signing is always resolved with CONFIG=Debug here).
 .PHONY: test
 test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
-	@eval "$$(CONFIG='Debug' SIGN_IDENTITY='$(SIGN_IDENTITY)' DEV_TEAM='$(DEV_TEAM)' ./scripts/resolve-signing.sh)"; \
+	@vals="$$(CONFIG=Debug ./scripts/select-signing.sh)" || exit $$?; \
+	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
+	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
@@ -307,7 +327,7 @@ test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		CODE_SIGN_IDENTITY="$$RESOLVED_IDENTITY" $${RESOLVED_TEAM:+DEVELOPMENT_TEAM="$$RESOLVED_TEAM"} \
+		CODE_SIGN_IDENTITY="$$id" $${team:+DEVELOPMENT_TEAM="$$team"} \
 		test
 
 .PHONY: app
