@@ -25,6 +25,14 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private let scrollView = NSScrollView()
     private let headerLabel = NSTextField(labelWithString: "")
 
+    /// Called when the diff window closes, so the owner can cancel any diff
+    /// request still in flight (drop its late result; unblock the next diff).
+    var onClose: (() -> Void)?
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
+    }
+
     init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),

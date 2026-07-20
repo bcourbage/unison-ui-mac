@@ -30,6 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var activeVersionProbe: VersionCheck.Handle?
     private var versionProbeSession: SessionID?
 
+    /// APP-GLOBAL diff-request broker. The OCaml diff result carries no request
+    /// id and is delivered through a single permanent handler, so at most one
+    /// diff is outstanding across the whole app and its result is routed to the
+    /// session that OWNS it (`diffRequestOwner`) — never to whatever session is
+    /// merely current. A session abandoned while its diff is in flight drains
+    /// before any new diff can be issued (see `DiffRequestBroker`).
+    private var diffBroker = DiffRequestBroker()
+    private var diffRequestOwner: SessionID?
+
     /// Pending restore for a one-shot `-ignorearchives` rescan: the
     /// `.prf` we temporarily injected `ignorearchives = true` into, plus
     /// its exact original contents. Restored the moment init1 has loaded
@@ -217,8 +226,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             },
             onIgnore: { [weak self] action, row in
                 self?.performIgnore(session: s, action: action, row: row) ?? UNISON_OP_INVALID
+            },
+            onDiffRequest: { [weak self] row in
+                self?.requestDiff(session: s, row: row) ?? .refused
+            },
+            onDiffAbandon: { [weak self] in
+                self?.abandonDiff(session: s)
             }
         )
+    }
+
+    /// Issue a diff for `row` on behalf of `session` through the app-global
+    /// broker. Records the owner so the async result is routed back to THIS
+    /// session's window, never to whatever session is current when it lands.
+    private func requestDiff(session s: SessionID, row: Int) -> DiffRequestResult {
+        switch diffBroker.request(owner: s.raw) {
+        case .refuseInFlight, .refuseDraining:
+            return .refused
+        case .issue:
+            diffRequestOwner = s
+            // Synchronous dispatch; the result (if any) arrives async via the
+            // diff/diff-err handler. A false return means the OCaml dispatch
+            // raised: no result will arrive, so clear the pending request.
+            if unison_bridge_run_show_diffs(Int32(row)) {
+                return .issued
+            }
+            diffBroker.requestRaised(owner: s.raw)
+            diffRequestOwner = nil
+            return .raised
+        }
+    }
+
+    /// The session's diff window closed, or the session itself is being torn
+    /// down. If it owns the outstanding diff, the broker enters draining so the
+    /// still-in-flight result is discarded before any new diff can be issued.
+    private func abandonDiff(session s: SessionID) {
+        diffBroker.abandon(owner: s.raw)
+        if diffRequestOwner == s { diffRequestOwner = nil }
     }
 
     /// The user closed a live session's reconcile window (the ✕ button or
@@ -258,6 +302,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             activeVersionProbe = nil
             versionProbeSession = nil
         }
+        // If this session owns an outstanding diff, drain it so its late result
+        // is discarded and can never be accepted as a replacement session's.
+        abandonDiff(session: s)
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
@@ -426,7 +473,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             onSyncStart: {},
             onSyncExit: { _ in },
             onEngineUncertain: { _ in },
-            onIgnore: { _, _ in UNISON_OP_INVALID }
+            onIgnore: { _, _ in UNISON_OP_INVALID },
+            onDiffRequest: { _ in .refused },
+            onDiffAbandon: {}
         )
         waitingWindow = (id, controller)
         controller.showWindow(nil)
@@ -633,14 +682,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installDiffHandler { [weak self] title, text in
             MainActor.assumeIsolated {
-                guard let self, let s = self.engine.currentSession else { return }
-                self.windowBySession[s]?.showDiff(title: title, text: text)
+                guard let self else { return }
+                // Route to the OWNER of the outstanding request (not the current
+                // session). The broker drops a result whose owning session was
+                // abandoned (draining) or that nothing is awaiting.
+                switch self.diffBroker.deliver() {
+                case .apply(let owner):
+                    if let s = self.diffRequestOwner, s.raw == owner {
+                        self.windowBySession[s]?.showDiff(title: title, text: text)
+                    }
+                    self.diffRequestOwner = nil
+                case .dropStale:
+                    self.diffRequestOwner = nil
+                }
             }
         }
         UnisonBridge.installDiffErrHandler { [weak self] err in
             MainActor.assumeIsolated {
-                guard let self, let s = self.engine.currentSession else { return }
-                self.windowBySession[s]?.showDiffError(err)
+                guard let self else { return }
+                switch self.diffBroker.deliver() {
+                case .apply(let owner):
+                    if let s = self.diffRequestOwner, s.raw == owner {
+                        self.windowBySession[s]?.showDiffError(err)
+                    }
+                    self.diffRequestOwner = nil
+                case .dropStale:
+                    self.diffRequestOwner = nil
+                }
             }
         }
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in

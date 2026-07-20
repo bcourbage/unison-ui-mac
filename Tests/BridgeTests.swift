@@ -843,6 +843,110 @@ final class BridgeTests: XCTestCase {
         // single g_ri_roots[row]) and the independent per-row tests above — NOT
         // by a live readback here, so no such assertion is made.
     }
+
+    /// L1 point 2 — GENUINE `run_show_diffs` fault injection through the REAL
+    /// bridge exception path, then proof the engine stays usable.
+    ///
+    /// This drives the real `unison_bridge_run_show_diffs` → `_ocaml_run_show_diffs`
+    /// → `bridge_call2_exn` on a really-scanned, really-diffable row. The
+    /// `unison_bridge_test_force_next_callbacks_raise(1)` hook makes that exn
+    /// wrapper report a raise (short-circuiting before OCaml), so we exercise
+    /// the wrapper's real raise handling — NOT a pure `requestRaised()` unit
+    /// test. Asserts precisely: the real bridge fault returns FALSE; NO result
+    /// or error callback is published (neither `displayDiff` nor
+    /// `displayDiffErr` fires); the broker's pending state is cleared through
+    /// `requestRaised`; and a subsequent real diff on the same row SUCCEEDS (the
+    /// worker survived the forced raise). This test does NOT observe the UI
+    /// error presentation: the `AppDelegate` `.raised` mapping and the Reconcile
+    /// window's `showError` branch are verified by code inspection, not an
+    /// AppKit UI harness.
+    func test_r_runShowDiffs_realBridgeRaise_thenEngineUsable() throws {
+        let fixture = try IntegrationFixture(name: "diff-raise")
+        // shared-diff.txt exists on BOTH replicas with DIFFERENT content → a
+        // genuinely diffable row (canDiff == true).
+        try fixture.populate(aFiles: ["shared-diff.txt": "version a\n"],
+                             bFiles: ["shared-diff.txt": "version b\n"])
+        // Give the profile a real `diff` command so a successful diff produces
+        // output through `displayDiff` (not a "no diff command" error).
+        let prf = try String(contentsOf: fixture.profileURL, encoding: .utf8)
+        try (prf + "\ndiff = diff -u\n").write(to: fixture.profileURL,
+                                               atomically: true, encoding: .utf8)
+
+        // Drive init1 + init2 to populate the real reconcile state.
+        let scanned = expectation(description: "init2 complete")
+        var items: [StateItem] = []
+        UnisonBridge.installInit1CompleteHandler { needsPrompt in
+            XCTAssertFalse(needsPrompt, "local-only profile shouldn't need a prompt")
+            unison_bridge_init2()
+        }
+        UnisonBridge.installInit2CompleteHandler { captured in
+            items = captured
+            scanned.fulfill()
+        }
+        fixture.profileName.withCString { unison_bridge_init1($0) }
+        wait(for: [scanned], timeout: 20.0)
+
+        guard let row = items.firstIndex(where: { $0.path == "shared-diff.txt" }) else {
+            return XCTFail("expected a shared-diff.txt row; got \(items.map(\.path))")
+        }
+        XCTAssertTrue(unison_bridge_can_diff(Int32(row)),
+                      "shared-diff.txt (differing content both sides) must be diffable")
+
+        // Record diff deliveries so we can assert NONE arrives on the fault
+        // path and one arrives on the success path.
+        var diffDeliveries = 0
+        var diffErrDeliveries = 0
+        var lastDiffText = ""
+        let successDelivered = expectation(description: "diff result delivered on success")
+        UnisonBridge.installDiffHandler { _, text in
+            diffDeliveries += 1
+            lastDiffText = text
+            successDelivered.fulfill()
+        }
+        UnisonBridge.installDiffErrHandler { _ in diffErrDeliveries += 1 }
+
+        // --- Fault path: force the next exn-wrapper dispatch to raise. --------
+        // Drive the broker's pending state exactly as AppDelegate's
+        // `requestDiff` does around the bridge call: request → issue →
+        // run_show_diffs → (false) → requestRaised. NOTE: this exercises the
+        // BROKER state transition, not the AppKit UI. The `.raised` result that
+        // AppDelegate maps this false return to, and the Reconcile window's
+        // `showError` branch it drives, are verified by code inspection (no UI
+        // harness) — this test only asserts the broker/bridge contract.
+        var broker = DiffRequestBroker()
+        let owner: DiffRequestBroker.Owner = 42
+        XCTAssertEqual(broker.request(owner: owner), .issue)
+
+        unison_bridge_test_force_next_callbacks_raise(1)
+        let faultOK = unison_bridge_run_show_diffs(Int32(row))
+        XCTAssertFalse(faultOK, "a raised diff dispatch must return false through the real wrapper")
+        XCTAssertEqual(unison_bridge_test_pending_forced_raises(), 0,
+                       "the run_show_diffs dispatch consumed exactly the forced raise")
+
+        // Pending state cleared through requestRaised: the broker returns to
+        // idle and a new request is immediately allowed.
+        broker.requestRaised(owner: owner)
+        XCTAssertFalse(broker.isAwaitingResult)
+        XCTAssertEqual(broker.request(owner: owner), .issue, "cleared → usable")
+        broker.requestRaised(owner: owner)   // reset for the success path below
+
+        // No stale result published: the forced raise short-circuits before
+        // OCaml, so neither displayDiff nor displayDiffErr fired. Give the main
+        // queue a beat to prove nothing is in flight.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(diffDeliveries, 0, "no diff result may be published on the fault path")
+        XCTAssertEqual(diffErrDeliveries, 0, "no diff error may be published on the fault path")
+
+        // --- Engine usable: a subsequent REAL diff on the same row succeeds. --
+        XCTAssertEqual(unison_bridge_test_pending_forced_raises(), 0, "no leftover forced raise")
+        XCTAssertEqual(broker.request(owner: owner), .issue)
+        let okAgain = unison_bridge_run_show_diffs(Int32(row))
+        XCTAssertTrue(okAgain, "the worker survived the forced raise; a real diff dispatches")
+        wait(for: [successDelivered], timeout: 20.0)
+        XCTAssertEqual(broker.deliver(), .apply(owner: owner))
+        XCTAssertEqual(diffDeliveries, 1, "exactly one diff result on the success path")
+        XCTAssertFalse(lastDiffText.isEmpty, "the real diff produced output")
+    }
 }
 
 // MARK: - Integration fixture helper
