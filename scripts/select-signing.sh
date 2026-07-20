@@ -52,4 +52,24 @@ if [ -z "$identity" ]; then
     exit 1
 fi
 
+# Enforce the identity/team pairing contract. The resolver emits exactly two
+# well-formed shapes; any other combination is malformed and FATAL, so the
+# build never proceeds with a mismatched pair:
+#   - ad-hoc:  identity "-"       with an EMPTY team.
+#   - signing: a real identity    with a NON-EMPTY team.
+# The two rejected shapes are an ad-hoc "-" carrying a team, and a real
+# identity with no team (which would sign without a resolvable team, exactly
+# the mismatch the same-record resolver exists to prevent).
+if [ "$identity" = "-" ]; then
+    if [ -n "$team" ]; then
+        echo "select-signing: malformed resolver output (ad-hoc identity '-' paired with a non-empty team '$team'); aborting build" >&2
+        exit 1
+    fi
+else
+    if [ -z "$team" ]; then
+        echo "select-signing: malformed resolver output (signing identity with an empty team); aborting build" >&2
+        exit 1
+    fi
+fi
+
 printf '%s\n%s\n' "$identity" "$team"

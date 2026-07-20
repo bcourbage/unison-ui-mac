@@ -236,16 +236,40 @@ check "selector: ad-hoc identity preserved" "$(id_of "$o")" "-"
 check "selector: ad-hoc empty team preserved" "$(team_of "$o")" ""
 check "selector: ad-hoc exits 0" "$(printf '%s\n' "$o" | sed -n 's/^rc=//p')" "0"
 
-# 22. a well-formed identity with a genuinely empty team (non-ad-hoc) also
-#     stays valid — the empty second line is contractual, not malformed.
+# --- Identity/team pairing contract (the two well-formed shapes only) --------
+
+# 22. a REAL identity with an EMPTY team is now FATAL. Signing without a
+#     resolvable team is exactly the mismatch the same-record resolver exists
+#     to prevent, so the selector must refuse it rather than pass it through.
 cat > "$tmp/stub_noteam.sh" <<'EOF'
 #!/bin/sh
 printf '%s\n%s\n' "IDVAL" ""
 EOF
 chmod +x "$tmp/stub_noteam.sh"
-o="$(SIGN_RESOLVER="$tmp/stub_noteam.sh" sh "$selector")"
-check "selector: empty team preserved" "$(id_of "$o")" "IDVAL"
-check "selector: empty team is empty"  "$(team_of "$o")" ""
+SIGN_RESOLVER="$tmp/stub_noteam.sh" sh "$selector" >/dev/null 2>&1
+check "selector: signing identity with empty team is fatal" "$?" "1"
+
+# 23. an ad-hoc "-" carrying a NON-EMPTY team is FATAL: ad-hoc has no team, so
+#     a team here means the resolver output is malformed.
+cat > "$tmp/stub_adhoc_team.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n' "-" "TEAMVAL"
+EOF
+chmod +x "$tmp/stub_adhoc_team.sh"
+SIGN_RESOLVER="$tmp/stub_adhoc_team.sh" sh "$selector" >/dev/null 2>&1
+check "selector: ad-hoc '-' with a non-empty team is fatal" "$?" "1"
+
+# 24. the well-formed SIGNING shape (real identity + non-empty team) passes
+#     with exit 0 and round-trips both values.
+cat > "$tmp/stub_signing.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n%s\n' "IDVAL" "TEAMVAL"
+EOF
+chmod +x "$tmp/stub_signing.sh"
+o="$(SIGN_RESOLVER="$tmp/stub_signing.sh" sh "$selector"; echo "rc=$?")"
+check "selector: signing identity+team round-trips identity" "$(id_of "$o")" "IDVAL"
+check "selector: signing identity+team round-trips team"     "$(team_of "$o")" "TEAMVAL"
+check "selector: signing identity+team exits 0" "$(printf '%s\n' "$o" | sed -n 's/^rc=//p')" "0"
 
 echo "-----------------------------------------------"
 echo "resolve-signing matrix: $pass passed, $fail failed"
