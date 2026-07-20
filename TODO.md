@@ -120,6 +120,29 @@ section at the bottom so this list stays scannable.
       destination atomically. `presentSaveError` gains the two new cases. Full
       suite 565 tests, 0 failures.
 
+      **No-clobber-race + cleanup-honesty pass (2026-07-20):**
+      (1) The `exists(dest)` pre-check is now only a fast, friendly PRE-check;
+      the real race guard is an atomic NO-REPLACE install at the commit point.
+      `ProfileFileOps.installExclusive` (real: `renamex_np(..., RENAME_EXCL)`;
+      fake: EEXIST when the destination exists) is used for new profiles and
+      the rename's new-file write, so a `<newName>.prf` created by another
+      actor between the pre-check and the install is surfaced as
+      `.destinationExists`, never overwritten. In-place overwrite keeps the
+      ordinary replacing `writeAtomic`.
+      (2) Temp-cleanup failures are no longer swallowed: a stale `.bak.tmp`
+      that can't be removed (or one lingering after a backup failure) is
+      reported via a new explicit `.cleanupFailed` (profile intact, residue
+      named) instead of `.backupFailed` + "nothing changed"; and the rename's
+      internal temp clears now feed the rollback/`.rollbackFailed` accounting.
+      Every error message states whether the state is clean, retryable, or
+      contains residue.
+      (3) New tests: rename + new-profile destination-race (intruder appears
+      after the pre-check -> refused, source + intruder untouched); real
+      `installExclusive` refuses an existing destination (EEXIST, no overwrite,
+      no leaked temp) and installs a fresh path; stale-temp cleanup failure
+      reports residue with the original unchanged. Full suite 569 tests, 0
+      failures.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**

@@ -31,9 +31,29 @@ final class ProfileSaveTransactionTests: XCTestCase {
                 throw InjectedFault()
             }
         }
-        func exists(_ path: String) -> Bool { files[path] != nil }
+        /// Fires after each exists() result is computed. A test uses it to
+        /// create the destination between the transaction's preliminary
+        /// `exists` pre-check and the later exclusive install (the TOCTOU race).
+        var afterExists: ((String) -> Void)?
+
+        func exists(_ path: String) -> Bool {
+            let r = files[path] != nil
+            afterExists?(path)
+            return r
+        }
         func writeAtomic(_ content: String, to path: String) throws {
             try maybeFail("write", path); files[path] = content; log.append("write \(path)")
+        }
+        // Models an atomic no-replace install: fails with EEXIST if the
+        // destination already exists (matching renamex_np RENAME_EXCL), so a
+        // file that appeared mid-flight is never overwritten.
+        func installExclusive(_ content: String, to path: String) throws {
+            try maybeFail("install", path)
+            if files[path] != nil {
+                throw ProfileFileOpsError(operation: "installExclusive",
+                                          from: path + ".new.tmp", to: path, code: EEXIST)
+            }
+            files[path] = content; log.append("install \(path)")
         }
         func copy(from: String, to: String) throws {
             try maybeFail("copy", to)
@@ -95,9 +115,9 @@ final class ProfileSaveTransactionTests: XCTestCase {
         let ops = FakeFileOps()
         ops.files["/u/a.prf"] = "A"
         try tx(ops).commit(oldName: "a", newName: "b", content: "B")
-        let writeIdx = ops.log.firstIndex { $0 == "write /u/b.prf" }!
+        let installIdx = ops.log.firstIndex { $0 == "install /u/b.prf" }!
         let removeIdx = ops.log.firstIndex { $0 == "remove /u/a.prf" }!
-        XCTAssertLessThan(writeIdx, removeIdx)
+        XCTAssertLessThan(installIdx, removeIdx)
     }
 
     func test_renameOntoExistingUnrelatedFile_refused_noChange() {
@@ -158,7 +178,7 @@ final class ProfileSaveTransactionTests: XCTestCase {
     func test_rename_writeFails_originalIntact_retrySucceeds() throws {
         let ops = FakeFileOps()
         ops.files["/u/a.prf"] = "A"
-        ops.faultOn = ("write", "b.prf")
+        ops.faultOn = ("install", "b.prf")   // rename installs the new file exclusively
         XCTAssertThrowsError(try tx(ops).commit(oldName: "a", newName: "b", content: "B")) {
             guard case .writeFailed = ($0 as? ProfileSaveError) else { return XCTFail() }
         }
@@ -244,6 +264,84 @@ final class ProfileSaveTransactionTests: XCTestCase {
         XCTAssertEqual(ops.files["/u/a.prf"], "A")
         XCTAssertEqual(ops.files["/u/b.prf"], "B")
         XCTAssertNil(ops.files["/u/b.prf.bak"], "the new backup was rolled back")
+    }
+
+    // MARK: - No-clobber race (destination appears after the pre-check)
+
+    func test_rename_destinationRace_afterPrecheck_refused_sourceAndIntruderUntouched() {
+        // The destination does not exist at the preliminary `exists` pre-check,
+        // but another actor creates it before the exclusive install. The
+        // install must refuse (destinationExists), leaving BOTH the original
+        // source and the unrelated intruder file untouched.
+        let ops = FakeFileOps()
+        ops.files["/u/a.prf"] = "A"
+        ops.afterExists = { path in
+            if path == "/u/b.prf" {
+                ops.files["/u/b.prf"] = "INTRUDER"   // appears mid-flight
+                ops.afterExists = nil                // one-shot
+            }
+        }
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "a", newName: "b", content: "B")) {
+            XCTAssertEqual($0 as? ProfileSaveError, .destinationExists(name: "b"))
+        }
+        XCTAssertEqual(ops.files["/u/a.prf"], "A", "original source untouched")
+        XCTAssertEqual(ops.files["/u/b.prf"], "INTRUDER",
+                       "unrelated destination that appeared mid-flight is NOT overwritten")
+    }
+
+    func test_new_destinationRace_afterPrecheck_refused_intruderUntouched() {
+        let ops = FakeFileOps()
+        ops.afterExists = { path in
+            if path == "/u/p.prf" { ops.files["/u/p.prf"] = "INTRUDER"; ops.afterExists = nil }
+        }
+        XCTAssertThrowsError(try tx(ops).commit(oldName: nil, newName: "p", content: "NEW")) {
+            XCTAssertEqual($0 as? ProfileSaveError, .destinationExists(name: "p"))
+        }
+        XCTAssertEqual(ops.files["/u/p.prf"], "INTRUDER", "not overwritten by the exclusive install")
+    }
+
+    // MARK: - Stale-temp cleanup failure is reported, not swallowed
+
+    func test_overwrite_staleTempCleanupFails_reportsResidue_originalUnchanged() {
+        let ops = FakeFileOps()
+        ops.files["/u/p.prf"] = "OLD"
+        ops.files["/u/p.prf.bak.tmp"] = "STALE"       // leftover from a prior crash
+        ops.faultOn = ("remove", "p.prf.bak.tmp")     // cleanup of it fails
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "p", newName: "p", content: "NEW")) {
+            guard case .cleanupFailed(let detail) = ($0 as? ProfileSaveError) else {
+                return XCTFail("expected cleanupFailed, got \($0)")
+            }
+            XCTAssertTrue(detail.contains("p.prf.bak.tmp"), "names the stray temp")
+            XCTAssertTrue(detail.contains("unchanged"), "states the original is unchanged")
+        }
+        XCTAssertEqual(ops.files["/u/p.prf"], "OLD", "original untouched")
+        XCTAssertEqual(ops.files["/u/p.prf.bak.tmp"], "STALE", "residue honestly left in place")
+    }
+
+    // MARK: - Real filesystem: exclusive install (no-replace)
+
+    func test_real_installExclusive_refusesExistingDestination() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ProfileSaveTxExcl-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let ops = SystemFileOps()
+        let dest = base.appendingPathComponent("p.prf").path
+        try "EXISTING".write(toFile: dest, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try ops.installExclusive("NEW", to: dest)) {
+            XCTAssertEqual(($0 as? ProfileFileOpsError)?.code, EEXIST,
+                           "exclusive install must fail with EEXIST on an existing destination")
+        }
+        XCTAssertEqual(try String(contentsOfFile: dest, encoding: .utf8), "EXISTING",
+                       "existing destination is not overwritten")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest + ".new.tmp"),
+                       "no temp leaked on the refused install")
+
+        // A fresh path installs cleanly.
+        let fresh = base.appendingPathComponent("q.prf").path
+        try ops.installExclusive("FRESH", to: fresh)
+        XCTAssertEqual(try String(contentsOfFile: fresh, encoding: .utf8), "FRESH")
     }
 
     // MARK: - Real filesystem: move is an atomic replace

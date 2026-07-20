@@ -1393,6 +1393,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             showAlert(text: "The rename failed and could not be fully undone",
                       info: "The Unison directory may now contain both the old and the new profile. Check it before retrying. \(detail)",
                       style: .critical)
+        case .cleanupFailed(let detail):
+            showAlert(text: "The profile was left unchanged, but a temporary file remains",
+                      info: "\(detail)", style: .warning)
         }
     }
 
