@@ -73,6 +73,28 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **L1 + residual Finding #6 (2026-07-20):** diff-result identity/safety. The
+      async diff result (`displayInfoDiff`) carries no request id and is
+      delivered on a later main hop, and the permanent handler routes to the
+      current session's window — so a slower earlier result could overwrite a
+      newer selection, or a result could land on a replacement session. Added a
+      pure `DiffRequestCoordinator` (serialize: one diff outstanding at a time;
+      monotonic token; `invalidate()` on window close / session teardown /
+      cancellation drops in-flight results). `ReconcileWindowController.
+      performDiff` gates on `request()` (refuses a rapid second diff while one is
+      loading), calls `requestRaised()` on the `run_show_diffs` false/raised
+      return (clears pending, surfaces the error synchronously without escalating
+      — a diff is a read-only query), and `showDiff`/`showDiffError` drop stale
+      deliveries via `deliver()`. `DiffWindowController.onClose` invalidates so a
+      closed diff window can't lock out the next diff or apply a late result.
+      **Coverage:** 9 deterministic `DiffRequestCoordinator` tests — rapid
+      selection change, duplicate/late completion, delivery with no outstanding
+      request, invalidate/replacement, bridge-raised fault, error delivery,
+      monotonic tokens. This also closes the missing `run_show_diffs`
+      exception-handling test gap at the pure-logic layer (the bridge-raised
+      path is modeled by `requestRaised()`); the controller wiring itself isn't
+      driven by a UI harness.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**

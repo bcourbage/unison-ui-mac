@@ -153,6 +153,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// clicking back to the picker, and the window is read-only so a
     /// stale association with the closed reconcile is harmless.
     private var diffWindowController: DiffWindowController?
+    /// Serializes async diff requests + drops stale/late results so an older,
+    /// slower diff can't overwrite a newer selection and a result arriving
+    /// after close/session-change is ignored (L1 + residual Finding #6).
+    private var diffCoordinator = DiffRequestCoordinator()
     /// True when the active profile's `.prf` declares at least one
     /// `merge = …` pattern. Drives the toolbar's Merge-button
     /// visibility AND the Edit-menu Merge item's enablement. Set at
@@ -1119,12 +1123,24 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// handler for the live session into this window's (lazily created)
     /// diff window. The window no longer installs its own diff handler.
     func showDiff(title: String, text: String) {
+        // Drop a stale/late result: one that arrives after its request was
+        // superseded, the diff window closed, or this window is a replacement
+        // session that never requested a diff (the permanent handler routes to
+        // the current session). Only the single outstanding request is applied.
+        guard diffCoordinator.deliver() == .apply else {
+            TraceLog.shared.write("ReconcileWindow: dropping stale diff result")
+            return
+        }
         diffWindowController?.showDiff(title: title, text: text)
     }
 
     /// Diff-error presentation, forwarded by AppDelegate's permanent
     /// diff-error handler for the live session.
     func showDiffError(_ message: String) {
+        guard diffCoordinator.deliver() == .apply else {
+            TraceLog.shared.write("ReconcileWindow: dropping stale diff error")
+            return
+        }
         diffWindowController?.showError(message)
     }
 
@@ -1407,18 +1423,41 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             alert.runModal()
             return
         }
+        // Serialize: only issue a diff when none is outstanding. Because the
+        // async result carries no request id and is delivered on a later main
+        // hop, allowing a second concurrent request would make it impossible to
+        // tell which request a given result belongs to. A rapid second click is
+        // refused with brief feedback until the first result (or error) lands.
+        switch diffCoordinator.request() {
+        case .refuseInFlight:
+            NSSound.beep()
+            TraceLog.shared.write("ReconcileWindow: diff already in flight — ignoring request for row \(row)")
+            return
+        case .issue:
+            break
+        }
+
         // Lazily create the diff window — most reconcile sessions
         // never need one.
         if diffWindowController == nil {
             diffWindowController = DiffWindowController()
+            // Closing the diff window (incl. while still loading) cancels the
+            // outstanding request so a late result is dropped and the next diff
+            // isn't locked out.
+            diffWindowController?.onClose = { [weak self] in
+                self?.diffCoordinator.invalidate()
+            }
         }
         diffWindowController?.surfaceForLoading(path: path)
         TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
         // A false return means the diff dispatch raised in OCaml. The engine
         // stays valid (a diff is a read-only per-row query), so surface a
         // narrow diff error in the already-open diff window rather than escalate.
+        // Clear the pending request FIRST (no async result will arrive) so the
+        // synchronous error isn't itself dropped as "stale".
         if !unison_bridge_run_show_diffs(Int32(row)) {
             TraceLog.shared.write("ReconcileWindow: run_show_diffs raised for row \(row)")
+            diffCoordinator.requestRaised()
             diffWindowController?.showError(
                 "Unison could not produce a diff for this row.")
         }
