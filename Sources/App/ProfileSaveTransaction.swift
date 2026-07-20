@@ -11,11 +11,17 @@ protocol ProfileFileOps {
     /// never left partially written — it holds either the old bytes or the new.
     func writeAtomic(_ content: String, to path: String) throws
     /// Install `content` at `path` with NO-REPLACE semantics, atomically at the
-    /// commit point: write to a temp in the SAME directory, then install it
-    /// ONLY if `path` still does not exist. If `path` was created between the
-    /// caller's earlier `exists` check and this call (the TOCTOU race), this
-    /// MUST fail rather than overwrite — throwing a `ProfileFileOpsError` whose
-    /// `code == EEXIST`. Used for new profiles and renames, where clobbering an
+    /// commit point. Stage into a UNIQUE, PRIVATE same-directory file (so
+    /// concurrent callers never share a staging path and cannot cross-write),
+    /// then install it ONLY if `path` still does not exist. If `path` was
+    /// created between the caller's earlier `exists` check and this call (the
+    /// TOCTOU race), this MUST fail rather than overwrite — throwing a
+    /// `ProfileFileOpsError` whose `code == EEXIST`. Implementations must never
+    /// remove or overwrite another caller's staging file. If installation fails
+    /// AND the implementation's own private staging file cannot be cleaned up,
+    /// it throws `ProfileSaveError.cleanupFailed` naming both the primary
+    /// failure and the residual temp (not reduced to `.destinationExists` /
+    /// `.writeFailed`). Used for new profiles and renames, where clobbering an
     /// unrelated file that appeared mid-flight would be data loss.
     func installExclusive(_ content: String, to path: String) throws
     func copy(from: String, to: String) throws
@@ -306,19 +312,73 @@ struct SystemFileOps: ProfileFileOps {
     }
 
     func installExclusive(_ content: String, to path: String) throws {
-        // Write to a temp in the SAME directory, then install with an atomic
-        // no-replace rename. `renamex_np(..., RENAME_EXCL)` is a single syscall
-        // that fails with EEXIST if `path` already exists — so a destination
-        // created between the caller's `exists` pre-check and here is never
-        // overwritten (the TOCTOU race), and the install is still atomic.
-        let tmp = path + ".new.tmp"
-        if fm.fileExists(atPath: tmp) { try fm.removeItem(atPath: tmp) }
-        try content.write(toFile: tmp, atomically: false, encoding: .utf8)
+        // Stage into a UNIQUE, PRIVATE file in the same directory via mkstemp
+        // (which opens O_CREAT|O_EXCL, so every caller gets its own name), then
+        // install with an atomic no-replace rename. A shared fixed staging path
+        // like `<dest>.new.tmp` would let concurrent callers delete, truncate,
+        // or write through one another's staging file — so a "successful"
+        // install could carry another caller's bytes. A per-call mkstemp name
+        // makes that impossible: we write to our own fd and NEVER touch another
+        // caller's staging file. `renamex_np(..., RENAME_EXCL)` then fails with
+        // EEXIST if `path` already exists — so a destination created between the
+        // caller's `exists` pre-check and here is never overwritten (the TOCTOU
+        // race), and the install itself is atomic.
+        let dir = (path as NSString).deletingLastPathComponent
+        let template = (dir as NSString).appendingPathComponent(".unison-ui-save.XXXXXX")
+        var tmplBytes = Array(template.utf8CString)
+        let fd = tmplBytes.withUnsafeMutableBufferPointer { mkstemp($0.baseAddress!) }
+        guard fd >= 0 else {
+            throw ProfileFileOpsError(operation: "mkstemp", from: template, to: path, code: errno)
+        }
+        let tmp = String(cString: tmplBytes)
+
+        // Write the full content to THIS exact fd, then close it. Profiles are
+        // config files; 0644 matches typical .prf perms (mkstemp opens 0600).
+        _ = fchmod(fd, 0o644)
+        let data = Data(content.utf8)
+        var writeErrno: Int32 = 0
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard var ptr = raw.baseAddress else { return }   // empty content: 0-byte file
+            var remaining = raw.count
+            while remaining > 0 {
+                let n = write(fd, ptr, remaining)
+                if n < 0 { if errno == EINTR { continue }; writeErrno = errno; return }
+                if n == 0 { break }
+                ptr = ptr.advanced(by: n); remaining -= n
+            }
+        }
+        close(fd)
+        if writeErrno != 0 {
+            try removePrivateStagingOrThrow(
+                tmp, primary: "writing the staging file failed: \(String(cString: strerror(writeErrno)))",
+                dest: path)
+            throw ProfileFileOpsError(operation: "write", from: tmp, to: path, code: writeErrno)
+        }
+
         if renamex_np(tmp, path, UInt32(RENAME_EXCL)) != 0 {
             let code = errno
-            try? fm.removeItem(atPath: tmp)   // don't leak the temp on failure
+            // Remove OUR OWN private staging file (never another caller's). If
+            // that removal ALSO fails, surface an explicit cleanup error naming
+            // both the primary failure and the residual temp — do NOT reduce it
+            // to destinationExists/writeFailed and claim a clean state.
+            try removePrivateStagingOrThrow(
+                tmp, primary: "exclusive install of \(path) failed: \(String(cString: strerror(code)))",
+                dest: path)
             throw ProfileFileOpsError(operation: "renamex_np(RENAME_EXCL)",
                                       from: tmp, to: path, code: code)
+        }
+    }
+
+    /// Remove our own private staging file. On a removal failure, throw an
+    /// explicit `.cleanupFailed` naming the primary failure and the residual
+    /// temp — never swallow it with `try?`.
+    private func removePrivateStagingOrThrow(_ tmp: String, primary: String, dest: String) throws {
+        guard fm.fileExists(atPath: tmp) else { return }
+        do { try fm.removeItem(atPath: tmp) }
+        catch {
+            throw ProfileSaveError.cleanupFailed(
+                "\(primary); AND its private staging file \(tmp) could not be removed " +
+                "(\(error.localizedDescription)); the staging file remains and \(dest) is unchanged")
         }
     }
 

@@ -143,6 +143,21 @@ section at the bottom so this list stays scannable.
       reports residue with the original unchanged. Full suite 569 tests, 0
       failures.
 
+      **Private-staging amendment (2026-07-20):** `installExclusive` no longer
+      stages through a shared fixed `<dest>.new.tmp` (which let concurrent
+      callers delete/truncate/cross-write one another's staging file, so a
+      "successful" install could carry another caller's bytes). It now creates a
+      UNIQUE private same-directory file via `mkstemp` (O_CREAT|O_EXCL), writes
+      and closes THAT exact fd, then installs it with `renamex_np(RENAME_EXCL)`;
+      it never touches another caller's staging file. If install fails and its
+      OWN private temp can't be removed, it throws the explicit `.cleanupFailed`
+      naming both the primary failure and the residual temp (not reduced to
+      `.destinationExists`/`.writeFailed`). Tests: independent staging (no fixed
+      temp); concurrent contenders -> exactly one winner whose destination holds
+      COMPLETE bytes; dest-exists + cleanup-failure reports residue honestly; no
+      staging residue after success or collision. Full suite 573 tests, 0
+      failures.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**

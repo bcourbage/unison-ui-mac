@@ -44,14 +44,25 @@ final class ProfileSaveTransactionTests: XCTestCase {
         func writeAtomic(_ content: String, to path: String) throws {
             try maybeFail("write", path); files[path] = content; log.append("write \(path)")
         }
+        /// When true, a collision (destination exists) ALSO fails to clean up
+        /// the private staging file, so installExclusive surfaces the honest
+        /// `.cleanupFailed` residue error instead of a plain EEXIST.
+        var installCleanupFailsOnCollision = false
+
         // Models an atomic no-replace install: fails with EEXIST if the
         // destination already exists (matching renamex_np RENAME_EXCL), so a
         // file that appeared mid-flight is never overwritten.
         func installExclusive(_ content: String, to path: String) throws {
             try maybeFail("install", path)
             if files[path] != nil {
+                if installCleanupFailsOnCollision {
+                    throw ProfileSaveError.cleanupFailed(
+                        "exclusive install of \(path) failed: File exists; AND its private " +
+                        "staging file \(path).stagingXYZ could not be removed; the staging " +
+                        "file remains and \(path) is unchanged")
+                }
                 throw ProfileFileOpsError(operation: "installExclusive",
-                                          from: path + ".new.tmp", to: path, code: EEXIST)
+                                          from: path + ".stagingXYZ", to: path, code: EEXIST)
             }
             files[path] = content; log.append("install \(path)")
         }
@@ -318,12 +329,24 @@ final class ProfileSaveTransactionTests: XCTestCase {
         XCTAssertEqual(ops.files["/u/p.prf.bak.tmp"], "STALE", "residue honestly left in place")
     }
 
-    // MARK: - Real filesystem: exclusive install (no-replace)
+    // MARK: - Real filesystem: exclusive install (no-replace, private staging)
+
+    /// Names of any leftover staging files in a directory (the old fixed
+    /// `*.new.tmp` OR the private `.unison-ui-save.*` scheme).
+    private func stagingResidue(in base: URL) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
+        return names.filter { $0.hasSuffix(".new.tmp") || $0.hasPrefix(".unison-ui-save") }
+    }
+
+    private func makeTempDir(_ tag: String) throws -> URL {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ProfileSaveTx\(tag)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
 
     func test_real_installExclusive_refusesExistingDestination() throws {
-        let base = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ProfileSaveTxExcl-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let base = try makeTempDir("Excl")
         defer { try? FileManager.default.removeItem(at: base) }
         let ops = SystemFileOps()
         let dest = base.appendingPathComponent("p.prf").path
@@ -335,13 +358,105 @@ final class ProfileSaveTransactionTests: XCTestCase {
         }
         XCTAssertEqual(try String(contentsOfFile: dest, encoding: .utf8), "EXISTING",
                        "existing destination is not overwritten")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dest + ".new.tmp"),
-                       "no temp leaked on the refused install")
 
         // A fresh path installs cleanly.
         let fresh = base.appendingPathComponent("q.prf").path
         try ops.installExclusive("FRESH", to: fresh)
         XCTAssertEqual(try String(contentsOfFile: fresh, encoding: .utf8), "FRESH")
+    }
+
+    /// (1) Separate exclusive-install attempts use INDEPENDENT staging files —
+    /// no shared fixed staging path — so they cannot cross-write.
+    func test_real_installExclusive_usesIndependentPrivateStaging() throws {
+        let base = try makeTempDir("Indep")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let ops = SystemFileOps()
+        let a = base.appendingPathComponent("a.prf").path
+        let b = base.appendingPathComponent("b.prf").path
+        try ops.installExclusive("AAA", to: a)
+        try ops.installExclusive("BBB", to: b)
+        XCTAssertEqual(try String(contentsOfFile: a, encoding: .utf8), "AAA")
+        XCTAssertEqual(try String(contentsOfFile: b, encoding: .utf8), "BBB")
+        // The old shared fixed staging names must never exist, and nothing
+        // staging-like may linger.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: a + ".new.tmp"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: b + ".new.tmp"))
+        XCTAssertTrue(stagingResidue(in: base).isEmpty,
+                      "no staging residue: \(stagingResidue(in: base))")
+    }
+
+    /// (2) Concurrent contenders installing the SAME destination: exactly one
+    /// succeeds, and the destination holds that contender's COMPLETE bytes (no
+    /// truncation or cross-written mix).
+    func test_real_installExclusive_concurrentContenders_oneWinnerCompleteBytes() throws {
+        let base = try makeTempDir("Race")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let ops = SystemFileOps()
+        let dest = base.appendingPathComponent("p.prf").path
+        let n = 8
+        // Distinct, large per-contender content so a partial/mixed write is
+        // detectable (each is ~40 KB with a unique marker and a distinct END).
+        let contents = (0..<n).map { i in String(repeating: "C\(i)-", count: 10_000) + "END\(i)" }
+
+        let lock = NSLock(); var successes = 0
+        let group = DispatchGroup()
+        for i in 0..<n {
+            group.enter()
+            DispatchQueue.global().async {
+                do {
+                    try ops.installExclusive(contents[i], to: dest)
+                    lock.lock(); successes += 1; lock.unlock()
+                } catch { /* EEXIST expected for the losers */ }
+                group.leave()
+            }
+        }
+        group.wait()
+
+        XCTAssertEqual(successes, 1, "exactly one contender installs the destination")
+        let final = try String(contentsOfFile: dest, encoding: .utf8)
+        XCTAssertTrue(contents.contains(final),
+                      "destination holds exactly one contender's COMPLETE bytes (no mix/truncation)")
+        XCTAssertTrue(stagingResidue(in: base).isEmpty,
+                      "losers cleaned up their private staging files: \(stagingResidue(in: base))")
+    }
+
+    /// (3) Destination-exists PLUS a temp-cleanup failure is reported honestly
+    /// (as `.cleanupFailed` naming the residue), NOT reduced to
+    /// `.destinationExists`. Exercised through the transaction with a fake that
+    /// simulates the collision-then-cleanup-failure at install time; the
+    /// destination is one that appeared AFTER the pre-check (the race).
+    func test_installExclusive_destExistsPlusCleanupFailure_reportsResidue() {
+        let ops = FakeFileOps()
+        ops.installCleanupFailsOnCollision = true
+        ops.afterExists = { path in
+            if path == "/u/p.prf" { ops.files["/u/p.prf"] = "INTRUDER"; ops.afterExists = nil }
+        }
+        XCTAssertThrowsError(try tx(ops).commit(oldName: nil, newName: "p", content: "NEW")) {
+            guard case .cleanupFailed(let detail) = ($0 as? ProfileSaveError) else {
+                return XCTFail("expected cleanupFailed (not destinationExists), got \($0)")
+            }
+            XCTAssertTrue(detail.contains("p.prf"), "names the residual staging / destination")
+            XCTAssertTrue(detail.lowercased().contains("staging"), "names the residual temp")
+        }
+        XCTAssertEqual(ops.files["/u/p.prf"], "INTRUDER", "unrelated destination untouched")
+    }
+
+    /// (4) No staging file remains after an ordinary SUCCESS or an ordinary
+    /// destination COLLISION.
+    func test_real_installExclusive_noStagingResidue_afterSuccessOrCollision() throws {
+        let base = try makeTempDir("Residue")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let ops = SystemFileOps()
+        let dest = base.appendingPathComponent("p.prf").path
+
+        try ops.installExclusive("ONE", to: dest)                 // ordinary success
+        XCTAssertTrue(stagingResidue(in: base).isEmpty, "no residue after success")
+
+        XCTAssertThrowsError(try ops.installExclusive("TWO", to: dest)) {  // ordinary collision
+            XCTAssertEqual(($0 as? ProfileFileOpsError)?.code, EEXIST)
+        }
+        XCTAssertEqual(try String(contentsOfFile: dest, encoding: .utf8), "ONE", "unchanged")
+        XCTAssertTrue(stagingResidue(in: base).isEmpty, "no residue after collision")
     }
 
     // MARK: - Real filesystem: move is an atomic replace
