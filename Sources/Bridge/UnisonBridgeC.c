@@ -596,9 +596,10 @@ static bool emit_state_items(value arr_in, unison_init2_complete_handler_t consu
     const value *fn_type      = caml_named_value("unisonRiToFileType");
     const value *fn_progress  = caml_named_value("unisonRiToProgress");
     const value *fn_bytes     = caml_named_value("unisonRiToBytesTransferred");
+    const value *fn_changed   = caml_named_value("changedFromDefault");
     if (fn_path == NULL || fn_left == NULL || fn_right == NULL ||
         fn_direction == NULL || fn_size == NULL || fn_type == NULL ||
-        fn_progress == NULL || fn_bytes == NULL) {
+        fn_progress == NULL || fn_bytes == NULL || fn_changed == NULL) {
         fprintf(stderr, "unison-mac: emit_state_items: a state accessor is not "
                         "registered (stale blob?) — not publishing\n");
         CAMLreturnT(bool, false);
@@ -648,6 +649,8 @@ static bool emit_state_items(value arr_in, unison_init2_complete_handler_t consu
         out[i].progress = bridge_strdup(String_val(v));    if (!out[i].progress) { oom = true; break; }
         v = bridge_call1_exn(fn_bytes, item, &raised);     if (raised) break;
         out[i].bytes_transferred = (int64_t)Double_val(v);
+        v = bridge_call1_exn(fn_changed, item, &raised);   if (raised) break;
+        out[i].changed_from_default = (Bool_val(v) == 1);
     }
 
     if (raised || oom) {
@@ -1484,29 +1487,37 @@ int unison_bridge_init2(void) {
 }
 
 struct ri_set_io {
-    const char *setter_name;     /* OCaml callback name, e.g. "unisonRiSetRight" */
+    const char *setter_name;     /* OCaml callback name, e.g. "unisonRiSetRight" | "unisonRiRevert" */
     int         row;
     char        direction[16];   /* Out: new direction in OCaml raw form */
+    bool        changed;         /* Out: changedFromDefault after the mutation */
     int         result;          /* unison_op_result_t */
 };
 
-static void _ocaml_ri_set(void *user) {
+/* Shared per-row direction mutation: apply `setter_name` to the row, then read
+ * back the resulting direction AND changedFromDefault. Used by all six direction
+ * setters and by Revert (setter_name = "unisonRiRevert"). Both readbacks are
+ * part of the operation — a raise in either is DIRTY (the row was mutated),
+ * never a silent "no change" / false `changed`. */
+static void _ocaml_ri_mutate(void *user) {
     struct ri_set_io *io = user;
     io->direction[0] = '\0';
+    io->changed = false;
     io->result = UNISON_OP_INVALID;
 
     if (io->row < 0 || (size_t)io->row >= g_ri_count) {
-        fprintf(stderr, "unison-mac: ri_set row %d out of range (count=%zu)\n",
+        fprintf(stderr, "unison-mac: ri mutate row %d out of range (count=%zu)\n",
                 io->row, g_ri_count);
         return;   /* INVALID — no mutation */
     }
 
-    /* Resolve BOTH callbacks before mutating: a missing readback is INVALID
+    /* Resolve ALL three callbacks before mutating: a missing one is INVALID
      * (nothing changed), never a null-deref after the setter already ran. */
     const value *setter = caml_named_value(io->setter_name);
     const value *dir_fn = caml_named_value("unisonRiToDirection");
-    if (setter == NULL || dir_fn == NULL) {
-        fprintf(stderr, "unison-mac: ri_set callback missing (%s / unisonRiToDirection)\n",
+    const value *chg_fn = caml_named_value("changedFromDefault");
+    if (setter == NULL || dir_fn == NULL || chg_fn == NULL) {
+        fprintf(stderr, "unison-mac: ri mutate callback missing (%s / unisonRiToDirection / changedFromDefault)\n",
                 io->setter_name);
         return;   /* INVALID — no mutation */
     }
@@ -1522,26 +1533,39 @@ static void _ocaml_ri_set(void *user) {
     if (raised) { io->result = UNISON_OP_FAILED_DIRTY; return; }  /* mutated, readback failed */
     strncpy(io->direction, String_val(dir_v), sizeof(io->direction) - 1);
     io->direction[sizeof(io->direction) - 1] = '\0';
+
+    value chg_v = bridge_call1_exn(chg_fn, g_ri_roots[io->row], &raised);
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; return; }  /* mutated; never report false-on-failure */
+    io->changed = (Bool_val(chg_v) == 1);
     io->result = UNISON_OP_OK;
 }
 
-static unison_op_result_t _ri_set_via(const char *setter_name, int row,
-                                      char *out_dir, size_t out_dir_len) {
+static unison_op_result_t _ri_mutate_via(const char *setter_name, int row,
+                                         char *out_dir, size_t out_dir_len,
+                                         bool *out_changed) {
     struct ri_set_io io = { .setter_name = setter_name, .row = row };
-    run_on_ocaml_thread(_ocaml_ri_set, &io);
+    run_on_ocaml_thread(_ocaml_ri_mutate, &io);
     if (out_dir != NULL && out_dir_len > 0) {
         strncpy(out_dir, io.result == UNISON_OP_OK ? io.direction : "", out_dir_len - 1);
         out_dir[out_dir_len - 1] = '\0';
     }
+    /* Only report changed on success — a non-OK result never conflates a
+     * callback failure with `false`. */
+    if (out_changed != NULL && io.result == UNISON_OP_OK) *out_changed = io.changed;
     return (unison_op_result_t)io.result;
 }
 
-unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *d, size_t n) { return _ri_set_via("unisonRiSetRight",    row, d, n); }
-unison_op_result_t unison_bridge_ri_set_to_local(int row, char *d, size_t n)  { return _ri_set_via("unisonRiSetLeft",     row, d, n); }
-unison_op_result_t unison_bridge_ri_set_skip(int row, char *d, size_t n)      { return _ri_set_via("unisonRiSetConflict", row, d, n); }
-unison_op_result_t unison_bridge_ri_set_merge(int row, char *d, size_t n)     { return _ri_set_via("unisonRiSetMerge",    row, d, n); }
-unison_op_result_t unison_bridge_ri_force_older(int row, char *d, size_t n)   { return _ri_set_via("unisonRiForceOlder",  row, d, n); }
-unison_op_result_t unison_bridge_ri_force_newer(int row, char *d, size_t n)   { return _ri_set_via("unisonRiForceNewer",  row, d, n); }
+unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *d, size_t n, bool *c) { return _ri_mutate_via("unisonRiSetRight",    row, d, n, c); }
+unison_op_result_t unison_bridge_ri_set_to_local(int row, char *d, size_t n, bool *c)  { return _ri_mutate_via("unisonRiSetLeft",     row, d, n, c); }
+unison_op_result_t unison_bridge_ri_set_skip(int row, char *d, size_t n, bool *c)      { return _ri_mutate_via("unisonRiSetConflict", row, d, n, c); }
+unison_op_result_t unison_bridge_ri_set_merge(int row, char *d, size_t n, bool *c)     { return _ri_mutate_via("unisonRiSetMerge",    row, d, n, c); }
+unison_op_result_t unison_bridge_ri_force_older(int row, char *d, size_t n, bool *c)   { return _ri_mutate_via("unisonRiForceOlder",  row, d, n, c); }
+unison_op_result_t unison_bridge_ri_force_newer(int row, char *d, size_t n, bool *c)   { return _ri_mutate_via("unisonRiForceNewer",  row, d, n, c); }
+
+/* Finding #2: the genuine engine inverse — reset the row to Unison's post-scan
+ * recommendation via upstream `unisonRiRevert`. Same mutate-then-readback
+ * contract; on success `*out_changed` is false (back to default by definition). */
+unison_op_result_t unison_bridge_ri_revert(int row, char *d, size_t n, bool *c)        { return _ri_mutate_via("unisonRiRevert",      row, d, n, c); }
 
 /* Per-row Diff support. canDiff is a pure read (no mutation); runShowDiffs
  * kicks off the diff and returns immediately — the result comes back via

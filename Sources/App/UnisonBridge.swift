@@ -167,39 +167,6 @@ private func _swiftInit1CompleteTrampoline(needsPrompt: Bool) {
     }
 }
 
-/* Called synchronously on the OCaml thread; the bridge frees the C array
- * after we return, so we must convert every string before async-dispatching. */
-private func _swiftInit2CompleteTrampoline(
-    items: UnsafePointer<unison_state_item_t>?, count: Int
-) {
-    var converted: [StateItem] = []
-    if let items, count > 0 {
-        converted.reserveCapacity(count)
-        for i in 0..<count {
-            let ci = items[i]
-            converted.append(StateItem(
-                path:             ci.path.map { String(cString: $0) } ?? "",
-                left:             ci.left.map { String(cString: $0) } ?? "",
-                right:            ci.right.map { String(cString: $0) } ?? "",
-                direction:        ci.direction.map { String(cString: $0) } ?? "",
-                sizeBytes:        ci.size_bytes,
-                fileType:         ci.file_type.map { String(cString: $0) } ?? "",
-                progress:         ci.progress.map { String(cString: $0) } ?? "",
-                bytesTransferred: ci.bytes_transferred
-            ))
-        }
-    }
-    DispatchQueue.main.async {
-        UnisonBridge.init2CompleteHandler?(converted)
-    }
-}
-
-private func _swiftScanFailedTrampoline() {
-    DispatchQueue.main.async {
-        UnisonBridge.scanFailedHandler?()
-    }
-}
-
 /// Convert the bridge's C row array into `[StateItem]`. MUST be called
 /// synchronously on the OCaml thread (before the bridge frees the array).
 private func convertStateItems(
@@ -211,18 +178,36 @@ private func convertStateItems(
         for i in 0..<count {
             let ci = items[i]
             converted.append(StateItem(
-                path:             ci.path.map { String(cString: $0) } ?? "",
-                left:             ci.left.map { String(cString: $0) } ?? "",
-                right:            ci.right.map { String(cString: $0) } ?? "",
-                direction:        ci.direction.map { String(cString: $0) } ?? "",
-                sizeBytes:        ci.size_bytes,
-                fileType:         ci.file_type.map { String(cString: $0) } ?? "",
-                progress:         ci.progress.map { String(cString: $0) } ?? "",
-                bytesTransferred: ci.bytes_transferred
+                path:               ci.path.map { String(cString: $0) } ?? "",
+                left:               ci.left.map { String(cString: $0) } ?? "",
+                right:              ci.right.map { String(cString: $0) } ?? "",
+                direction:          ci.direction.map { String(cString: $0) } ?? "",
+                sizeBytes:          ci.size_bytes,
+                fileType:           ci.file_type.map { String(cString: $0) } ?? "",
+                progress:           ci.progress.map { String(cString: $0) } ?? "",
+                bytesTransferred:   ci.bytes_transferred,
+                changedFromDefault: ci.changed_from_default
             ))
         }
     }
     return converted
+}
+
+/* Called synchronously on the OCaml thread; the bridge frees the C array
+ * after we return, so we must convert every string before async-dispatching. */
+private func _swiftInit2CompleteTrampoline(
+    items: UnsafePointer<unison_state_item_t>?, count: Int
+) {
+    let converted = convertStateItems(items, count)
+    DispatchQueue.main.async {
+        UnisonBridge.init2CompleteHandler?(converted)
+    }
+}
+
+private func _swiftScanFailedTrampoline() {
+    DispatchQueue.main.async {
+        UnisonBridge.scanFailedHandler?()
+    }
 }
 
 private func _swiftIgnoreCompleteTrampoline(

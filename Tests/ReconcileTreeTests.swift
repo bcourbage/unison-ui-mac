@@ -6,8 +6,8 @@ final class ReconcileTreeTests: XCTestCase {
     private func item(_ path: String) -> StateItem {
         StateItem(
             path: path, left: "", right: "", direction: "",
-            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0
-        )
+            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0,
+                          changedFromDefault: false)
     }
 
     func test_emptyItems_producesEmptyTree() {
@@ -140,8 +140,8 @@ final class ReconcileTreeTests: XCTestCase {
     private func item(_ path: String, direction: String) -> StateItem {
         StateItem(
             path: path, left: "", right: "", direction: direction,
-            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0
-        )
+            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0,
+                          changedFromDefault: false)
     }
 
     func test_aggregate_uniformDirection_whenAllChildrenAgree() {
@@ -275,8 +275,8 @@ final class ReconcileTreeTests: XCTestCase {
     private func itemWithDirection(_ path: String, _ direction: String) -> StateItem {
         StateItem(
             path: path, left: "", right: "", direction: direction,
-            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0
-        )
+            sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0,
+                          changedFromDefault: false)
     }
 
     func test_flatLayout_everyLeafIsTopLevel() {
@@ -583,7 +583,7 @@ final class ReconcileTreeTests: XCTestCase {
                        bytes: Int64) -> StateItem {
         StateItem(path: path, left: "", right: "", direction: "",
                   sizeBytes: size, fileType: "FILE",
-                  progress: progress, bytesTransferred: bytes)
+                  progress: progress, bytesTransferred: bytes, changedFromDefault: false)
     }
 
     func test_progressFraction_nilWhenIdle() {

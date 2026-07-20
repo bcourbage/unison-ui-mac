@@ -79,12 +79,13 @@ enum DirectionAction: CaseIterable {
     static let directionGroupIdentifier = NSToolbarItem.Identifier("dir.group")
 
     /// Apply this direction to `row`. Returns the bridge's structured result
-    /// (Blocker 4) plus, on success, the row's new raw direction string. A
-    /// setter mutates the row before the direction is read back, so any raise is
-    /// `UNISON_OP_FAILED_DIRTY` — the caller must route that to restart-required
-    /// rather than treat it as a silent no-op.
-    func invoke(row: Int32) -> (result: unison_op_result_t, direction: String) {
+    /// (Blocker 4) plus, on success, the row's new raw direction string and its
+    /// engine `changedFromDefault`. A setter mutates the row before the
+    /// readbacks, so any raise is `UNISON_OP_FAILED_DIRTY` — the caller must
+    /// route that to restart-required rather than treat it as a silent no-op.
+    func invoke(row: Int32) -> (result: unison_op_result_t, direction: String, changed: Bool) {
         var buf = [CChar](repeating: 0, count: 16)
+        var changed = false
         let r: unison_op_result_t
         switch self {
         // Bridge function names retain "to_remote / to_local" because they
@@ -92,14 +93,14 @@ enum DirectionAction: CaseIterable {
         // names — that's the layer where direction is unambiguous (right
         // = second column, left = first column). Renaming the bridge would
         // mean either patching upstream or adding a translation layer.
-        case .toSecond:   r = unison_bridge_ri_set_to_remote(row, &buf, buf.count)
-        case .toFirst:    r = unison_bridge_ri_set_to_local(row, &buf, buf.count)
-        case .skip:       r = unison_bridge_ri_set_skip(row, &buf, buf.count)
-        case .merge:      r = unison_bridge_ri_set_merge(row, &buf, buf.count)
-        case .forceOlder: r = unison_bridge_ri_force_older(row, &buf, buf.count)
-        case .forceNewer: r = unison_bridge_ri_force_newer(row, &buf, buf.count)
+        case .toSecond:   r = unison_bridge_ri_set_to_remote(row, &buf, buf.count, &changed)
+        case .toFirst:    r = unison_bridge_ri_set_to_local(row, &buf, buf.count, &changed)
+        case .skip:       r = unison_bridge_ri_set_skip(row, &buf, buf.count, &changed)
+        case .merge:      r = unison_bridge_ri_set_merge(row, &buf, buf.count, &changed)
+        case .forceOlder: r = unison_bridge_ri_force_older(row, &buf, buf.count, &changed)
+        case .forceNewer: r = unison_bridge_ri_force_newer(row, &buf, buf.count, &changed)
         }
-        return (r, String(cString: buf))
+        return (r, String(cString: buf), changed)
     }
 
     /// Stable per-action tag for menu items. Reserved range 1–9 (1–4

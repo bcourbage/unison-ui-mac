@@ -139,10 +139,10 @@ final class BridgeTests: XCTestCase {
         // range row is a validation failure (INVALID) — no mutation, no crash,
         // and NOT the DIRTY result that would force restart-required.
         var buf = [CChar](repeating: 0, count: 16)
-        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_INVALID)
-        XCTAssertEqual(unison_bridge_ri_set_to_local(99999, &buf, buf.count), UNISON_OP_INVALID)
-        XCTAssertEqual(unison_bridge_ri_set_skip(-1, &buf, buf.count), UNISON_OP_INVALID)
-        XCTAssertEqual(unison_bridge_ri_set_merge(0, &buf, buf.count), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count, nil), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_to_local(99999, &buf, buf.count, nil), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_skip(-1, &buf, buf.count, nil), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_merge(0, &buf, buf.count, nil), UNISON_OP_INVALID)
         // On a non-OK result the out buffer must be the empty string, never stale.
         XCTAssertEqual(String(cString: buf), "")
     }
@@ -408,19 +408,26 @@ final class BridgeTests: XCTestCase {
     /// stub, it restores a benign one before returning.)
     @discardableResult
     private func scanFixtureRows(_ fixture: IntegrationFixture) -> Int {
+        scanFixtureItems(fixture).count
+    }
+
+    /// Like `scanFixtureRows` but returns the emitted `[StateItem]` (row order ==
+    /// g_ri_roots index), so tests can map path→row and record each row's scanned
+    /// recommendation direction + changedFromDefault (false right after a scan).
+    private func scanFixtureItems(_ fixture: IntegrationFixture) -> [StateItem] {
         let scanned = expectation(description: "init2 complete for fixture")
-        var rowCount = 0
+        var captured: [StateItem] = []
         UnisonBridge.installInit1CompleteHandler { needsPrompt in
             XCTAssertFalse(needsPrompt, "local-only profile shouldn't need prompts")
             _ = unison_bridge_init2()
         }
         UnisonBridge.installInit2CompleteHandler { items in
-            rowCount = items.count
+            captured = items
             scanned.fulfill()
         }
         fixture.profileName.withCString { _ = unison_bridge_init1($0) }
         wait(for: [scanned], timeout: 15.0)
-        return rowCount
+        return captured
     }
 
     /// **Blocker 4 — mutation-stage failure classification.** Inject a raise at a
@@ -439,17 +446,17 @@ final class BridgeTests: XCTestCase {
 
         // Stage 1: the setter (1st wrapper call) raises → DIRTY.
         unison_bridge_test_force_raise_at_ordinal(1)
-        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_FAILED_DIRTY)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count, nil), UNISON_OP_FAILED_DIRTY)
         XCTAssertEqual(String(cString: buf), "", "no stale direction handed back on failure")
 
         // Stage 2: the setter runs, the direction readback (2nd wrapper) raises →
         // still DIRTY (the row WAS mutated; we just can't read the new direction).
         unison_bridge_test_force_raise_at_ordinal(2)
-        XCTAssertEqual(unison_bridge_ri_set_to_local(0, &buf, buf.count), UNISON_OP_FAILED_DIRTY)
+        XCTAssertEqual(unison_bridge_ri_set_to_local(0, &buf, buf.count, nil), UNISON_OP_FAILED_DIRTY)
 
         // Worker survived: a clean set now succeeds and returns a direction.
         unison_bridge_test_force_raise_at_ordinal(0)
-        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_OK)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count, nil), UNISON_OP_OK)
         XCTAssertFalse(String(cString: buf).isEmpty)
 
         // Ignore: the path read (1st wrapper) is read-only → CLEAN (nothing
@@ -577,6 +584,264 @@ final class BridgeTests: XCTestCase {
             "allocation failure must preserve the previously-published roots")
         UnisonBridge.installInit2CompleteHandler { _ in }
         UnisonBridge.installIgnoreCompleteHandler { _ in }
+    }
+
+    // MARK: - Finding #2: per-row Revert engine inverse
+
+    private func rowOf(_ path: String, _ items: [StateItem]) -> Int? {
+        items.firstIndex { $0.path == path }
+    }
+
+    /// Revert a row via the bridge, returning (result, restored direction, changed).
+    private func revert(_ row: Int) -> (unison_op_result_t, String, Bool) {
+        var buf = [CChar](repeating: 0, count: 16)
+        var changed = false
+        let r = unison_bridge_ri_revert(Int32(row), &buf, buf.count, &changed)
+        return (r, String(cString: buf), changed)
+    }
+
+    /// A fresh scan. Rows:
+    ///   only-a → "---->", only-b → "<----"
+    ///   both.txt    → conflict "<-?->", DISTINCT mtimes (A older, B newer) so
+    ///                 Force resolves to a definite side (Force-changes case)
+    ///   both-eq.txt → conflict "<-?->", EQUAL mtimes so Force Older/Newer are
+    ///                 ignored by the engine (deterministic Force-equals-default)
+    private func makeReconFixture(_ name: String) throws -> ([StateItem], IntegrationFixture) {
+        let fixture = try IntegrationFixture(name: name)
+        try fixture.populate(
+            aFiles: ["only-a.txt": "alpha\n", "both.txt": "a-side\n", "both-eq.txt": "a-eq\n"],
+            bFiles: ["only-b.txt": "beta\n",  "both.txt": "b-side\n", "both-eq.txt": "b-eq\n"])
+        func setMtime(_ path: String, _ date: Date) throws {
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path)
+        }
+        let older = Date(timeIntervalSince1970: 1_000_000_000)
+        let newer = Date(timeIntervalSince1970: 1_000_100_000)
+        let same  = Date(timeIntervalSince1970: 1_000_050_000)
+        try setMtime(fixture.aRoot.appendingPathComponent("both.txt").path, older)
+        try setMtime(fixture.bRoot.appendingPathComponent("both.txt").path, newer)
+        try setMtime(fixture.aRoot.appendingPathComponent("both-eq.txt").path, same)
+        try setMtime(fixture.bRoot.appendingPathComponent("both-eq.txt").path, same)
+        let items = scanFixtureItems(fixture)
+        return (items, fixture)
+    }
+
+    /// Every direction action, applied then reverted, restores the exact scanned
+    /// recommendation. Each action's returned (direction, changedFromDefault) is
+    /// asserted BEFORE reverting, so the test cannot pass through a no-op
+    /// mutation. Includes an action-equals-default case (Second on a row whose
+    /// default is already ---->) and a deterministic Force-equals-default case
+    /// (Force on the EQUAL-mtime conflict row `both-eq.txt`, where the engine
+    /// ignores Older/Newer → the direction stays at the default).
+    func test_k_actionsThenRevert_restoreRecommendation() throws {
+        let (items, _) = try makeReconFixture("revert6")
+        guard let onlyA = rowOf("only-a.txt", items) else { return XCTFail("no only-a row") }
+        XCTAssertEqual(items[onlyA].direction, "---->", "only-a recommendation")
+        XCTAssertFalse(items[onlyA].changedFromDefault, "fresh scan row is unchanged")
+
+        // (action, expected post-action direction, expected changed) on only-a.
+        let cases: [(DirectionAction, String, Bool)] = [
+            (.toFirst, "<----", true),    // divergent
+            (.toSecond, "---->", false),  // action equals the default → not changed
+            (.skip,    "<-?->", true),
+            (.merge,   "<-M->", true),
+        ]
+        for (action, expectDir, expectChanged) in cases {
+            let (sr, sdir, schanged) = action.invoke(row: Int32(onlyA))
+            XCTAssertEqual(sr, UNISON_OP_OK, "\(action) should apply")
+            XCTAssertEqual(sdir, expectDir, "\(action) should yield \(expectDir)")
+            XCTAssertEqual(schanged, expectChanged, "\(action) changed flag")
+            let (rr, rdir, rchanged) = revert(onlyA)
+            XCTAssertEqual(rr, UNISON_OP_OK, "revert after \(action)")
+            XCTAssertEqual(rdir, "---->", "revert after \(action) restores the recommendation")
+            XCTAssertFalse(rchanged, "reverted row is back to default")
+        }
+
+        // Force that ACTUALLY changes direction: on the conflict row with
+        // distinct mtimes, Force resolves to a definite side (away from <-?->).
+        guard let both = rowOf("both.txt", items) else { return XCTFail("no both row") }
+        XCTAssertEqual(items[both].direction, "<-?->", "both-sides-differ is a conflict")
+        for action in [DirectionAction.forceOlder, .forceNewer] {
+            let (sr, sdir, schanged) = action.invoke(row: Int32(both))
+            XCTAssertEqual(sr, UNISON_OP_OK)
+            XCTAssertNotEqual(sdir, "<-?->", "\(action) with distinct mtimes must change the direction")
+            XCTAssertTrue(schanged, "\(action) diverges from the conflict default")
+            let (rr, rdir, rchanged) = revert(both)
+            XCTAssertEqual(rr, UNISON_OP_OK)
+            XCTAssertEqual(rdir, "<-?->", "revert after \(action) restores the conflict recommendation")
+            XCTAssertFalse(rchanged)
+        }
+
+        // Deterministic Force-EQUALS-default: on the EQUAL-mtime conflict row the
+        // engine ignores Older/Newer, so the direction stays at the default and
+        // changed stays false — and revert is a clean OK no-op.
+        guard let bothEq = rowOf("both-eq.txt", items) else { return XCTFail("no both-eq row") }
+        XCTAssertEqual(items[bothEq].direction, "<-?->", "equal-mtime differ is still a conflict")
+        for action in [DirectionAction.forceOlder, .forceNewer] {
+            let (sr, sdir, schanged) = action.invoke(row: Int32(bothEq))
+            XCTAssertEqual(sr, UNISON_OP_OK)
+            XCTAssertEqual(sdir, "<-?->", "\(action) with equal mtimes leaves the default")
+            XCTAssertFalse(schanged, "\(action)-equals-default reports not changed")
+            let (rr, rdir, rchanged) = revert(bothEq)
+            XCTAssertEqual(rr, UNISON_OP_OK)
+            XCTAssertEqual(rdir, "<-?->")
+            XCTAssertFalse(rchanged)
+        }
+    }
+
+    /// Skip over an ORIGINAL conflict: both the default and the skip render as
+    /// "<-?->", but the engine sees skip-requested as changed (structural
+    /// compare), and revert restores the ORIGINAL conflict (changed=false).
+    func test_l_skipOverConflict_restoresOriginalConflict() throws {
+        let (items, _) = try makeReconFixture("revertconflict")
+        guard let both = rowOf("both.txt", items) else { return XCTFail("no both row") }
+        XCTAssertEqual(items[both].direction, "<-?->", "both-sides-differ should be a conflict")
+        XCTAssertFalse(items[both].changedFromDefault)
+
+        let (sr, sdir, schanged) = DirectionAction.skip.invoke(row: Int32(both))
+        XCTAssertEqual(sr, UNISON_OP_OK)
+        XCTAssertEqual(sdir, "<-?->", "skip on a conflict still renders <-?->")
+        XCTAssertTrue(schanged,
+            "skip-requested must be seen as CHANGED even though it renders like the default conflict")
+
+        let (rr, rdir, rchanged) = revert(both)
+        XCTAssertEqual(rr, UNISON_OP_OK)
+        XCTAssertEqual(rdir, "<-?->", "revert restores the original conflict rendering")
+        XCTAssertFalse(rchanged, "revert restores the ORIGINAL conflict (no longer changed)")
+    }
+
+    /// Per-row revert building blocks (NOT the window batch loop, which is a
+    /// private @MainActor method with no automated UI harness): two independent
+    /// rows revert to their own recommendations, and an injected raise on one
+    /// row's revert reports DIRTY while the engine/worker survives for the next.
+    func test_m_perRowRevert_independentSuccessAndInjectedFailure() throws {
+        let (items, _) = try makeReconFixture("revertmulti")
+        guard let a = rowOf("only-a.txt", items), let b = rowOf("only-b.txt", items) else {
+            return XCTFail("missing rows")
+        }
+        let defA = items[a].direction, defB = items[b].direction
+        // Change both, then revert both — independent successes to each own default.
+        XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(a)).result, UNISON_OP_OK)
+        XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(b)).result, UNISON_OP_OK)
+        XCTAssertEqual(revert(a).1, defA)
+        XCTAssertEqual(revert(b).1, defB)
+
+        // Inject a raise at the revert setter (ordinal 1) → DIRTY; engine survives.
+        XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(a)).result, UNISON_OP_OK)
+        unison_bridge_test_force_raise_at_ordinal(1)
+        XCTAssertEqual(revert(a).0, UNISON_OP_FAILED_DIRTY)
+        unison_bridge_test_force_raise_at_ordinal(0)
+        // A clean revert now works (worker survived).
+        XCTAssertEqual(revert(a).0, UNISON_OP_OK)
+    }
+
+    /// Exception injection at each revert stage → DIRTY (never a silent no-op /
+    /// false changed): the setter (1), direction readback (2), changed readback (3).
+    func test_n_revertExceptionAtEachStage_isDirty() throws {
+        let (items, _) = try makeReconFixture("revertexn")
+        guard let a = rowOf("only-a.txt", items) else { return XCTFail("no only-a row") }
+        for ordinal in 1...3 {
+            XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(a)).result, UNISON_OP_OK)
+            unison_bridge_test_force_raise_at_ordinal(Int32(ordinal))
+            XCTAssertEqual(revert(a).0, UNISON_OP_FAILED_DIRTY,
+                "a raise at revert stage \(ordinal) must be DIRTY")
+            unison_bridge_test_force_raise_at_ordinal(0)
+            _ = revert(a)   // clean up to default for the next iteration
+        }
+    }
+
+    /// An out-of-range row reverts to a no-op INVALID (never DIRTY).
+    func test_o_revertInvalidRow_isNoOp() throws {
+        _ = try makeReconFixture("revertinvalid")
+        XCTAssertEqual(revert(99999).0, UNISON_OP_INVALID)
+        XCTAssertEqual(revert(-1).0, UNISON_OP_INVALID)
+    }
+
+    /// changedFromDefault is carried by scan emission (all false on a fresh scan)
+    /// and by Ignore re-publication after reindexing: a row changed before an
+    /// Ignore still reports changed=true in the post-Ignore item set.
+    func test_p_changedFromDefault_carriedThroughScanAndIgnoreReindex() throws {
+        let (items, _) = try makeReconFixture("revertemit")
+        for it in items { XCTAssertFalse(it.changedFromDefault, "fresh scan: nothing changed") }
+        guard let onlyA = rowOf("only-a.txt", items),
+              let onlyB = rowOf("only-b.txt", items) else { return XCTFail("missing rows") }
+
+        // Change only-a (skip), then Ignore only-b → re-emits the (reindexed) set.
+        XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(onlyA)).result, UNISON_OP_OK)
+
+        let republished = expectation(description: "ignore re-publication")
+        var afterItems: [StateItem] = []
+        UnisonBridge.installIgnoreCompleteHandler { rows in afterItems = rows; republished.fulfill() }
+        XCTAssertEqual(unison_bridge_ignore_path(Int32(onlyB)), UNISON_OP_OK)
+        wait(for: [republished], timeout: 15.0)
+        UnisonBridge.installIgnoreCompleteHandler { _ in }
+
+        // only-b is gone; only-a survives and must still report changed=true at
+        // its NEW index.
+        guard let a2 = rowOf("only-a.txt", afterItems) else {
+            return XCTFail("only-a should survive the ignore of only-b")
+        }
+        XCTAssertTrue(afterItems[a2].changedFromDefault,
+            "a changed row must still report changedFromDefault after reindexing")
+        XCTAssertNil(rowOf("only-b.txt", afterItems), "ignored row should be gone")
+        // Restore to default so later tests aren't affected by lingering skip.
+        _ = revert(a2)
+    }
+
+    /// Consolidated engine-level equivalent of the manual Revert smoke: apply a
+    /// distinct action to each of three DIFFERENT rows — a plain direction on
+    /// `only-a`, Force on the distinct-mtime conflict (`both.txt`, so Force truly
+    /// resolves a side), and Skip on the equal-mtime conflict (`both-eq.txt`) —
+    /// while leaving `only-b` untargeted. Reverting all three restores each to its
+    /// recommendation with changedFromDefault == false, and the restored
+    /// direction is exactly what a sync would propagate (the engine's readback).
+    ///
+    /// This is a bridge/engine test only. It does NOT drive the private
+    /// `ReconcileWindowController` batch loop, observe visual badges, or observe
+    /// menu greying — those GUI/window behaviors are not automatable here (see
+    /// the PR description's automation limitation).
+    func test_q_multiRowRevertSmoke_restoresRecommendations() throws {
+        let (items, _) = try makeReconFixture("revertsmoke")
+        guard let onlyA  = rowOf("only-a.txt", items),
+              let both   = rowOf("both.txt", items),
+              let bothEq = rowOf("both-eq.txt", items) else { return XCTFail("missing rows") }
+        // only-b is deliberately not looked up or touched by this test.
+        let defA = items[onlyA].direction, defBoth = items[both].direction
+        let defBothEq = items[bothEq].direction
+
+        // Plain direction on only-a.
+        let (aR, _, aChanged) = DirectionAction.toFirst.invoke(row: Int32(onlyA))
+        XCTAssertEqual(aR, UNISON_OP_OK); XCTAssertTrue(aChanged)
+        // Force on the distinct-mtime conflict → resolves to a definite side.
+        let (fR, fDir, fChanged) = DirectionAction.forceNewer.invoke(row: Int32(both))
+        XCTAssertEqual(fR, UNISON_OP_OK)
+        XCTAssertNotEqual(fDir, "<-?->", "Force with distinct mtimes must resolve a side")
+        XCTAssertTrue(fChanged)
+        // Skip on the equal-mtime conflict.
+        let (sR, sDir, sChanged) = DirectionAction.skip.invoke(row: Int32(bothEq))
+        XCTAssertEqual(sR, UNISON_OP_OK)
+        XCTAssertEqual(sDir, "<-?->"); XCTAssertTrue(sChanged, "skip diverges from the conflict default")
+
+        // Revert all three targeted rows → each restored to its recommendation,
+        // no longer changed, and the readback direction is what a sync would use.
+        for (row, def) in [(onlyA, defA), (both, defBoth), (bothEq, defBothEq)] {
+            let (rr, rdir, rchanged) = revert(row)
+            XCTAssertEqual(rr, UNISON_OP_OK)
+            XCTAssertEqual(rdir, def, "revert restores the recommendation (sync would propagate this)")
+            XCTAssertFalse(rchanged, "reverted row is back to default")
+        }
+
+        // Post-Revert eligibility, as SPLIT evidence (not a UI observation):
+        //   (a) the engine reports changedFromDefault == false (asserted above);
+        //   (b) the pure predicate returns false once no override is present;
+        //   (c) code inspection: revertSelectionAction removes the row's override
+        //       on success (see ReconcileWindowController), so hasOverride is false
+        //       after a real Revert — this test cannot observe that step.
+        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: false, hasOverride: false))
+
+        // only-b: no operation in this test targeted it. Cross-row isolation is
+        // guaranteed by the indexed bridge implementation (each op addresses a
+        // single g_ri_roots[row]) and the independent per-row tests above — NOT
+        // by a live readback here, so no such assertion is made.
     }
 }
 
