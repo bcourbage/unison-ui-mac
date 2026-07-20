@@ -30,9 +30,24 @@ void unison_bridge_track_child(pid_t pid);
 void unison_bridge_retire_child(pid_t pid);
 int  unison_bridge_reap_transport_children(void);
 /* Declared unconditionally so every target/config sees the prototype; only
- * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls it, so
- * a Release build links fine with no definition and the symbol is absent. */
+ * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls them,
+ * so a Release build links fine with no definition and the symbols are absent. */
 void unison_bridge_reset_child_registry_for_test(void);
+/* Test-only fault injection (Finding #6): force the next `n` OCaml bridge
+ * callbacks dispatched through the worker to be treated as if they raised, so
+ * the exception-handling / completion / status contract can be exercised
+ * deterministically without a raising OCaml stub in the vendored blob. */
+void unison_bridge_test_force_next_callbacks_raise(int n);
+int  unison_bridge_test_pending_forced_raises(void);
+/* Test-only (Finding #1): run reloadTable's rooting pattern against row's real
+ * progress/bytes callbacks with a forced moving collection interposed. Returns
+ * true and fills `out` with the (still-valid) progress string on success. */
+bool unison_bridge_test_reload_under_gc(int row, char *out, size_t outlen);
+
+/* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
+#define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */
+#define UNISON_BRIDGE_ERR_EXN     2    /* the OCaml callback raised (logged) */
+#define UNISON_BRIDGE_ERR_MISSING (-1) /* callback not registered (old blob) */
 
 const char *unison_bridge_get_version(void);
 
@@ -87,8 +102,11 @@ void unison_bridge_init0(void);
 
 /* === Init1 — load profile, parse roots, open remote connection ===
  *
- * Asynchronous: returns immediately; OCaml spawns a worker that eventually
- * invokes the installed init1-complete handler from the OCaml thread.
+ * Asynchronous: OCaml spawns a worker that eventually invokes the installed
+ * init1-complete handler from the OCaml thread. The return value covers only
+ * the SYNCHRONOUS dispatch: UNISON_BRIDGE_OK once the worker was launched, or
+ * UNISON_BRIDGE_ERR_EXN if the OCaml call raised before launching (in which
+ * case the completion handler will never fire and the caller must fail the op).
  *
  * If `needs_prompt` is true, the bridge has stashed a preconnection value
  * internally; the caller must drive the credential loop via
@@ -96,7 +114,7 @@ void unison_bridge_init0(void);
  * proceeding to unison_bridge_init2(). */
 typedef void (*unison_init1_complete_handler_t)(bool needs_prompt);
 void unison_bridge_set_init1_complete_handler(unison_init1_complete_handler_t h);
-void unison_bridge_init1(const char *profile_name);
+int unison_bridge_init1(const char *profile_name);
 
 /* === Credential prompts ===
  *
@@ -170,7 +188,10 @@ typedef struct unison_state_item {
 typedef void (*unison_init2_complete_handler_t)(const unison_state_item_t *items,
                                                  size_t count);
 void unison_bridge_set_init2_complete_handler(unison_init2_complete_handler_t h);
-void unison_bridge_init2(void);
+/* Return covers only the synchronous dispatch: UNISON_BRIDGE_OK once the scan
+ * was launched, or UNISON_BRIDGE_ERR_EXN if the OCaml call raised before
+ * launching (the init2-complete handler will then never fire). */
+int unison_bridge_init2(void);
 
 /* === Per-row direction overrides ===
  *
@@ -219,7 +240,7 @@ const char *unison_bridge_ri_get_details(int row);
  * Returns immediately; the diff itself runs through Unison's configured
  * `diff` pref (default `diff -u`) on the OCaml side. */
 bool unison_bridge_can_diff(int row);
-void unison_bridge_run_show_diffs(int row);
+bool unison_bridge_run_show_diffs(int row);
 
 typedef void (*unison_diff_handler_t)(const char *title, const char *text);
 typedef void (*unison_diff_err_handler_t)(const char *msg);
@@ -262,7 +283,11 @@ typedef void (*unison_sync_complete_handler_t)(void);
 
 void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t h);
 void unison_bridge_set_sync_complete_handler(unison_sync_complete_handler_t h);
-void unison_bridge_synchronize(void);
+/* Return covers only the synchronous dispatch: UNISON_BRIDGE_OK once the sync
+ * worker was launched (completion arrives later via the sync-complete handler),
+ * or UNISON_BRIDGE_ERR_EXN if the OCaml call raised before launching (the
+ * sync-complete handler will then never fire). */
+int unison_bridge_synchronize(void);
 
 /* Real mid-sync abort. Sets OCaml's `Abort.abortAll` flag; the
  * in-flight sync worker raises `Util.Transient "Aborted by user

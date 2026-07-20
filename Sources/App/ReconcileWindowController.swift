@@ -1324,9 +1324,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         diffWindowController?.surfaceForLoading(path: path)
         TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
-        unison_bridge_run_show_diffs(Int32(row))
-        // Result arrives via the diff handler → diffWindowController.showDiff,
-        // or via the diff-err handler → showError.
+        // A false return means the diff dispatch raised in OCaml. The engine
+        // stays valid (a diff is a read-only per-row query), so surface a
+        // narrow diff error in the already-open diff window rather than escalate.
+        if !unison_bridge_run_show_diffs(Int32(row)) {
+            TraceLog.shared.write("ReconcileWindow: run_show_diffs raised for row \(row)")
+            diffWindowController?.showError(
+                "Unison could not produce a diff for this row.")
+        }
+        // On success the result arrives via the diff handler →
+        // diffWindowController.showDiff, or via the diff-err handler → showError.
     }
 
     // MARK: - Select Conflicts / Revert to Recommendation

@@ -85,13 +85,22 @@ section at the bottom so this list stays scannable.
          `update.ml:1027 Assertion failed`** (surfaced as a "Unison error /
          uncaught exception" fatal). So the abort flag must be gated on
          `isSyncing` (transport only); a scan must NOT flag abort.
-      3. **New prerequisite for the real fix:** tearing down the connection
-         mid-`init2` makes OCaml raise, and `_ocaml_init2` uses plain
-         `caml_callback`, so an uncaught exception there aborts the process
-         (SIGABRT). A true scan teardown therefore *also* needs the phase
-         calls hardened to `caml_callback_exn` (catch + route to the
-         fatal / return-to-picker path) — do that first, then add the
-         connection teardown.
+      3. **Prerequisite (DONE 2026-07-19, `fix/bridge-safety`):** tearing down
+         the connection mid-`init2` makes OCaml raise, and `_ocaml_init2`
+         formerly used plain `caml_callback`, so an uncaught exception there
+         aborted the process (SIGABRT). That exception-hardening prerequisite is
+         now satisfied: every Swift→OCaml bridge callback routes through the
+         shared `caml_callback*_exn` wrappers, `_ocaml_init2` returns an explicit
+         status, and `unison_bridge_init2()` failures are routed by
+         `AppDelegate.driveBeginScan` through the coordinator
+         (`operationFailed(…, engineIsQuiescent: false)` → restart-required).
+         So a raise during the scan phase no longer aborts the process — it
+         surfaces as a clean failure. **Still open:** this only makes the raise
+         *safe*; the actual teardown that *causes* the mid-`init2` raise (killing
+         the connection / remote child so the scan genuinely stops) is not yet
+         wired to the scan-phase Stop. That connection-teardown-during-scan is
+         the remaining work for this item — build on the now-hardened phase
+         calls; do NOT re-derive the exception handling.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:

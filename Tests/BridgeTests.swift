@@ -345,6 +345,51 @@ final class BridgeTests: XCTestCase {
         XCTAssertTrue(innerVersion?.contains("ocaml") == true,
                       "version string from re-entrant call malformed: \(innerVersion ?? "<nil>")")
     }
+
+    /// **Finding #1 — GC rooting.** `reloadTable` reads a progress `value` that
+    /// must stay rooted across a second, allocating callback. This drives the
+    /// `unison_bridge_test_reload_under_gc` probe, which reproduces reloadTable's
+    /// CAMLlocal2 rooting against the real per-row progress/bytes callbacks but
+    /// forces a moving minor collection between obtaining the progress value and
+    /// reading its `String_val`. With the rooting present the value is relocated
+    /// and the read stays valid; without it the read would hit freed memory
+    /// (crash or garbage). Runs as `test_e_` so it executes AFTER the "no state
+    /// loaded" assertions and after `test_c` — it populates reconcile state.
+    func test_e_reloadRow_progressValueSurvivesCollection() throws {
+        let fixture = try IntegrationFixture(name: "gcroot")
+        try fixture.populate(
+            aFiles: ["only-in-a.txt": "alpha\n", "shared-diff.txt": "a\n"],
+            bFiles: ["only-in-b.txt": "beta\n",  "shared-diff.txt": "b\n"]
+        )
+
+        let scanned = expectation(description: "init2 complete for gc test")
+        var rowCount = 0
+        UnisonBridge.installInit1CompleteHandler { needsPrompt in
+            XCTAssertFalse(needsPrompt, "local-only profile shouldn't need prompts")
+            _ = unison_bridge_init2()
+        }
+        UnisonBridge.installInit2CompleteHandler { items in
+            rowCount = items.count
+            scanned.fulfill()
+        }
+        fixture.profileName.withCString { _ = unison_bridge_init1($0) }
+        wait(for: [scanned], timeout: 15.0)
+        XCTAssertGreaterThan(rowCount, 0, "fixture should have produced rows")
+
+        // Probe every row repeatedly (heap-layout dependent regressions may only
+        // trip on some iterations). Surviving with a readable string each time
+        // is the assertion.
+        for _ in 0..<10 {
+            for row in 0..<rowCount {
+                var buf = [CChar](repeating: 0, count: 1024)
+                let ok = unison_bridge_test_reload_under_gc(Int32(row), &buf, buf.count)
+                XCTAssertTrue(ok, "reload-under-gc probe failed for row \(row)")
+                // Decoding a NUL-terminated C string that survived relocation;
+                // a dangling read would crash above or yield garbage here.
+                _ = String(cString: buf)
+            }
+        }
+    }
 }
 
 // MARK: - Integration fixture helper
@@ -355,7 +400,8 @@ final class BridgeTests: XCTestCase {
 // a tearDown call after init2 anyway, so deinit on the local var is
 // the cleanup hook).
 
-private final class IntegrationFixture {
+// Shared with BridgeExceptionTests (module-internal, not private).
+final class IntegrationFixture {
     let aRoot: URL
     let bRoot: URL
     let profileURL: URL

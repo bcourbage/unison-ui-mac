@@ -222,7 +222,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // window's own flag to avoid re-labelling it.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
         armConnectWatchdog()
-        connectQueue.async { profile.withCString { unison_bridge_init1($0) } }
+        // init1 dispatches synchronously and returns a status. On success the
+        // connect proceeds via installInit1CompleteHandler (prompt loop /
+        // connectFinished); a non-OK status means the OCaml init raised, so that
+        // completion will NEVER fire — route the failure here (with quiescence
+        // UNproven → coordinator restart) instead of waiting for the watchdog.
+        connectQueue.async { [weak self] in
+            let status = profile.withCString { unison_bridge_init1($0) }
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                self.log.write("init1 (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "connect init failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveBeginScan(_ s: SessionID, _ op: OperationID) {
@@ -230,13 +248,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Show the scanning spinner for a rescan (the initial scan already
         // shows it via beginInitialScan). Idempotent — guarded on isScanning.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
-        connectQueue.async { unison_bridge_init2() }
+        // Same contract as init1: on success installInit2CompleteHandler fires
+        // later; a non-OK status means the scan raised on dispatch and that
+        // completion will never arrive, so route the failure immediately (with
+        // quiescence UNproven → coordinator restart). No watchdog change here:
+        // scan-phase no-progress is already covered by the 45s stall detector,
+        // and this failure fires synchronously off the returned status.
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_init2()
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingScan.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingScan = nil
+                self.log.write("init2 (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "scan failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveBeginSync(_ s: SessionID, _ op: OperationID) {
         pendingSync = (s, op)
         windowBySession[s]?.enterSyncingUI()   // syncing UI is the driver's job now
-        unison_bridge_synchronize()   // returns quickly; runs on its own OCaml thread
+        // synchronize spawns its own OCaml thread and returns a dispatch status.
+        // On success syncComplete arrives later; a non-OK status means the sync
+        // never launched (OCaml raised) and syncComplete will never fire, so
+        // route the failure with quiescence UNproven → coordinator restart.
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_synchronize()
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingSync.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingSync = nil
+                self.log.write("synchronize (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "sync start failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveCloseConnection(_ s: SessionID, _ op: OperationID) {
