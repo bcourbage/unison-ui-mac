@@ -1036,15 +1036,53 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // end-of-document would land *below* a just-placed bottom include,
         // flipping their order (the reported "include jumps above my
         // Advanced item" bug). Top includes still land before the first pref.
-        let inc = includesView.entries
-            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
-        doc.setIncludes(
-            top: inc.filter { $0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
-            bottom: inc.filter { !$0.top }
-                .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
+        //
+        // Finding #7: only rebuild the includes when the user actually changed
+        // them. If unchanged, leave every include lexeme, pass-through directive,
+        // raw line, comment, and position exactly as loaded. `.refusePassThrough`
+        // is handled (and refused) in `saveAction` before any mutation; treat it
+        // as a no-op here defensively.
+        switch includeSaveDecision() {
+        case .unchanged, .refusePassThrough:
+            break
+        case .applyTopBottom:
+            let edited = editedIncludeProjection()
+            doc.setIncludes(
+                top: edited.filter { $0.top }
+                    .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) },
+                bottom: edited.filter { !$0.top }
+                    .map { ProfileDocument.IncludeEntry(name: Self.includeNameForDisk($0.name), comment: $0.comment) })
+        }
 
         return doc
+    }
+
+    /// Includes UI projection as loaded from the pristine document (DISPLAY
+    /// names, before `.prf` canonicalization) — one half of the change check.
+    private func loadedIncludeProjection() -> [ProfileDocument.IncludeUIItem] {
+        prfDocument.topIncludes.map {
+            ProfileDocument.IncludeUIItem(name: Self.displayIncludeName($0.name), top: true, comment: $0.comment)
+        } + prfDocument.bottomIncludes.map {
+            ProfileDocument.IncludeUIItem(name: Self.displayIncludeName($0.name), top: false, comment: $0.comment)
+        }
+    }
+
+    /// Includes UI projection as currently edited in the combo (DISPLAY names),
+    /// blanks dropped — the other half of the change check.
+    private func editedIncludeProjection() -> [ProfileDocument.IncludeUIItem] {
+        includesView.entries
+            .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { ProfileDocument.IncludeUIItem(name: $0.name, top: $0.top, comment: $0.comment) }
+    }
+
+    /// The Finding #7 include-save decision for the current form vs the loaded
+    /// document. Used by `saveAction` (to refuse before any filesystem work) and
+    /// by `formIntoDocument` (to skip or apply the rebuild).
+    private func includeSaveDecision() -> ProfileDocument.IncludeSaveDecision {
+        ProfileDocument.includeSaveDecision(
+            loaded: loadedIncludeProjection(),
+            edited: editedIncludeProjection(),
+            hasPassThroughDirectives: prfDocument.hasPassThroughDirectives)
     }
 
     /// Add the "pop-out" button to the title bar's upper-right corner as a
@@ -1274,6 +1312,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Names with spaces are fine: ProfileDocument escapes them on write
         // (`include File\ System\ Ignores`), which Unison reads back as one
         // word. No validation needed here.
+
+        // Finding #7: if the user changed the includes AND this profile contains
+        // ordered pass-through directives (`source`/`include?`/`source?`) the
+        // Includes section doesn't manage, refuse the save BEFORE touching the
+        // filesystem — rebuilding includes could reorder those directives and
+        // silently change how preferences override each other.
+        if includeSaveDecision() == .refusePassThrough {
+            showAlert(text: "Includes can't be edited here",
+                      info: "This profile contains ordered directives (source, include?, or source?) that the Includes section doesn't manage. Changing includes here could reorder them and alter how settings override each other. Use “Open .prf” to edit includes in your text editor, then reload.",
+                      style: .warning)
+            return
+        }
 
         let doc = formIntoDocument()
         let text = doc.serialized

@@ -34,6 +34,24 @@ section at the bottom so this list stays scannable.
       View-controller line counts above are now stale (files have grown).
       Posture unchanged: keep extracting, no UI harness.
 
+      **Progress (2026-07-20, review Finding #7):** made `.prf` save
+      directive-lossless. `ProfileDocument` now models all four inclusion
+      directives (`include`/`source`/`include?`/`source?`) as `.directive`
+      (kind + logical argument + original lexeme) and every other unrecognized
+      non-`=` line as `.raw`, serialized verbatim — previously `source`/
+      `include?`/`source?`/unknown lines were silently turned into `#` comments,
+      disabling them on a no-op save. Parser mirrors Unison's `prefs.ml`
+      (column-zero recognition, escape-aware single-word argument, malformed →
+      `.raw`). Extracted the pure `ProfileDocument.includeSaveDecision`
+      (+`IncludeUIItem` projection): an includes edit is skipped when unchanged,
+      applied Top/Bottom when changed with no pass-through directives, and
+      **refused** (before any filesystem write) when changed while
+      `source`/`include?`/`source?` are present, rather than reordering hidden
+      precedence. No first-class UI for the pass-through directives yet; they are
+      preserved and edited via the external-editor button. A malformed/`.raw`
+      directive is the signal Finding #9 will later use to mark archive
+      attribution unreliable (not implemented here).
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**

@@ -17,11 +17,38 @@ import Foundation
 /// with that key, inserted at the position of the first old match.
 struct ProfileDocument: Equatable {
 
+    /// One of Unison's four inclusion directives (`prefs.ml`). `argument` is the
+    /// LOGICAL (unescaped) filename; `lexeme` is the original full line, retained
+    /// so an untouched directive serializes byte-for-byte. `lexeme == nil` means
+    /// "render canonically" — used when the Includes UI creates or rewrites an
+    /// ordinary `include`, which has no reusable original line.
+    struct Directive: Equatable {
+        enum Kind: Equatable {
+            case include          // `include ` — profile name, `.prf` appended, fail if missing
+            case source           // `source `  — literal file, fail if missing
+            case includeOptional  // `include? ` — profile, missing file silently skipped
+            case sourceOptional   // `source? `  — literal file, missing silently skipped
+
+            var keyword: String {
+                switch self {
+                case .include:         return "include"
+                case .source:          return "source"
+                case .includeOptional: return "include?"
+                case .sourceOptional:  return "source?"
+                }
+            }
+        }
+        var kind: Kind
+        var argument: String
+        var lexeme: String?
+    }
+
     enum Entry: Equatable {
         case blank
         case comment(String)            // text after the leading `#`, with leading space trimmed
         case keyValue(key: String, value: String)
-        case include(String)            // `include <name>` directive (no `=`)
+        case directive(Directive)       // include / source / include? / source? (no `=`)
+        case raw(String)                // any other non-`=` line, preserved verbatim
 
         /// True if this entry is a key=value with the given key.
         func matches(key target: String) -> Bool {
@@ -29,8 +56,17 @@ struct ProfileDocument: Equatable {
             return false
         }
 
+        /// An editor-managed ordinary `include` (the only kind the Includes UI
+        /// shows/edits). Derived from the kind — there is no separate flag.
         var isInclude: Bool {
-            if case .include = self { return true }
+            if case let .directive(d) = self, d.kind == .include { return true }
+            return false
+        }
+
+        /// A directive the Includes UI does NOT manage (`source`/`include?`/
+        /// `source?`). These are preserved verbatim and never edited here.
+        var isPassThroughDirective: Bool {
+            if case let .directive(d) = self, d.kind != .include { return true }
             return false
         }
     }
@@ -79,6 +115,17 @@ struct ProfileDocument: Equatable {
                 doc.entries.append(.comment(body))
                 continue
             }
+            // Inclusion directives (`include`/`source`/`include?`/`source?`).
+            // Mirror Unison (prefs.ml): recognition is on the RAW line at column
+            // zero (leading whitespace ⇒ NOT a directive), and the argument is
+            // one escape-aware word. A directive-looking line that doesn't parse
+            // to exactly two words is malformed and falls through to `.raw`.
+            // Checked before `=` so an `include foo=bar` reads as a directive,
+            // exactly as Unison does.
+            if let directive = ProfileDocument.parseDirective(rawLine: line) {
+                doc.entries.append(.directive(directive))
+                continue
+            }
             // key = value. Unison's parser is whitespace-tolerant around `=`.
             if let eq = line.firstIndex(of: "=") {
                 let key = line[..<eq].trimmingCharacters(in: .whitespaces)
@@ -88,26 +135,32 @@ struct ProfileDocument: Equatable {
                     continue
                 }
             }
-            // `include <name>` directive — pulls in another prefs file at
-            // parse time. No `=`, so it must be handled before the
-            // preserve-as-comment fallback or it would be commented out.
-            // Unison parses the line with backslash-escaping (Util.splitIntoWords
-            // with esc='\\'), so a name with spaces is written `include a\ b`.
-            // We strip the keyword and unescape, storing the *logical* name.
-            if trimmed == "include" || trimmed.hasPrefix("include ") {
-                let raw = String(trimmed.dropFirst("include".count))
-                    .drop(while: { $0 == " " })
-                let name = ProfileDocument.unescapeWord(String(raw))
-                if !name.isEmpty {
-                    doc.entries.append(.include(name))
-                    continue
-                }
-            }
-            // Fallback — preserve verbatim as a comment so we never lose
-            // data even if the file has something we don't understand.
-            doc.entries.append(.comment(trimmed))
+            // Anything else — a malformed directive, a non-`=` line Unison would
+            // itself reject, etc. — is preserved verbatim as `.raw`. NEVER turned
+            // into a comment (which would silently disable it) or normalized.
+            doc.entries.append(.raw(line))
         }
         return doc
+    }
+
+    /// Parse a raw line as one of the four inclusion directives, or nil.
+    /// Mirrors `prefs.ml`: `Util.startswith` on the RAW line for each exact
+    /// `"<keyword> "` prefix (column-zero, trailing space), then an escape-aware
+    /// word split that must yield exactly two words `[keyword; filename]`.
+    /// `argument` is the unescaped filename; `lexeme` is the original line.
+    static func parseDirective(rawLine line: String) -> Directive? {
+        let prefixes: [(String, Directive.Kind)] = [
+            ("include? ", .includeOptional),
+            ("source? ",  .sourceOptional),
+            ("include ",  .include),
+            ("source ",   .source),
+        ]
+        for (prefix, kind) in prefixes where line.hasPrefix(prefix) {
+            let words = ProfileDocument.splitIntoWordsUnison(line)
+            guard words.count == 2 else { return nil }  // malformed → caller stores .raw
+            return Directive(kind: kind, argument: words[1], lexeme: line)
+        }
+        return nil
     }
 
     // MARK: - Accessors
@@ -216,9 +269,21 @@ struct ProfileDocument: Equatable {
         entries.insert(contentsOf: newEntries, at: min(insertAt, entries.count))
     }
 
-    /// All `include` directive names, in document order.
+    /// All ordinary `include` directive names (logical/unescaped), in order.
+    /// Pass-through directives (`source`/`include?`/`source?`) are excluded — the
+    /// Includes UI neither shows nor manages them.
     var includes: [String] {
-        entries.compactMap { if case let .include(n) = $0 { return n } else { return nil } }
+        entries.compactMap {
+            if case let .directive(d) = $0, d.kind == .include { return d.argument }
+            return nil
+        }
+    }
+
+    /// True if the document contains any directive the Includes UI does not
+    /// manage. Used to refuse an include-changing save rather than risk
+    /// reordering hidden directive precedence.
+    var hasPassThroughDirectives: Bool {
+        entries.contains { $0.isPassThroughDirective }
     }
 
     private var firstKeyValueIndex: Int? {
@@ -235,10 +300,10 @@ struct ProfileDocument: Equatable {
     /// line directly above it (if any).
     private func includeList(in range: Range<Int>) -> [IncludeEntry] {
         range.compactMap { i -> IncludeEntry? in
-            guard case let .include(n) = entries[i] else { return nil }
+            guard case let .directive(d) = entries[i], d.kind == .include else { return nil }
             var comment = ""
             if i > 0, case let .comment(c) = entries[i - 1] { comment = c }
-            return IncludeEntry(name: n, comment: comment)
+            return IncludeEntry(name: d.argument, comment: comment)
         }
     }
 
@@ -257,16 +322,33 @@ struct ProfileDocument: Equatable {
         return includeList(in: firstKV..<entries.count)
     }
 
-    /// Replace all `include` directives. `top` entries land before the first
-    /// pref line, `bottom` after the last. Each entry's non-empty comment is
-    /// written as a `#` line directly above its `include`. The old includes
-    /// and the comments directly above them are removed first.
+    /// Replace ordinary `include` directives (kind == .include only). `top`
+    /// entries land before the first pref line, `bottom` after the last. Each
+    /// entry's non-empty comment is written as a `#` line directly above its
+    /// `include`. The old ordinary includes and the comments directly above them
+    /// are removed first.
+    ///
+    /// The caller (`includeSaveDecision`) only invokes this when the profile has
+    /// NO pass-through directives, so this never moves a `source`/`include?`/
+    /// `source?`. It also never consumes a comment that belongs to a preceding
+    /// `.raw` or directive: a comment is only removed if it sits directly above a
+    /// removed include AND the entry above the comment isn't itself a `.raw` or
+    /// `.directive` (ambiguous ownership → leave it).
     mutating func setIncludes(top: [IncludeEntry], bottom: [IncludeEntry]) {
         var remove = Set<Int>()
         for (i, e) in entries.enumerated() where e.isInclude {
             remove.insert(i)
             if i > 0, case .comment = entries[i - 1], !remove.contains(i - 1) {
-                remove.insert(i - 1)
+                // Don't steal a comment whose ownership is ambiguous because a
+                // `.raw` or another directive sits directly above it.
+                let ownedByOther: Bool = {
+                    guard i - 2 >= 0 else { return false }
+                    switch entries[i - 2] {
+                    case .raw, .directive: return true
+                    default:               return false
+                    }
+                }()
+                if !ownedByOther { remove.insert(i - 1) }
             }
         }
         for idx in remove.sorted(by: >) { entries.remove(at: idx) }
@@ -276,7 +358,9 @@ struct ProfileDocument: Equatable {
             for inc in list {
                 let c = inc.comment.trimmingCharacters(in: .whitespaces)
                 if !c.isEmpty { out.append(.comment(c)) }
-                out.append(.include(inc.name))
+                // UI-created/edited include ⇒ no reusable lexeme ⇒ render
+                // canonically from the logical name (escaped on serialize).
+                out.append(.directive(Directive(kind: .include, argument: inc.name, lexeme: nil)))
             }
             return out
         }
@@ -314,14 +398,52 @@ struct ProfileDocument: Equatable {
                 lines.append(body.isEmpty ? "#" : "# " + body)
             case .keyValue(let key, let value):
                 lines.append("\(key) = \(value)")
-            case .include(let name):
-                lines.append("include \(ProfileDocument.escapeWord(name))")
+            case .directive(let d):
+                if let lexeme = d.lexeme {
+                    // Untouched directive parsed from disk — emit byte-for-byte
+                    // (preserves escaping, `.prf`-less names, exact spacing).
+                    lines.append(lexeme)
+                } else {
+                    // UI-created/edited ordinary include — render canonically.
+                    lines.append("\(d.kind.keyword) \(ProfileDocument.escapeWord(d.argument))")
+                }
+            case .raw(let text):
+                lines.append(text)
             }
         }
         return lines.joined(separator: "\n") + "\n"
     }
 
     // MARK: - Word escaping (mirrors Unison's Util.splitIntoWords, esc='\\')
+
+    /// Split a line into escape-aware words exactly as Unison's
+    /// `Util.splitIntoWords` does (esc = `\`, separator = space): a `\` makes the
+    /// next char literal, a trailing `\` is dropped ("ignore final esc"), and
+    /// runs of separators collapse (no empty words). The returned words are
+    /// already UNESCAPED. Used to parse a directive's single filename argument
+    /// and to require exactly `[keyword; filename]`.
+    static func splitIntoWordsUnison(_ s: String) -> [String] {
+        let chars = Array(s)
+        let n = chars.count
+        let esc: Character = "\\"
+        let sep: Character = " "
+        var words: [String] = []
+        var i = 0
+        while i < n {
+            if chars[i] == sep { i += 1; continue }        // betweenwords: skip separators
+            var word = ""
+            while i < n && chars[i] != sep {               // inword
+                if chars[i] == esc {
+                    if i + 1 >= n { i += 1 }                // ignore final esc
+                    else { word.append(chars[i + 1]); i += 2 }
+                } else {
+                    word.append(chars[i]); i += 1
+                }
+            }
+            words.append(word)
+        }
+        return words
+    }
 
     /// Escape a word so Unison reads it back as a single token: backslash and
     /// space (the escape char and the word separator) are prefixed with `\`.
@@ -359,4 +481,38 @@ struct ProfileDocument: Equatable {
     /// Keys Unison treats as list-valued. We pretty-print them as one
     /// entry per line in the editor.
     static let listValuedKeys: Set<String> = ["root", "path", "ignore", "ignorenot"]
+
+    // MARK: - Includes UI reconciliation (Finding #7)
+
+    /// The Includes UI's view of one ordinary include: the DISPLAY name (as the
+    /// combo shows it, before `.prf` canonicalization), its Top/Bottom position,
+    /// and its attached comment. This is the smallest projection needed to decide
+    /// whether the user actually changed the includes.
+    struct IncludeUIItem: Equatable {
+        var name: String
+        var top: Bool
+        var comment: String
+    }
+
+    /// The save-path decision for the Includes UI (Finding #7):
+    ///   - `.unchanged`         — the projection matches; do NOT call setIncludes,
+    ///                            so every include lexeme, pass-through directive,
+    ///                            raw line, comment, and position is preserved.
+    ///   - `.applyTopBottom`    — includes changed and there are no pass-through
+    ///                            directives; the ordinary Top/Bottom rebuild is
+    ///                            safe (canonical rendering of edited includes).
+    ///   - `.refusePassThrough` — includes changed AND the profile contains
+    ///                            `source`/`include?`/`source?`; refuse the save
+    ///                            rather than risk reordering hidden precedence.
+    enum IncludeSaveDecision: Equatable { case unchanged, applyTopBottom, refusePassThrough }
+
+    /// Pure decision used by the real save path AND the tests. `loaded` and
+    /// `edited` are compared as DISPLAY-name projections (before any
+    /// `.prf`/escaping canonicalization), so a genuine no-op is detected exactly.
+    static func includeSaveDecision(loaded: [IncludeUIItem],
+                                    edited: [IncludeUIItem],
+                                    hasPassThroughDirectives: Bool) -> IncludeSaveDecision {
+        if loaded == edited { return .unchanged }
+        return hasPassThroughDirectives ? .refusePassThrough : .applyTopBottom
+    }
 }
