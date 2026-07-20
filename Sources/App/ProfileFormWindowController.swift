@@ -30,7 +30,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     typealias SaveCompletion = @MainActor (_ profileName: String) -> Void
 
     private let unisonDirectory: String
-    private let initialProfileName: String?   // nil = new profile
+    // `var` (not `let`): updated to the new name only AFTER a rename commits
+    // successfully, so a failed save leaves the controller's identity matching
+    // the (unchanged) on-disk state and a retry behaves correctly (Finding #11).
+    private var initialProfileName: String?   // nil = new profile
     private let onSaved: SaveCompletion
     private var prfDocument: ProfileDocument
 
@@ -1324,64 +1327,63 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let doc = formIntoDocument()
         let text = doc.serialized
 
-        // For Rename: move the source .prf (and its .bak sidecar) out of
-        // the way first, so the destination write below is clean. We
-        // do the rename BEFORE the write so a write failure leaves the
-        // user with the renamed-but-stale file — still consistent —
-        // rather than two files (old + new) on a partial write.
-        if isRename, let oldName = initialProfileName {
-            // No confirm sheet: see comment in `configure(profile:)`.
-            // Renaming a .prf is benign for archive state because
-            // Unison's archive hash depends on roots, not the .prf
-            // filename.
-            let oldURL = profileURL(forName: oldName)
-            let oldBak = oldURL.appendingPathExtension("bak")
-            let newBak = url.appendingPathExtension("bak")
-            do {
-                if FileManager.default.fileExists(atPath: oldURL.path) {
-                    try FileManager.default.moveItem(at: oldURL, to: url)
-                }
-                if FileManager.default.fileExists(atPath: oldBak.path) {
-                    try? FileManager.default.moveItem(at: oldBak, to: newBak)
-                }
-                // Carry view preferences (hide / order) across the rename
-                // so the renamed profile stays in the same slot in the
-                // manager / picker. See ProfilePreferencesTests.test_rename_*.
-                var prefs = ProfilePreferences.load()
-                prefs.rename(oldName, to: name)
-                prefs.save()
-                TraceLog.shared.write("ProfileForm: renamed \(oldName) -> \(name)")
-            } catch {
-                showAlert(text: "Couldn't rename profile",
-                          info: "Renaming \(oldName).prf → \(name).prf:\n\(error.localizedDescription)",
-                          style: .critical)
-                return
-            }
-        }
-
-        // Backup before overwrite. Skipping on a first write (file doesn't
-        // exist yet) is fine — there's nothing to back up.
-        if FileManager.default.fileExists(atPath: url.path) {
-            let backupURL = url.appendingPathExtension("bak")
-            try? FileManager.default.removeItem(at: backupURL)
-            try? FileManager.default.copyItem(at: url, to: backupURL)
-        }
-
+        // Failure-safe, retry-consistent commit (Finding #11): backs up before
+        // overwriting, writes the new file BEFORE removing the old on a rename
+        // (original recoverable until the replacement is durable), and rolls a
+        // failed rename back to the pre-save state. All filesystem side effects
+        // happen here; controller identity + prefs are updated ONLY after this
+        // succeeds, so a failure leaves a coherent state the user can retry.
+        let tx = ProfileSaveTransaction(ops: SystemFileOps(), unisonDirectory: unisonDirectory)
         do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            TraceLog.shared.write("ProfileForm: wrote \(url.path) (\(text.count) bytes)")
-            // Apply picker visibility for the final name (mirrors the
-            // Profile Editor's eye toggle). Done after any rename so it
-            // keys off the name the file now has.
-            var prefs = ProfilePreferences.load()
-            if visibilityCheckbox.state == .on { prefs.hidden.remove(name) }
-            else { prefs.hidden.insert(name) }
-            prefs.save()
-            onSaved(name)
-            window?.performClose(nil)
+            try tx.commit(oldName: isNew ? nil : initialProfileName, newName: name, content: text)
+        } catch let error as ProfileSaveError {
+            presentSaveError(error, name: name)
+            return
         } catch {
             showAlert(text: "Failed to save profile",
-                      info: "\(url.path):\n\(error.localizedDescription)",
+                      info: "\(url.path):\n\(error.localizedDescription)", style: .critical)
+            return
+        }
+
+        // --- Commit succeeded: update identity + preferences, then close. ---
+        TraceLog.shared.write("ProfileForm: saved \(url.path) (\(text.count) bytes)")
+        var prefs = ProfilePreferences.load()
+        if isRename, let oldName = initialProfileName {
+            // Carry view preferences (hide / order) across the rename so the
+            // renamed profile stays in the same slot. See
+            // ProfilePreferencesTests.test_rename_*.
+            prefs.rename(oldName, to: name)
+            TraceLog.shared.write("ProfileForm: renamed \(oldName) -> \(name)")
+        }
+        // Identity now reflects the committed name — a subsequent save in this
+        // (still-open) window would target the right file.
+        initialProfileName = name
+        // Apply picker visibility for the final name (mirrors the Profile
+        // Editor's eye toggle).
+        if visibilityCheckbox.state == .on { prefs.hidden.remove(name) }
+        else { prefs.hidden.insert(name) }
+        prefs.save()
+        onSaved(name)
+        window?.performClose(nil)
+    }
+
+    /// Map a transactional save failure to a precise alert. In every case the
+    /// on-disk state is coherent and the operation can be retried.
+    private func presentSaveError(_ error: ProfileSaveError, name: String) {
+        switch error {
+        case .destinationExists:
+            showAlert(text: "Profile already exists",
+                      info: "\(name).prf is already in the Unison directory. Pick a different name.",
+                      style: .warning)
+        case .backupFailed(let detail):
+            showAlert(text: "Couldn't back up the existing profile",
+                      info: "Nothing was changed. \(detail)", style: .critical)
+        case .writeFailed(let detail):
+            showAlert(text: "Failed to save profile",
+                      info: "The existing profile is unchanged. \(detail)", style: .critical)
+        case .renameCleanupFailed(let detail):
+            showAlert(text: "Couldn't complete the rename",
+                      info: "The profile was left under its original name. \(detail)",
                       style: .critical)
         }
     }

@@ -73,6 +73,25 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **Finding #11 (2026-07-20):** profile save/rename is now failure-safe and
+      retry-consistent. Extracted a pure `ProfileSaveTransaction` (behind a
+      `ProfileFileOps` protocol; real `SystemFileOps`): it backs up the existing
+      profile BEFORE overwriting (copy → atomic move over `.bak`, so a backup
+      failure never destroys the prior `.bak`), and on a **rename** writes the
+      new-named file FIRST and only then removes the old one — so the original
+      stays recoverable until the replacement is durable, and a failed
+      old-removal rolls the new file back to the exact pre-save state. Because a
+      failure leaves the pre-save state intact, the controller's identity stays
+      correct and a retry works — fixing the old bug where the pre-write move
+      left `initialProfileName` stale and the next Save was rejected as a
+      collision. `ProfileFormWindowController` now updates identity
+      (`initialProfileName`, made `var`) + prefs ONLY after the transaction
+      commits. **Coverage:** 12 tests — per-stage fault injection via an
+      in-memory `FakeFileOps` (backup-copy, backup-move, write, rename-remove)
+      asserting coherent state + successful retry, plus real-`SystemFileOps`
+      happy paths in a temp dir. Pure/unit-level; the AppKit save button itself
+      is not driven by a UI harness (unchanged posture).
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
