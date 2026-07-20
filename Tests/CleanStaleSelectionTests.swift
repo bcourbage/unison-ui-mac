@@ -48,4 +48,57 @@ final class CleanStaleSelectionTests: XCTestCase {
             roots: ["//MacBookPro//Users/bcourbage", "//MacBookPro//x"],
             currentLabel: "heracles"))
     }
+
+    // MARK: - Global uncertainty (Finding #9 review)
+
+    private func rowUncertain(_ finding: Bool, _ global: Bool) -> Bool {
+        CleanStaleArchivesWindowController.rowUncertain(
+            findingUncertain: finding, globalUncertain: global)
+    }
+
+    func test_rowUncertain_globalUncertaintyForcesUncertain() {
+        XCTAssertTrue(rowUncertain(false, true), "global uncertainty overrides a certain finding")
+        XCTAssertTrue(rowUncertain(true, false))
+        XCTAssertFalse(rowUncertain(false, false))
+    }
+
+    func test_noDestructivePreselect_underGlobalUncertainty() {
+        // The dangerous case: a local-only orphan (owned=false, localOnly=true)
+        // would normally be checked by default. When the Unison directory can't
+        // be enumerated we don't actually know it's an orphan, so global
+        // uncertainty must force it uncertain and therefore NOT preselected.
+        let uncertain = rowUncertain(false, /*global*/ true)
+        XCTAssertFalse(defaults(owned: false, uncertain: uncertain, localOnly: true),
+                       "no archive may be preselected for deletion under global uncertainty")
+    }
+
+    func test_attributionWarning_nilWhenClean() {
+        XCTAssertNil(CleanStaleArchivesWindowController.attributionWarning(
+            enumerationFailed: false, unresolvedProfiles: []))
+    }
+
+    func test_attributionWarning_enumerationFailure_mentionsUnreadableDirectory() {
+        let w = CleanStaleArchivesWindowController.attributionWarning(
+            enumerationFailed: true, unresolvedProfiles: [])
+        XCTAssertNotNil(w)
+        XCTAssertTrue(w!.contains("could not be read"))
+        XCTAssertTrue(w!.lowercased().contains("uncertain"))
+        XCTAssertTrue(w!.lowercased().contains("none are preselected"))
+    }
+
+    func test_attributionWarning_unresolvedProfiles_areNamed_andMentionIncludes() {
+        let w = CleanStaleArchivesWindowController.attributionWarning(
+            enumerationFailed: false, unresolvedProfiles: ["zed", "alpha"])
+        XCTAssertNotNil(w)
+        XCTAssertTrue(w!.contains("unresolved or unreadable includes"))
+        // Names sorted for stable display.
+        XCTAssertTrue(w!.contains("alpha, zed"))
+    }
+
+    func test_attributionWarning_noEmDash() {
+        let w = CleanStaleArchivesWindowController.attributionWarning(
+            enumerationFailed: true, unresolvedProfiles: ["p"])
+        XCTAssertNotNil(w)
+        XCTAssertFalse(w!.contains("—"))
+    }
 }

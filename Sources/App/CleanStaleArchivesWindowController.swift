@@ -71,9 +71,28 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     /// button re-enables.
     private var snapshotGuard = StaleSnapshotGuard()
 
+    /// Global attribution state from the last scan: whether the Unison
+    /// directory could be enumerated at all, and which profiles resolved with
+    /// unreliable includes. Drives the warning banner.
+    private struct ProfileScan {
+        let profiles: [ArchiveStaleScanner.Profile]
+        /// True when the Unison directory itself couldn't be enumerated, so the
+        /// full profile set is unknown and every archive must stay uncertain.
+        let enumerationFailed: Bool
+        /// Profiles whose `include`/`source` graph did not resolve reliably
+        /// (missing/unreadable include, cycle, malformed line, bound hit).
+        let unresolvedProfiles: [String]
+    }
+    private var lastProfileScan: ProfileScan?
+
     private let tableView = NSTableView()
     private let selectAllCheckbox = NSButton(
         checkboxWithTitle: "Select all", target: nil, action: nil)
+    /// Orange banner shown only when attribution is globally compromised
+    /// (directory unreadable, or profiles with unresolved/unreadable includes).
+    /// Collapses to zero height when there is nothing to warn about.
+    private let warningLabel = NSTextField(wrappingLabelWithString: "")
+    private var warningZeroHeight: NSLayoutConstraint?
     private let summaryLabel = NSTextField(labelWithString: "")
     private let trashButton = NSButton(title: "", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export CSV…", target: nil, action: nil)
@@ -169,6 +188,11 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         header.textColor = .secondaryLabelColor
         header.translatesAutoresizingMaskIntoConstraints = false
 
+        warningLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        warningLabel.textColor = .systemOrange
+        warningLabel.isHidden = true
+        warningLabel.translatesAutoresizingMaskIntoConstraints = false
+
         selectAllCheckbox.allowsMixedState = true
         selectAllCheckbox.target = self
         selectAllCheckbox.action = #selector(toggleSelectAll(_:))
@@ -219,17 +243,25 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         footer.translatesAutoresizingMaskIntoConstraints = false
 
         content.addSubview(header)
+        content.addSubview(warningLabel)
         content.addSubview(selectAllCheckbox)
         content.addSubview(summaryLabel)
         content.addSubview(scroll)
         content.addSubview(footer)
         let m: CGFloat = 16
+        let warningZero = warningLabel.heightAnchor.constraint(equalToConstant: 0)
+        warningZero.isActive = true          // collapsed until a warning appears
+        self.warningZeroHeight = warningZero
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: m),
             header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: m),
             header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -m),
 
-            selectAllCheckbox.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
+            warningLabel.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
+            warningLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: m),
+            warningLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -m),
+
+            selectAllCheckbox.topAnchor.constraint(equalTo: warningLabel.bottomAnchor, constant: 10),
             selectAllCheckbox.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: m),
             summaryLabel.centerYAnchor.constraint(equalTo: selectAllCheckbox.centerYAnchor),
             summaryLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -m),
@@ -261,6 +293,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
 
     private func reload() {
         rows = scan()
+        refreshWarning()
         // Record the scan against the staleness guard: a scan taken while the
         // engine is busy is immediately dirty, so the button stays disabled
         // until a clean re-scan happens at idle.
@@ -285,11 +318,58 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         refreshSelectionUI()
     }
 
+    /// Update the orange warning banner from the last scan's global attribution
+    /// state, collapsing it when there is nothing to warn about.
+    private func refreshWarning() {
+        let text = Self.attributionWarning(
+            enumerationFailed: lastProfileScan?.enumerationFailed ?? false,
+            unresolvedProfiles: lastProfileScan?.unresolvedProfiles ?? [])
+        if let text {
+            warningLabel.stringValue = text
+            warningLabel.isHidden = false
+            warningZeroHeight?.isActive = false
+        } else {
+            warningLabel.stringValue = ""
+            warningLabel.isHidden = true
+            warningZeroHeight?.isActive = true
+        }
+    }
+
+    /// The banner text for globally-compromised attribution, or nil when
+    /// attribution is fully trustworthy. Pure so it can be unit-tested.
+    static func attributionWarning(enumerationFailed: Bool,
+                                   unresolvedProfiles: [String]) -> String? {
+        var parts: [String] = []
+        if enumerationFailed {
+            parts.append(
+                "The Unison directory could not be read, so the full set of " +
+                "profiles is unknown. Every archive is shown as uncertain and " +
+                "none are preselected. Verify before removing anything.")
+        }
+        if !unresolvedProfiles.isEmpty {
+            let names = unresolvedProfiles.sorted().joined(separator: ", ")
+            parts.append(
+                "Some profiles have unresolved or unreadable includes (\(names)), " +
+                "so their roots can't be fully trusted. Archives that might " +
+                "belong to them are shown as uncertain.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+
+    /// A row is uncertain if its own attribution is uncertain OR attribution is
+    /// globally compromised (the directory couldn't be enumerated, so we don't
+    /// actually know the profile set). Pure so it can be unit-tested.
+    static func rowUncertain(findingUncertain: Bool, globalUncertain: Bool) -> Bool {
+        findingUncertain || globalUncertain
+    }
+
     private func scan() -> [Row] {
         let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
         let index = cleanup.indexArchives()
+        let ps = profileScan()
+        lastProfileScan = ps
         let findings = ArchiveStaleScanner.findings(
-            in: index, profiles: profiles(), localHostname: ArchiveHash.systemHostname)
+            in: index, profiles: ps.profiles, localHostname: ArchiveHash.systemHostname)
         let fm = FileManager.default
         let currentLabel = ArchiveMatcher.shortLabel(ArchiveHash.systemHostname)
         return findings
@@ -311,14 +391,20 @@ final class CleanStaleArchivesWindowController: NSWindowController,
                 }
                 let modified = (try? fm.attributesOfItem(atPath: finding.entry.url.path))?[.modificationDate] as? Date
                 let localOnly = Self.isLocalOnly(roots: [r1, r2], currentLabel: currentLabel)
+                // Fold in global uncertainty: if the directory couldn't be
+                // enumerated we don't know the true profile set, so no archive
+                // may be treated as a confident orphan or preselected.
+                let uncertain = Self.rowUncertain(
+                    findingUncertain: finding.uncertain,
+                    globalUncertain: ps.enumerationFailed)
                 let defaultChecked = Self.defaultsToChecked(
                     owned: !finding.profileNames.isEmpty,
-                    uncertain: finding.uncertain,
+                    uncertain: uncertain,
                     localOnly: localOnly)
                 return Row(hash: finding.entry.hash,
                            reason: finding.reason,
                            profileNames: finding.profileNames,
-                           uncertain: finding.uncertain,
+                           uncertain: uncertain,
                            root1: r1, root2: r2, files: files,
                            modified: modified, defaultChecked: defaultChecked)
             }
@@ -330,9 +416,17 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     /// differ from the .prf), has a symlinked local root (canonical path
     /// differs), or is a home-dir ssh profile sharing its local root with
     /// another profile (the remote can't disambiguate them offline).
-    private func profiles() -> [ArchiveStaleScanner.Profile] {
+    private func profileScan() -> ProfileScan {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return [] }
+        guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else {
+            // The Unison directory can't be enumerated. Returning an empty
+            // profile set would make EVERY archive look like a certain orphan
+            // and preselect the local-only ones for deletion, from a scan that
+            // simply failed to read the profiles. Signal global uncertainty
+            // instead: the caller marks every row uncertain and preselects
+            // none, and the banner explains why.
+            return ProfileScan(profiles: [], enumerationFailed: true, unresolvedProfiles: [])
+        }
 
         struct Raw {
             let name: String
@@ -368,7 +462,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             }
         }
 
-        return raws.map { raw in
+        let profiles = raws.map { raw -> ArchiveStaleScanner.Profile in
             let specs = ArchiveMatcher.rootSpecs(forRoots: raw.roots)
             let localPaths = specs.filter { $0.isLocal }.compactMap { $0.path }
             let hasWildcardRemote = specs.contains { $0.path == nil }
@@ -381,6 +475,15 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             return ArchiveStaleScanner.Profile(
                 name: raw.name, roots: raw.roots, attributionReliable: reliable)
         }
+        // Surface specifically the profiles whose INCLUDE graph didn't resolve
+        // (missing/unreadable include, cycle, malformed line, bound) — the case
+        // Finding #9 is about — separate from the broader attribution caveats
+        // (rootalias/symlink/shared-root) which the per-row tooltip already
+        // explains.
+        let unresolved = raws.filter { !$0.resolutionReliable }.map { $0.name }
+        return ProfileScan(profiles: profiles,
+                           enumerationFailed: false,
+                           unresolvedProfiles: unresolved)
     }
 
     private static func isLeafSymlink(_ path: String) -> Bool {
@@ -552,8 +655,10 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         case Col.profile:
             let text = item.profileText + (item.uncertain ? " ?" : "")
             let tip = item.uncertain
-                ? "Attribution uncertain: a profile uses rootalias, a symlinked root, " +
-                  "or shares a local root, so this may be wrong. Verify before relying on it."
+                ? "Attribution uncertain: a profile has unresolved or unreadable " +
+                  "includes, uses rootalias, has a symlinked root, shares a local " +
+                  "root, or the Unison directory couldn't be read, so this may be " +
+                  "wrong. Verify before relying on it."
                 : (item.profileNames.isEmpty ? item.reason.label : item.profileText)
             let cell = labelCell(text, tooltip: tip)
             cell.textField?.textColor =

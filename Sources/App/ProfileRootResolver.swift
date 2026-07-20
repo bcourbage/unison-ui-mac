@@ -131,10 +131,20 @@ enum ProfileRootResolver {
                 if required { issues.append(.missingRequired(token: token)) }
                 // optional-missing is normal (Unison silently skips): no issue.
             case .unreadable:
-                // Upstream treats an unopenable required file as fatal, and an
-                // optional one as absent. We mirror: required ⇒ unreliable,
-                // optional ⇒ silently skipped.
-                if required { issues.append(.unreadable(path: path)) }
+                // An existing-but-unreadable target is NOT proven absent, so —
+                // unlike `.missing` — it is unsafe to skip even when OPTIONAL.
+                // Two ways a read comes back `.unreadable`:
+                //   (a) a regular file we can't decode as UTF-8. Unison reads
+                //       profiles as bytes (Latin-1), so it may still load roots
+                //       from a file we reject; we just can't see them.
+                //   (b) the path exists but is a directory / FIFO / device /
+                //       socket. Its mere existence changes resolution (for an
+                //       `include` it suppresses the `.prf` fallback), and there
+                //       are no roots we can read from it.
+                // In both cases the roots are unknown, so attribution must stay
+                // uncertain regardless of `required`. Only a proven `.missing`
+                // optional target is safely skipped (handled above).
+                issues.append(.unreadable(path: path))
             case .ok(let text):
                 let cpath = canonical(path)
                 if openSet.contains(cpath) {
@@ -192,18 +202,55 @@ enum ProfileRootResolver {
                           issues: issues)
     }
 
-    /// Default reader: a regular readable UTF-8 file ⇒ `.ok`; a directory or a
-    /// nonexistent path ⇒ `.missing`; an existing file that can't be read as
-    /// text ⇒ `.unreadable`.
+    /// Default reader. The classification is deliberately precise because the
+    /// caller treats `.missing` (optional ⇒ safely skipped) very differently
+    /// from `.unreadable` (⇒ unreliable):
+    ///
+    /// - Path does not exist (symlinks followed) ⇒ `.missing`.
+    /// - Path exists but is a **directory** ⇒ `.unreadable`. It is NOT missing:
+    ///   its existence is what upstream sees, and for an `include` that
+    ///   suppresses the `.prf` fallback. There are no profile roots to read.
+    /// - Path exists but is **not a regular file** (FIFO, device, socket) ⇒
+    ///   `.unreadable`, decided WITHOUT opening it. Opening a FIFO or device
+    ///   could block indefinitely or have side effects; we only need to know
+    ///   it exists and is not a readable profile.
+    /// - A regular file we can decode as UTF-8 ⇒ `.ok`. A UTF-8 BOM, if
+    ///   present, is stripped by the decoder (and defensively below), so a
+    ///   BOM-prefixed profile parses like any other.
+    /// - A regular file we cannot decode as UTF-8 (bad encoding, permissions)
+    ///   ⇒ `.unreadable` — never `.missing`. Unison reads profiles as bytes,
+    ///   so such a file may still carry roots we simply can't see.
     static func filesystemRead(_ path: String) -> ReadResult {
         let fm = FileManager.default
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else {
+        // fileExists follows symlinks and reports directory-ness of the target.
+        guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
             return .missing
         }
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+        if isDir.boolValue {
             return .unreadable
         }
+        // Exists and is not a directory. Confirm it is a REGULAR file before
+        // opening it, so a FIFO / device / socket at this path is classified
+        // without a blocking open. `stat` follows symlinks, matching open().
+        guard isRegularFile(path) else {
+            return .unreadable
+        }
+        guard var text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return .unreadable
+        }
+        // Defensively strip a leading UTF-8 BOM (U+FEFF). Foundation's UTF-8
+        // decoder normally removes it, but stripping here guarantees the first
+        // directive/line is never misparsed as `.raw` because of a BOM.
+        if text.first == "\u{FEFF}" { text.removeFirst() }
         return .ok(text)
+    }
+
+    /// Whether the path (after following symlinks) is a regular file. Uses
+    /// `stat`, so it never opens the target — safe for FIFOs/devices.
+    private static func isRegularFile(_ path: String) -> Bool {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return false }
+        return (st.st_mode & S_IFMT) == S_IFREG
     }
 }

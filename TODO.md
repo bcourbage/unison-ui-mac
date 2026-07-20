@@ -86,11 +86,35 @@ section at the bottom so this list stays scannable.
       roots live in an included file is attributed correctly and an
       unreliably-resolved profile's archives stay uncertain (never start
       checked). Cycle detection + hard bounds (maxFiles/maxDepth) guarantee
-      termination that upstream lacks. **Coverage is pure-logic only** (18
+      termination that upstream lacks. **Coverage is pure-logic only** (the
       `ProfileRootResolver` tests with scratch fixtures + an injected reader for
       unreadable/unbounded cases); this is NOT field-proven through the actual
       Clean Stale Archives window against a live `.unison` directory — that
       manual validation remains, consistent with the no-UI-harness posture.
+
+      **Safety-correction pass (2026-07-20, review of Finding #9):**
+      (1) An existing-but-unreadable target is no longer treated as absent even
+      when OPTIONAL. `include?`/`source?` only skip a proven-`.missing` file;
+      an unreadable one (bad UTF-8 that Unison would still read as bytes, or a
+      directory/FIFO/device at the path) is now `.unreadable` ⇒ unreliable.
+      (2) `filesystemRead` classification is precise: a directory or a
+      non-regular object (FIFO/device/socket) is `.unreadable`, NOT `.missing`
+      — so for `include` its existence correctly suppresses the `.prf` fallback,
+      and a FIFO/device is classified via `stat` WITHOUT being opened (no
+      blocking). A leading UTF-8 BOM is stripped so the first line never
+      mis-parses as `.raw`.
+      (3) When the Unison directory itself can't be enumerated,
+      `CleanStaleArchivesWindowController` no longer returns an empty profile
+      set (which would mark every archive a certain orphan and preselect the
+      local-only ones). It propagates GLOBAL uncertainty: every row is
+      uncertain and none are preselected.
+      (4) A new orange banner (`attributionWarning`, pure/tested) explains an
+      unreadable directory and names profiles with unresolved/unreadable
+      includes; the per-row tooltip now lists the includes case too.
+      (5) Added tests: optional invalid-UTF-8 ⇒ unreliable; exact-path
+      directory alongside a valid `<name>.prf` ⇒ no fallback + unreliable; FIFO
+      ⇒ `.unreadable` without hanging; BOM parity; global-uncertainty forces no
+      destructive preselect; warning-text content + no em-dash.
 
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
