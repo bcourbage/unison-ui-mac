@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// without re-probing. Set on every `handleVersionCheckOutcome`.
     private var lastVersionOutcome: (profile: String, outcome: VersionCheck.Outcome)?
 
+    /// The in-flight SSH version probe and the session it belongs to. Kept so
+    /// the probe can be cancelled on profile replacement, window close, or
+    /// shutdown, and so a slow result is dropped when its session is no longer
+    /// current — a stale probe must never update a replacement profile (#12).
+    private var activeVersionProbe: VersionCheck.Handle?
+    private var versionProbeSession: SessionID?
+
     /// Pending restore for a one-shot `-ignorearchives` rescan: the
     /// `.prf` we temporarily injected `ignorearchives = true` into, plus
     /// its exact original contents. Restored the moment init1 has loaded
@@ -166,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         reconcile.beginInitialScan()
         profileWindowController?.close()
 
-        runVersionCheckIfNeeded(profile: profile)
+        runVersionCheckIfNeeded(profile: profile, session: s)
     }
 
     private func makeReconcileWindow(session s: SessionID, profile: String,
@@ -217,6 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// The user closed a live session's reconcile window (the ✕ button or
     /// ⌘W). Route it through the one session-teardown helper.
     private func handleWindowClosed(session s: SessionID, profile: String) {
+        // Abandon this session's version probe (if any) so a slow result can't
+        // surface an alert after the window is gone.
+        if versionProbeSession == s {
+            activeVersionProbe?.cancel()
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
         // The window is already mid-close (this fires from windowWillClose),
         // so don't re-close it — just detach + abandon + show the picker.
         leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
@@ -1119,6 +1133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// release-gate `make leaks` runs.
     func applicationWillTerminate(_ notification: Notification) {
         log.write("applicationWillTerminate — releasing bridge roots")
+        // Cancel any in-flight version probe so its subprocess is torn down.
+        activeVersionProbe?.cancel()
         unison_bridge_shutdown()
     }
 
@@ -1407,16 +1423,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// queue and may show a modal alert *while init1/init2 is still
     /// running*. That's fine — init1/init2 are async on the OCaml
     /// side and don't block on the main queue.
-    private func runVersionCheckIfNeeded(profile: String) {
+    private func runVersionCheckIfNeeded(profile: String, session: SessionID) {
         guard let localBridgeVersion = unison_bridge_get_version().map({ String(cString: $0) }) else {
             Log.versionCheck.warning("version check: unison_bridge_get_version returned nil")
             return
         }
+        // Cancel any earlier probe (this is a new/replacement open) so its slow
+        // result can't surface, then mint this probe's identity (the session).
+        activeVersionProbe?.cancel()
+        versionProbeSession = session
         Log.versionCheck.info("starting version check for profile '\(profile, privacy: .public)'")
-        VersionCheck.run(
+        activeVersionProbe = VersionCheck.run(
             profile: profile,
             unisonDirectory: unisonDirectory,
-            localBridgeVersion: localBridgeVersion
+            localBridgeVersion: localBridgeVersion,
+            // Delivered only while this exact session is still the current one:
+            // a reopened profile mints a new session, superseding this probe.
+            isCurrent: { [weak self] in self?.versionProbeSession == session }
         ) { [weak self] outcome in
             self?.handleVersionCheckOutcome(outcome, profile: profile)
         }

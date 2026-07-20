@@ -147,6 +147,26 @@ section at the bottom so this list stays scannable.
          cancel) remains to be done. Build on the hardened phase calls; do not
          re-derive the exception handling. **This item stays open.**
 
+      **Findings #8 + #12 (2026-07-20):** the advisory SSH version probe was
+      redesigned as a lifecycle-owned subprocess. #8: `StrictHostKeyChecking`
+      changed from `accept-new` to **`yes`** (placed before profile `sshargs` so
+      it wins) — the probe never writes a host key; an unknown/changed host makes
+      it skip, leaving host-key confirmation to the real Unison connection. #12:
+      a true **wall-clock deadline** (`defaultDeadline`=20s) now covers launch +
+      I/O + exit (not just `ConnectTimeout`), with terminate→SIGKILL→**reap of the
+      exact child** so a wedged ProxyCommand/`servercmd -version` can't hang a
+      worker or orphan a process; each probe returns a `Handle` bound to its
+      `SessionID`, and `run` delivers only when the probe is neither cancelled
+      nor superseded (`isCurrent`), so a slow result can't update a replacement
+      profile. AppDelegate cancels the probe on profile replacement, window
+      close, and shutdown. Failure kinds are now distinguished (timeout,
+      cancellation, host-key rejection, auth failure, generic ssh failure, launch
+      failure, malformed output) via a pure `classifyRaw`. Process execution is
+      behind an injectable `VersionProbeExecutor`. **Coverage:** 21
+      deterministic tests (fake executors for identity/cancellation/late-
+      completion/timeout + real-subprocess terminate/reap/launch-fail against
+      `/bin/sleep`,`/bin/echo`); NOT field-proven against a live wedged remote.
+
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:
       have ssh actively probe and disconnect a dead peer (~45s) instead
