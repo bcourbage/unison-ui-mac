@@ -396,6 +396,17 @@ final class EngineSessionCoordinator {
     /// actually unwound (not just that the UI displayed an error). If it
     /// can't be proven, we require restart rather than reuse a possibly
     /// contaminated runtime.
+    /// A per-row mutation (direction override / Ignore) failed AFTER OCaml
+    /// state began changing while the session sat in `.ready` (Blocker 4). The
+    /// engine is no longer provably consistent with the displayed rows, so we
+    /// cannot leave the ready UI live/actionable — transition to
+    /// restart-required. A no-op unless we are actually `.ready` (a stale action
+    /// arriving in another phase is ignored).
+    func engineBecameUncertain(reason: String) -> [Effect] {
+        guard case .ready = phase else { return [] }
+        return enterRestartRequired(reason)
+    }
+
     func operationFailed(_ session: SessionID, _ op: OperationID,
                          reason: String, engineIsQuiescent: Bool) -> [Effect] {
         let active: Bool

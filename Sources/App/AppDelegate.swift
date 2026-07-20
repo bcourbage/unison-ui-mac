@@ -68,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var pendingScan: (SessionID, OperationID)?
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
+    /// The session whose successful Ignore is awaiting its dedicated completion.
+    /// Identity token (separate from `pendingScan`) so an Ignore completion can
+    /// never satisfy a pending scan/rescan, and a stale/duplicate completion for
+    /// a replaced session is dropped. Set by `performIgnore`, consumed by the
+    /// ignore-complete handler.
+    private var pendingIgnore: SessionID?
 
     /// Reconcile window per live session (keyed by SessionID, stable across
     /// connect→scan→ready→sync→rescan). Plus the single queued "waiting"
@@ -169,7 +175,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             profile: profile,
             mergeConfigured: mergeConfigured,
             onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
-            onRescanRequested: { [weak self] in self?.run(self?.engine.requestRescan() ?? []) },
+            onRescanRequested: { [weak self] in
+                guard let self else { return }
+                // Defensive (not solely AppKit validation): never authorize a
+                // rescan while THIS session's Ignore publication is still in
+                // flight — its new roots are installed but its rows haven't
+                // landed, and a rescan would race the pending completion.
+                guard self.pendingIgnore != s else {
+                    self.log.write("deferring rescan — ignore completion pending for \(s)")
+                    return
+                }
+                self.run(self.engine.requestRescan())
+            },
             // Stop during connect/scan: tear the window down to the picker now
             // (leaving the lease with the in-flight op), rather than leaving it
             // spinning on "Cancelling…" until the background op settles.
@@ -177,8 +194,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self?.leaveSession(s, profile: profile, closeWindow: true,
                                    reason: "Stop during connect/scan")
             },
-            onSyncStart: { [weak self] in self?.run(self?.engine.requestSync() ?? []) },
-            onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) }
+            onSyncStart: { [weak self] in
+                guard let self else { return }
+                // Defensive: never authorize a sync while THIS session's Ignore
+                // publication is still in flight (see onRescanRequested).
+                guard self.pendingIgnore != s else {
+                    self.log.write("deferring sync — ignore completion pending for \(s)")
+                    return
+                }
+                self.run(self.engine.requestSync())
+            },
+            onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) },
+            onEngineUncertain: { [weak self] reason in
+                self?.run(self?.engine.engineBecameUncertain(reason: reason) ?? [])
+            },
+            onIgnore: { [weak self] action, row in
+                self?.performIgnore(session: s, action: action, row: row) ?? UNISON_OP_INVALID
+            }
         )
     }
 
@@ -222,7 +254,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // window's own flag to avoid re-labelling it.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
         armConnectWatchdog()
-        connectQueue.async { profile.withCString { unison_bridge_init1($0) } }
+        // init1 dispatches synchronously and returns a status. On success the
+        // connect proceeds via installInit1CompleteHandler (prompt loop /
+        // connectFinished); a non-OK status means the OCaml init raised, so that
+        // completion will NEVER fire — route the failure here (with quiescence
+        // UNproven → coordinator restart) instead of waiting for the watchdog.
+        connectQueue.async { [weak self] in
+            let status = profile.withCString { unison_bridge_init1($0) }
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                self.log.write("init1 (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "connect init failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveBeginScan(_ s: SessionID, _ op: OperationID) {
@@ -230,13 +280,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Show the scanning spinner for a rescan (the initial scan already
         // shows it via beginInitialScan). Idempotent — guarded on isScanning.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
-        connectQueue.async { unison_bridge_init2() }
+        // Same contract as init1: on success installInit2CompleteHandler fires
+        // later; a non-OK status means the scan raised on dispatch and that
+        // completion will never arrive, so route the failure immediately (with
+        // quiescence UNproven → coordinator restart). No watchdog change here:
+        // scan-phase no-progress is already covered by the 45s stall detector,
+        // and this failure fires synchronously off the returned status.
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_init2()
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingScan.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingScan = nil
+                self.log.write("init2 (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "scan failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveBeginSync(_ s: SessionID, _ op: OperationID) {
         pendingSync = (s, op)
         windowBySession[s]?.enterSyncingUI()   // syncing UI is the driver's job now
-        unison_bridge_synchronize()   // returns quickly; runs on its own OCaml thread
+        // synchronize spawns its own OCaml thread and returns a dispatch status.
+        // On success syncComplete arrives later; a non-OK status means the sync
+        // never launched (OCaml raised) and syncComplete will never fire, so
+        // route the failure with quiescence UNproven → coordinator restart.
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_synchronize()
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingSync.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingSync = nil
+                self.log.write("synchronize (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "sync start failed (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveCloseConnection(_ s: SessionID, _ op: OperationID) {
@@ -252,8 +336,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    /// Perform an Ignore for session `s` through the bridge, binding the
+    /// dedicated ignore completion to `s` first so its fresh rows are delivered
+    /// back to that exact session (via the ignore-complete handler →
+    /// `applyIgnoreResult`). Runs synchronously on the main thread (the bridge
+    /// call blocks briefly, as it did before); the completion arrives on the next
+    /// main turn. On any non-OK result no completion fires, so the token is
+    /// cleared to avoid mis-attributing a later completion.
+    private func performIgnore(session s: SessionID, action: IgnoreAction,
+                               row: Int) -> unison_op_result_t {
+        pendingIgnore = s
+        let result = action.invoke(row: Int32(row))
+        if result != UNISON_OP_OK { pendingIgnore = nil }
+        return result
+    }
+
     private func driveAbortSync(_ s: SessionID, _ op: OperationID) {
-        DispatchQueue.global().async { unison_bridge_abort_sync() }
+        // Blocker 5: route the abort through the SAME serial connectQueue that
+        // driveBeginSync uses to launch the sync. Since the sync-launch was
+        // enqueued first (at requestSync time) and `unison_bridge_synchronize`
+        // returns as soon as it spawns the OCaml worker, FIFO ordering
+        // guarantees the abort can never overtake the launch and set the flag on
+        // a sync that hasn't started. On abort failure (flag not reliably set)
+        // do NOT let the UI keep claiming "Cancelling…": route the sync op to
+        // restart-required — the user's stop couldn't be honored and the engine
+        // state is uncertain.
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_abort_sync()
+            guard status != UNISON_BRIDGE_OK else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.log.write("abort_sync (\(s)/\(op)) failed status \(status) — restart required")
+                self.run(self.engine.operationFailed(
+                    s, op, reason: "sync abort could not be requested (status \(status))",
+                    engineIsQuiescent: false))
+            }
+        }
     }
 
     private func driveShowWaiting(_ id: OpenRequestID, profile: String) {
@@ -285,7 +403,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             onRescanRequested: {},
             onCancelScan: {},
             onSyncStart: {},
-            onSyncExit: { _ in }
+            onSyncExit: { _ in },
+            onEngineUncertain: { _ in },
+            onIgnore: { _, _ in UNISON_OP_INVALID }
         )
         waitingWindow = (id, controller)
         controller.showWindow(nil)
@@ -520,7 +640,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installInit2CompleteHandler { [weak self] items in
             guard let self else { return }
-            guard let (s, op) = self.pendingScan else {
+            // Routed via the extracted RowCompletionRouter (same logic the tests
+            // drive). A scan completion consumes ONLY pendingScan — an Ignore
+            // completion arrives on a separate handler/token and can never land
+            // here.
+            guard case let .scan(s, op) =
+                    RowCompletionRouter.routeScan(pendingScan: self.pendingScan) else {
                 self.log.write("dropping init2 completion — no pending scan"); return
             }
             self.pendingScan = nil
@@ -530,6 +655,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             #if DEBUG
             self.maybeRunAutotestHooks(reconcile: self.windowBySession[s], items: items)
             #endif
+        }
+        // Dedicated Ignore completion (separate token + handler from scan). Binds
+        // to the EXACT session that invoked the Ignore (pendingIgnore) and only
+        // if that session is still live — a completion for a closed/replaced
+        // session is dropped, never applied to a replacement. Updates that
+        // session's rows in place; the window's mutation gate is lifted here.
+        UnisonBridge.installIgnoreCompleteHandler { [weak self] items in
+            guard let self else { return }
+            let live = Set(self.windowBySession.keys)
+            guard case let .ignore(s) =
+                    RowCompletionRouter.routeIgnore(pendingIgnore: self.pendingIgnore,
+                                                    liveSessions: live) else {
+                self.log.write("dropping ignore completion — no live pending ignore")
+                self.pendingIgnore = nil
+                return
+            }
+            self.pendingIgnore = nil
+            self.log.write("ignore complete — \(items.count) items \(s)")
+            self.windowBySession[s]?.applyIgnoreResult(items)
+        }
+        // Terminal ASYNC scan failure (Blocker 2): a scan finished in OCaml but
+        // its state could not be published, so init2CompleteHandler will never
+        // fire. Route the pending scan op to restart-required (quiescence
+        // unprovable after a mid-emission failure) so the coordinator leaves
+        // .scanning rather than hanging. Token-bound via pendingScan.
+        UnisonBridge.installScanFailedHandler { [weak self] in
+            guard let self else { return }
+            guard let (s, op) = self.pendingScan else {
+                self.log.write("dropping scan-failed — no pending scan"); return
+            }
+            self.pendingScan = nil
+            self.disarmConnectWatchdog()
+            self.log.write("scan failed (state emission) \(s)/\(op) — restart required")
+            self.run(self.engine.operationFailed(
+                s, op, reason: "scan state could not be published",
+                engineIsQuiescent: false))
         }
         UnisonBridge.installSyncCompleteHandler { [weak self] in
             guard let self else { return }
@@ -614,8 +775,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
         armConnectWatchdog()
         connectQueue.async { [weak self] in
-            let cstr = unison_bridge_connection_prompt()
-            guard let cstr else {
+            var promptPtr: UnsafePointer<CChar>? = nil
+            let result = unison_bridge_connection_prompt(&promptPtr)
+            // Blocker 3: an OCaml exception (or a vanished preconnection) is a
+            // DISTINCT result from "no more prompts". Only UNISON_PROMPT_DONE may
+            // proceed to connection_end; a prompt failure must NOT finalize the
+            // connection — it retains the token, attempts preconnection cleanup
+            // without declaring success, and lets that cleanup's status decide
+            // clean-idle vs restart-required.
+            guard result == UNISON_PROMPT_DONE || result == UNISON_PROMPT_AVAILABLE else {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                    let why = result == UNISON_PROMPT_EXN
+                        ? "credential prompt raised"
+                        : "no pending preconnection for prompt"
+                    self.log.write("connection prompt failed (\(why)) — cleanup, no finalize")
+                    self.cancelPreconnection(s, op, reason: why)
+                }
+                return
+            }
+            if result == UNISON_PROMPT_DONE {
                 TraceLog.shared.write("connection: no more prompts — connection_end + init2")
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -661,7 +841,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 }
                 return
             }
-            let prompt = String(cString: cstr)
+            // UNISON_PROMPT_AVAILABLE — promptPtr is non-nil and bridge-owned;
+            // copy it before leaving the worker.
+            let prompt = promptPtr.map { String(cString: $0) } ?? ""
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
@@ -701,8 +883,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                         self.showProfilePicker(select: profile)
                         return
                     }
-                    self.connectQueue.async { unison_bridge_connection_reply(response) }
-                    self.drivePromptLoop(s, op)
+                    // Blocker 3: check the reply status. On OK, loop back for the
+                    // next prompt. On failure (the reply raised, or the
+                    // preconnection vanished), do NOT continue the loop — attempt
+                    // cleanup without declaring success; the cleanup's status
+                    // routes to clean-idle or restart-required. Token re-checked
+                    // after the async reply returns.
+                    self.connectQueue.async { [weak self] in
+                        let rc = unison_bridge_connection_reply(response)
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+                            if rc == UNISON_REPLY_OK {
+                                self.drivePromptLoop(s, op)
+                            } else {
+                                self.log.write("credential reply failed (rc \(rc)) — cleanup, no loop")
+                                self.cancelPreconnection(s, op, reason: "credential reply failed")
+                            }
+                        }
+                    }
                 }
                 self.pendingPasswordSheet = sheet
                 if let parent = self.windowBySession[s]?.window ?? self.profileWindowController?.window {
@@ -849,8 +1048,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
         // Wire Trace.messageDisplayer := displayStatus on the OCaml side.
         // Without this, Trace.status output bypasses our handler and goes
-        // straight to stderr.
-        unison_bridge_init0()
+        // straight to stderr. Blocker 5: init0 failure leaves the runtime only
+        // partly initialized — do NOT continue a normal launch; present an
+        // unrecoverable startup error and terminate.
+        let init0Status = unison_bridge_init0()
+        if init0Status != UNISON_BRIDGE_OK {
+            log.write("FATAL: unison init0 failed (status \(init0Status)) — aborting launch")
+            presentUnrecoverableStartupError(
+                detail: "The Unison engine could not be initialized (code \(init0Status)).")
+            return
+        }
 
         if let cstr = unison_bridge_unison_directory() {
             unisonDirectory = String(cString: cstr)
@@ -884,6 +1091,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             profileWindowController?.autoSelectAndOpen(profile: autoProfile)
         }
         #endif
+    }
+
+    /// Blocker 5: engine initialization (`init0`) failed. The runtime is only
+    /// partly wired, so there is no safe way to continue — present a terminal
+    /// error and quit rather than limp along with a half-initialized engine.
+    /// Under XCTest the host app has already started the runtime successfully,
+    /// so this path is not exercised there; kept modal + terminating for the
+    /// real app.
+    private func presentUnrecoverableStartupError(detail: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Unison could not start"
+        alert.informativeText = detail + " Please quit and try again; if it "
+            + "keeps happening, reinstall Unison."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
     }
 
     /// Last hook before the process exits. The OCaml runtime is still
@@ -1154,9 +1378,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             .toSecond, .toFirst, .skip, .merge, .forceOlder, .forceNewer, .toSecond,
         ]
         for action in cycle {
-            let raw = action.invoke(row: 0).flatMap { String(cString: $0) }
-            log.write("  row 0 (\(items[0].path)): \(current) --[\(action.label)]--> \(raw ?? "<nil>")")
-            current = raw ?? current
+            let (result, dir) = action.invoke(row: 0)
+            let shown = result == UNISON_OP_OK ? dir : "<\(result.rawValue)>"
+            log.write("  row 0 (\(items[0].path)): \(current) --[\(action.label)]--> \(shown)")
+            if result == UNISON_OP_OK { current = dir }
         }
     }
     #endif

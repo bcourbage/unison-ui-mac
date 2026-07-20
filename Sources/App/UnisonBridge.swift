@@ -19,6 +19,16 @@ enum UnisonBridge {
     nonisolated(unsafe) static var progressHandler: ((Double) -> Void)?
     nonisolated(unsafe) static var init1CompleteHandler: ((Bool) -> Void)?
     nonisolated(unsafe) static var init2CompleteHandler: (([StateItem]) -> Void)?
+    /// Fires (main queue) when a scan completes in OCaml but its state could not
+    /// be published (Blocker 2) — the terminal alternative to
+    /// `init2CompleteHandler`. Routes to `operationFailed(engineIsQuiescent:
+    /// false)` so a stranded `.scanning` becomes restart-required.
+    nonisolated(unsafe) static var scanFailedHandler: (() -> Void)?
+    /// Fires (main queue) when a successful Ignore produces a fresh row set.
+    /// DISTINCT from `init2CompleteHandler` so an Ignore completion never
+    /// satisfies/clears a pending scan. The driver binds it to the exact session
+    /// that invoked the Ignore.
+    nonisolated(unsafe) static var ignoreCompleteHandler: (([StateItem]) -> Void)?
     nonisolated(unsafe) static var reloadRowHandler: ((_ row: Int, _ progress: String, _ bytes: Int64) -> Void)?
     nonisolated(unsafe) static var syncCompleteHandler: (() -> Void)?
 
@@ -82,6 +92,16 @@ enum UnisonBridge {
     static func installInit2CompleteHandler(_ handler: @escaping ([StateItem]) -> Void) {
         init2CompleteHandler = handler
         unison_bridge_set_init2_complete_handler(_swiftInit2CompleteTrampoline)
+    }
+
+    static func installScanFailedHandler(_ handler: @escaping () -> Void) {
+        scanFailedHandler = handler
+        unison_bridge_set_scan_failed_handler(_swiftScanFailedTrampoline)
+    }
+
+    static func installIgnoreCompleteHandler(_ handler: @escaping ([StateItem]) -> Void) {
+        ignoreCompleteHandler = handler
+        unison_bridge_set_ignore_complete_handler(_swiftIgnoreCompleteTrampoline)
     }
 
     static func installReloadRowHandler(_ handler: @escaping (Int, String, Int64) -> Void) {
@@ -171,6 +191,46 @@ private func _swiftInit2CompleteTrampoline(
     }
     DispatchQueue.main.async {
         UnisonBridge.init2CompleteHandler?(converted)
+    }
+}
+
+private func _swiftScanFailedTrampoline() {
+    DispatchQueue.main.async {
+        UnisonBridge.scanFailedHandler?()
+    }
+}
+
+/// Convert the bridge's C row array into `[StateItem]`. MUST be called
+/// synchronously on the OCaml thread (before the bridge frees the array).
+private func convertStateItems(
+    _ items: UnsafePointer<unison_state_item_t>?, _ count: Int
+) -> [StateItem] {
+    var converted: [StateItem] = []
+    if let items, count > 0 {
+        converted.reserveCapacity(count)
+        for i in 0..<count {
+            let ci = items[i]
+            converted.append(StateItem(
+                path:             ci.path.map { String(cString: $0) } ?? "",
+                left:             ci.left.map { String(cString: $0) } ?? "",
+                right:            ci.right.map { String(cString: $0) } ?? "",
+                direction:        ci.direction.map { String(cString: $0) } ?? "",
+                sizeBytes:        ci.size_bytes,
+                fileType:         ci.file_type.map { String(cString: $0) } ?? "",
+                progress:         ci.progress.map { String(cString: $0) } ?? "",
+                bytesTransferred: ci.bytes_transferred
+            ))
+        }
+    }
+    return converted
+}
+
+private func _swiftIgnoreCompleteTrampoline(
+    items: UnsafePointer<unison_state_item_t>?, count: Int
+) {
+    let converted = convertStateItems(items, count)
+    DispatchQueue.main.async {
+        UnisonBridge.ignoreCompleteHandler?(converted)
     }
 }
 

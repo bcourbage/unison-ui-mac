@@ -29,6 +29,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// through the coordinator, which owns the abort + connection-close
     /// decision — the window never calls `unison_bridge_abort_sync()`.
     typealias SyncExitRequest = @MainActor (EngineSessionCoordinator.SyncExitIntent) -> Void
+    /// Invoked when a per-row mutation (direction / Ignore) fails AFTER OCaml
+    /// state began changing (Blocker 4). The engine is no longer provably
+    /// consistent with the displayed rows, so the window asks the coordinator to
+    /// enter restart-required rather than leave the ready UI actionable.
+    typealias EngineUncertainRequest = @MainActor (_ reason: String) -> Void
+    /// Perform an Ignore for THIS session through the driver, which binds the
+    /// dedicated ignore completion to the session before invoking the bridge and
+    /// (on success) delivers the fresh rows back via `applyIgnoreResult`. Returns
+    /// the bridge's structured result so the window can classify DIRTY failures.
+    typealias IgnoreRequest = @MainActor (_ action: IgnoreAction, _ row: Int) -> unison_op_result_t
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -61,6 +71,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onSyncStart: SyncStartRequest
     /// User chose how to leave a running sync; see `SyncExitRequest`.
     private let onSyncExit: SyncExitRequest
+    /// A row mutation left the engine uncertain; see `EngineUncertainRequest`.
+    private let onEngineUncertain: EngineUncertainRequest
+    /// Perform an Ignore through the driver; see `IgnoreRequest`.
+    private let onIgnore: IgnoreRequest
+    /// True between a successful Ignore invocation and its dedicated completion
+    /// landing (`applyIgnoreResult`). During this gap the published OCaml roots
+    /// are the post-Ignore set but the displayed rows are still the pre-Ignore
+    /// set, so row actions MUST be disabled — otherwise a click would address the
+    /// wrong OCaml item. Gates row/sync/rescan actions like `isScanning`.
+    private var mutationInFlight = false
     /// Terminal restart-required latch. Set by `showRestartRequired`; once
     /// set, all row/sync/rescan actions are disabled (the coordinator has
     /// declared the engine unsafe for reuse — the user must quit + reopen).
@@ -159,7 +179,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onRescanRequested: @escaping RescanRequest,
          onCancelScan: @escaping CancelScanRequest,
          onSyncStart: @escaping SyncStartRequest,
-         onSyncExit: @escaping SyncExitRequest) {
+         onSyncExit: @escaping SyncExitRequest,
+         onEngineUncertain: @escaping EngineUncertainRequest,
+         onIgnore: @escaping IgnoreRequest) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
@@ -168,6 +190,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onCancelScan = onCancelScan
         self.onSyncStart = onSyncStart
         self.onSyncExit = onSyncExit
+        self.onEngineUncertain = onEngineUncertain
+        self.onIgnore = onIgnore
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -276,6 +300,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Both settings are re-read on every populate, so a change in
     /// the Settings window takes effect on the next rescan.
     func replaceItems(_ newItems: [StateItem]) {
+        // Any fresh publication (scan or ignore) means rows now match roots, so
+        // the mutation gate no longer applies.
+        mutationInFlight = false
+        outlineView.isEnabled = true
         items = newItems
         let layout = SettingsModel.reconcileLayoutMode()
         let policy = SettingsModel.reconcileExpandPolicy()
@@ -494,7 +522,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// bridge call out of the window is what makes the coordinator the sole
     /// authority over engine actions.
     func startSync() {
-        guard !isSyncing, !restartRequired else { return }
+        // Method-boundary gate (not just toolbar/menu validation): never start a
+        // sync during an Ignore publication gap or a restart.
+        guard actionGate.allows(.sync) else { NSSound.beep(); return }
         onSyncStart()
     }
 
@@ -566,7 +596,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     // MARK: - Scanning (initial or rescan)
 
     func rescan() {
-        guard !isSyncing, !restartRequired else { NSSound.beep(); return }
+        // Method-boundary gate: reject during an Ignore publication gap (as well
+        // as during a sync or a restart).
+        guard actionGate.allows(.rescan) else { NSSound.beep(); return }
         onRescanRequested()
     }
 
@@ -638,6 +670,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     private func updateDetailsForSelection() {
+        // During an Ignore publication gap the displayed row indices are stale
+        // against the newly-published OCaml roots, so ri_get_details(row) would
+        // read the wrong item. Show a placeholder and DO NOT touch the bridge;
+        // the details refresh again when the fresh rows land.
+        guard actionGate.allows(.details) else {
+            detailsTextView.string = "Applying ignore…"
+            detailsTextView.textColor = .secondaryLabelColor
+            return
+        }
         guard let node = selectedNodes().first else {
             detailsTextView.string = "Select a row to see details."
             detailsTextView.textColor = .secondaryLabelColor
@@ -1093,17 +1134,31 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// leaves *underneath* selected folders. Single click on a folder thus
     /// becomes "apply this action to every file in that folder".
     func applyDirection(_ action: DirectionAction) {
+        guard actionGate.allows(.direction) else { NSSound.beep(); return }
         let rows = leafRowsInSelection()
         guard !rows.isEmpty else { NSSound.beep(); return }
         var changedRows: [Int] = []
         for row in rows {
             guard row < items.count else { continue }
-            let raw = action.invoke(row: Int32(row))
-            guard let raw, let str = String(validatingUTF8: raw) else {
-                TraceLog.shared.write("ri-set failed for row \(row) (\(action))")
+            let (result, dir) = action.invoke(row: Int32(row))
+            if result == UNISON_OP_FAILED_DIRTY {
+                // Blocker 4: the setter mutated (or may have mutated) this row's
+                // OCaml state before failing. The engine no longer provably
+                // matches the displayed rows, so stop the batch and hand the
+                // engine to the coordinator for restart-required rather than
+                // leave a stale-but-actionable table. Any rows already changed
+                // this batch are moot — the window is about to freeze.
+                TraceLog.shared.write("ri-set DIRTY on row \(row) (\(action)) — engine uncertain")
+                onEngineUncertain("direction override failed after mutating a row")
+                return
+            }
+            guard result == UNISON_OP_OK else {
+                // INVALID (bad row / missing callback) or FAILED_CLEAN (raised
+                // before any mutation) — nothing changed; skip this row.
+                TraceLog.shared.write("ri-set skipped row \(row) (\(action), result \(result.rawValue))")
                 continue
             }
-            items[row] = items[row].with(direction: str)
+            items[row] = items[row].with(direction: dir)
             // Update the row's pinned override based on the action. Skip
             // / Force Older / Force Newer are mutually exclusive — each
             // overwrites whichever flag was there before. Plain direction
@@ -1218,22 +1273,54 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         )
     }
 
-    /// Apply one of the three Ignore actions to a specific leaf row. The
-    /// bridge call recomputes OCaml's `theState`; the init2-complete handler
-    /// installed on AppDelegate fires re-entrantly and `replaceItems(_:)`
-    /// repopulates the table with the post-filter list.
+    /// Apply one of the three Ignore actions to a specific leaf row. The bridge
+    /// call recomputes OCaml's `theState` and installs the new per-row roots,
+    /// then delivers the post-filter rows through the DEDICATED asynchronous
+    /// Ignore completion (bound by the driver to this session) — NOT the
+    /// init2/scan handler. `applyIgnoreResult(_:)` repopulates the table when
+    /// that completion lands.
     func applyIgnore(_ action: IgnoreAction, row: Int?) {
-        guard !isSyncing else { NSSound.beep(); return }
+        guard actionGate.allows(.ignore) else { NSSound.beep(); return }
         guard let row, row >= 0, row < items.count else { NSSound.beep(); return }
         let path = items[row].path
         TraceLog.shared.write("ReconcileWindow: \(action.label) on row \(row) (\(path))")
-        if !action.invoke(row: Int32(row)) {
-            TraceLog.shared.write("  \(action.label) returned false — no state change")
+        // Route through the driver: it binds the dedicated ignore completion to
+        // THIS session before invoking the bridge, so the fresh rows come back to
+        // this exact window via `applyIgnoreResult`.
+        let result = onIgnore(action, row)
+        if result == UNISON_OP_OK {
+            // The Ignore mutated theState and installed new OCaml roots, but the
+            // fresh rows arrive on the (async) dedicated completion. Until they
+            // land, the displayed rows are stale against the new roots — set the
+            // mutation gate (blocks every engine-reaching action via
+            // `actionGate`) and disable the outline view for presentation
+            // clarity. `applyIgnoreResult` lifts both.
+            mutationInFlight = true
+            outlineView.isEnabled = false
+            setSummary("Applying ignore…")
+            updateDetailsForSelection()   // show the placeholder immediately
+            refreshToolbarEnabled()
+        } else if result == UNISON_OP_FAILED_DIRTY {
+            // Blocker 4: the ignore pattern was persisted / theState rewritten,
+            // but the post-filter rows couldn't be published — the table now
+            // lies about the engine. Route to restart-required.
+            TraceLog.shared.write("  \(action.label) DIRTY — engine uncertain")
+            onEngineUncertain("ignore failed after mutating engine state")
+        } else {
+            // INVALID / FAILED_CLEAN — nothing changed; narrow no-op.
+            TraceLog.shared.write("  \(action.label) no-op (result \(result.rawValue))")
             NSSound.beep()
         }
-        // No explicit reload needed: the bridge invokes the init2-complete
-        // handler synchronously, which calls `endRescan` / `replaceItems` and
-        // clears rowOverrides + redraws the outline.
+    }
+
+    /// Deliver a successful Ignore's fresh rows to THIS session (called by the
+    /// driver's dedicated ignore completion, bound to this window's session).
+    /// Replaces the displayed rows to match the already-installed OCaml roots and
+    /// lifts the mutation gate — the atomic "rows now match roots" point.
+    func applyIgnoreResult(_ newItems: [StateItem]) {
+        mutationInFlight = false
+        outlineView.isEnabled = true
+        replaceItems(newItems)
     }
 
     // MARK: - Direction menu actions
@@ -1287,7 +1374,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// loading window, and kicks off the async OCaml diff. `row` is
     /// assumed in-bounds.
     private func performDiff(row: Int) {
-        guard !isSyncing else { NSSound.beep(); return }
+        // Method-boundary gate: reject BEFORE any canDiff / run_show_diffs bridge
+        // call while an Ignore publication is pending (the row index would
+        // address the wrong OCaml root) or a restart is required.
+        guard actionGate.allows(.diff) else { NSSound.beep(); return }
         let path = items[row].path
         // Defensive re-check — the menu validation calls canDiff too,
         // but a context-menu click on a row that changed since
@@ -1324,9 +1414,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         diffWindowController?.surfaceForLoading(path: path)
         TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
-        unison_bridge_run_show_diffs(Int32(row))
-        // Result arrives via the diff handler → diffWindowController.showDiff,
-        // or via the diff-err handler → showError.
+        // A false return means the diff dispatch raised in OCaml. The engine
+        // stays valid (a diff is a read-only per-row query), so surface a
+        // narrow diff error in the already-open diff window rather than escalate.
+        if !unison_bridge_run_show_diffs(Int32(row)) {
+            TraceLog.shared.write("ReconcileWindow: run_show_diffs raised for row \(row)")
+            diffWindowController?.showError(
+                "Unison could not produce a diff for this row.")
+        }
+        // On success the result arrives via the diff handler →
+        // diffWindowController.showDiff, or via the diff-err handler → showError.
     }
 
     // MARK: - Select Conflicts / Revert to Recommendation
@@ -1473,13 +1570,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isScanning
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
-            // Rescan is the way out of .done back to .ready — we
-            // explicitly want it enabled post-sync. Blocked during an
-            // active sync (OCaml runtime is occupied) and once a restart
-            // is required (the coordinator refuses new engine work).
-            if restartRequired { return false }
-            if case .syncing = phase { return false }
-            return true
+            // Rescan is the way out of .done back to .ready — enabled post-sync.
+            // Blocked during an active sync, once a restart is required, and
+            // during an Ignore publication gap (same gate the method enforces).
+            return actionGate.allows(.rescan)
         }
         if menuItem.action == #selector(showProfilePickerMenuAction(_:)) {
             // Allowed in any phase except .syncing — closing the
@@ -1588,11 +1682,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // Disabled once the engine needs a restart (nothing to abort).
             return !restartRequired && (syncing || isScanning)
         case DirectionAction.rescanIdentifier:
-            // Rescan is the way out of `.done` back to `.ready` —
-            // explicitly available after completion. Blocked while OCaml is
-            // actively running a sync, and once a restart is required (the
-            // coordinator would refuse the new engine work anyway).
-            return !restartRequired && !syncing
+            // Rescan is the way out of `.done` back to `.ready` — explicitly
+            // available after completion. Blocked while OCaml is running a sync,
+            // once a restart is required, and during an Ignore publication gap
+            // (same gate the method enforces).
+            return actionGate.allows(.rescan)
         case DirectionAction.profilesIdentifier:
             // Always navigable back to the picker.
             return true
@@ -1676,14 +1770,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///
     /// Read-only actions (Select Conflicts, navigation) bypass this
     /// gate and validate on their own data.
-    private var isActionable: Bool {
-        guard !restartRequired else { return false }
-        guard !items.isEmpty else { return false }
+    /// Snapshot of the current gating state, used by BOTH the action methods and
+    /// menu/toolbar validation so they can't drift. The pure predicate lives in
+    /// `ReconcileActionGate` (unit-tested).
+    private var actionGate: ReconcileActionGate {
+        let gatePhase: ReconcileActionGate.Phase
         switch phase {
-        case .ready:           return true
-        case .syncing, .done:  return false
+        case .ready:   gatePhase = .ready
+        case .syncing: gatePhase = .syncing
+        case .done:    gatePhase = .done
         }
+        return ReconcileActionGate(
+            restartRequired: restartRequired,
+            mutationInFlight: mutationInFlight,
+            isSyncing: isSyncing,
+            isScanning: isScanning,
+            phase: gatePhase,
+            hasItems: !items.isEmpty)
     }
+
+    private var isActionable: Bool { actionGate.isActionable }
 }
 
 // MARK: - Direction-cell view (the only colored cell in the row)

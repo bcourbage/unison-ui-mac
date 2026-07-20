@@ -85,13 +85,28 @@ section at the bottom so this list stays scannable.
          `update.ml:1027 Assertion failed`** (surfaced as a "Unison error /
          uncaught exception" fatal). So the abort flag must be gated on
          `isSyncing` (transport only); a scan must NOT flag abort.
-      3. **New prerequisite for the real fix:** tearing down the connection
-         mid-`init2` makes OCaml raise, and `_ocaml_init2` uses plain
-         `caml_callback`, so an uncaught exception there aborts the process
-         (SIGABRT). A true scan teardown therefore *also* needs the phase
-         calls hardened to `caml_callback_exn` (catch + route to the
-         fatal / return-to-picker path) — do that first, then add the
-         connection teardown.
+      3. **Exception-hardening prerequisite (satisfied 2026-07-19,
+         `fix/bridge-safety`):** tearing down the connection mid-`init2` makes
+         OCaml raise, and `_ocaml_init2` formerly used plain `caml_callback`, so
+         an uncaught exception there aborted the process (SIGABRT). The
+         exception-containment groundwork this needs is now in place:
+         - every Swift→OCaml bridge callback goes through the shared
+           `caml_callback*_exn` wrappers;
+         - both scan outcomes are terminal — `_ocaml_init2` returns a dispatch
+           status routed by `AppDelegate.driveBeginScan`, AND a failure while
+           *publishing* the completed scan's state fires a token-bound
+           async scan-failed callback → `operationFailed(engineIsQuiescent:
+           false)` (no more silent strand in `.scanning`);
+         - state publication is transactional (the row roots and the Swift table
+           swap atomically or roll back together), so a mid-scan raise can't
+           leave `g_ri_roots` describing rows Swift never received.
+
+         This makes a scan-phase raise *safe to trigger*. It is NOT the whole
+         task: the mid-`init2` connection teardown that would *cause* the raise
+         (killing the transport / remote child so the scan actually stops) is
+         still unwired, and making the scan-phase Stop honest (label + true
+         cancel) remains to be done. Build on the hardened phase calls; do not
+         re-derive the exception handling. **This item stays open.**
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:
