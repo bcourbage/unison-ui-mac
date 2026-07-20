@@ -252,16 +252,32 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 # CI — which has no such identity — builds byte-for-byte as before. Forwarding
 # CODE_SIGN_IDENTITY=- is equivalent to the project.yml default, so the CI path
 # is unchanged. Override explicitly with `make build SIGN_IDENTITY=...`.
+#
+# DEBUG BUILDS ONLY. Release must stay ad-hoc: a personal Apple Development
+# cert is a development identity (expires, not valid for distribution), and
+# both shipping paths re-sign ad-hoc anyway (install.sh `codesign --sign -`,
+# release.yml on a runner with no cert). Scoping the cert to Debug keeps the
+# personal identity off every Release artifact, even transiently.
 SIGN_IDENTITY ?= $(shell if [ -z "$$CI" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then echo "Apple Development"; else echo "-"; fi)
 
 # Manual signing with a real certificate also requires a development team.
 # Auto-derive it (the OU field of the Apple Development cert) only when we're
 # actually signing with that cert; the ad-hoc/CI path passes no team. Override
 # with `make build DEV_TEAM=XXXXXXXXXX` if auto-detection ever misses.
-SIGN_ARGS := CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)"
 ifneq ($(SIGN_IDENTITY),-)
 DEV_TEAM ?= $(shell security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -oE 'OU ?= ?[A-Z0-9]+' | head -1 | grep -oE '[A-Z0-9]+$$')
-SIGN_ARGS += DEVELOPMENT_TEAM=$(DEV_TEAM)
+DEBUG_SIGN_ARGS := CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)" DEVELOPMENT_TEAM=$(DEV_TEAM)
+else
+DEBUG_SIGN_ARGS := CODE_SIGN_IDENTITY="-"
+endif
+
+# `build` honors CONFIG: a Debug build gets the stable dev-cert signature; a
+# Release build always stays ad-hoc (equivalent to the project.yml default).
+# `test` always builds Debug, so it always uses DEBUG_SIGN_ARGS.
+ifeq ($(CONFIG),Debug)
+BUILD_SIGN_ARGS := $(DEBUG_SIGN_ARGS)
+else
+BUILD_SIGN_ARGS := CODE_SIGN_IDENTITY="-"
 endif
 
 # ----- Build via xcodebuild -----
@@ -276,7 +292,7 @@ build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		$(SIGN_ARGS) \
+		$(BUILD_SIGN_ARGS) \
 		build
 
 .PHONY: run
@@ -300,7 +316,7 @@ test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		$(SIGN_ARGS) \
+		$(DEBUG_SIGN_ARGS) \
 		test
 
 .PHONY: app
