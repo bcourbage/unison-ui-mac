@@ -243,46 +243,36 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 # so macOS derives the app's TCC "designated requirement" from its cdhash —
 # which changes on every rebuild. Each freshly built app then looks brand new
 # to TCC and re-prompts for every permission (Notifications, Documents access,
-# ...) on launch. Signing with a real Apple Development certificate instead
-# yields a stable requirement (bundle id + certificate leaf), so a permission
-# you grant once survives all later rebuilds — no more per-launch prompts.
+# ...) on launch. Signing a Debug build with a real Apple Development
+# certificate instead yields a stable requirement (bundle id + certificate
+# leaf), so a permission you grant once survives all later rebuilds.
 #
-# Auto-detect: on a dev Mac that has an "Apple Development" identity in its
-# keychain (and is NOT in CI), sign with it; otherwise fall back to ad-hoc so
-# CI — which has no such identity — builds byte-for-byte as before. Forwarding
-# CODE_SIGN_IDENTITY=- is equivalent to the project.yml default, so the CI path
-# is unchanged. Override explicitly with `make build SIGN_IDENTITY=...`.
+# scripts/resolve-signing.sh resolves the identity and team TOGETHER from a
+# single valid identity record (never two independent lookups that could refer
+# to different certs), and falls back to ad-hoc on any ambiguity. Policy:
+#   - Debug / `make test`: stable Apple Development signature when a complete,
+#     self-consistent identity/team pair is available; else ad-hoc.
+#   - CI (any config): ad-hoc (no cert on runners).
+#   - Every Release build: ad-hoc, even with an override present — a personal
+#     dev cert (expires, not valid for distribution) must never touch a Release
+#     artifact. Both shipping paths ad-hoc-sign anyway (install.sh
+#     `codesign --sign -`; release.yml on a certless runner).
+# Manual overrides (Debug/`make test` only): `SIGN_IDENTITY=-` forces ad-hoc; a
+# custom identity must be supplied together with a matching `DEV_TEAM`. These
+# are passed straight through to the resolver.
 #
-# DEBUG BUILDS ONLY. Release must stay ad-hoc: a personal Apple Development
-# cert is a development identity (expires, not valid for distribution), and
-# both shipping paths re-sign ad-hoc anyway (install.sh `codesign --sign -`,
-# release.yml on a runner with no cert). Scoping the cert to Debug keeps the
-# personal identity off every Release artifact, even transiently.
-SIGN_IDENTITY ?= $(shell if [ -z "$$CI" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then echo "Apple Development"; else echo "-"; fi)
-
-# Manual signing with a real certificate also requires a development team.
-# Auto-derive it (the OU field of the Apple Development cert) only when we're
-# actually signing with that cert; the ad-hoc/CI path passes no team. Override
-# with `make build DEV_TEAM=XXXXXXXXXX` if auto-detection ever misses.
-ifneq ($(SIGN_IDENTITY),-)
-DEV_TEAM ?= $(shell security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -oE 'OU ?= ?[A-Z0-9]+' | head -1 | grep -oE '[A-Z0-9]+$$')
-DEBUG_SIGN_ARGS := CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)" DEVELOPMENT_TEAM=$(DEV_TEAM)
-else
-DEBUG_SIGN_ARGS := CODE_SIGN_IDENTITY="-"
-endif
-
-# `build` honors CONFIG: a Debug build gets the stable dev-cert signature; a
-# Release build always stays ad-hoc (equivalent to the project.yml default).
-# `test` always builds Debug, so it always uses DEBUG_SIGN_ARGS.
-ifeq ($(CONFIG),Debug)
-BUILD_SIGN_ARGS := $(DEBUG_SIGN_ARGS)
-else
-BUILD_SIGN_ARGS := CODE_SIGN_IDENTITY="-"
-endif
+# NOTE: this covers Makefile-driven `build`/`test` only. A direct Xcode.app
+# build still uses the generated project's ad-hoc default. Persistence of a
+# TCC grant holds across repeated identically-signed Debug rebuilds (cdhash may
+# change, the designated requirement does not); it is NOT guaranteed across
+# alternating Debug (dev-signed) and Release (ad-hoc) launches of the same
+# bundle id, which present different requirements.
+RESOLVE_SIGNING := CONFIG='$(CONFIG)' SIGN_IDENTITY='$(SIGN_IDENTITY)' DEV_TEAM='$(DEV_TEAM)' ./scripts/resolve-signing.sh
 
 # ----- Build via xcodebuild -----
 .PHONY: build
 build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+	@eval "$$($(RESOLVE_SIGNING))"; \
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
@@ -292,7 +282,7 @@ build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		$(BUILD_SIGN_ARGS) \
+		CODE_SIGN_IDENTITY="$$RESOLVED_IDENTITY" $${RESOLVED_TEAM:+DEVELOPMENT_TEAM="$$RESOLVED_TEAM"} \
 		build
 
 .PHONY: run
@@ -303,9 +293,10 @@ run: build
 # `assert()` / preconditions that catch bugs which Release would optimize
 # away, and they build faster on iteration. The user-facing CONFIG knob
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
-# identically.
+# identically (the resolver is always invoked with CONFIG=Debug here).
 .PHONY: test
 test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+	@eval "$$(CONFIG='Debug' SIGN_IDENTITY='$(SIGN_IDENTITY)' DEV_TEAM='$(DEV_TEAM)' ./scripts/resolve-signing.sh)"; \
 	xcodebuild \
 		-project $(XCODEPROJ) \
 		-scheme unison-ui-mac \
@@ -316,12 +307,19 @@ test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
 		UNISON_SRC=$(UNISON_SRC) \
 		STRIPPED_ASMRUN_DIR=$(STRIPPED_ASMRUN_DIR) \
 		BLOB=$(BLOB) \
-		$(DEBUG_SIGN_ARGS) \
+		CODE_SIGN_IDENTITY="$$RESOLVED_IDENTITY" $${RESOLVED_TEAM:+DEVELOPMENT_TEAM="$$RESOLVED_TEAM"} \
 		test
 
 .PHONY: app
 app: build
 	open $(BUILT_APP) $(if $(RUNARGS),--args $(RUNARGS),)
+
+# Deterministic matrix test for the code-signing resolver (no keychain / no
+# xcodebuild needed). Exercises Debug/Release, CI, multiple identities, and the
+# manual-override contract via the resolver's SIGN_RESOLVER_*_CMD test seams.
+.PHONY: check-signing
+check-signing:
+	@./scripts/test-resolve-signing.sh
 
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
