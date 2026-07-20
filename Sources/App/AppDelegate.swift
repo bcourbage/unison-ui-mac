@@ -1459,7 +1459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Mint this probe's identity (the session) only once we're committed to
         // launching it.
         versionProbeSession = session
-        Log.versionCheck.info("starting version check for profile '\(profile, privacy: .public)'")
+        Log.versionCheck.info("starting version check for profile '\(profile, privacy: .private)'")
         activeVersionProbe = VersionCheck.run(
             profile: profile,
             unisonDirectory: unisonDirectory,
@@ -1505,18 +1505,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 "compatible-mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) — new wire protocol negotiates, no alert"
             )
         case .noRemoteRoot:
-            Log.versionCheck.info("no remote root in profile '\(profile, privacy: .public)' — skipping")
+            Log.versionCheck.info("no remote root in profile '\(profile, privacy: .private)' — skipping")
         case .probeFailed(let reason):
-            Log.versionCheck.info("probe skipped/failed: \(reason, privacy: .public)")
+            // `reason` can embed the host, ssh stderr, or a servercmd path.
+            Log.versionCheck.info("probe skipped/failed: \(reason, privacy: .private)")
         case .mismatch(let local, let remote, let host):
             if VersionCheck.Suppression.isSuppressed(host: host, local: local, remote: remote) {
                 Log.versionCheck.info(
-                    "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — suppressed"
+                    "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .private) — suppressed"
                 )
                 return
             }
             Log.versionCheck.notice(
-                "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — surfacing alert"
+                "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .private) — surfacing alert"
             )
             showVersionMismatchAlert(local: local, remote: remote, host: host)
         }
@@ -1543,7 +1544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         if alert.suppressionButton?.state == .on {
             VersionCheck.Suppression.suppress(host: host, local: local, remote: remote)
             Log.versionCheck.info(
-                "user suppressed mismatch alert for \(host, privacy: .public) @ \(local, privacy: .public)/\(remote, privacy: .public)"
+                "user suppressed mismatch alert for \(host, privacy: .private) @ \(local, privacy: .public)/\(remote, privacy: .public)"
             )
         }
     }
@@ -1748,20 +1749,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Unison-UI-Mac quit unexpectedly last time"
-        alert.informativeText =
-            "Sending the crash report helps find and fix the problem. It's a "
-            + "technical stack trace with no personal data.\n\n"
-            + "“Report…” opens a pre-filled GitHub issue and reveals the crash "
-            + "report in Finder; just drag it into the issue."
+        alert.informativeText = CrashReportCopy.alertInfo
         alert.addButton(withTitle: "Report…")
         alert.addButton(withTitle: "Not Now")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         revealCrashReportForAttachment(url)
-        openIssueReport(context:
-            "The app crashed on a previous launch. The macOS crash report "
-            + "(`\(report.name)`) has been revealed in Finder. Please drag it into "
-            + "this issue. It contains no personal data.")
+        openIssueReport(context: CrashReportCopy.issueContext(reportName: report.name))
     }
 
     /// Copy the `.ips` to a `.txt` in the temp dir (GitHub rejects the
