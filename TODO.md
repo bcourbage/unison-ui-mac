@@ -79,8 +79,11 @@ section at the bottom so this list stays scannable.
       paths, process arguments, and system details, and keeps the review-in-
       Finder step. Logging policy flipped to private-by-default for dynamic
       user-controlled content: `TraceLog.write` logs its composed message as
-      `%{private}@` (redacted in shared diagnostics/Release, visible when
-      actively debugging), and the version-check log sites mark `profile` /
+      `%{private}@` (redacted by default in EVERY build wherever the log is
+      read — Console, `log show`/`log stream`, sysdiagnose, archive — and
+      visible only when private-data logging has been explicitly enabled on the
+      machine; NOT lifted by a Debug build or by attaching a debugger), and the
+      version-check log sites mark `profile` /
       `host` / probe `reason` `.private` while keeping non-sensitive Unison
       version numbers `.public`. Doc comments in `TraceLog`/`Log` updated to the
       new policy. **Coverage:** 7 tests — crash-copy assertions (no "no personal
