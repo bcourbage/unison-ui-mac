@@ -630,7 +630,8 @@ final class BridgeTests: XCTestCase {
     /// asserted BEFORE reverting, so the test cannot pass through a no-op
     /// mutation. Includes an action-equals-default case (Second on a row whose
     /// default is already ---->) and a deterministic Force-equals-default case
-    /// (Force on a one-sided row, where older/newer is undefined → no change).
+    /// (Force on the EQUAL-mtime conflict row `both-eq.txt`, where the engine
+    /// ignores Older/Newer → the direction stays at the default).
     func test_k_actionsThenRevert_restoreRecommendation() throws {
         let (items, _) = try makeReconFixture("revert6")
         guard let onlyA = rowOf("only-a.txt", items) else { return XCTFail("no only-a row") }
@@ -786,52 +787,61 @@ final class BridgeTests: XCTestCase {
         _ = revert(a2)
     }
 
-    /// Consolidated engine-level equivalent of the manual Revert smoke: apply
-    /// different actions to several rows (Skip on a conflict, Force on another, a
-    /// plain direction on a third), leave one row untouched, then revert the
-    /// changed rows. Confirms each is restored to its recommendation, the
-    /// untouched row is unaffected, reverted rows are no longer revertible, and
-    /// the restored direction is exactly what a sync would propagate (the
-    /// engine's current direction readback). The GUI gestures (folder multi-
-    /// select, visual badges, menu greying) are not automatable here.
-    func test_q_multiRowRevertSmoke_restoresRecommendationsLeavingOthers() throws {
+    /// Consolidated engine-level equivalent of the manual Revert smoke: apply a
+    /// distinct action to each of three DIFFERENT rows — a plain direction on
+    /// `only-a`, Force on the distinct-mtime conflict (`both.txt`, so Force truly
+    /// resolves a side), and Skip on the equal-mtime conflict (`both-eq.txt`) —
+    /// while leaving `only-b` untargeted. Reverting all three restores each to its
+    /// recommendation with changedFromDefault == false, and the restored
+    /// direction is exactly what a sync would propagate (the engine's readback).
+    ///
+    /// This is a bridge/engine test only. It does NOT drive the private
+    /// `ReconcileWindowController` batch loop, observe visual badges, or observe
+    /// menu greying — those GUI/window behaviors are not automatable here (see
+    /// the PR description's automation limitation).
+    func test_q_multiRowRevertSmoke_restoresRecommendations() throws {
         let (items, _) = try makeReconFixture("revertsmoke")
-        guard let onlyA = rowOf("only-a.txt", items),
-              let onlyB = rowOf("only-b.txt", items),
-              let both  = rowOf("both.txt", items) else { return XCTFail("missing rows") }
+        guard let onlyA  = rowOf("only-a.txt", items),
+              let both   = rowOf("both.txt", items),
+              let bothEq = rowOf("both-eq.txt", items) else { return XCTFail("missing rows") }
+        // only-b is deliberately not looked up or touched by this test.
         let defA = items[onlyA].direction, defBoth = items[both].direction
-        let defB = items[onlyB].direction   // the untouched "unrelated" row
+        let defBothEq = items[bothEq].direction
 
-        // Apply a mix: plain direction on only-a, Skip on the conflict, Force on
-        // the (distinct-mtime) conflict is not possible on the same row, so use
-        // Force on only-a after — instead: toFirst on only-a, skip on both.
-        XCTAssertEqual(DirectionAction.toFirst.invoke(row: Int32(onlyA)).result, UNISON_OP_OK)
-        let (skR, _, skChanged) = DirectionAction.skip.invoke(row: Int32(both))
-        XCTAssertEqual(skR, UNISON_OP_OK)
-        XCTAssertTrue(skChanged, "skip on a conflict diverges from default")
-        // only-b left untouched.
+        // Plain direction on only-a.
+        let (aR, _, aChanged) = DirectionAction.toFirst.invoke(row: Int32(onlyA))
+        XCTAssertEqual(aR, UNISON_OP_OK); XCTAssertTrue(aChanged)
+        // Force on the distinct-mtime conflict → resolves to a definite side.
+        let (fR, fDir, fChanged) = DirectionAction.forceNewer.invoke(row: Int32(both))
+        XCTAssertEqual(fR, UNISON_OP_OK)
+        XCTAssertNotEqual(fDir, "<-?->", "Force with distinct mtimes must resolve a side")
+        XCTAssertTrue(fChanged)
+        // Skip on the equal-mtime conflict.
+        let (sR, sDir, sChanged) = DirectionAction.skip.invoke(row: Int32(bothEq))
+        XCTAssertEqual(sR, UNISON_OP_OK)
+        XCTAssertEqual(sDir, "<-?->"); XCTAssertTrue(sChanged, "skip diverges from the conflict default")
 
-        // Revert the two changed rows.
-        let (ra, rda, rca) = revert(onlyA)
-        let (rb, rdb, rcb) = revert(both)
-        XCTAssertEqual(ra, UNISON_OP_OK); XCTAssertEqual(rb, UNISON_OP_OK)
+        // Revert all three targeted rows → each restored to its recommendation,
+        // no longer changed, and the readback direction is what a sync would use.
+        for (row, def) in [(onlyA, defA), (both, defBoth), (bothEq, defBothEq)] {
+            let (rr, rdir, rchanged) = revert(row)
+            XCTAssertEqual(rr, UNISON_OP_OK)
+            XCTAssertEqual(rdir, def, "revert restores the recommendation (sync would propagate this)")
+            XCTAssertFalse(rchanged, "reverted row is back to default")
+        }
 
-        // Restored to the exact recommendations, no longer changed → not
-        // revertible ("Revert becomes disabled"), and the readback direction is
-        // what a sync would propagate.
-        XCTAssertEqual(rda, defA); XCTAssertFalse(rca)
-        XCTAssertEqual(rdb, defBoth); XCTAssertFalse(rcb)
-        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: rca, hasOverride: false))
-        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: rcb, hasOverride: false))
+        // Post-Revert eligibility, as SPLIT evidence (not a UI observation):
+        //   (a) the engine reports changedFromDefault == false (asserted above);
+        //   (b) the pure predicate returns false once no override is present;
+        //   (c) code inspection: revertSelectionAction removes the row's override
+        //       on success (see ReconcileWindowController), so hasOverride is false
+        //       after a real Revert — this test cannot observe that step.
+        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: false, hasOverride: false))
 
-        // The untouched row is unaffected: re-read its direction/changed via a
-        // no-op check — it should still equal its scanned default and be clean.
-        // (A fresh Skip+revert round-trip on it would perturb it, so instead
-        // assert it was never touched by comparing to its scanned default and
-        // confirming it's not revertible.)
-        XCTAssertEqual(defB, items[onlyB].direction)
-        XCTAssertFalse(items[onlyB].changedFromDefault,
-            "the unrelated row must remain at its recommendation, untouched by the reverts")
+        // only-b: no operation in this test targeted it. Cross-row isolation is
+        // guaranteed by the indexed bridge implementation (each op addresses a
+        // single g_ri_roots[row]) and the independent per-row tests above — NOT
+        // by a live readback here, so no such assertion is made.
     }
 }
 
