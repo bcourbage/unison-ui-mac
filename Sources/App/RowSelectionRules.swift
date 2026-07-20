@@ -67,24 +67,11 @@ enum RowSelectionRules {
         return selectedNodes[0].row  // nil for folders
     }
 
-    /// Pure helper: drop the visual override for a set of rows, returning the
-    /// new dict (rows not in `revertRows` untouched). Retained for reuse/tests.
-    ///
-    /// NOTE: this is NOT the Revert mechanism. Revert
-    /// (`ReconcileWindowController.revertSelectionAction`) performs a real engine
-    /// reset per row via `unison_bridge_ri_revert` (upstream `unisonRiRevert`,
-    /// which restores `diff.direction <- diff.default_direction` — the exact
-    /// inverse of all six actions, including Skip's `Conflict "skip requested"`),
-    /// then clears the override alongside. Clearing the Swift override alone would
-    /// leave sync using the forced direction, which was the original defect.
-    static func clearOverrides(
-        rowOverrides: [Int: RowOverride],
-        forRows revertRows: Set<Int>
-    ) -> [Int: RowOverride] {
-        var next = rowOverrides
-        for row in revertRows { next.removeValue(forKey: row) }
-        return next
-    }
+    // NOTE: the former `clearOverrides` helper (a pure "drop the Swift override"
+    // dict op) was removed with Finding #2 — it encoded the original defect
+    // (clearing the visual override without reverting the OCaml direction). Revert
+    // now goes through `revertSelectionAction` → `unison_bridge_ri_revert`, which
+    // resets the engine and clears the override together.
 
     /// Whether a row can be reverted to Unison's recommendation. True when the
     /// row diverges from the engine default (`changedFromDefault` — covers plain

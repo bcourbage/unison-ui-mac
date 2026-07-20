@@ -220,11 +220,13 @@ int unison_bridge_close_connection(void);
  * array itself are owned by the bridge and freed *after* the handler
  * returns — so the handler MUST copy/convert before returning.
  *
- * One OCaml->C transition does all per-row extraction (6 callbacks per row
- * inside the loop) on the OCaml thread. The Swift trampoline copies into
- * a Swift [StateItem] (which copies each String), then returns. Total
- * cost for N rows: ~6N caml_callback dispatches + N * 6 strdup, all on
- * the OCaml thread, no inter-thread handoffs. */
+ * One OCaml->C transition does all per-row extraction (9 callbacks per row
+ * inside the loop: path/left/right/direction/size/type/progress/bytes/
+ * changedFromDefault) on the OCaml thread. The Swift trampoline copies into a
+ * Swift [StateItem] (which copies each String), then returns. Total cost for N
+ * rows: ~9N caml_callback dispatches + N * 6 strdup (only the six string fields
+ * are duplicated; size/bytes/changedFromDefault are scalars), all on the OCaml
+ * thread, no inter-thread handoffs. */
 typedef struct unison_state_item {
     const char *path;             /* relative path, e.g. "Documents/foo.txt" */
     const char *left;             /* "", "Created", "Modified", "Deleted", "PropsChanged" */
@@ -236,7 +238,7 @@ typedef struct unison_state_item {
     int64_t     bytes_transferred;
     /* Whether the row's current direction differs from Unison's post-scan
      * recommendation (engine `changedFromDefault`). Populated per row during
-     * emission; carried so the UI can badge/enable Revert from engine truth
+     * emission; carried so the UI can gate Revert eligibility from engine truth
      * (a plain First/Second/Merge change diverges from default even though it
      * leaves no visual-intent override), and so a skip-requested Conflict is
      * seen as changed even though it renders like a default Conflict. */

@@ -16,15 +16,16 @@ struct StateItem: Sendable {
     /// recommendation (engine `changedFromDefault`). Carried from the engine
     /// because Swift cannot compute it from the direction string alone — a
     /// skip-requested Conflict renders identically to a default Conflict yet is
-    /// "changed". Drives the "modified" badge and Revert enablement.
+    /// "changed". Currently drives Revert eligibility.
     let changedFromDefault: Bool
 
-    /// Default `changedFromDefault: false` so the many test/UI construction
-    /// sites that predate the field keep compiling; real values come from the
-    /// bridge trampolines and the direction-action readbacks.
+    /// No default for `changedFromDefault`: it is a load-bearing engine fact, so
+    /// every construction site must state it explicitly (a silent `false` on a
+    /// real row would hide a divergence and mis-gate Revert). Bridge rows carry
+    /// the engine value; synthetic/test rows pass it deliberately.
     init(path: String, left: String, right: String, direction: String,
          sizeBytes: Int64, fileType: String, progress: String,
-         bytesTransferred: Int64, changedFromDefault: Bool = false) {
+         bytesTransferred: Int64, changedFromDefault: Bool) {
         self.path = path
         self.left = left
         self.right = right
@@ -36,15 +37,9 @@ struct StateItem: Sendable {
         self.changedFromDefault = changedFromDefault
     }
 
-    func with(direction newDirection: String) -> StateItem {
-        StateItem(path: path, left: left, right: right,
-                  direction: newDirection, sizeBytes: sizeBytes, fileType: fileType,
-                  progress: progress, bytesTransferred: bytesTransferred,
-                  changedFromDefault: changedFromDefault)
-    }
-
-    /// Update both the direction and the engine-divergence flag together — used
-    /// after a direction action or a Revert reports its readback.
+    /// Update the direction and the engine-divergence flag together — a direction
+    /// change must ALWAYS supply the corresponding `changedFromDefault` (there is
+    /// deliberately no direction-only updater, which could desync the two).
     func with(direction newDirection: String, changedFromDefault newChanged: Bool) -> StateItem {
         StateItem(path: path, left: left, right: right,
                   direction: newDirection, sizeBytes: sizeBytes, fileType: fileType,

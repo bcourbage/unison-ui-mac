@@ -16,7 +16,7 @@ final class ReconcileSummaryTests: XCTestCase {
                       type: String = "FILE") -> StateItem {
         StateItem(path: "p", left: "Modified", right: "",
                   direction: direction, sizeBytes: size, fileType: type,
-                  progress: "", bytesTransferred: 0)
+                  progress: "", bytesTransferred: 0, changedFromDefault: false)
     }
 
     private let toFirst  = ReconcileSummary.directionToFirst   // "<----"

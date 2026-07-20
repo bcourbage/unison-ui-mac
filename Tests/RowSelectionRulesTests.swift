@@ -9,7 +9,8 @@ final class RowSelectionRulesTests: XCTestCase {
 
     private func item(_ path: String, _ dir: String) -> StateItem {
         StateItem(path: path, left: "", right: "", direction: dir,
-                  sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0)
+                  sizeBytes: 0, fileType: "FILE", progress: "", bytesTransferred: 0,
+                  changedFromDefault: false)
     }
 
     // MARK: - unresolvedConflictRows
@@ -165,37 +166,6 @@ final class RowSelectionRulesTests: XCTestCase {
             rightClickedNode: nil, selectedNodes: []
         )
         XCTAssertNil(result)
-    }
-
-    // MARK: - clearOverrides
-
-    func test_clearOverrides_removesOnlyRequestedRows() {
-        let before: [Int: RowOverride] = [
-            0: .skip, 1: .forceOlder, 2: .forceNewer, 3: .skip
-        ]
-        let after = RowSelectionRules.clearOverrides(
-            rowOverrides: before, forRows: [1, 3]
-        )
-        XCTAssertEqual(after[0], .skip)
-        XCTAssertNil(after[1])
-        XCTAssertEqual(after[2], .forceNewer)
-        XCTAssertNil(after[3])
-    }
-
-    func test_clearOverrides_noTargetRows_isNoOp() {
-        let before: [Int: RowOverride] = [0: .skip, 1: .forceOlder]
-        let after = RowSelectionRules.clearOverrides(
-            rowOverrides: before, forRows: []
-        )
-        XCTAssertEqual(after, before)
-    }
-
-    func test_clearOverrides_rowWithNoOverride_isNoOp() {
-        let before: [Int: RowOverride] = [0: .skip]
-        let after = RowSelectionRules.clearOverrides(
-            rowOverrides: before, forRows: [5, 99]
-        )
-        XCTAssertEqual(after, before)
     }
 
     // MARK: - isRevertible (Finding #2 — Revert menu eligibility)

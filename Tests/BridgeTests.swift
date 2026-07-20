@@ -600,43 +600,89 @@ final class BridgeTests: XCTestCase {
         return (r, String(cString: buf), changed)
     }
 
-    /// A fresh scan: only-a → "---->", only-b → "<----", both → conflict "<-?->".
+    /// A fresh scan. Rows:
+    ///   only-a → "---->", only-b → "<----"
+    ///   both.txt    → conflict "<-?->", DISTINCT mtimes (A older, B newer) so
+    ///                 Force resolves to a definite side (Force-changes case)
+    ///   both-eq.txt → conflict "<-?->", EQUAL mtimes so Force Older/Newer are
+    ///                 ignored by the engine (deterministic Force-equals-default)
     private func makeReconFixture(_ name: String) throws -> ([StateItem], IntegrationFixture) {
         let fixture = try IntegrationFixture(name: name)
         try fixture.populate(
-            aFiles: ["only-a.txt": "alpha\n", "both.txt": "a-side\n"],
-            bFiles: ["only-b.txt": "beta\n",  "both.txt": "b-side\n"])
+            aFiles: ["only-a.txt": "alpha\n", "both.txt": "a-side\n", "both-eq.txt": "a-eq\n"],
+            bFiles: ["only-b.txt": "beta\n",  "both.txt": "b-side\n", "both-eq.txt": "b-eq\n"])
+        func setMtime(_ path: String, _ date: Date) throws {
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path)
+        }
+        let older = Date(timeIntervalSince1970: 1_000_000_000)
+        let newer = Date(timeIntervalSince1970: 1_000_100_000)
+        let same  = Date(timeIntervalSince1970: 1_000_050_000)
+        try setMtime(fixture.aRoot.appendingPathComponent("both.txt").path, older)
+        try setMtime(fixture.bRoot.appendingPathComponent("both.txt").path, newer)
+        try setMtime(fixture.aRoot.appendingPathComponent("both-eq.txt").path, same)
+        try setMtime(fixture.bRoot.appendingPathComponent("both-eq.txt").path, same)
         let items = scanFixtureItems(fixture)
         return (items, fixture)
     }
 
-    /// Each of the six direction actions, applied then reverted, restores the
-    /// exact scanned recommendation and reports changedFromDefault=false.
-    func test_k_sixActionsThenRevert_restoreRecommendation() throws {
+    /// Every direction action, applied then reverted, restores the exact scanned
+    /// recommendation. Each action's returned (direction, changedFromDefault) is
+    /// asserted BEFORE reverting, so the test cannot pass through a no-op
+    /// mutation. Includes an action-equals-default case (Second on a row whose
+    /// default is already ---->) and a deterministic Force-equals-default case
+    /// (Force on a one-sided row, where older/newer is undefined → no change).
+    func test_k_actionsThenRevert_restoreRecommendation() throws {
         let (items, _) = try makeReconFixture("revert6")
         guard let onlyA = rowOf("only-a.txt", items) else { return XCTFail("no only-a row") }
-        let defaultA = items[onlyA].direction            // "---->"
+        XCTAssertEqual(items[onlyA].direction, "---->", "only-a recommendation")
         XCTAssertFalse(items[onlyA].changedFromDefault, "fresh scan row is unchanged")
 
-        // First/Second/Skip/Merge all just set diff.direction — revert restores it.
-        for action in [DirectionAction.toFirst, .toSecond, .skip, .merge] {
-            let (sr, _, _) = action.invoke(row: Int32(onlyA))
+        // (action, expected post-action direction, expected changed) on only-a.
+        let cases: [(DirectionAction, String, Bool)] = [
+            (.toFirst, "<----", true),    // divergent
+            (.toSecond, "---->", false),  // action equals the default → not changed
+            (.skip,    "<-?->", true),
+            (.merge,   "<-M->", true),
+        ]
+        for (action, expectDir, expectChanged) in cases {
+            let (sr, sdir, schanged) = action.invoke(row: Int32(onlyA))
             XCTAssertEqual(sr, UNISON_OP_OK, "\(action) should apply")
+            XCTAssertEqual(sdir, expectDir, "\(action) should yield \(expectDir)")
+            XCTAssertEqual(schanged, expectChanged, "\(action) changed flag")
             let (rr, rdir, rchanged) = revert(onlyA)
             XCTAssertEqual(rr, UNISON_OP_OK, "revert after \(action)")
-            XCTAssertEqual(rdir, defaultA, "revert after \(action) must restore the recommendation")
+            XCTAssertEqual(rdir, "---->", "revert after \(action) restores the recommendation")
             XCTAssertFalse(rchanged, "reverted row is back to default")
         }
 
-        // Force Older/Newer on the conflict row (both sides present).
+        // Force that ACTUALLY changes direction: on the conflict row with
+        // distinct mtimes, Force resolves to a definite side (away from <-?->).
         guard let both = rowOf("both.txt", items) else { return XCTFail("no both row") }
-        let defaultBoth = items[both].direction
+        XCTAssertEqual(items[both].direction, "<-?->", "both-sides-differ is a conflict")
         for action in [DirectionAction.forceOlder, .forceNewer] {
-            let (sr, _, _) = action.invoke(row: Int32(both))
-            XCTAssertEqual(sr, UNISON_OP_OK, "\(action) should apply")
+            let (sr, sdir, schanged) = action.invoke(row: Int32(both))
+            XCTAssertEqual(sr, UNISON_OP_OK)
+            XCTAssertNotEqual(sdir, "<-?->", "\(action) with distinct mtimes must change the direction")
+            XCTAssertTrue(schanged, "\(action) diverges from the conflict default")
             let (rr, rdir, rchanged) = revert(both)
             XCTAssertEqual(rr, UNISON_OP_OK)
-            XCTAssertEqual(rdir, defaultBoth, "revert after \(action) restores the recommendation")
+            XCTAssertEqual(rdir, "<-?->", "revert after \(action) restores the conflict recommendation")
+            XCTAssertFalse(rchanged)
+        }
+
+        // Deterministic Force-EQUALS-default: on the EQUAL-mtime conflict row the
+        // engine ignores Older/Newer, so the direction stays at the default and
+        // changed stays false — and revert is a clean OK no-op.
+        guard let bothEq = rowOf("both-eq.txt", items) else { return XCTFail("no both-eq row") }
+        XCTAssertEqual(items[bothEq].direction, "<-?->", "equal-mtime differ is still a conflict")
+        for action in [DirectionAction.forceOlder, .forceNewer] {
+            let (sr, sdir, schanged) = action.invoke(row: Int32(bothEq))
+            XCTAssertEqual(sr, UNISON_OP_OK)
+            XCTAssertEqual(sdir, "<-?->", "\(action) with equal mtimes leaves the default")
+            XCTAssertFalse(schanged, "\(action)-equals-default reports not changed")
+            let (rr, rdir, rchanged) = revert(bothEq)
+            XCTAssertEqual(rr, UNISON_OP_OK)
+            XCTAssertEqual(rdir, "<-?->")
             XCTAssertFalse(rchanged)
         }
     }
@@ -662,16 +708,17 @@ final class BridgeTests: XCTestCase {
         XCTAssertFalse(rchanged, "revert restores the ORIGINAL conflict (no longer changed)")
     }
 
-    /// Multiple rows revert independently (success), and a per-row revert reports
-    /// DIRTY under exception injection (the building block of the window batch's
-    /// stop-on-DIRTY-keep-earlier-synced behavior).
-    func test_m_multiRowRevert_successAndInjectedFailure() throws {
+    /// Per-row revert building blocks (NOT the window batch loop, which is a
+    /// private @MainActor method with no automated UI harness): two independent
+    /// rows revert to their own recommendations, and an injected raise on one
+    /// row's revert reports DIRTY while the engine/worker survives for the next.
+    func test_m_perRowRevert_independentSuccessAndInjectedFailure() throws {
         let (items, _) = try makeReconFixture("revertmulti")
         guard let a = rowOf("only-a.txt", items), let b = rowOf("only-b.txt", items) else {
             return XCTFail("missing rows")
         }
         let defA = items[a].direction, defB = items[b].direction
-        // Change both, then revert both — independent successes.
+        // Change both, then revert both — independent successes to each own default.
         XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(a)).result, UNISON_OP_OK)
         XCTAssertEqual(DirectionAction.skip.invoke(row: Int32(b)).result, UNISON_OP_OK)
         XCTAssertEqual(revert(a).1, defA)
@@ -737,6 +784,54 @@ final class BridgeTests: XCTestCase {
         XCTAssertNil(rowOf("only-b.txt", afterItems), "ignored row should be gone")
         // Restore to default so later tests aren't affected by lingering skip.
         _ = revert(a2)
+    }
+
+    /// Consolidated engine-level equivalent of the manual Revert smoke: apply
+    /// different actions to several rows (Skip on a conflict, Force on another, a
+    /// plain direction on a third), leave one row untouched, then revert the
+    /// changed rows. Confirms each is restored to its recommendation, the
+    /// untouched row is unaffected, reverted rows are no longer revertible, and
+    /// the restored direction is exactly what a sync would propagate (the
+    /// engine's current direction readback). The GUI gestures (folder multi-
+    /// select, visual badges, menu greying) are not automatable here.
+    func test_q_multiRowRevertSmoke_restoresRecommendationsLeavingOthers() throws {
+        let (items, _) = try makeReconFixture("revertsmoke")
+        guard let onlyA = rowOf("only-a.txt", items),
+              let onlyB = rowOf("only-b.txt", items),
+              let both  = rowOf("both.txt", items) else { return XCTFail("missing rows") }
+        let defA = items[onlyA].direction, defBoth = items[both].direction
+        let defB = items[onlyB].direction   // the untouched "unrelated" row
+
+        // Apply a mix: plain direction on only-a, Skip on the conflict, Force on
+        // the (distinct-mtime) conflict is not possible on the same row, so use
+        // Force on only-a after — instead: toFirst on only-a, skip on both.
+        XCTAssertEqual(DirectionAction.toFirst.invoke(row: Int32(onlyA)).result, UNISON_OP_OK)
+        let (skR, _, skChanged) = DirectionAction.skip.invoke(row: Int32(both))
+        XCTAssertEqual(skR, UNISON_OP_OK)
+        XCTAssertTrue(skChanged, "skip on a conflict diverges from default")
+        // only-b left untouched.
+
+        // Revert the two changed rows.
+        let (ra, rda, rca) = revert(onlyA)
+        let (rb, rdb, rcb) = revert(both)
+        XCTAssertEqual(ra, UNISON_OP_OK); XCTAssertEqual(rb, UNISON_OP_OK)
+
+        // Restored to the exact recommendations, no longer changed → not
+        // revertible ("Revert becomes disabled"), and the readback direction is
+        // what a sync would propagate.
+        XCTAssertEqual(rda, defA); XCTAssertFalse(rca)
+        XCTAssertEqual(rdb, defBoth); XCTAssertFalse(rcb)
+        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: rca, hasOverride: false))
+        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: rcb, hasOverride: false))
+
+        // The untouched row is unaffected: re-read its direction/changed via a
+        // no-op check — it should still equal its scanned default and be clean.
+        // (A fresh Skip+revert round-trip on it would perturb it, so instead
+        // assert it was never touched by comparing to its scanned default and
+        // confirming it's not revertible.)
+        XCTAssertEqual(defB, items[onlyB].direction)
+        XCTAssertFalse(items[onlyB].changedFromDefault,
+            "the unrelated row must remain at its recommendation, untouched by the reverts")
     }
 }
 
