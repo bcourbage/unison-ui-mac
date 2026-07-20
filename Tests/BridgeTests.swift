@@ -852,10 +852,14 @@ final class BridgeTests: XCTestCase {
     /// `unison_bridge_test_force_next_callbacks_raise(1)` hook makes that exn
     /// wrapper report a raise (short-circuiting before OCaml), so we exercise
     /// the wrapper's real raise handling — NOT a pure `requestRaised()` unit
-    /// test. Asserts: the bridge returns FALSE; the pending request is cleared
-    /// and the UI error path is selected (modeled via `DiffRequestBroker`); NO
-    /// diff result is published; and a subsequent real diff on the same row
-    /// SUCCEEDS (the worker survived the forced raise).
+    /// test. Asserts precisely: the real bridge fault returns FALSE; NO result
+    /// or error callback is published (neither `displayDiff` nor
+    /// `displayDiffErr` fires); the broker's pending state is cleared through
+    /// `requestRaised`; and a subsequent real diff on the same row SUCCEEDS (the
+    /// worker survived the forced raise). This test does NOT observe the UI
+    /// error presentation: the `AppDelegate` `.raised` mapping and the Reconcile
+    /// window's `showError` branch are verified by code inspection, not an
+    /// AppKit UI harness.
     func test_r_runShowDiffs_realBridgeRaise_thenEngineUsable() throws {
         let fixture = try IntegrationFixture(name: "diff-raise")
         // shared-diff.txt exists on BOTH replicas with DIFFERENT content → a
@@ -902,8 +906,13 @@ final class BridgeTests: XCTestCase {
         UnisonBridge.installDiffErrHandler { _ in diffErrDeliveries += 1 }
 
         // --- Fault path: force the next exn-wrapper dispatch to raise. --------
-        // Model the Swift side with the app-global broker exactly as AppDelegate
-        // does: request → issue → run_show_diffs → (false) → requestRaised.
+        // Drive the broker's pending state exactly as AppDelegate's
+        // `requestDiff` does around the bridge call: request → issue →
+        // run_show_diffs → (false) → requestRaised. NOTE: this exercises the
+        // BROKER state transition, not the AppKit UI. The `.raised` result that
+        // AppDelegate maps this false return to, and the Reconcile window's
+        // `showError` branch it drives, are verified by code inspection (no UI
+        // harness) — this test only asserts the broker/bridge contract.
         var broker = DiffRequestBroker()
         let owner: DiffRequestBroker.Owner = 42
         XCTAssertEqual(broker.request(owner: owner), .issue)
@@ -914,8 +923,8 @@ final class BridgeTests: XCTestCase {
         XCTAssertEqual(unison_bridge_test_pending_forced_raises(), 0,
                        "the run_show_diffs dispatch consumed exactly the forced raise")
 
-        // UI error path selected + pending cleared: the broker returns to idle
-        // and a new request is immediately allowed.
+        // Pending state cleared through requestRaised: the broker returns to
+        // idle and a new request is immediately allowed.
         broker.requestRaised(owner: owner)
         XCTAssertFalse(broker.isAwaitingResult)
         XCTAssertEqual(broker.request(owner: owner), .issue, "cleared → usable")

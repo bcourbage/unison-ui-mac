@@ -33,6 +33,17 @@ enum DiffRequestResult: Equatable {
 ///   session's request is never issued while an older result is in flight, and
 ///   an abandoned result can never be delivered as a newer session's result.
 ///
+/// DESIGN CONTRACT (required for draining to terminate): every diff request
+/// that was ISSUED (i.e. `run_show_diffs` returned true) must eventually
+/// produce EXACTLY ONE terminal callback — a diff result (`displayDiff`) or a
+/// diff error (`displayDiffErr`) — which drives `deliver()`. Drain-gating
+/// depends on this: an abandoned request's single terminal callback is what
+/// returns the broker from `draining` to `idle`, so if a successful
+/// `run_show_diffs` could ever produce zero terminal callbacks, an abandoned
+/// request would block all future diffs forever. The synchronous FALSE return
+/// (the OCaml dispatch raised) is the ONLY non-callback outcome, and it is
+/// handled separately by `requestRaised` (no terminal callback is awaited).
+///
 /// Pure and synchronous — mutated on the main actor; no threading here, which
 /// is what makes the invariant unit-testable against the exact dangerous
 /// ordering rather than a race.
