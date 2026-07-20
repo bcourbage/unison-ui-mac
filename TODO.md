@@ -73,6 +73,100 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **Finding #9 (2026-07-20):** "Clean Stale Archives" now resolves a
+      profile's effective roots recursively through `include`/`source`/
+      `include?`/`source?` via the new pure `ProfileRootResolver`, replicating
+      upstream `prefs.ml` semantics (relative to the Unison dir; `include`
+      appends `.prf` only when the exact file is absent; `source` never does;
+      `?` variants silently skip a missing file; a required missing/unreadable
+      file, a cycle, a malformed/`.raw` line, or exceeding the traversal bound
+      makes resolution **unreliable**). `CleanStaleArchivesWindowController.
+      profiles()` feeds the resolved roots to the matcher and folds
+      `resolution.reliable` into `attributionReliable`, so an archive whose
+      roots live in an included file is attributed correctly and an
+      unreliably-resolved profile's archives stay uncertain (never start
+      checked). Cycle detection + hard bounds (maxFiles/maxDepth) guarantee
+      termination that upstream lacks. **Coverage is pure-logic only** (the
+      `ProfileRootResolver` tests with scratch fixtures + an injected reader for
+      unreadable/unbounded cases); this is NOT field-proven through the actual
+      Clean Stale Archives window against a live `.unison` directory — that
+      manual validation remains, consistent with the no-UI-harness posture.
+
+      **Safety-correction pass (2026-07-20, review of Finding #9):**
+      (1) An existing-but-unreadable target is no longer treated as absent even
+      when OPTIONAL. `include?`/`source?` only skip a proven-`.missing` file;
+      an unreadable one (bad UTF-8 that Unison would still read as bytes, or a
+      directory/FIFO/device at the path) is now `.unreadable` ⇒ unreliable.
+      (2) `filesystemRead` classification is precise: a directory or a
+      non-regular object (FIFO/device/socket) is `.unreadable`, NOT `.missing`
+      — so for `include` its existence correctly suppresses the `.prf` fallback,
+      and a FIFO/device is classified via `stat` WITHOUT being opened (no
+      blocking). A leading UTF-8 BOM is stripped so the first line never
+      mis-parses as `.raw`.
+      (3) When the Unison directory itself can't be enumerated,
+      `CleanStaleArchivesWindowController` no longer returns an empty profile
+      set (which would mark every archive a certain orphan and preselect the
+      local-only ones). It propagates GLOBAL uncertainty: every row is
+      uncertain and none are preselected.
+      (4) A new orange banner (`attributionWarning`, pure/tested) explains an
+      unreadable directory and names profiles with unresolved/unreadable
+      includes; the per-row tooltip now lists the includes case too.
+      (5) Added tests: optional invalid-UTF-8 ⇒ unreliable; exact-path
+      directory alongside a valid `<name>.prf` ⇒ no fallback + unreliable; FIFO
+      ⇒ `.unreadable` without hanging; BOM parity; global-uncertainty forces no
+      destructive preselect; warning-text content + no em-dash.
+
+      **Finding #13 (2026-07-20):** privacy-safe diagnostics. The post-crash
+      prompt no longer claims "no personal data" (twice); `CrashReportCopy`
+      (extracted, testable) states a `.ips` can contain the account name, file
+      paths, process arguments, and system details, and keeps the review-in-
+      Finder step. Logging policy flipped to private-by-default for dynamic
+      user-controlled content: `TraceLog.write` logs its composed message as
+      `%{private}@` (redacted by default in EVERY build wherever the log is
+      read — Console, `log show`/`log stream`, sysdiagnose, archive — and
+      visible only when private-data logging has been explicitly enabled on the
+      machine; NOT lifted by a Debug build or by attaching a debugger), and the
+      version-check log sites mark `profile` /
+      `host` / probe `reason` `.private` while keeping non-sensitive Unison
+      version numbers `.public`. Doc comments in `TraceLog`/`Log` updated to the
+      new policy. **Coverage:** 8 tests — crash-copy assertions (no "no personal
+      data", names the categories, keeps Finder review, no em-dash) + a
+      source-level regression scan of the logging privacy posture (broadened to
+      all Swift sources). NOTE: os_log redaction isn't runtime-observable, so
+      Release redaction is relied upon by os_log semantics, not asserted at
+      runtime.
+
+      **Finding #11 (2026-07-20):** profile save/rename is failure-safe,
+      retry-consistent, and race-safe. A pure `ProfileSaveTransaction` (behind a
+      `ProfileFileOps` protocol; real `SystemFileOps`) backs up the existing
+      profile before overwriting via a temp + atomic move over `.bak` (a backup
+      failure never destroys the prior `.bak`); a rename installs the new-named
+      file first and removes the old only after, so the original stays
+      recoverable until the replacement is durable, and it backs up the
+      immediately-pre-save source content under the new name (refusing up front
+      if `<newName>.prf.bak` already exists). New profiles and renames install
+      the destination with ATOMIC NO-REPLACE semantics (`installExclusive` → a
+      unique per-call `mkstemp` staging file, then `renamex_np(RENAME_EXCL)`),
+      closing the TOCTOU race after the `exists` pre-check and never clobbering a
+      destination that appeared mid-flight; concurrent callers use independent
+      private staging and cannot cross-write. `SystemFileOps.move` uses POSIX
+      `rename(2)` (atomic replace, never momentarily absent). Failures are
+      reported honestly: a rollback that itself fails throws `.rollbackFailed`
+      naming the true residue, and a temp-cleanup failure throws `.cleanupFailed`
+      naming the residual temp — never a false "nothing changed". Crash scope is
+      precise: each step is crash-atomic, but the multi-step rename is not one
+      crash-atomic transaction (a hard crash between steps leaves a well-defined
+      recoverable intermediate); in-process failures are all-or-nothing via the
+      rollbacks. `ProfileFormWindowController` updates identity
+      (`initialProfileName`) + prefs only after the transaction commits, so a
+      failure leaves a coherent, retryable state. **Coverage:** per-stage fault
+      injection via an in-memory `FakeFileOps` + real-`SystemFileOps` tests
+      (atomic no-replace refuses an existing destination; concurrent contenders →
+      exactly one winner whose destination holds complete bytes; destination-race
+      refused; honest rollback/cleanup residue; no staging residue after success
+      or collision). Pure/unit-level; the AppKit save button is not driven by a
+      UI harness.
+
       **L1 + residual Finding #6 (2026-07-20):** diff-result identity/safety. The
       async diff result (`displayInfoDiff`) carries no request id and is
       delivered on a later main hop, and the permanent handler routes to the
@@ -168,6 +262,66 @@ section at the bottom so this list stays scannable.
          still unwired, and making the scan-phase Stop honest (label + true
          cancel) remains to be done. Build on the hardened phase calls; do not
          re-derive the exception handling. **This item stays open.**
+
+      **Findings #8 + #12 (2026-07-20):** the advisory SSH version probe was
+      redesigned as a lifecycle-owned subprocess. #8: `StrictHostKeyChecking`
+      changed from `accept-new` to **`yes`** (placed before profile `sshargs` so
+      it wins) — the probe never writes a host key; an unknown/changed host makes
+      it skip, leaving host-key confirmation to the real Unison connection. #12:
+      a true **wall-clock deadline** (`defaultDeadline`=20s) now covers launch +
+      I/O + exit (not just `ConnectTimeout`), with terminate→SIGKILL→**reap of the
+      exact child** so a wedged ProxyCommand/`servercmd -version` can't hang a
+      worker or orphan a process; each probe returns a `Handle` bound to its
+      `SessionID`, and `run` delivers only when the probe is neither cancelled
+      nor superseded (`isCurrent`), so a slow result can't update a replacement
+      profile. AppDelegate cancels the probe on profile replacement, window
+      close, and shutdown. Failure kinds are now distinguished (timeout,
+      cancellation, host-key rejection, auth failure, generic ssh failure, launch
+      failure, malformed output) via a pure `classifyRaw`. Process execution is
+      behind an injectable `VersionProbeExecutor`. **Coverage:** 21
+      deterministic tests (fake executors for identity/cancellation/late-
+      completion/timeout + real-subprocess terminate/reap/launch-fail against
+      `/bin/sleep`,`/bin/echo`); NOT field-proven against a live wedged remote.
+
+      **Lifecycle-correction pass (2026-07-20, review of Findings #8/#12):**
+      centralized probe lifecycle ownership and made termination deterministic.
+      (1) The probe is now cancelled inside `leaveSession` (the common
+      session-leave path), so BOTH window-close AND the programmatic Stop-
+      during-scan path tear it down — previously Stop-during-scan detached the
+      window delegate before closing, so `handleWindowClosed` (which held the
+      cancel) never fired and the probe leaked. (2) `runVersionCheckIfNeeded`
+      supersedes the old probe BEFORE the `unison_bridge_get_version()` guard,
+      so a failed version lookup on a replacement open still invalidates the
+      previous session's probe. (3) The executor checks cancellation BEFORE
+      launch (never spawns an already-abandoned child) and immediately AFTER
+      `Process.run()`. (4) Cancellation is DETERMINISTIC: a new `ProbeCanceller`
+      fires a registered teardown (SIGTERM) SYNCHRONOUSLY inside `cancel()`
+      (not on a later background poll tick), and `applicationWillTerminate`
+      waits (bounded) on `Handle.waitUntilFinished` so the app doesn't exit
+      mid-teardown. (5) Active-probe state is cleared on completion only when
+      the delivering probe is still current (a newer probe is never clobbered).
+      (6) Corrected teardown CLAIMS: the deadline is measured from just after
+      launch (not "launch + I/O + exit"); the final SIGKILL reap-wait result is
+      not asserted; and terminating ssh does NOT guarantee its ProxyCommand /
+      remote descendants are reaped. (7) Added lifecycle tests: cancel-before-
+      launch never launches; teardown fires synchronously on cancel; late
+      registration fires immediately; cancel is idempotent (teardown once);
+      wait wakes on cancel / times out otherwise; shutdown `waitUntilFinished`
+      completes after cancel. Full suite 576 tests, 0 failures.
+
+      **argv-ordering correction (2026-07-20):** `buildConfig` put `--` AFTER
+      the destination (`ssh … dest -- servercmd -version`). OpenSSH treats
+      every token after the destination as the remote command, so the remote
+      shell was asked to run `-- servercmd -version` — wrong. `--` now comes
+      BEFORE the destination (`ssh … -- dest servercmd -version`): it ends
+      ssh's own option parsing and protects an option-like destination, and the
+      remote command is exactly `servercmd -version`. Corrected the unit-test
+      suffix assertion and the misleading comment, and added an end-to-end argv
+      test that runs the real `SubprocessProbeExecutor` against a temporary
+      fake ssh which parses local options, rejects a stray leading remote `--`,
+      requires the remote command to be exactly `servercmd -version`, and (as a
+      guard proof) rejects the old ordering. Lifecycle design unchanged. Full
+      suite 577 tests, 0 failures.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:

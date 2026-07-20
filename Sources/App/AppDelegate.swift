@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// without re-probing. Set on every `handleVersionCheckOutcome`.
     private var lastVersionOutcome: (profile: String, outcome: VersionCheck.Outcome)?
 
+    /// The in-flight SSH version probe and the session it belongs to. Kept so
+    /// the probe can be cancelled on profile replacement, window close, or
+    /// shutdown, and so a slow result is dropped when its session is no longer
+    /// current — a stale probe must never update a replacement profile (#12).
+    private var activeVersionProbe: VersionCheck.Handle?
+    private var versionProbeSession: SessionID?
+
     /// Pending restore for a one-shot `-ignorearchives` rescan: the
     /// `.prf` we temporarily injected `ignorearchives = true` into, plus
     /// its exact original contents. Restored the moment init1 has loaded
@@ -166,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         reconcile.beginInitialScan()
         profileWindowController?.close()
 
-        runVersionCheckIfNeeded(profile: profile)
+        runVersionCheckIfNeeded(profile: profile, session: s)
     }
 
     private func makeReconcileWindow(session s: SessionID, profile: String,
@@ -218,7 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// ⌘W). Route it through the one session-teardown helper.
     private func handleWindowClosed(session s: SessionID, profile: String) {
         // The window is already mid-close (this fires from windowWillClose),
-        // so don't re-close it — just detach + abandon + show the picker.
+        // so don't re-close it — just detach + abandon + show the picker. The
+        // version probe is cancelled inside leaveSession (the common path), so
+        // BOTH this and the programmatic Stop-during-scan path tear it down.
         leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
     }
 
@@ -237,6 +246,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func leaveSession(_ s: SessionID, profile: String,
                               closeWindow: Bool, reason: String) {
         guard let w = windowBySession[s] else { return }
+        // Cancel THIS session's in-flight version probe here, in the common
+        // session-leave path. Both entry points route through leaveSession:
+        // the user closing the window (handleWindowClosed) and pressing Stop
+        // during connect/scan (onCancelScan). Because leaveSession detaches the
+        // window delegate before closing (so windowWillClose/handleWindowClosed
+        // never re-fires), cancelling here is the only place that also covers
+        // the programmatic Stop path — otherwise its probe would leak.
+        if versionProbeSession == s {
+            activeVersionProbe?.cancel()
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
@@ -1119,6 +1140,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// release-gate `make leaks` runs.
     func applicationWillTerminate(_ notification: Notification) {
         log.write("applicationWillTerminate — releasing bridge roots")
+        // Cancel any in-flight version probe. cancel() fires the child's
+        // SIGTERM SYNCHRONOUSLY (deterministic teardown, not a flag noticed on
+        // a later poll tick), then wait a bounded interval for the probe body
+        // to finish its reap so we don't exit while the ssh child is still
+        // being torn down. Bound = the executor's SIGTERM+SIGKILL grace budget
+        // plus a small margin; if it somehow overruns we proceed anyway rather
+        // than hang the quit.
+        if let probe = activeVersionProbe {
+            probe.cancel()
+            probe.waitUntilFinished(
+                timeout: .now() + (VersionCheck.terminateGrace * 2) + 0.5)
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
         unison_bridge_shutdown()
     }
 
@@ -1407,18 +1442,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// queue and may show a modal alert *while init1/init2 is still
     /// running*. That's fine — init1/init2 are async on the OCaml
     /// side and don't block on the main queue.
-    private func runVersionCheckIfNeeded(profile: String) {
+    private func runVersionCheckIfNeeded(profile: String, session: SessionID) {
+        // Supersede any earlier probe FIRST — before any early return. A new
+        // open must always invalidate the previous session's probe, even if we
+        // then can't start a new one (e.g. the version lookup below fails).
+        // Clearing versionProbeSession also makes the old probe's `isCurrent`
+        // guard fail, so its late result is dropped, not applied to us.
+        activeVersionProbe?.cancel()
+        activeVersionProbe = nil
+        versionProbeSession = nil
+
         guard let localBridgeVersion = unison_bridge_get_version().map({ String(cString: $0) }) else {
             Log.versionCheck.warning("version check: unison_bridge_get_version returned nil")
             return
         }
-        Log.versionCheck.info("starting version check for profile '\(profile, privacy: .public)'")
-        VersionCheck.run(
+        // Mint this probe's identity (the session) only once we're committed to
+        // launching it.
+        versionProbeSession = session
+        Log.versionCheck.info("starting version check for profile '\(profile, privacy: .private)'")
+        activeVersionProbe = VersionCheck.run(
             profile: profile,
             unisonDirectory: unisonDirectory,
-            localBridgeVersion: localBridgeVersion
+            localBridgeVersion: localBridgeVersion,
+            // Delivered only while this exact session is still the current one:
+            // a reopened profile mints a new session, superseding this probe.
+            isCurrent: { [weak self] in self?.versionProbeSession == session }
         ) { [weak self] outcome in
-            self?.handleVersionCheckOutcome(outcome, profile: profile)
+            guard let self else { return }
+            self.handleVersionCheckOutcome(outcome, profile: profile)
+            // This probe delivered; clear the active-probe state, but ONLY if it
+            // is still the current probe. Delivery already required
+            // `versionProbeSession == session`, but re-check defensively so a
+            // newer probe that superseded us is never clobbered.
+            if self.versionProbeSession == session {
+                self.activeVersionProbe = nil
+                self.versionProbeSession = nil
+            }
         }
     }
 
@@ -1446,18 +1505,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 "compatible-mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) — new wire protocol negotiates, no alert"
             )
         case .noRemoteRoot:
-            Log.versionCheck.info("no remote root in profile '\(profile, privacy: .public)' — skipping")
+            Log.versionCheck.info("no remote root in profile '\(profile, privacy: .private)' — skipping")
         case .probeFailed(let reason):
-            Log.versionCheck.info("probe skipped/failed: \(reason, privacy: .public)")
+            // `reason` can embed the host, ssh stderr, or a servercmd path.
+            Log.versionCheck.info("probe skipped/failed: \(reason, privacy: .private)")
         case .mismatch(let local, let remote, let host):
             if VersionCheck.Suppression.isSuppressed(host: host, local: local, remote: remote) {
                 Log.versionCheck.info(
-                    "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — suppressed"
+                    "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .private) — suppressed"
                 )
                 return
             }
             Log.versionCheck.notice(
-                "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .public) — surfacing alert"
+                "mismatch \(local, privacy: .public) ↔ \(remote, privacy: .public) on \(host, privacy: .private) — surfacing alert"
             )
             showVersionMismatchAlert(local: local, remote: remote, host: host)
         }
@@ -1484,7 +1544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         if alert.suppressionButton?.state == .on {
             VersionCheck.Suppression.suppress(host: host, local: local, remote: remote)
             Log.versionCheck.info(
-                "user suppressed mismatch alert for \(host, privacy: .public) @ \(local, privacy: .public)/\(remote, privacy: .public)"
+                "user suppressed mismatch alert for \(host, privacy: .private) @ \(local, privacy: .public)/\(remote, privacy: .public)"
             )
         }
     }
@@ -1689,20 +1749,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Unison-UI-Mac quit unexpectedly last time"
-        alert.informativeText =
-            "Sending the crash report helps find and fix the problem. It's a "
-            + "technical stack trace with no personal data.\n\n"
-            + "“Report…” opens a pre-filled GitHub issue and reveals the crash "
-            + "report in Finder; just drag it into the issue."
+        alert.informativeText = CrashReportCopy.alertInfo
         alert.addButton(withTitle: "Report…")
         alert.addButton(withTitle: "Not Now")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         revealCrashReportForAttachment(url)
-        openIssueReport(context:
-            "The app crashed on a previous launch. The macOS crash report "
-            + "(`\(report.name)`) has been revealed in Finder. Please drag it into "
-            + "this issue. It contains no personal data.")
+        openIssueReport(context: CrashReportCopy.issueContext(reportName: report.name))
     }
 
     /// Copy the `.ips` to a `.txt` in the temp dir (GitHub rejects the
