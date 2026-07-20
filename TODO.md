@@ -190,6 +190,66 @@ section at the bottom so this list stays scannable.
          cancel) remains to be done. Build on the hardened phase calls; do not
          re-derive the exception handling. **This item stays open.**
 
+      **Findings #8 + #12 (2026-07-20):** the advisory SSH version probe was
+      redesigned as a lifecycle-owned subprocess. #8: `StrictHostKeyChecking`
+      changed from `accept-new` to **`yes`** (placed before profile `sshargs` so
+      it wins) — the probe never writes a host key; an unknown/changed host makes
+      it skip, leaving host-key confirmation to the real Unison connection. #12:
+      a true **wall-clock deadline** (`defaultDeadline`=20s) now covers launch +
+      I/O + exit (not just `ConnectTimeout`), with terminate→SIGKILL→**reap of the
+      exact child** so a wedged ProxyCommand/`servercmd -version` can't hang a
+      worker or orphan a process; each probe returns a `Handle` bound to its
+      `SessionID`, and `run` delivers only when the probe is neither cancelled
+      nor superseded (`isCurrent`), so a slow result can't update a replacement
+      profile. AppDelegate cancels the probe on profile replacement, window
+      close, and shutdown. Failure kinds are now distinguished (timeout,
+      cancellation, host-key rejection, auth failure, generic ssh failure, launch
+      failure, malformed output) via a pure `classifyRaw`. Process execution is
+      behind an injectable `VersionProbeExecutor`. **Coverage:** 21
+      deterministic tests (fake executors for identity/cancellation/late-
+      completion/timeout + real-subprocess terminate/reap/launch-fail against
+      `/bin/sleep`,`/bin/echo`); NOT field-proven against a live wedged remote.
+
+      **Lifecycle-correction pass (2026-07-20, review of Findings #8/#12):**
+      centralized probe lifecycle ownership and made termination deterministic.
+      (1) The probe is now cancelled inside `leaveSession` (the common
+      session-leave path), so BOTH window-close AND the programmatic Stop-
+      during-scan path tear it down — previously Stop-during-scan detached the
+      window delegate before closing, so `handleWindowClosed` (which held the
+      cancel) never fired and the probe leaked. (2) `runVersionCheckIfNeeded`
+      supersedes the old probe BEFORE the `unison_bridge_get_version()` guard,
+      so a failed version lookup on a replacement open still invalidates the
+      previous session's probe. (3) The executor checks cancellation BEFORE
+      launch (never spawns an already-abandoned child) and immediately AFTER
+      `Process.run()`. (4) Cancellation is DETERMINISTIC: a new `ProbeCanceller`
+      fires a registered teardown (SIGTERM) SYNCHRONOUSLY inside `cancel()`
+      (not on a later background poll tick), and `applicationWillTerminate`
+      waits (bounded) on `Handle.waitUntilFinished` so the app doesn't exit
+      mid-teardown. (5) Active-probe state is cleared on completion only when
+      the delivering probe is still current (a newer probe is never clobbered).
+      (6) Corrected teardown CLAIMS: the deadline is measured from just after
+      launch (not "launch + I/O + exit"); the final SIGKILL reap-wait result is
+      not asserted; and terminating ssh does NOT guarantee its ProxyCommand /
+      remote descendants are reaped. (7) Added lifecycle tests: cancel-before-
+      launch never launches; teardown fires synchronously on cancel; late
+      registration fires immediately; cancel is idempotent (teardown once);
+      wait wakes on cancel / times out otherwise; shutdown `waitUntilFinished`
+      completes after cancel. Full suite 576 tests, 0 failures.
+
+      **argv-ordering correction (2026-07-20):** `buildConfig` put `--` AFTER
+      the destination (`ssh … dest -- servercmd -version`). OpenSSH treats
+      every token after the destination as the remote command, so the remote
+      shell was asked to run `-- servercmd -version` — wrong. `--` now comes
+      BEFORE the destination (`ssh … -- dest servercmd -version`): it ends
+      ssh's own option parsing and protects an option-like destination, and the
+      remote command is exactly `servercmd -version`. Corrected the unit-test
+      suffix assertion and the misleading comment, and added an end-to-end argv
+      test that runs the real `SubprocessProbeExecutor` against a temporary
+      fake ssh which parses local options, rejects a stray leading remote `--`,
+      requires the remote command to be exactly `servercmd -version`, and (as a
+      guard proof) rejects the old ordering. Lifecycle design unchanged. Full
+      suite 577 tests, 0 failures.
+
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:
       have ssh actively probe and disconnect a dead peer (~45s) instead
