@@ -114,6 +114,98 @@ final class ProfileDirectiveTests: XCTestCase {
         XCTAssertEqual(doc.serialized, text)
     }
 
+    // MARK: - Malformed directive-looking lines containing `=` must NOT fall
+    //         through to key/value parsing (they stay .raw, verbatim)
+
+    func test_malformedDirectiveWithEquals_staysRaw_notKeyValue() {
+        // Once a line matches an exact directive prefix, failing the two-word rule
+        // makes it .raw. It must never be reinterpreted as `key = value`, even
+        // though it contains `=`. Covers all four directive prefixes.
+        for line in ["include one = two",
+                     "source one = two",
+                     "include? one = two",
+                     "source? one = two"] {
+            let text = line + "\n"
+            let doc = D.parse(text)
+            guard case let .raw(s) = doc.entries.first else {
+                return XCTFail("expected .raw for \(line), got \(kinds(doc))")
+            }
+            XCTAssertEqual(s, line)
+            // Verbatim serialization — no key/value canonicalization applied.
+            XCTAssertEqual(doc.serialized, text)
+            // And explicitly: it is NOT a keyValue entry.
+            if case .keyValue = doc.entries.first! {
+                XCTFail("\(line) must not become a keyValue entry")
+            }
+        }
+    }
+
+    // MARK: - CRLF handling (Util.removeTrailingCR: strip one trailing \r)
+
+    func test_crlf_allFourDirectiveKindsRecognized_argsHaveNoTrailingCR() {
+        let text = "include Common\r\nsource /etc/base\r\ninclude? Maybe\r\nsource? /opt\r\n"
+        let doc = D.parse(text)
+        let dirs = doc.entries.compactMap { if case let .directive(d) = $0 { return d } else { return nil } }
+        XCTAssertEqual(dirs.map(\.kind), [.include, .source, .includeOptional, .sourceOptional])
+        // Logical arguments must be free of the trailing carriage return.
+        XCTAssertEqual(dirs.map(\.argument), ["Common", "/etc/base", "Maybe", "/opt"])
+        for d in dirs {
+            XCTAssertFalse(d.argument.contains("\r"), "argument must not retain CR: \(d.argument)")
+        }
+    }
+
+    func test_crlf_directiveLexemeRetainsLineEnding() {
+        // The structural line (CR stripped) drives recognition, but the preserved
+        // lexeme keeps the original CRLF so the file round-trips byte-for-byte.
+        let text = "source /etc/base\r\n"
+        let doc = D.parse(text)
+        guard case let .directive(d) = doc.entries.first else {
+            return XCTFail("expected .directive, got \(kinds(doc))")
+        }
+        XCTAssertEqual(d.argument, "/etc/base")
+        XCTAssertEqual(d.lexeme, "source /etc/base\r")
+        XCTAssertEqual(doc.serialized, text)
+    }
+
+    func test_crlf_rawLexemeRetainsLineEnding() {
+        let text = "this is raw\r\n"
+        let doc = D.parse(text)
+        guard case let .raw(s) = doc.entries.first else {
+            return XCTFail("expected .raw, got \(kinds(doc))")
+        }
+        // The raw lexeme keeps its CR so the byte-for-byte round-trip holds.
+        XCTAssertEqual(s, "this is raw\r")
+        XCTAssertEqual(doc.serialized, text)
+    }
+
+    func test_crlf_keyValueParsedFromStructuralLine() {
+        // key/value recognition also uses the CR-stripped structural line, so the
+        // value must not carry a trailing carriage return.
+        let text = "root = /a\r\n"
+        let doc = D.parse(text)
+        guard case let .keyValue(k, v) = doc.entries.first else {
+            return XCTFail("expected .keyValue, got \(kinds(doc))")
+        }
+        XCTAssertEqual(k, "root")
+        XCTAssertEqual(v, "/a")
+        XCTAssertFalse(v.contains("\r"))
+    }
+
+    // MARK: - Escaped leading/trailing-space include: untouched ⇒ verbatim
+
+    func test_escapedLeadingTrailingSpaceInclude_roundTripsVerbatim() {
+        // An include whose filename has escaped leading/trailing spaces is lossy to
+        // display but must round-trip byte-for-byte when untouched (the on-disk
+        // lexeme is preserved, never re-canonicalized).
+        let text = "include \\ leading\\ and\\ trailing\\ \n"
+        let doc = D.parse(text)
+        let dirs = doc.entries.compactMap { if case let .directive(d) = $0 { return d } else { return nil } }
+        XCTAssertEqual(dirs.count, 1)
+        XCTAssertEqual(dirs[0].kind, .include)
+        XCTAssertEqual(dirs[0].argument, " leading and trailing ")   // logical, unescaped
+        XCTAssertEqual(doc.serialized, text)                          // lexeme verbatim
+    }
+
     // MARK: - Directives before, between, and after key-value entries
 
     func test_directivesInterleavedWithPrefs_keepPositions() {
@@ -174,56 +266,92 @@ final class ProfileDirectiveTests: XCTestCase {
 
     // MARK: - Includes UI decision (the pure test seam)
 
-    private func item(_ n: String, _ top: Bool, _ c: String = "") -> D.IncludeUIItem {
-        D.IncludeUIItem(name: n, top: top, comment: c)
+    // The decision now depends only on an explicit editor-dirty flag plus whether
+    // the document holds unmanaged ordered content — never on a lossy projection.
+
+    func test_includeDecision_notEdited_isUnchanged() {
+        // Untouched editor ⇒ .unchanged regardless of document content.
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: false,
+                                             hasUnmanagedOrderedEntries: false), .unchanged)
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: false,
+                                             hasUnmanagedOrderedEntries: true), .unchanged)
     }
 
-    func test_includeDecision_unchanged_skips() {
-        let loaded = [item("Common", true), item("Shared", false)]
-        XCTAssertEqual(D.includeSaveDecision(loaded: loaded, edited: loaded,
-                                             hasPassThroughDirectives: false), .unchanged)
-        // Unchanged wins even if pass-throughs exist — nothing is rebuilt.
-        XCTAssertEqual(D.includeSaveDecision(loaded: loaded, edited: loaded,
-                                             hasPassThroughDirectives: true), .unchanged)
+    func test_includeDecision_editedNoUnmanaged_applies() {
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
+                                             hasUnmanagedOrderedEntries: false), .applyTopBottom)
     }
 
-    func test_includeDecision_changedNoPassThrough_applies() {
-        let loaded = [item("Common", true)]
-        let edited = [item("Common", true), item("Extra", false)]
-        XCTAssertEqual(D.includeSaveDecision(loaded: loaded, edited: edited,
-                                             hasPassThroughDirectives: false), .applyTopBottom)
+    func test_includeDecision_editedWithUnmanaged_refuses() {
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
+                                             hasUnmanagedOrderedEntries: true), .refuseUnmanaged)
     }
 
-    func test_includeDecision_changedWithPassThrough_refuses() {
-        let loaded = [item("Common", true)]
-        let edited = [item("Common", false)]   // moved Top→Bottom = a change
-        XCTAssertEqual(D.includeSaveDecision(loaded: loaded, edited: edited,
-                                             hasPassThroughDirectives: true), .refusePassThrough)
+    func test_hasUnmanagedOrderedEntries_flag() {
+        // Ordinary includes + managed key/values are fully manageable.
+        XCTAssertFalse(D.parse("include Common\nroot = /a\n").hasUnmanagedOrderedEntries)
+        // Pass-through directives count as unmanaged ordered content.
+        XCTAssertTrue(D.parse("source /x\n").hasUnmanagedOrderedEntries)
+        XCTAssertTrue(D.parse("include? m\n").hasUnmanagedOrderedEntries)
+        XCTAssertTrue(D.parse("source? m\n").hasUnmanagedOrderedEntries)
+        // Any raw (unrecognized / malformed) line also counts.
+        XCTAssertTrue(D.parse("some raw junk\n").hasUnmanagedOrderedEntries)
     }
 
-    func test_hasPassThroughDirectives_flag() {
-        XCTAssertFalse(D.parse("include Common\nroot = /a\n").hasPassThroughDirectives)
-        XCTAssertTrue(D.parse("source /x\n").hasPassThroughDirectives)
-        XCTAssertTrue(D.parse("include? m\n").hasPassThroughDirectives)
-        XCTAssertTrue(D.parse("source? m\n").hasPassThroughDirectives)
-    }
+    // MARK: - setIncludes is a hard no-op when unmanaged content is present
 
-    // MARK: - setIncludes never consumes a raw's / pass-through's comment
-
-    func test_setIncludes_doesNotStealCommentOwnedByRaw() {
-        // Layout: raw, then a comment, then an include. The comment sits directly
-        // above the include, but a `.raw` sits directly above the comment, so its
-        // ownership is ambiguous → setIncludes must NOT remove it.
-        var doc = D.parse("""
+    func test_setIncludes_refusesWhenUnmanagedContentPresent() {
+        // A `.raw` line makes the whole document unmanaged-ordered. The low-level
+        // rebuild must refuse (return false) and leave the document byte-identical,
+        // so no comment — the raw's or the include's — is ever disturbed.
+        let text = """
         weird raw directive-ish
         # belongs to the raw?
         include Common
 
+        """
+        var doc = D.parse(text)
+        let applied = doc.setIncludes(top: [D.IncludeEntry(name: "Common", comment: "")], bottom: [])
+        XCTAssertFalse(applied, "setIncludes must refuse when unmanaged content is present")
+        XCTAssertEqual(doc.serialized, text, "document must be untouched on refusal")
+    }
+
+    func test_setIncludes_commentPrecedingUnmanagedDirectiveUntouched() {
+        // A comment sits directly above a pass-through directive. Because the
+        // document is unmanaged-ordered, setIncludes refuses and the comment stays.
+        let text = """
+        include Common
+        # notes for the source below
+        source /etc/base
+
+        """
+        var doc = D.parse(text)
+        let applied = doc.setIncludes(top: [D.IncludeEntry(name: "Common", comment: "")], bottom: [])
+        XCTAssertFalse(applied)
+        XCTAssertEqual(doc.serialized, text)
+    }
+
+    func test_setIncludes_rebuildsManagedCommentExactlyOnce() {
+        // Fully managed document (includes + key/values only): rebuild is permitted.
+        // Each managed include's directly-associated comment must appear exactly
+        // once after the rebuild — never duplicated, never dropped onto a neighbor.
+        var doc = D.parse("""
+        # comment for Common
+        include Common
+        root = /a
+
         """)
-        doc.setIncludes(top: [D.IncludeEntry(name: "Common", comment: "")], bottom: [])
-        let ks = kinds(doc)
-        XCTAssertTrue(ks.contains("raw|weird raw directive-ish"))
-        XCTAssertTrue(ks.contains("#belongs to the raw?"), "comment above a raw must survive")
+        // IncludeEntry.comment holds the comment BODY (no leading '#'); serialize
+        // re-adds "# ".
+        let applied = doc.setIncludes(
+            top: [D.IncludeEntry(name: "Common", comment: "comment for Common")],
+            bottom: [])
+        XCTAssertTrue(applied)
+        let occurrences = doc.serialized
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0 == "# comment for Common" }
+            .count
+        XCTAssertEqual(occurrences, 1, "the managed include's comment must occur exactly once")
     }
 
     // MARK: - Pass-through directives + unchanged includes survive a save

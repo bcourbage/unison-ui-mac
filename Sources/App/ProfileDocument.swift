@@ -93,17 +93,38 @@ struct ProfileDocument: Equatable {
         // ["a", ""], whereas we want ["a"]. Without this strip a
         // round-trip (parse → serialize → parse) would gain a blank
         // line every cycle.
-        var normalized = text
-        if normalized.hasSuffix("\n") { normalized.removeLast() }
-        // Empty input → empty document. (Without this short-circuit,
-        // Swift's split returns `[""]` for an empty string, which would
-        // emit a spurious blank entry.)
-        if normalized.isEmpty { return doc }
-        // split(omittingEmptySubsequences: false) keeps blank lines so we
-        // can preserve them.
-        for rawLine in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        // Work at the Unicode SCALAR level for line splitting. Swift merges a
+        // CRLF ("\r\n") into a single extended grapheme `Character`, so a
+        // Character/Substring `split(separator: "\n")` would neither break CRLF
+        // lines nor let us detect the trailing `\r` — it would silently fold the
+        // CR into the newline. Splitting on the LF scalar (U+000A) keeps each
+        // line's trailing CR attached as a lone `\r`, which `removeTrailingCR`
+        // then strips. This mirrors Unison reading lines then `Util.removeTrailingCR`.
+        var scalars = Array(text.unicodeScalars)
+        if scalars.isEmpty { return doc }
+        // Drop exactly one trailing newline terminator (matches the previous
+        // `removeLast()` of a trailing "\n"); a lone "\n" file → empty document.
+        if scalars.last == "\n" { scalars.removeLast() }
+        if scalars.isEmpty { return doc }
+        var rawLines: [String] = []
+        var current = String.UnicodeScalarView()
+        for scalar in scalars {
+            if scalar == "\n" {
+                rawLines.append(String(current))
+                current = String.UnicodeScalarView()
+            } else {
+                current.append(scalar)
+            }
+        }
+        rawLines.append(String(current))
+        for line in rawLines {
+            // `line` is the ORIGINAL lexeme (kept for verbatim directive/raw
+            // serialization, including any trailing `\r`). `structural` is the
+            // line Unison actually parses: exactly one trailing `\r` removed
+            // (`Util.removeTrailingCR`). All recognition + word-splitting uses
+            // `structural`; serialization of preserved entries uses `line`.
+            let structural = line.hasSuffix("\r") ? String(line.dropLast()) : line
+            let trimmed = structural.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty {
                 doc.entries.append(.blank)
                 continue
@@ -116,20 +137,32 @@ struct ProfileDocument: Equatable {
                 continue
             }
             // Inclusion directives (`include`/`source`/`include?`/`source?`).
-            // Mirror Unison (prefs.ml): recognition is on the RAW line at column
-            // zero (leading whitespace ⇒ NOT a directive), and the argument is
-            // one escape-aware word. A directive-looking line that doesn't parse
-            // to exactly two words is malformed and falls through to `.raw`.
-            // Checked before `=` so an `include foo=bar` reads as a directive,
+            // Mirror Unison (prefs.ml): recognition is on the RAW (structural)
+            // line at column zero (leading whitespace ⇒ NOT a directive), and the
+            // argument is one escape-aware word. Tri-state:
+            //   .valid     → store `.directive` (lexeme = original `line`);
+            //   .malformed → the line matched a directive prefix but did NOT
+            //                produce exactly two words; store `.raw` and DO NOT
+            //                fall through to key/value parsing (so e.g.
+            //                `include one = two` is raw, not a key named
+            //                "include one");
+            //   .notDirective → fall through.
+            // Checked before `=` so `include foo=bar` reads as a directive,
             // exactly as Unison does.
-            if let directive = ProfileDocument.parseDirective(rawLine: line) {
-                doc.entries.append(.directive(directive))
+            switch ProfileDocument.classifyDirective(structuralLine: structural) {
+            case .valid(let kind, let argument):
+                doc.entries.append(.directive(Directive(kind: kind, argument: argument, lexeme: line)))
                 continue
+            case .malformed:
+                doc.entries.append(.raw(line))
+                continue
+            case .notDirective:
+                break
             }
             // key = value. Unison's parser is whitespace-tolerant around `=`.
-            if let eq = line.firstIndex(of: "=") {
-                let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-                let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if let eq = structural.firstIndex(of: "=") {
+                let key = structural[..<eq].trimmingCharacters(in: .whitespaces)
+                let value = structural[structural.index(after: eq)...].trimmingCharacters(in: .whitespaces)
                 if !key.isEmpty {
                     doc.entries.append(.keyValue(key: key, value: value))
                     continue
@@ -143,12 +176,23 @@ struct ProfileDocument: Equatable {
         return doc
     }
 
-    /// Parse a raw line as one of the four inclusion directives, or nil.
-    /// Mirrors `prefs.ml`: `Util.startswith` on the RAW line for each exact
-    /// `"<keyword> "` prefix (column-zero, trailing space), then an escape-aware
-    /// word split that must yield exactly two words `[keyword; filename]`.
-    /// `argument` is the unescaped filename; `lexeme` is the original line.
-    static func parseDirective(rawLine line: String) -> Directive? {
+    /// Tri-state classification of a structural line against the four inclusion
+    /// directives. Distinguishes "this isn't a directive at all" from "this
+    /// matched a directive prefix but is malformed" — the latter must become
+    /// `.raw` and must NOT fall through to key/value parsing (a line like
+    /// `include one = two` is a malformed directive, not a key `include one`).
+    enum DirectiveClassification: Equatable {
+        case notDirective
+        case valid(kind: Directive.Kind, argument: String)
+        case malformed
+    }
+
+    /// Classify a structural line (one trailing `\r` already removed). Mirrors
+    /// `prefs.ml`: `Util.startswith` for each exact `"<keyword> "` prefix
+    /// (column-zero, trailing space), then an escape-aware split that must yield
+    /// exactly two words `[keyword; filename]`. The caller supplies the original
+    /// lexeme when building the `.directive`.
+    static func classifyDirective(structuralLine line: String) -> DirectiveClassification {
         let prefixes: [(String, Directive.Kind)] = [
             ("include? ", .includeOptional),
             ("source? ",  .sourceOptional),
@@ -157,10 +201,10 @@ struct ProfileDocument: Equatable {
         ]
         for (prefix, kind) in prefixes where line.hasPrefix(prefix) {
             let words = ProfileDocument.splitIntoWordsUnison(line)
-            guard words.count == 2 else { return nil }  // malformed → caller stores .raw
-            return Directive(kind: kind, argument: words[1], lexeme: line)
+            guard words.count == 2 else { return .malformed }
+            return .valid(kind: kind, argument: words[1])
         }
-        return nil
+        return .notDirective
     }
 
     // MARK: - Accessors
@@ -279,11 +323,20 @@ struct ProfileDocument: Equatable {
         }
     }
 
-    /// True if the document contains any directive the Includes UI does not
-    /// manage. Used to refuse an include-changing save rather than risk
-    /// reordering hidden directive precedence.
+    /// True if the document contains a pass-through directive
+    /// (`source`/`include?`/`source?`) the Includes UI does not manage.
     var hasPassThroughDirectives: Bool {
         entries.contains { $0.isPassThroughDirective }
+    }
+
+    /// True if the document contains any UNMANAGED ORDERED content the Includes
+    /// UI cannot represent or safely re-order: a pass-through directive OR any
+    /// `.raw` line. An includes edit is refused when this holds, and the
+    /// low-level rebuild (`setIncludes`) refuses to run, so ordered content is
+    /// never silently moved.
+    var hasUnmanagedOrderedEntries: Bool {
+        entries.contains { $0.isPassThroughDirective }
+            || entries.contains { if case .raw = $0 { return true } else { return false } }
     }
 
     private var firstKeyValueIndex: Int? {
@@ -325,30 +378,27 @@ struct ProfileDocument: Equatable {
     /// Replace ordinary `include` directives (kind == .include only). `top`
     /// entries land before the first pref line, `bottom` after the last. Each
     /// entry's non-empty comment is written as a `#` line directly above its
-    /// `include`. The old ordinary includes and the comments directly above them
-    /// are removed first.
+    /// `include`. The old ordinary includes and the comment directly above each
+    /// are removed first, then rebuilt exactly once.
     ///
-    /// The caller (`includeSaveDecision`) only invokes this when the profile has
-    /// NO pass-through directives, so this never moves a `source`/`include?`/
-    /// `source?`. It also never consumes a comment that belongs to a preceding
-    /// `.raw` or directive: a comment is only removed if it sits directly above a
-    /// removed include AND the entry above the comment isn't itself a `.raw` or
-    /// `.directive` (ambiguous ownership → leave it).
-    mutating func setIncludes(top: [IncludeEntry], bottom: [IncludeEntry]) {
+    /// SAFETY GUARD (Finding #7): this refuses — returns `false` without
+    /// mutating anything — when the document contains unmanaged ordered content
+    /// (a pass-through directive OR any `.raw` line), because a rebuild would
+    /// reorder content the Includes UI cannot represent. The document-level API
+    /// therefore cannot be bypassed to move ordered content, regardless of what
+    /// the caller passes. On a permitted rebuild it returns `true`. Because a
+    /// rebuild only runs when there is NO unmanaged content, the comment directly
+    /// above a removed include is unambiguously that include's — no ownership
+    /// heuristic is needed.
+    @discardableResult
+    mutating func setIncludes(top: [IncludeEntry], bottom: [IncludeEntry]) -> Bool {
+        guard !hasUnmanagedOrderedEntries else { return false }
+
         var remove = Set<Int>()
         for (i, e) in entries.enumerated() where e.isInclude {
             remove.insert(i)
             if i > 0, case .comment = entries[i - 1], !remove.contains(i - 1) {
-                // Don't steal a comment whose ownership is ambiguous because a
-                // `.raw` or another directive sits directly above it.
-                let ownedByOther: Bool = {
-                    guard i - 2 >= 0 else { return false }
-                    switch entries[i - 2] {
-                    case .raw, .directive: return true
-                    default:               return false
-                    }
-                }()
-                if !ownedByOther { remove.insert(i - 1) }
+                remove.insert(i - 1)
             }
         }
         for idx in remove.sorted(by: >) { entries.remove(at: idx) }
@@ -379,6 +429,7 @@ struct ProfileDocument: Equatable {
             topBlock.insert(.blank, at: 0)
         }
         entries.insert(contentsOf: topBlock, at: min(topAt, entries.count))
+        return true
     }
 
     // MARK: - Serialization
@@ -484,35 +535,28 @@ struct ProfileDocument: Equatable {
 
     // MARK: - Includes UI reconciliation (Finding #7)
 
-    /// The Includes UI's view of one ordinary include: the DISPLAY name (as the
-    /// combo shows it, before `.prf` canonicalization), its Top/Bottom position,
-    /// and its attached comment. This is the smallest projection needed to decide
-    /// whether the user actually changed the includes.
-    struct IncludeUIItem: Equatable {
-        var name: String
-        var top: Bool
-        var comment: String
-    }
-
     /// The save-path decision for the Includes UI (Finding #7):
-    ///   - `.unchanged`         — the projection matches; do NOT call setIncludes,
-    ///                            so every include lexeme, pass-through directive,
-    ///                            raw line, comment, and position is preserved.
-    ///   - `.applyTopBottom`    — includes changed and there are no pass-through
-    ///                            directives; the ordinary Top/Bottom rebuild is
-    ///                            safe (canonical rendering of edited includes).
-    ///   - `.refusePassThrough` — includes changed AND the profile contains
-    ///                            `source`/`include?`/`source?`; refuse the save
-    ///                            rather than risk reordering hidden precedence.
-    enum IncludeSaveDecision: Equatable { case unchanged, applyTopBottom, refusePassThrough }
+    ///   - `.unchanged`   — the user did not edit the Includes section; do NOT
+    ///                      call setIncludes, so every include lexeme, directive,
+    ///                      raw line, comment, and position is preserved exactly
+    ///                      (even when the includes' displayed form is lossy).
+    ///   - `.applyTopBottom` — includes were edited and the document has NO
+    ///                      unmanaged ordered content; the Top/Bottom rebuild is
+    ///                      safe (canonical rendering of the edited includes).
+    ///   - `.refuseUnmanaged` — includes were edited AND the document contains
+    ///                      unmanaged ordered content (`source`/`include?`/
+    ///                      `source?` or any `.raw` line); refuse the save rather
+    ///                      than reorder content the UI cannot represent.
+    enum IncludeSaveDecision: Equatable { case unchanged, applyTopBottom, refuseUnmanaged }
 
-    /// Pure decision used by the real save path AND the tests. `loaded` and
-    /// `edited` are compared as DISPLAY-name projections (before any
-    /// `.prf`/escaping canonicalization), so a genuine no-op is detected exactly.
-    static func includeSaveDecision(loaded: [IncludeUIItem],
-                                    edited: [IncludeUIItem],
-                                    hasPassThroughDirectives: Bool) -> IncludeSaveDecision {
-        if loaded == edited { return .unchanged }
-        return hasPassThroughDirectives ? .refusePassThrough : .applyTopBottom
+    /// Pure decision used by the real save path AND the tests. No-op detection is
+    /// driven by the editor's explicit dirty flag (`includesEdited`), NOT by
+    /// comparing a lossy display projection — so an untouched Includes section
+    /// always chooses `.unchanged` even if its displayed representation can't be
+    /// reconstructed byte-for-byte.
+    static func includeSaveDecision(includesEdited: Bool,
+                                    hasUnmanagedOrderedEntries: Bool) -> IncludeSaveDecision {
+        guard includesEdited else { return .unchanged }
+        return hasUnmanagedOrderedEntries ? .refuseUnmanaged : .applyTopBottom
     }
 }

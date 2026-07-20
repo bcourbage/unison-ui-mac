@@ -52,6 +52,27 @@ section at the bottom so this list stays scannable.
       directive is the signal Finding #9 will later use to mark archive
       attribution unreliable (not implemented here).
 
+      **Correction pass (2026-07-20, review Finding #7 round 2):** (1) directive
+      classification is now tri-state (`notDirective`/`valid`/`malformed`): a line
+      matching a directive prefix that isn't exactly two words becomes `.raw` and
+      NEVER falls through to key/value, so `include one = two` is preserved
+      verbatim, not parsed as a key. (2) CRLF handled correctly: line splitting is
+      done at the Unicode-scalar level (Swift folds `\r\n` into one grapheme, so a
+      Character split on `\n` was silently mis-parsing CRLF files); one trailing
+      `\r` is stripped for structural recognition (`Util.removeTrailingCR`) while
+      the original lexeme keeps its line ending for verbatim round-trip. (3) no-op
+      detection replaced with an explicit Includes-editor dirty flag (set on every
+      genuine add/remove/rename/Top-Bottom/comment change, reset after populate) —
+      an untouched Includes section is always `.unchanged`, even when its display
+      is lossy. (4) `.raw` entries now count as unmanaged ordered content:
+      `hasUnmanagedOrderedEntries` (pass-through directive OR any `.raw`) drives
+      the refusal, which fires before any mutation/rename/backup/write. (5) the
+      low-level rebuild (`setIncludes`) is `@discardableResult` and self-guards
+      (returns `false`, mutating nothing, when unmanaged content is present), so it
+      cannot be bypassed; the old "preceding raw/directive owns the comment"
+      heuristic is gone — a permitted rebuild only runs on fully managed documents,
+      where each managed include's comment is unambiguously its own.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
