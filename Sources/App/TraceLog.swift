@@ -32,14 +32,21 @@ final class TraceLog {
     /// PRIVACY (Finding #13): the message is a pre-composed string that in
     /// practice interpolates user-controlled values — profile names, filesystem
     /// paths, hostnames, counts, status text — so it is logged as `%{private}@`.
-    /// In shared diagnostic material (a sysdiagnose / log archive from a Release
-    /// build) the dynamic text is redacted to `<private>`; when you are actively
-    /// debugging the process (a Debug build attached to Console) it shows in
-    /// full. This is the conservative default: `TraceLog` can't tell an
-    /// operational constant apart from a path once they're concatenated. For a
-    /// line that is genuinely non-sensitive and worth keeping public at rest,
-    /// use the structured `Log.*` API with a public string LITERAL and explicit
-    /// per-value privacy instead of composing here.
+    /// The dynamic text is redacted to `<private>` wherever the log is read —
+    /// Console.app, `log show`/`log stream`, a sysdiagnose, or a log archive —
+    /// REGARDLESS of build configuration. Redaction is a property of the
+    /// os_log format directive, not of who is watching: it is NOT lifted by
+    /// running a Debug build, by attaching Console to the process, or by
+    /// "actively debugging". The value shows in full only when private-data
+    /// logging has been explicitly enabled on the machine (e.g. an
+    /// `Enable-Private-Data` configuration profile, or `log config --mode
+    /// private_data:on`) — an authorized, deliberately-configured debugging
+    /// environment, never the default. This `%{private}@` default is the
+    /// conservative choice: `TraceLog` can't tell an operational constant apart
+    /// from a path once they're concatenated. For a line that is genuinely
+    /// non-sensitive and worth keeping public at rest, use the structured
+    /// `Log.*` API with a public string LITERAL and explicit per-value privacy
+    /// instead of composing here.
     func write(_ message: String) {
         logger.info("\(message, privacy: .private)")
     }
