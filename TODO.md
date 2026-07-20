@@ -320,9 +320,20 @@ landed across the bring-up and follow-on sessions.*
       configured; menu Merge item is greyed via `validateMenuItem`.
 - [x] **Select Conflicts** + **Revert to Recommendation** —
       Action-menu items. `RowSelectionRules.unresolvedConflictRows`
-      returns indices of `<-?->` rows with no user override pinned;
-      `clearOverrides(...)` drops overrides on requested rows. Both
-      pure-function, fully tested.
+      returns indices of `<-?->` rows with no user override pinned.
+      **Revert is a REAL engine revert (Finding #2, 2026-07-20):** each
+      selected modified leaf is reset in OCaml via `unison_bridge_ri_revert`
+      (upstream `unisonRiRevert` → `diff.direction <- diff.default_direction`,
+      the exact inverse of all six actions, incl. restoring an original
+      Conflict that Skip overwrote), then the Swift row (direction +
+      `changedFromDefault`) and its visual override are resynced. `changedFromDefault`
+      is now first-class on the state item (emitted per scan/Ignore, updated by
+      every action) so Revert enablement covers plain First/Second/Merge —
+      not just rows in `rowOverrides` — and a Force whose result equals the
+      default stays revertible to clear its badge. DIRTY failure → restart-required.
+      Verified by engine round-trip tests (six actions→revert, skip-over-conflict,
+      force incl. equal-to-default, merge, invalid no-op, exn at each stage,
+      multi-row, emit/reindex) + the `isRevertible` predicate tests.
 
 ### Profile management
 

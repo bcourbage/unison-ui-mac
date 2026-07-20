@@ -67,24 +67,16 @@ enum RowSelectionRules {
         return selectedNodes[0].row  // nil for folders
     }
 
-    /// Apply "Revert to Recommendation" to a set of rows. Returns the
-    /// new override dict — the controller installs it after calling
-    /// the bridge to reset each row's direction on the OCaml side.
+    /// Pure helper: drop the visual override for a set of rows, returning the
+    /// new dict (rows not in `revertRows` untouched). Retained for reuse/tests.
     ///
-    /// Semantics: for each requested row, drop any user override so
-    /// the row falls back to OCaml's auto-detected direction. Rows
-    /// NOT in `revertRows` are left untouched.
-    ///
-    /// Pure dict operation — doesn't touch OCaml. The caller is
-    /// responsible for re-resolving the OCaml side (typically by
-    /// calling `unisonRiToDirection` on each row, since we want to
-    /// see what OCaml would have chosen now that our override is
-    /// gone). For rows that were `.skip` (which sets OCaml to
-    /// `Conflict "skip requested"`), the caller may want to call
-    /// `unisonRiResetConflict` — currently unimplemented (no upstream
-    /// callback for "clear the conflict"); for v1 we just clear the
-    /// Swift-side override and let the row continue to show as a
-    /// conflict, which is what OCaml's reconciler thinks anyway.
+    /// NOTE: this is NOT the Revert mechanism. Revert
+    /// (`ReconcileWindowController.revertSelectionAction`) performs a real engine
+    /// reset per row via `unison_bridge_ri_revert` (upstream `unisonRiRevert`,
+    /// which restores `diff.direction <- diff.default_direction` — the exact
+    /// inverse of all six actions, including Skip's `Conflict "skip requested"`),
+    /// then clears the override alongside. Clearing the Swift override alone would
+    /// leave sync using the forced direction, which was the original defect.
     static func clearOverrides(
         rowOverrides: [Int: RowOverride],
         forRows revertRows: Set<Int>
@@ -92,5 +84,14 @@ enum RowSelectionRules {
         var next = rowOverrides
         for row in revertRows { next.removeValue(forKey: row) }
         return next
+    }
+
+    /// Whether a row can be reverted to Unison's recommendation. True when the
+    /// row diverges from the engine default (`changedFromDefault` — covers plain
+    /// First/Second/Merge, which leave no visual override) OR carries a
+    /// visual-intent override such as Skip/Force (so a Force whose result equals
+    /// the default direction is still revertible, to clear its badge).
+    static func isRevertible(changedFromDefault: Bool, hasOverride: Bool) -> Bool {
+        changedFromDefault || hasOverride
     }
 }

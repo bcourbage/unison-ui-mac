@@ -1140,7 +1140,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         var changedRows: [Int] = []
         for row in rows {
             guard row < items.count else { continue }
-            let (result, dir) = action.invoke(row: Int32(row))
+            let (result, dir, changed) = action.invoke(row: Int32(row))
             if result == UNISON_OP_FAILED_DIRTY {
                 // Blocker 4: the setter mutated (or may have mutated) this row's
                 // OCaml state before failing. The engine no longer provably
@@ -1158,7 +1158,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
                 TraceLog.shared.write("ri-set skipped row \(row) (\(action), result \(result.rawValue))")
                 continue
             }
-            items[row] = items[row].with(direction: dir)
+            items[row] = items[row].with(direction: dir, changedFromDefault: changed)
             // Update the row's pinned override based on the action. Skip
             // / Force Older / Force Newer are mutually exclusive — each
             // overwrites whichever flag was there before. Plain direction
@@ -1462,20 +1462,60 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     /// Clear user overrides on every leaf row in the current
     /// selection, returning them to OCaml's auto-recommended state.
-    /// Mirrors the legacy app's "Revert to Unison's Recommendation"
-    /// Edit-menu item. Doesn't touch OCaml — only the Swift-side
-    /// override dict — since the underlying direction strings are
-    /// what OCaml decided in the first place.
+    /// "Revert to Unison's Recommendation" (Finding #2). This performs a REAL
+    /// engine revert: each direction action already mutated OCaml via
+    /// `unisonRiSet*`, so clearing the Swift override alone would leave sync
+    /// using the forced direction/skip. For each selected modified leaf we call
+    /// `unison_bridge_ri_revert`, which resets the row to
+    /// `diff.default_direction` in the engine (the exact inverse of all six
+    /// actions), then we resync the Swift row (direction + changedFromDefault)
+    /// and clear its visual override so badge, rows, and engine agree.
+    ///
+    /// A row whose revert reports FAILED_DIRTY stops the batch and enters
+    /// restart-required; rows already reverted this batch stay synced first.
     @objc private func revertSelectionAction(_ sender: Any?) {
-        guard !isSyncing else { NSSound.beep(); return }
-        let rows = Set(leafRowsInSelection())
+        // Same mutation gate as the direction actions (blocks during sync,
+        // restart, and the Ignore publication gap).
+        guard actionGate.allows(.direction) else { NSSound.beep(); return }
+        let rows = leafRowsInSelection().filter { isRevertible($0) }
         guard !rows.isEmpty else { NSSound.beep(); return }
-        let before = rowOverrides.count
-        rowOverrides = RowSelectionRules.clearOverrides(
-            rowOverrides: rowOverrides, forRows: rows
-        )
-        // Redraw every row that lost an override + every ancestor
-        // folder so aggregates re-resolve.
+        var changedRows: [Int] = []
+        for row in rows {
+            guard row < items.count else { continue }
+            var buf = [CChar](repeating: 0, count: 16)
+            var changed = false
+            let result = unison_bridge_ri_revert(Int32(row), &buf, buf.count, &changed)
+            if result == UNISON_OP_FAILED_DIRTY {
+                // The revert began mutating the row but a readback failed — the
+                // engine no longer provably matches the displayed rows. Keep the
+                // rows already reverted this batch synced (done in prior
+                // iterations), then hand the engine to restart-required.
+                TraceLog.shared.write("revert DIRTY on row \(row) — engine uncertain")
+                redrawRowsAndAncestors(changedRows)
+                onEngineUncertain("revert failed after mutating a row")
+                return
+            }
+            guard result == UNISON_OP_OK else {
+                // INVALID (bad row / missing callback) — nothing changed; skip.
+                TraceLog.shared.write("revert skipped row \(row) (result \(result.rawValue))")
+                continue
+            }
+            // Engine reset succeeded: resync the Swift row to the restored
+            // recommendation (changed is false by definition) and drop the
+            // visual override so the badge clears.
+            items[row] = items[row].with(direction: String(cString: buf),
+                                         changedFromDefault: changed)
+            rowOverrides.removeValue(forKey: row)
+            changedRows.append(row)
+        }
+        redrawRowsAndAncestors(changedRows)
+        if !changedRows.isEmpty { setSummary(summaryText()) }
+        TraceLog.shared.write("ReconcileWindow: Revert → engine-reverted \(changedRows.count) row(s)")
+    }
+
+    /// Redraw the given leaf rows plus every ancestor folder so aggregates
+    /// re-resolve. Shared by direction/revert batch handlers.
+    private func redrawRowsAndAncestors(_ rows: [Int]) {
         var nodesToReload: [ObjectIdentifier: ReconcileNode] = [:]
         for row in rows {
             guard let leaf = leafNode(forRow: row) else { continue }
@@ -1489,9 +1529,18 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         for node in nodesToReload.values {
             outlineView.reloadItem(node, reloadChildren: false)
         }
-        TraceLog.shared.write(
-            "ReconcileWindow: Revert → cleared overrides on \(before - rowOverrides.count) row(s)"
-        )
+    }
+
+    /// A row is revertible if it diverges from the engine's recommendation
+    /// (`changedFromDefault`) OR carries a visual-intent override (Skip / Force),
+    /// so a Force whose result equals the default direction is still revertible
+    /// to clear its badge. Covers plain First/Second/Merge too, which leave no
+    /// `rowOverrides` entry but do set `changedFromDefault`.
+    private func isRevertible(_ row: Int) -> Bool {
+        guard row >= 0, row < items.count else { return false }
+        return RowSelectionRules.isRevertible(
+            changedFromDefault: items[row].changedFromDefault,
+            hasOverride: rowOverrides[row] != nil)
     }
 
     /// NSMenuItemValidation entry point. AppKit walks the responder chain
@@ -1538,10 +1587,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         if menuItem.action == #selector(revertSelectionAction(_:)) {
             guard isActionable else { return false }
-            // Only useful if at least one selected row carries an
-            // override. Otherwise the action is a no-op.
-            let rows = leafRowsInSelection()
-            return rows.contains { rowOverrides[$0] != nil }
+            // Enabled when at least one selected leaf is revertible — it
+            // diverges from the engine recommendation (changedFromDefault, which
+            // covers plain First/Second/Merge that leave no override) OR carries
+            // a visual Force/Skip override (so a Force whose result equals the
+            // default is still revertible to clear its badge).
+            return leafRowsInSelection().contains { isRevertible($0) }
         }
         if menuItem.action == #selector(directionMenuAction(_:)) {
             guard isActionable else { return false }

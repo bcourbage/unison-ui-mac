@@ -234,6 +234,13 @@ typedef struct unison_state_item {
     const char *file_type;        /* "FILE", "DIR", "SYMLINK", ... */
     const char *progress;         /* "", "start ", " 35%", "done", "FAILED" */
     int64_t     bytes_transferred;
+    /* Whether the row's current direction differs from Unison's post-scan
+     * recommendation (engine `changedFromDefault`). Populated per row during
+     * emission; carried so the UI can badge/enable Revert from engine truth
+     * (a plain First/Second/Merge change diverges from default even though it
+     * leaves no visual-intent override), and so a skip-requested Conflict is
+     * seen as changed even though it renders like a default Conflict. */
+    bool        changed_from_default;
 } unison_state_item_t;
 
 typedef void (*unison_init2_complete_handler_t)(const unison_state_item_t *items,
@@ -287,21 +294,42 @@ typedef enum {
  *
  * On UNISON_OP_OK, `out_dir` (a caller-provided buffer of `out_dir_len` bytes)
  * receives the row's new direction string in OCaml's raw representation
- * ("---->", "<----", "<-?->", "<-M->"). On any non-OK result `out_dir` is set to
- * the empty string. A setter mutates the row before the direction is read back,
- * so any raise here is UNISON_OP_FAILED_DIRTY (never a silent "no change"): the
- * caller must route it to restart-required rather than leave a stale-but-
- * actionable row. UNISON_OP_INVALID (bad row / missing callback) mutated
- * nothing and is safe to surface narrowly. */
-unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *out_dir, size_t out_dir_len);  /* unisonRiSetRight */
-unison_op_result_t unison_bridge_ri_set_to_local(int row, char *out_dir, size_t out_dir_len);   /* unisonRiSetLeft */
-unison_op_result_t unison_bridge_ri_set_skip(int row, char *out_dir, size_t out_dir_len);       /* unisonRiSetConflict */
-unison_op_result_t unison_bridge_ri_set_merge(int row, char *out_dir, size_t out_dir_len);      /* unisonRiSetMerge */
+ * ("---->", "<----", "<-?->", "<-M->") and `*out_changed` receives the engine's
+ * `changedFromDefault` for the row (so the caller can update the cached state
+ * item + Revert enablement in one round-trip). On any non-OK result `out_dir` is
+ * set to the empty string and `*out_changed` is left unchanged. A setter mutates
+ * the row before the readbacks, so any raise here — including the direction or
+ * changed-from-default readback — is UNISON_OP_FAILED_DIRTY (never a silent "no
+ * change" or a false `changed`): the caller must route it to restart-required
+ * rather than leave a stale-but-actionable row. UNISON_OP_INVALID (bad row /
+ * missing callback) mutated nothing and is safe to surface narrowly.
+ * `out_dir`/`out_changed` may be NULL if the caller doesn't need them. */
+unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *out_dir, size_t out_dir_len, bool *out_changed);  /* unisonRiSetRight */
+unison_op_result_t unison_bridge_ri_set_to_local(int row, char *out_dir, size_t out_dir_len, bool *out_changed);   /* unisonRiSetLeft */
+unison_op_result_t unison_bridge_ri_set_skip(int row, char *out_dir, size_t out_dir_len, bool *out_changed);       /* unisonRiSetConflict */
+unison_op_result_t unison_bridge_ri_set_merge(int row, char *out_dir, size_t out_dir_len, bool *out_changed);      /* unisonRiSetMerge */
 /* Force-older / force-newer pick a direction based on mtime — the side
  * with the older (resp. newer) mtime wins. Same mutation-then-readback contract
  * and result semantics as the ri_set_* functions above. */
-unison_op_result_t unison_bridge_ri_force_older(int row, char *out_dir, size_t out_dir_len);
-unison_op_result_t unison_bridge_ri_force_newer(int row, char *out_dir, size_t out_dir_len);
+unison_op_result_t unison_bridge_ri_force_older(int row, char *out_dir, size_t out_dir_len, bool *out_changed);
+unison_op_result_t unison_bridge_ri_force_newer(int row, char *out_dir, size_t out_dir_len, bool *out_changed);
+
+/* === Per-row Revert to Unison's recommendation (Finding #2) ===
+ *
+ * The genuine engine inverse for ALL of the above (First/Second/Skip/Merge/
+ * Force Older/Force Newer): resets the row's direction to Unison's post-scan
+ * recommendation via the upstream `unisonRiRevert` callback (which restores
+ * `diff.direction <- diff.default_direction`). Because every setter mutates only
+ * `diff.direction` and `default_direction` is immutable after the scan, this is
+ * exact and total — no rescan required.
+ *
+ * Same structured contract as the setters: resolves the revert, direction, and
+ * changed-from-default callbacks BEFORE mutating; UNISON_OP_INVALID for a bad
+ * row / missing callback (nothing changed); UNISON_OP_FAILED_DIRTY for any raise
+ * once the revert began, including either readback. On UNISON_OP_OK, `out_dir`
+ * is the restored recommendation direction and `*out_changed` is `false` (a
+ * successful revert is, by definition, back to the default). */
+unison_op_result_t unison_bridge_ri_revert(int row, char *out_dir, size_t out_dir_len, bool *out_changed);
 
 /* Calls OCaml's unisonRiToDetails for the given row and returns the
  * multi-line details string (path, both sides' size/mtime, conflict

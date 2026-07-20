@@ -197,4 +197,29 @@ final class RowSelectionRulesTests: XCTestCase {
         )
         XCTAssertEqual(after, before)
     }
+
+    // MARK: - isRevertible (Finding #2 — Revert menu eligibility)
+
+    func test_isRevertible_plainDirectionChange_viaChangedFromDefault() {
+        // First/Second/Merge leave no override but DO diverge from the default →
+        // must still be revertible (the pre-fix gap: rowOverrides-only checks
+        // missed these entirely).
+        XCTAssertTrue(RowSelectionRules.isRevertible(changedFromDefault: true, hasOverride: false))
+    }
+
+    func test_isRevertible_skipOrForce_viaOverride() {
+        // Skip / Force carry a visual override.
+        XCTAssertTrue(RowSelectionRules.isRevertible(changedFromDefault: true, hasOverride: true))
+    }
+
+    func test_isRevertible_forceEqualsDefault_stillRevertibleToClearBadge() {
+        // A Force whose result happens to equal the default direction reports
+        // changedFromDefault=false, but the badge (override) must still be
+        // clearable via Revert.
+        XCTAssertTrue(RowSelectionRules.isRevertible(changedFromDefault: false, hasOverride: true))
+    }
+
+    func test_isRevertible_unchangedNoOverride_notRevertible() {
+        XCTAssertFalse(RowSelectionRules.isRevertible(changedFromDefault: false, hasOverride: false))
+    }
 }

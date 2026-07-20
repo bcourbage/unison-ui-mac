@@ -1378,8 +1378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             .toSecond, .toFirst, .skip, .merge, .forceOlder, .forceNewer, .toSecond,
         ]
         for action in cycle {
-            let (result, dir) = action.invoke(row: 0)
-            let shown = result == UNISON_OP_OK ? dir : "<\(result.rawValue)>"
+            let (result, dir, changed) = action.invoke(row: 0)
+            let shown = result == UNISON_OP_OK ? "\(dir) (changed=\(changed))" : "<\(result.rawValue)>"
             log.write("  row 0 (\(items[0].path)): \(current) --[\(action.label)]--> \(shown)")
             if result == UNISON_OP_OK { current = dir }
         }
