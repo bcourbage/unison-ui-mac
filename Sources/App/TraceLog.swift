@@ -27,13 +27,21 @@ final class TraceLog {
         self.logger = Logger(subsystem: Log.subsystem, category: "general")
     }
 
-    /// Append a message to the log. The first argument is treated as a
-    /// public string — we're an interactive dev tool, not a privacy-
-    /// sensitive production app, so `%{public}@` is the right default.
-    /// If you need to log a value that might contain a credential, use
-    /// `Logger.info(_:)` directly with an explicit redaction.
+    /// Append a message to the log.
+    ///
+    /// PRIVACY (Finding #13): the message is a pre-composed string that in
+    /// practice interpolates user-controlled values — profile names, filesystem
+    /// paths, hostnames, counts, status text — so it is logged as `%{private}@`.
+    /// In shared diagnostic material (a sysdiagnose / log archive from a Release
+    /// build) the dynamic text is redacted to `<private>`; when you are actively
+    /// debugging the process (a Debug build attached to Console) it shows in
+    /// full. This is the conservative default: `TraceLog` can't tell an
+    /// operational constant apart from a path once they're concatenated. For a
+    /// line that is genuinely non-sensitive and worth keeping public at rest,
+    /// use the structured `Log.*` API with a public string LITERAL and explicit
+    /// per-value privacy instead of composing here.
     func write(_ message: String) {
-        logger.info("\(message, privacy: .public)")
+        logger.info("\(message, privacy: .private)")
     }
 }
 
@@ -45,12 +53,14 @@ final class TraceLog {
 ///     log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "bridge"'
 ///     log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 1h
 ///
-/// All entries use `.public` privacy because this is a developer-
-/// facing diagnostic stream, not a privacy-sensitive end-user trace.
-/// If we ever start logging passphrases / SSH keys / file content, we
-/// MUST switch those individual call sites to `.private` (the default
-/// when no explicit modifier is given) — but right now nothing here
-/// crosses that line.
+/// PRIVACY POLICY (Finding #13): a message's string LITERAL is always public
+/// (it is the os_log format string). For INTERPOLATED values, the default is
+/// `.private` (redacted in shared diagnostic material) — so user-controlled
+/// values (paths, profile names, hostnames, usernames, command output, error
+/// text) must be left at the default OR marked `\(x, privacy: .private)`
+/// explicitly. Only genuinely non-sensitive OPERATIONAL metadata — counts,
+/// enum/state labels, Unison version numbers — should be marked
+/// `\(x, privacy: .public)`. When in doubt, leave it private.
 enum Log {
     /// Reverse-DNS subsystem for the whole app. Keep stable — users'
     /// saved Console.app filters and stream predicates reference it.

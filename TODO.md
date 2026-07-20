@@ -73,6 +73,22 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **Finding #13 (2026-07-20):** privacy-safe diagnostics. The post-crash
+      prompt no longer claims "no personal data" (twice); `CrashReportCopy`
+      (extracted, testable) states a `.ips` can contain the account name, file
+      paths, process arguments, and system details, and keeps the review-in-
+      Finder step. Logging policy flipped to private-by-default for dynamic
+      user-controlled content: `TraceLog.write` logs its composed message as
+      `%{private}@` (redacted in shared diagnostics/Release, visible when
+      actively debugging), and the version-check log sites mark `profile` /
+      `host` / probe `reason` `.private` while keeping non-sensitive Unison
+      version numbers `.public`. Doc comments in `TraceLog`/`Log` updated to the
+      new policy. **Coverage:** 7 tests — crash-copy assertions (no "no personal
+      data", names the categories, keeps Finder review, no em-dash) + a
+      source-level regression scan of the logging privacy posture. NOTE: os_log
+      redaction isn't runtime-observable, so Release redaction is relied upon by
+      os_log semantics, not asserted at runtime.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
