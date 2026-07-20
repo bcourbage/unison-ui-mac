@@ -334,16 +334,29 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return [] }
 
-        struct Raw { let name: String; let roots: [String]; let usesRootalias: Bool }
+        struct Raw {
+            let name: String
+            let roots: [String]
+            let usesRootalias: Bool
+            /// False when the profile's directives couldn't be resolved cleanly
+            /// (missing/unreadable include, cycle, malformed line, bound hit) —
+            /// its roots can't be trusted, so attribution must stay uncertain.
+            let resolutionReliable: Bool
+        }
         let raws: [Raw] = names
             .filter { ($0 as NSString).pathExtension == "prf" }
-            .compactMap { name in
-                let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(name)
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                let doc = ProfileDocument.parse(text)
-                return Raw(name: (name as NSString).deletingPathExtension,
-                           roots: doc.values(forKey: "root"),
-                           usesRootalias: !doc.values(forKey: "rootalias").isEmpty)
+            .map { name -> Raw in
+                let profileName = (name as NSString).deletingPathExtension
+                // Resolve `include`/`source`/`include?`/`source?` recursively so
+                // a profile whose roots live in an included file is attributed
+                // correctly (Finding #9). Conservative: any resolution ambiguity
+                // ⇒ `reliable == false` ⇒ the profile's archives stay uncertain.
+                let resolution = ProfileRootResolver.resolve(
+                    unisonDirectory: unisonDirectory, profile: profileName)
+                return Raw(name: profileName,
+                           roots: resolution.roots,
+                           usesRootalias: !resolution.rootaliases.isEmpty,
+                           resolutionReliable: resolution.reliable)
             }
 
         // Count how many profiles use each local root path (to detect a
@@ -361,9 +374,10 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             let hasWildcardRemote = specs.contains { $0.path == nil }
             let hasSymlinkRoot = localPaths.contains { Self.isLeafSymlink($0) }
             let sharesLocalRoot = localPaths.contains { (localPathCount[$0] ?? 0) > 1 }
-            let reliable = !(raw.usesRootalias
-                             || hasSymlinkRoot
-                             || (hasWildcardRemote && sharesLocalRoot))
+            let reliable = raw.resolutionReliable
+                           && !(raw.usesRootalias
+                                || hasSymlinkRoot
+                                || (hasWildcardRemote && sharesLocalRoot))
             return ArchiveStaleScanner.Profile(
                 name: raw.name, roots: raw.roots, attributionReliable: reliable)
         }

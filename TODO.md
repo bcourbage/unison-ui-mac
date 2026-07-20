@@ -73,6 +73,25 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **Finding #9 (2026-07-20):** "Clean Stale Archives" now resolves a
+      profile's effective roots recursively through `include`/`source`/
+      `include?`/`source?` via the new pure `ProfileRootResolver`, replicating
+      upstream `prefs.ml` semantics (relative to the Unison dir; `include`
+      appends `.prf` only when the exact file is absent; `source` never does;
+      `?` variants silently skip a missing file; a required missing/unreadable
+      file, a cycle, a malformed/`.raw` line, or exceeding the traversal bound
+      makes resolution **unreliable**). `CleanStaleArchivesWindowController.
+      profiles()` feeds the resolved roots to the matcher and folds
+      `resolution.reliable` into `attributionReliable`, so an archive whose
+      roots live in an included file is attributed correctly and an
+      unreliably-resolved profile's archives stay uncertain (never start
+      checked). Cycle detection + hard bounds (maxFiles/maxDepth) guarantee
+      termination that upstream lacks. **Coverage is pure-logic only** (18
+      `ProfileRootResolver` tests with scratch fixtures + an injected reader for
+      unreadable/unbounded cases); this is NOT field-proven through the actual
+      Clean Stale Archives window against a live `.unison` directory — that
+      manual validation remains, consistent with the no-UI-harness posture.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
