@@ -949,9 +949,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return result
     }
 
-    /// O(items) walk to find the leaf for a row. Fine for the per-row
-    /// update path — fires at most ~once per file during sync. If we ever
-    /// hit profiles where this is hot, cache row → node in a dictionary.
+    /// O(1) lookup of the leaf for a row via the `rowToNode` index, which is
+    /// rebuilt synchronously alongside `items`/`tree` (see `buildRowIndex`), so
+    /// it can never lag the current row set. Replaces the former O(items) walk
+    /// over the tree (Finding #10).
     private func leafNode(forRow row: Int) -> ReconcileNode? {
         rowToNode[row]
     }
