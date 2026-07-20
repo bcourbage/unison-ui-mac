@@ -175,7 +175,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             profile: profile,
             mergeConfigured: mergeConfigured,
             onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
-            onRescanRequested: { [weak self] in self?.run(self?.engine.requestRescan() ?? []) },
+            onRescanRequested: { [weak self] in
+                guard let self else { return }
+                // Defensive (not solely AppKit validation): never authorize a
+                // rescan while THIS session's Ignore publication is still in
+                // flight — its new roots are installed but its rows haven't
+                // landed, and a rescan would race the pending completion.
+                guard self.pendingIgnore != s else {
+                    self.log.write("deferring rescan — ignore completion pending for \(s)")
+                    return
+                }
+                self.run(self.engine.requestRescan())
+            },
             // Stop during connect/scan: tear the window down to the picker now
             // (leaving the lease with the in-flight op), rather than leaving it
             // spinning on "Cancelling…" until the background op settles.
@@ -183,7 +194,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self?.leaveSession(s, profile: profile, closeWindow: true,
                                    reason: "Stop during connect/scan")
             },
-            onSyncStart: { [weak self] in self?.run(self?.engine.requestSync() ?? []) },
+            onSyncStart: { [weak self] in
+                guard let self else { return }
+                // Defensive: never authorize a sync while THIS session's Ignore
+                // publication is still in flight (see onRescanRequested).
+                guard self.pendingIgnore != s else {
+                    self.log.write("deferring sync — ignore completion pending for \(s)")
+                    return
+                }
+                self.run(self.engine.requestSync())
+            },
             onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) },
             onEngineUncertain: { [weak self] reason in
                 self?.run(self?.engine.engineBecameUncertain(reason: reason) ?? [])

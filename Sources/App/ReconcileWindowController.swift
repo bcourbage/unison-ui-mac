@@ -303,6 +303,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // Any fresh publication (scan or ignore) means rows now match roots, so
         // the mutation gate no longer applies.
         mutationInFlight = false
+        outlineView.isEnabled = true
         items = newItems
         let layout = SettingsModel.reconcileLayoutMode()
         let policy = SettingsModel.reconcileExpandPolicy()
@@ -521,7 +522,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// bridge call out of the window is what makes the coordinator the sole
     /// authority over engine actions.
     func startSync() {
-        guard !isSyncing, !restartRequired else { return }
+        // Method-boundary gate (not just toolbar/menu validation): never start a
+        // sync during an Ignore publication gap or a restart.
+        guard actionGate.allows(.sync) else { NSSound.beep(); return }
         onSyncStart()
     }
 
@@ -593,7 +596,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     // MARK: - Scanning (initial or rescan)
 
     func rescan() {
-        guard !isSyncing, !restartRequired else { NSSound.beep(); return }
+        // Method-boundary gate: reject during an Ignore publication gap (as well
+        // as during a sync or a restart).
+        guard actionGate.allows(.rescan) else { NSSound.beep(); return }
         onRescanRequested()
     }
 
@@ -665,6 +670,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     private func updateDetailsForSelection() {
+        // During an Ignore publication gap the displayed row indices are stale
+        // against the newly-published OCaml roots, so ri_get_details(row) would
+        // read the wrong item. Show a placeholder and DO NOT touch the bridge;
+        // the details refresh again when the fresh rows land.
+        guard actionGate.allows(.details) else {
+            detailsTextView.string = "Applying ignore…"
+            detailsTextView.textColor = .secondaryLabelColor
+            return
+        }
         guard let node = selectedNodes().first else {
             detailsTextView.string = "Select a row to see details."
             detailsTextView.textColor = .secondaryLabelColor
@@ -1120,7 +1134,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// leaves *underneath* selected folders. Single click on a folder thus
     /// becomes "apply this action to every file in that folder".
     func applyDirection(_ action: DirectionAction) {
-        guard !restartRequired, !mutationInFlight else { NSSound.beep(); return }
+        guard actionGate.allows(.direction) else { NSSound.beep(); return }
         let rows = leafRowsInSelection()
         guard !rows.isEmpty else { NSSound.beep(); return }
         var changedRows: [Int] = []
@@ -1259,12 +1273,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         )
     }
 
-    /// Apply one of the three Ignore actions to a specific leaf row. The
-    /// bridge call recomputes OCaml's `theState`; the init2-complete handler
-    /// installed on AppDelegate fires re-entrantly and `replaceItems(_:)`
-    /// repopulates the table with the post-filter list.
+    /// Apply one of the three Ignore actions to a specific leaf row. The bridge
+    /// call recomputes OCaml's `theState` and installs the new per-row roots,
+    /// then delivers the post-filter rows through the DEDICATED asynchronous
+    /// Ignore completion (bound by the driver to this session) — NOT the
+    /// init2/scan handler. `applyIgnoreResult(_:)` repopulates the table when
+    /// that completion lands.
     func applyIgnore(_ action: IgnoreAction, row: Int?) {
-        guard !isSyncing, !restartRequired, !mutationInFlight else { NSSound.beep(); return }
+        guard actionGate.allows(.ignore) else { NSSound.beep(); return }
         guard let row, row >= 0, row < items.count else { NSSound.beep(); return }
         let path = items[row].path
         TraceLog.shared.write("ReconcileWindow: \(action.label) on row \(row) (\(path))")
@@ -1275,10 +1291,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         if result == UNISON_OP_OK {
             // The Ignore mutated theState and installed new OCaml roots, but the
             // fresh rows arrive on the (async) dedicated completion. Until they
-            // land, the displayed rows are stale against the new roots — disable
-            // row actions so nothing addresses the wrong item in the gap.
+            // land, the displayed rows are stale against the new roots — set the
+            // mutation gate (blocks every engine-reaching action via
+            // `actionGate`) and disable the outline view for presentation
+            // clarity. `applyIgnoreResult` lifts both.
             mutationInFlight = true
+            outlineView.isEnabled = false
             setSummary("Applying ignore…")
+            updateDetailsForSelection()   // show the placeholder immediately
             refreshToolbarEnabled()
         } else if result == UNISON_OP_FAILED_DIRTY {
             // Blocker 4: the ignore pattern was persisted / theState rewritten,
@@ -1299,6 +1319,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// lifts the mutation gate — the atomic "rows now match roots" point.
     func applyIgnoreResult(_ newItems: [StateItem]) {
         mutationInFlight = false
+        outlineView.isEnabled = true
         replaceItems(newItems)
     }
 
@@ -1353,7 +1374,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// loading window, and kicks off the async OCaml diff. `row` is
     /// assumed in-bounds.
     private func performDiff(row: Int) {
-        guard !isSyncing else { NSSound.beep(); return }
+        // Method-boundary gate: reject BEFORE any canDiff / run_show_diffs bridge
+        // call while an Ignore publication is pending (the row index would
+        // address the wrong OCaml root) or a restart is required.
+        guard actionGate.allows(.diff) else { NSSound.beep(); return }
         let path = items[row].path
         // Defensive re-check — the menu validation calls canDiff too,
         // but a context-menu click on a row that changed since
@@ -1546,13 +1570,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isScanning
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
-            // Rescan is the way out of .done back to .ready — we
-            // explicitly want it enabled post-sync. Blocked during an
-            // active sync (OCaml runtime is occupied) and once a restart
-            // is required (the coordinator refuses new engine work).
-            if restartRequired { return false }
-            if case .syncing = phase { return false }
-            return true
+            // Rescan is the way out of .done back to .ready — enabled post-sync.
+            // Blocked during an active sync, once a restart is required, and
+            // during an Ignore publication gap (same gate the method enforces).
+            return actionGate.allows(.rescan)
         }
         if menuItem.action == #selector(showProfilePickerMenuAction(_:)) {
             // Allowed in any phase except .syncing — closing the
@@ -1661,11 +1682,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // Disabled once the engine needs a restart (nothing to abort).
             return !restartRequired && (syncing || isScanning)
         case DirectionAction.rescanIdentifier:
-            // Rescan is the way out of `.done` back to `.ready` —
-            // explicitly available after completion. Blocked while OCaml is
-            // actively running a sync, and once a restart is required (the
-            // coordinator would refuse the new engine work anyway).
-            return !restartRequired && !syncing
+            // Rescan is the way out of `.done` back to `.ready` — explicitly
+            // available after completion. Blocked while OCaml is running a sync,
+            // once a restart is required, and during an Ignore publication gap
+            // (same gate the method enforces).
+            return actionGate.allows(.rescan)
         case DirectionAction.profilesIdentifier:
             // Always navigable back to the picker.
             return true
@@ -1749,18 +1770,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///
     /// Read-only actions (Select Conflicts, navigation) bypass this
     /// gate and validate on their own data.
-    private var isActionable: Bool {
-        guard !restartRequired else { return false }
-        // A successful Ignore has installed new OCaml roots but its fresh rows
-        // have not landed yet — the displayed rows are stale against the roots,
-        // so no row action may run until `applyIgnoreResult` (Blocker fix).
-        guard !mutationInFlight else { return false }
-        guard !items.isEmpty else { return false }
+    /// Snapshot of the current gating state, used by BOTH the action methods and
+    /// menu/toolbar validation so they can't drift. The pure predicate lives in
+    /// `ReconcileActionGate` (unit-tested).
+    private var actionGate: ReconcileActionGate {
+        let gatePhase: ReconcileActionGate.Phase
         switch phase {
-        case .ready:           return true
-        case .syncing, .done:  return false
+        case .ready:   gatePhase = .ready
+        case .syncing: gatePhase = .syncing
+        case .done:    gatePhase = .done
         }
+        return ReconcileActionGate(
+            restartRequired: restartRequired,
+            mutationInFlight: mutationInFlight,
+            isSyncing: isSyncing,
+            isScanning: isScanning,
+            phase: gatePhase,
+            hasItems: !items.isEmpty)
     }
+
+    private var isActionable: Bool { actionGate.isActionable }
 }
 
 // MARK: - Direction-cell view (the only colored cell in the row)
