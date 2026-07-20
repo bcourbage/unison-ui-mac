@@ -39,6 +39,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// (on success) delivers the fresh rows back via `applyIgnoreResult`. Returns
     /// the bridge's structured result so the window can classify DIRTY failures.
     typealias IgnoreRequest = @MainActor (_ action: IgnoreAction, _ row: Int) -> unison_op_result_t
+    /// Ask the app-global broker (via AppDelegate) to issue a diff for `row`,
+    /// owned by this window's session. Returns whether it was issued, refused
+    /// (one already outstanding / draining), or raised synchronously.
+    typealias DiffRequest = @MainActor (_ row: Int) -> DiffRequestResult
+    /// The diff window closed (or the session is leaving): drain this session's
+    /// outstanding diff so a late result is discarded.
+    typealias DiffAbandon = @MainActor () -> Void
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -75,6 +82,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onEngineUncertain: EngineUncertainRequest
     /// Perform an Ignore through the driver; see `IgnoreRequest`.
     private let onIgnore: IgnoreRequest
+    /// Issue a diff through the app-global broker; see `DiffRequest`.
+    private let onDiffRequest: DiffRequest
+    /// Drain this session's outstanding diff; see `DiffAbandon`.
+    private let onDiffAbandon: DiffAbandon
     /// True between a successful Ignore invocation and its dedicated completion
     /// landing (`applyIgnoreResult`). During this gap the published OCaml roots
     /// are the post-Ignore set but the displayed rows are still the pre-Ignore
@@ -153,10 +164,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// clicking back to the picker, and the window is read-only so a
     /// stale association with the closed reconcile is harmless.
     private var diffWindowController: DiffWindowController?
-    /// Serializes async diff requests + drops stale/late results so an older,
-    /// slower diff can't overwrite a newer selection and a result arriving
-    /// after close/session-change is ignored (L1 + residual Finding #6).
-    private var diffCoordinator = DiffRequestCoordinator()
     /// True when the active profile's `.prf` declares at least one
     /// `merge = …` pattern. Drives the toolbar's Merge-button
     /// visibility AND the Edit-menu Merge item's enablement. Set at
@@ -185,7 +192,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onSyncStart: @escaping SyncStartRequest,
          onSyncExit: @escaping SyncExitRequest,
          onEngineUncertain: @escaping EngineUncertainRequest,
-         onIgnore: @escaping IgnoreRequest) {
+         onIgnore: @escaping IgnoreRequest,
+         onDiffRequest: @escaping DiffRequest,
+         onDiffAbandon: @escaping DiffAbandon) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
@@ -196,6 +205,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onSyncExit = onSyncExit
         self.onEngineUncertain = onEngineUncertain
         self.onIgnore = onIgnore
+        self.onDiffRequest = onDiffRequest
+        self.onDiffAbandon = onDiffAbandon
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -1119,28 +1130,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         TraceLog.shared.write("ReconcileWindow: restart required (\(reason))")
     }
 
-    /// Diff-result presentation, forwarded by AppDelegate's permanent diff
-    /// handler for the live session into this window's (lazily created)
-    /// diff window. The window no longer installs its own diff handler.
+    /// Diff-result presentation. AppDelegate calls this ONLY after the
+    /// app-global `DiffRequestBroker` has confirmed the result belongs to this
+    /// session (the owner of the single outstanding request); a stale/late
+    /// result from an abandoned or replaced session is dropped by the broker
+    /// before it ever reaches here, so this method just displays.
     func showDiff(title: String, text: String) {
-        // Drop a stale/late result: one that arrives after its request was
-        // superseded, the diff window closed, or this window is a replacement
-        // session that never requested a diff (the permanent handler routes to
-        // the current session). Only the single outstanding request is applied.
-        guard diffCoordinator.deliver() == .apply else {
-            TraceLog.shared.write("ReconcileWindow: dropping stale diff result")
-            return
-        }
         diffWindowController?.showDiff(title: title, text: text)
     }
 
-    /// Diff-error presentation, forwarded by AppDelegate's permanent
-    /// diff-error handler for the live session.
+    /// Diff-error presentation. Same broker-gated contract as `showDiff`.
     func showDiffError(_ message: String) {
-        guard diffCoordinator.deliver() == .apply else {
-            TraceLog.shared.write("ReconcileWindow: dropping stale diff error")
-            return
-        }
         diffWindowController?.showError(message)
     }
 
@@ -1423,46 +1423,45 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             alert.runModal()
             return
         }
-        // Serialize: only issue a diff when none is outstanding. Because the
-        // async result carries no request id and is delivered on a later main
-        // hop, allowing a second concurrent request would make it impossible to
-        // tell which request a given result belongs to. A rapid second click is
-        // refused with brief feedback until the first result (or error) lands.
-        switch diffCoordinator.request() {
-        case .refuseInFlight:
+        // Issue through the APP-GLOBAL broker (via AppDelegate). It serializes
+        // globally — at most one diff outstanding across the whole app — and
+        // records this session as the owner so the async result is routed back
+        // to THIS window, never to whatever session happens to be current when
+        // it lands. A second request while one is outstanding (or while an
+        // abandoned request is still draining) is refused with brief feedback.
+        // `onDiffRequest` performs the `run_show_diffs` dispatch internally.
+        let outcome = onDiffRequest(row)
+        switch outcome {
+        case .refused:
             NSSound.beep()
-            TraceLog.shared.write("ReconcileWindow: diff already in flight — ignoring request for row \(row)")
+            TraceLog.shared.write("ReconcileWindow: diff refused (in-flight/draining) for row \(row)")
             return
-        case .issue:
+        case .issued, .raised:
             break
         }
 
-        // Lazily create the diff window — most reconcile sessions
-        // never need one.
+        // Lazily create the diff window — most reconcile sessions never need
+        // one. Closing it drains this session's outstanding diff so a late
+        // result is dropped and can't be misattributed to a later request.
         if diffWindowController == nil {
             diffWindowController = DiffWindowController()
-            // Closing the diff window (incl. while still loading) cancels the
-            // outstanding request so a late result is dropped and the next diff
-            // isn't locked out.
             diffWindowController?.onClose = { [weak self] in
-                self?.diffCoordinator.invalidate()
+                self?.onDiffAbandon()
             }
         }
         diffWindowController?.surfaceForLoading(path: path)
         TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
-        // A false return means the diff dispatch raised in OCaml. The engine
-        // stays valid (a diff is a read-only per-row query), so surface a
-        // narrow diff error in the already-open diff window rather than escalate.
-        // Clear the pending request FIRST (no async result will arrive) so the
-        // synchronous error isn't itself dropped as "stale".
-        if !unison_bridge_run_show_diffs(Int32(row)) {
+
+        if outcome == .raised {
+            // The diff dispatch raised in OCaml; no async result will arrive.
+            // The engine stays valid (a diff is a read-only per-row query), so
+            // surface a narrow diff error in the diff window rather than escalate.
             TraceLog.shared.write("ReconcileWindow: run_show_diffs raised for row \(row)")
-            diffCoordinator.requestRaised()
             diffWindowController?.showError(
                 "Unison could not produce a diff for this row.")
         }
-        // On success the result arrives via the diff handler →
-        // diffWindowController.showDiff, or via the diff-err handler → showError.
+        // On success the result arrives via AppDelegate's diff handler (routed
+        // to this window by the broker) → showDiff, or → showDiffError.
     }
 
     // MARK: - Select Conflicts / Revert to Recommendation

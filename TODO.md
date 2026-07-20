@@ -167,26 +167,38 @@ section at the bottom so this list stays scannable.
       or collision). Pure/unit-level; the AppKit save button is not driven by a
       UI harness.
 
-      **L1 + residual Finding #6 (2026-07-20):** diff-result identity/safety. The
-      async diff result (`displayInfoDiff`) carries no request id and is
-      delivered on a later main hop, and the permanent handler routes to the
-      current session's window — so a slower earlier result could overwrite a
-      newer selection, or a result could land on a replacement session. Added a
-      pure `DiffRequestCoordinator` (serialize: one diff outstanding at a time;
-      monotonic token; `invalidate()` on window close / session teardown /
-      cancellation drops in-flight results). `ReconcileWindowController.
-      performDiff` gates on `request()` (refuses a rapid second diff while one is
-      loading), calls `requestRaised()` on the `run_show_diffs` false/raised
-      return (clears pending, surfaces the error synchronously without escalating
-      — a diff is a read-only query), and `showDiff`/`showDiffError` drop stale
-      deliveries via `deliver()`. `DiffWindowController.onClose` invalidates so a
-      closed diff window can't lock out the next diff or apply a late result.
-      **Coverage:** 9 deterministic `DiffRequestCoordinator` tests — rapid
-      selection change, duplicate/late completion, delivery with no outstanding
-      request, invalidate/replacement, bridge-raised fault, error delivery,
-      monotonic tokens. This also closes the missing `run_show_diffs`
-      exception-handling test gap at the pure-logic layer (the bridge-raised
-      path is modeled by `requestRaised()`); the controller wiring itself isn't
+      **L1 + residual Finding #6 (2026-07-20):** diff-result identity/safety.
+      The async OCaml diff result carries no request id and is delivered through
+      a single permanent handler that had routed to the CURRENT session's
+      window — so a late result from an abandoned/replaced session could be
+      accepted as a new session's result. A per-window coordinator can't fix
+      this (the result is routed to whatever window is current, which has its
+      own pending request). Replaced it with an APP-GLOBAL `DiffRequestBroker`
+      (owned by AppDelegate) that makes the invariant STRUCTURAL, not timing-
+      dependent: at most one diff is outstanding across the whole app, tagged
+      with its owning `SessionID`; a delivered result is routed to that OWNER
+      (never the merely-current session); and when the owner is abandoned/
+      replaced while its result is in flight the broker DRAINS — refusing any
+      new request until the now-unwanted result arrives and is discarded. So a
+      replacement's request is never issued while an older result is in flight,
+      and an abandoned result can never become a newer session's. `AppDelegate`
+      records the owner on issue, routes `deliver()` to it, and calls
+      `abandon()` from `leaveSession` and the diff-window close; the diff/
+      diff-err handlers no longer route to `currentSession`. `performDiff` keeps
+      the `actionGate.allows(.diff)` method-boundary gate and issues through the
+      broker. **Coverage:** deterministic `DiffRequestBroker` tests including the
+      exact dangerous ordering (old issued → old abandoned → replacement request
+      REFUSED while draining → old result REJECTED → replacement result alone
+      applied), the intra-session abandon-then-re-request variant, and refuse-
+      while-draining; PLUS a GENUINE real-bridge fault test
+      (`test_r_runShowDiffs_realBridgeRaise_thenEngineUsable`) that drives the
+      REAL `unison_bridge_run_show_diffs` on a really-scanned diffable row with
+      `unison_bridge_test_force_next_callbacks_raise(1)` forcing the real
+      `bridge_call2_exn` raise path → asserts the bridge returns false, the
+      pending request clears (broker → idle), NO diff result is published, and a
+      subsequent real diff on the same row SUCCEEDS (worker survived). No
+      vendored-blob / patch change (the id round-trip through OCaml remains a
+      separate, deferred step); the controller/AppDelegate wiring itself isn't
       driven by a UI harness.
 
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
