@@ -49,6 +49,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
+    /// O(1) row-index → leaf-node lookup (Finding #10), rebuilt atomically with
+    /// `items`/`tree` in `replaceItems` and `beginScanning` so a stale mapping
+    /// can never survive a scan/rescan/Ignore. Replaces the old O(n) walk over
+    /// `tree.allNodes` on every per-row progress update (which was ~quadratic
+    /// across a large sync).
+    private var rowToNode: [Int: ReconcileNode] = [:]
     /// Per-row user-pinned decisions that override the rendered badge.
     /// Three cases, all mutually exclusive (the dict can hold at most
     /// one entry per row):
@@ -96,6 +102,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// set, all row/sync/rescan actions are disabled (the coordinator has
     /// declared the engine unsafe for reuse — the user must quit + reopen).
     private var restartRequired = false
+    /// Finding #10: sync completed but its per-file results couldn't be shown
+    /// (snapshot marshalling failure / count mismatch). Unlike `restartRequired`
+    /// the engine is fine — so Rescan stays available — but the displayed rows
+    /// are not trustworthy, so Sync and per-row actions are disabled until a
+    /// Rescan refreshes state. Cleared when a rescan begins.
+    private var syncResultsUnavailable = false
     /// True between `beginScanning` and `endRescan` — i.e. while the
     /// initial connect/scan (or a rescan) is in flight. Gates the Stop
     /// button so the user can abort a slow/wedged connection instead of
@@ -323,6 +335,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         let layout = SettingsModel.reconcileLayoutMode()
         let policy = SettingsModel.reconcileExpandPolicy()
         tree = ReconcileTree(items: newItems, layout: layout)
+        rebuildRowIndex()
+        // Fresh, valid row set ⇒ any prior "results unavailable" state is cleared.
+        syncResultsUnavailable = false
         rowOverrides.removeAll()
         outlineView.reloadData()
         applyExpandPolicy(policy)
@@ -631,6 +646,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // was just opened and the row set was already empty.
         items = []
         tree = ReconcileTree(items: [])
+        rebuildRowIndex()
+        syncResultsUnavailable = false
         rowOverrides.removeAll()
         outlineView.reloadData()
         detailsTextView.string = "Select a row to see details."
@@ -805,13 +822,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// tinted bold summary text. Called from `finalizeSyncUI` after the
     /// summary text is set. The next `setSummary` (e.g. a rescan) clears
     /// it via `clearCompletionEmphasis`.
-    private func applyCompletionEmphasis(failures: Int, stopped: Bool = false) {
-        let emphasis = ReconcileSummary.completionEmphasis(failures: failures, stopped: stopped)
+    private func applyCompletionEmphasis(failures: Int, stopped: Bool = false,
+                                         resultsUnavailable: Bool = false) {
+        let emphasis = ReconcileSummary.completionEmphasis(
+            failures: failures, stopped: stopped, resultsUnavailable: resultsUnavailable)
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [emphasis.tint]))
         statusIcon.image = NSImage(systemSymbolName: emphasis.symbolName,
-                                   accessibilityDescription: emphasis.symbolName)?
+                                   accessibilityDescription: emphasis.accessibilityLabel)?
             .withSymbolConfiguration(config)
         statusIcon.isHidden = false
         summaryLabel.textColor = emphasis.tint
@@ -930,14 +949,31 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         return result
     }
 
-    /// O(items) walk to find the leaf for a row. Fine for the per-row
-    /// update path — fires at most ~once per file during sync. If we ever
-    /// hit profiles where this is hot, cache row → node in a dictionary.
+    /// O(1) lookup of the leaf for a row via the `rowToNode` index, which is
+    /// rebuilt synchronously alongside `items`/`tree` (see `buildRowIndex`), so
+    /// it can never lag the current row set. Replaces the former O(items) walk
+    /// over the tree (Finding #10).
     private func leafNode(forRow row: Int) -> ReconcileNode? {
-        for node in tree.allNodes where node.row == row {
-            return node
+        rowToNode[row]
+    }
+
+    /// Rebuild the O(1) row→leaf-node index from the current `tree`. MUST be
+    /// called in the same synchronous block that assigns `items`/`tree` (see
+    /// `replaceItems`, `beginScanning`) so the index is always consistent with
+    /// the published rows — a stale mapping could reload the wrong row.
+    private func rebuildRowIndex() {
+        rowToNode = Self.buildRowIndex(tree.allNodes)
+    }
+
+    /// Pure row→leaf-node index builder (testable). First occurrence of a given
+    /// row wins, matching the old `allNodes` walk order.
+    nonisolated static func buildRowIndex(_ nodes: [ReconcileNode]) -> [Int: ReconcileNode] {
+        var index: [Int: ReconcileNode] = [:]
+        for node in nodes {
+            guard let r = node.row else { continue }
+            if index[r] == nil { index[r] = node }
         }
-        return nil
+        return index
     }
 
     /// Terminal sync-UI presentation. Called by the coordinator's
@@ -945,38 +981,35 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// handler the window installed. The connection-close policy is the
     /// coordinator's now, so this method no longer signals an owner: it
     /// only paints the completed/failed/stopped state.
-    func finalizeSyncUI() {
+    func finalizeSyncUI(snapshot: [SyncSnapshotRow]) {
         isSyncing = false
         cancelSyncStallDetector()
         progressBar.doubleValue = 100
         progressBar.isHidden = true
 
-        // Some Unison failure paths only update the row's
-        // *details* field (`unison_bridge_ri_get_details`), not its
-        // *progress* field. The screenshot example: a transfer
-        // aborted because the source file changed mid-sync — Unison
-        // stores "Transfer aborted" in the row's details but leaves
-        // progress stuck at whatever percent it reached before the
-        // abort. The Progress column would draw a partial blue bar
-        // (looks successful-ish), the row wouldn't carry the ⚠ FAILED
-        // marker, and the summary's failure count would miss it.
-        //
-        // Walk every row at sync-complete: for any row whose progress
-        // isn't already FAILED, check its details string for a
-        // failure marker and synthesize "FAILED: <reason>" into the
-        // progress field if found. ProgressDescriptor.parse + the
-        // ProgressCellView then take over as if Unison had emitted
-        // FAILED itself.
-        attributeRowFailuresFromDetails()
-
-        // Count rows whose progress ended FAILED (now including the
-        // synthesized ones from the pass above). Latches into the
-        // phase so both the summary ("Synchronization completed with
-        // N error(s)") AND the action-gating logic see the same
-        // terminal state.
-        let failedRowSet: Set<Int> = Set(items.indices.filter {
-            ProgressDescriptor.parse(items[$0].progress).isFailure
-        })
+        // Finding #10: apply the ONE bulk post-sync snapshot to the cached row
+        // model — the completion path makes ZERO per-row bridge calls. The
+        // snapshot carries each row's final progress + details; the SAME
+        // details-based failure synthesis (a row whose progress isn't FAILED but
+        // whose details carry a failure marker → "FAILED: <reason>") runs on
+        // that cached data, so transfer failures and partial/problematic rows
+        // are attributed identically to before. A row-count mismatch cannot be
+        // applied partially, so it routes to the unavailable-results path (the
+        // engine is quiescent + archive committed — NOT restartRequired).
+        let applied: SyncCompletionModel.Applied
+        switch SyncCompletionModel.apply(snapshot: snapshot, to: items) {
+        case .countMismatch(let expected, let got):
+            TraceLog.shared.write(
+                "ReconcileWindow: sync snapshot count mismatch "
+                + "(expected \(expected), got \(got)) — results unavailable")
+            finalizeSyncUnavailable(reason: "per-file results didn't match the file list")
+            return
+        case .applied(let a):
+            applied = a
+        }
+        items = applied.items
+        outlineView.reloadData()
+        let failedRowSet = applied.failedRows
         let failures = failedRowSet.count
         phase = .done(failures: failures)
         // If the user pressed Stop, the run ended on an abort — report it as
@@ -1022,40 +1055,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // matching `.closeConnection` effect (if any) before this present.
     }
 
-    /// Walk every row whose progress field doesn't already indicate
-    /// failure. Query its per-row details from OCaml; if the details
-    /// contain a failure marker (Transfer aborted / Failed: /
-    /// permission denied / …), synthesize a FAILED progress string
-    /// for that row and reload it in the outline view. Catches the
-    /// failure modes Unison signals via per-row details without
-    /// touching the per-row progress field.
-    ///
-    /// Cost: ~one bridge round-trip per non-failed row, only at
-    /// sync-complete time. For typical sync sizes that's tens or
-    /// hundreds of round-trips synchronously on main — fast enough
-    /// (each call is a single mutex-handoff to the OCaml worker that
-    /// reads a stored string).
-    private func attributeRowFailuresFromDetails() {
-        for row in items.indices {
-            if ProgressDescriptor.parse(items[row].progress).isFailure {
-                continue
-            }
-            guard let cstr = unison_bridge_ri_get_details(Int32(row)) else {
-                continue
-            }
-            let details = String(cString: cstr)
-            guard Self.detailsIndicateFailure(details) else { continue }
-            let reason = Self.failureReason(from: details)
-            items[row] = items[row].with(
-                progress: "FAILED: \(reason)",
-                bytesTransferred: items[row].bytesTransferred)
-            if let node = leafNode(forRow: row) {
-                outlineView.reloadItem(node, reloadChildren: false)
-            }
-            TraceLog.shared.write(
-                "ReconcileWindow: synthesized FAILED for row[\(row)] " +
-                "(\(items[row].path)) — reason: \(reason)")
-        }
+    /// Finding #10: sync finished and the archive was committed, but the engine
+    /// could not produce the per-file results (a snapshot marshalling failure)
+    /// or they didn't match the row set. The engine is QUIESCENT — this is a
+    /// read-only-results failure, NOT engine contamination, so it does NOT go
+    /// through `restartRequired`. Show a clear terminal message, never present
+    /// ordinary success, never apply a partial snapshot, and leave only safe
+    /// recovery/navigation actions live (Rescan, Profiles, Quit).
+    func finalizeSyncUnavailable(reason: String) {
+        isSyncing = false
+        cancelSyncStallDetector()
+        progressBar.stopAnimation(nil)
+        progressBar.isIndeterminate = false
+        progressBar.isHidden = true
+        syncResultsUnavailable = true
+        phase = .done(failures: 0)
+        setSummary("Synchronization finished, but its per-file results could not "
+                   + "be displayed. Rescan before synchronizing again.")
+        applyCompletionEmphasis(failures: 0, stopped: false, resultsUnavailable: true)
+        refreshToolbarEnabled()
+        TraceLog.shared.write("ReconcileWindow: sync results unavailable — \(reason)")
     }
 
     /// Pure classification: does a per-row details string indicate a
@@ -1761,8 +1780,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }()
         switch identifier {
         case DirectionAction.goIdentifier:
-            // Go: same gate as direction overrides. Disabled during
-            // sync, after sync completes, and when items is empty.
+            // Go: same gate as direction overrides. Disabled during sync, after
+            // sync completes, when items is empty, and when results are
+            // unavailable (`isActionable` now folds in `resultsUnavailable`).
             return isActionable
         case DirectionAction.stopIdentifier:
             // Stop is meaningful while a sync is in flight OR while the
@@ -1875,7 +1895,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             isSyncing: isSyncing,
             isScanning: isScanning,
             phase: gatePhase,
-            hasItems: !items.isEmpty)
+            hasItems: !items.isEmpty,
+            resultsUnavailable: syncResultsUnavailable)
     }
 
     private var isActionable: Bool { actionGate.isActionable }

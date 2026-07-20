@@ -116,19 +116,88 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let e = c.syncCompleted(s, syncOp)
-        XCTAssertTrue(e.contains(.presentSyncResults(s)))
+        let e = c.syncCompleted(s, syncOp, results: .available([]))
+        XCTAssertTrue(e.contains(.presentSyncResults(s, [])))
         let closed = closeOp(e)!
         XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
         XCTAssertEqual(c.phase, .ready(s))                      // window stays
         XCTAssertEqual(c.connection, .disconnected)            // remote closed on sync-end
     }
 
+    // MARK: - Finding #10: available / unavailable sync results
+
+    func test_syncAvailable_carriesSnapshot() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        let syncOp = beginSync(c.requestSync())!.1
+        let snap = [SyncSnapshotRow(progress: "done", details: "d", bytesTransferred: 1)]
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available(snap)),
+                       [.presentSyncResults(s, snap)])
+        XCTAssertEqual(c.phase, .ready(s))
+    }
+
+    func test_syncUnavailable_presentsUnavailable_notRestartRequired() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        let syncOp = beginSync(c.requestSync())!.1
+        let e = c.syncCompleted(s, syncOp, results: .unavailable(reason: "marshalling failed"))
+        XCTAssertEqual(e, [.presentSyncUnavailable(s, reason: "marshalling failed")])
+        XCTAssertEqual(c.phase, .ready(s), "engine is quiescent — ready, not restart")
+        XCTAssertFalse(e.contains { if case .restartRequired = $0 { return true } else { return false } },
+                       "read-only results failure must NOT force a restart")
+    }
+
+    func test_syncUnavailable_nonInteractive_followsClosePolicy() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: false)
+        let syncOp = beginSync(c.requestSync())!.1
+        let e = c.syncCompleted(s, syncOp, results: .unavailable(reason: "x"))
+        XCTAssertTrue(e.contains(.presentSyncUnavailable(s, reason: "x")))
+        XCTAssertNotNil(closeOp(e), "same non-interactive close policy as available")
+    }
+
+    func test_syncUnavailable_abandoned_closesNoPresent() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        let syncOp = beginSync(c.requestSync())!.1
+        _ = c.abandon(reason: "left")
+        let e = c.syncCompleted(s, syncOp, results: .unavailable(reason: "x"))
+        XCTAssertNotNil(closeOp(e), "abandoned → close")
+        XCTAssertFalse(e.contains { if case .presentSyncUnavailable = $0 { return true } else { return false } })
+    }
+
+    func test_syncResults_duplicateRejected() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        let syncOp = beginSync(c.requestSync())!.1
+        _ = c.syncCompleted(s, syncOp, results: .available([]))     // → ready
+        // A duplicate / stale / wrong-operation completion no longer matches
+        // .syncing(s,op) and is dropped (lease already released).
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])), [])
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .unavailable(reason: "y")), [])
+    }
+
+    func test_syncCompleted_wrongOperationID_rejected_leaveRealOpPending() {
+        let c = C()
+        let (s, _) = openToReady(c, interactive: true)
+        let syncOp = beginSync(c.requestSync())!.1           // the real sync op is pending
+        // A completion carrying a DIFFERENT operation id than the pending sync
+        // matches no `.syncing(s, op)` phase and is dropped.
+        let wrongOp = C.OperationID(raw: 999_999)
+        XCTAssertEqual(c.syncCompleted(s, wrongOp, results: .available([])), [])
+        // The real op's phase/lease is untouched — still syncing, not released.
+        XCTAssertEqual(c.phase, .syncing(s, syncOp))
+        // ...and the genuine completion still lands normally afterward.
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])),
+                       [.presentSyncResults(s, [])])
+        XCTAssertEqual(c.phase, .ready(s))
+    }
+
     func test_interactive_holdsThroughSyncEnd_closesOnLeave() {
         let c = C()
         let (s, _) = openToReady(c, interactive: true)
         let syncOp = beginSync(c.requestSync())!.1
-        XCTAssertEqual(c.syncCompleted(s, syncOp), [.presentSyncResults(s)])  // held
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])), [.presentSyncResults(s, [])])  // held
         let closed = closeOp(c.abandon(reason: "leave"))!
         _ = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertTrue(c.isIdle)
@@ -148,7 +217,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!
         _ = c.closeCompleted(closed.0, closed.1, status: 0)     // connection none, ready
         let e = c.requestRescan()
         XCTAssertEqual(beginConnect(e)?.0, s)                   // reopen, SAME session
@@ -186,8 +255,8 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        _ = c.syncCompleted(s, syncOp)                           // → ready (+ close)
-        XCTAssertEqual(c.syncCompleted(s, syncOp), [])           // duplicate → no second close
+        _ = c.syncCompleted(s, syncOp, results: .available([]))                           // → ready (+ close)
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])), [])           // duplicate → no second close
     }
 
     func test_lateConnectFinished_whileNotOpening_ignored() {
@@ -258,7 +327,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!       // close started while window "ready"
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!       // close started while window "ready"
         let e = c.closeCompleted(closed.0, closed.1, status: 2) // close FAILS
         XCTAssertTrue(hasRestart(e))                            // immediate, not deferred to next action
     }
@@ -279,7 +348,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!   // .closing(.backToReady) in flight
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!   // .closing(.backToReady) in flight
         _ = c.abandon(reason: "closed window during sync-end close")
         let e = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertEqual(e, [])
@@ -308,7 +377,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!   // .closing(.backToReady)
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!   // .closing(.backToReady)
         XCTAssertNotNil(waitingID(c.requestOpen(profile: "B")))   // queued + outcome upgraded
         let e = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertNotNil(beginConnect(e))                    // B starts after the close idles
@@ -322,7 +391,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let syncOp = beginSync(c.requestSync())!.1
         XCTAssertEqual(c.requestSyncExit(.stopAndKeepWindow), [.abortSync(s, syncOp)])
         XCTAssertEqual(c.phase, .syncing(s, syncOp))        // still syncing until completion
-        XCTAssertTrue(c.syncCompleted(s, syncOp).contains(.presentSyncResults(s)))  // window kept
+        XCTAssertTrue(c.syncCompleted(s, syncOp, results: .available([])).contains(.presentSyncResults(s, [])))  // window kept
     }
 
     func test_syncExit_abortAndClose_abortsAndClosesAfterCompletion() {
@@ -330,7 +399,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let (s, _) = openToReady(c)
         let syncOp = beginSync(c.requestSync())!.1
         XCTAssertEqual(c.requestSyncExit(.abortAndClose), [.abortSync(s, syncOp)])
-        let closed = closeOp(c.syncCompleted(s, syncOp))!   // abandoned → close, no present
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!   // abandoned → close, no present
         _ = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertTrue(c.isIdle)
     }
@@ -340,7 +409,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let (s, _) = openToReady(c)
         let syncOp = beginSync(c.requestSync())!.1
         XCTAssertEqual(c.requestSyncExit(.closeAndLetRun), [])   // no abort effect
-        let closed = closeOp(c.syncCompleted(s, syncOp))!       // abandoned → close after done
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!       // abandoned → close after done
         _ = c.closeCompleted(closed.0, closed.1, status: 0)
         XCTAssertTrue(c.isIdle)
     }
@@ -354,7 +423,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.connection, .localOnly)
         _ = c.scanCompleted(s, scanOp)
         let syncOp = beginSync(c.requestSync())!.1
-        XCTAssertEqual(c.syncCompleted(s, syncOp), [.presentSyncResults(s)])  // no close for local
+        XCTAssertEqual(c.syncCompleted(s, syncOp, results: .available([])), [.presentSyncResults(s, [])])  // no close for local
         XCTAssertEqual(c.abandon(reason: "leave"), [])          // none → straight idle
         XCTAssertTrue(c.isIdle)
     }
@@ -368,7 +437,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)         // non-interactive
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!       // phase = .closing(.backToReady)
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!       // phase = .closing(.backToReady)
         // Rescan while the close is in flight: deferred (no effect now), NOT discarded.
         XCTAssertEqual(c.requestRescan(), [])
         // Close returns 0 → the deferred rescan reconnects the same session now.
@@ -385,7 +454,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!
         XCTAssertEqual(c.requestRescan(), [])                   // deferred
         let e = c.closeCompleted(closed.0, closed.1, status: 2) // close fails
         XCTAssertTrue(hasRestart(e))
@@ -400,7 +469,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!
         XCTAssertEqual(c.closeCompleted(closed.0, closed.1, status: 0), [])
         XCTAssertEqual(c.phase, .ready(s))
         XCTAssertEqual(c.connection, .disconnected)
@@ -427,7 +496,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!
         _ = c.closeCompleted(closed.0, closed.1, status: 0)     // .ready + .disconnected
         let e = c.requestRescan()
         XCTAssertNotNil(beginConnect(e), "rescan over a disconnected remote must reconnect")
@@ -498,7 +567,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let c = C()
         let (s, _) = openToReady(c, interactive: false)
         let syncOp = beginSync(c.requestSync())!.1
-        let closed = closeOp(c.syncCompleted(s, syncOp))!
+        let closed = closeOp(c.syncCompleted(s, syncOp, results: .available([])))!
         let bogus = C.OperationID(raw: 888_888)
         XCTAssertEqual(c.closeCompleted(s, bogus, status: 0), [])   // wrong op → dropped
         // the real close still completes

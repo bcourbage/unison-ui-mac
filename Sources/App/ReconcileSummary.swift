@@ -162,22 +162,37 @@ enum ReconcileSummary {
     struct CompletionEmphasis: Equatable {
         let symbolName: String
         let tint: NSColor
+        /// VoiceOver / accessibility label for the status icon — describes the
+        /// outcome, not the SF Symbol name.
+        let accessibilityLabel: String
     }
 
     static func completionEmphasis(failures: Int,
-                                   stopped: Bool = false) -> CompletionEmphasis {
+                                   stopped: Bool = false,
+                                   resultsUnavailable: Bool = false) -> CompletionEmphasis {
+        if resultsUnavailable {
+            // Sync + archive commit succeeded, but the per-file results could
+            // not be shown. NOT the green success check — a distinct warning so
+            // the user isn't told it plainly succeeded.
+            return CompletionEmphasis(symbolName: "exclamationmark.triangle.fill",
+                                      tint: .systemOrange,
+                                      accessibilityLabel: "Synchronization finished; per-file results unavailable")
+        }
         if stopped {
             // Distinct from success (green) and error (red): the user
             // halted it deliberately. Orange "stop" reads as "you stopped
             // this", not "it failed".
             return CompletionEmphasis(symbolName: "stop.circle.fill",
-                                      tint: .systemOrange)
+                                      tint: .systemOrange,
+                                      accessibilityLabel: "Synchronization stopped")
         }
         if failures > 0 {
             return CompletionEmphasis(symbolName: "exclamationmark.triangle.fill",
-                                      tint: .systemRed)
+                                      tint: .systemRed,
+                                      accessibilityLabel: "Synchronization completed with errors")
         }
         return CompletionEmphasis(symbolName: "checkmark.circle.fill",
-                                  tint: .systemGreen)
+                                  tint: .systemGreen,
+                                  accessibilityLabel: "Synchronization completed")
     }
 }

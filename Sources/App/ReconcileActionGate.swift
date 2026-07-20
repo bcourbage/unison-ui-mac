@@ -19,6 +19,14 @@ struct ReconcileActionGate: Equatable {
     var isScanning: Bool
     var phase: Phase
     var hasItems: Bool
+    /// Finding #10: sync completed but its per-file results couldn't be shown
+    /// (snapshot marshalling failure / row-count mismatch). The engine is
+    /// quiescent (so NOT `restartRequired`), but the displayed rows are not
+    /// trustworthy — so EVERY engine-reaching action (Direction/Revert, Ignore,
+    /// Diff incl. canDiff, Details, Go/Sync) is blocked. Only Rescan (the way
+    /// out), Profiles/close, and Quit remain. Pure selection helpers are not
+    /// gated here.
+    var resultsUnavailable: Bool = false
 
     enum Action: CaseIterable {
         case direction    // apply a direction override (ri_set_*)
@@ -35,7 +43,8 @@ struct ReconcileActionGate: Equatable {
     /// The row set is stable and the engine is idle-ready — the precondition for
     /// any per-row or start-sync action.
     var isActionable: Bool {
-        !restartRequired && !mutationInFlight && hasItems && phase == .ready
+        !restartRequired && !mutationInFlight && !resultsUnavailable
+            && hasItems && phase == .ready
     }
 
     func allows(_ action: Action) -> Bool {
@@ -55,12 +64,16 @@ struct ReconcileActionGate: Equatable {
             // Same envelope as the other row mutations, but permitted outside
             // strict .ready too as long as no sync is running — matching the
             // pre-existing Ignore availability, plus the mutation/restart gate.
-            return !restartRequired && !mutationInFlight && !isSyncing && hasItems
+            // Also blocked when results are unavailable: the displayed rows are
+            // stale, so an Ignore by row index would address the wrong root.
+            return !restartRequired && !mutationInFlight && !resultsUnavailable
+                && !isSyncing && hasItems
         case .details:
             // Read-only, but reads ri_get_details BY ROW INDEX against the
             // published roots, so it must not run while rows are stale against
             // new roots. No items/phase requirement (a placeholder is shown).
-            return !restartRequired && !mutationInFlight
+            // Blocked when results are unavailable for the same stale-row reason.
+            return !restartRequired && !mutationInFlight && !resultsUnavailable
         case .rescan:
             // Allowed post-sync (.done) too, but never during a sync, a restart,
             // or an Ignore publication gap.

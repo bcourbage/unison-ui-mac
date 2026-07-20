@@ -201,6 +201,48 @@ section at the bottom so this list stays scannable.
       separate, deferred step); the controller/AppDelegate wiring itself isn't
       driven by a UI harness.
 
+      **Finding #10 (2026-07-20, vendored blob a57f5c4e → 2f345306, patch
+      `0005` added):** sync completion no longer makes O(n) per-row
+      `unison_bridge_ri_get_details` bridge calls on the main thread. Patch
+      `0005` changes `syncComplete` to carry the final post-sync `stateItem
+      array`; the C `syncComplete` marshals ONE bulk snapshot (each row's final
+      progress + details + bytes) via the already-registered accessors while the
+      array is GC-rooted, TRANSACTIONALLY (accessor raise / OOM / bad count →
+      explicit `ok=false`, never partial, never "no failures"); the marshalling
+      is a shared `deliver_sync_snapshot` with ABI guards (`Is_block`/tag +
+      `size_t`→int bound; the Swift trampoline rejects ok+count>0+null-rows).
+      Delivery is bound to the exact pending `(SessionID, OperationID)`; the
+      coordinator gained `SyncResults .available/.unavailable` → effects
+      `.presentSyncResults(s, snapshot)` / `.presentSyncUnavailable(s, reason)`,
+      each releasing the lease once and NEITHER entering `restartRequired`
+      (engine is quiescent post-commit). `finalizeSyncUI(snapshot:)` applies the
+      cached snapshot once on main (pure `SyncCompletionModel`, same
+      details-based failure synthesis, zero bridge calls); a count mismatch
+      routes to `finalizeSyncUnavailable`. Results-unavailable is a first-class
+      `ReconcileActionGate` state: every engine-reaching action (Direction/
+      Revert, Ignore, Diff incl. `canDiff`, Details, Go/Sync) is blocked at both
+      validation and method boundaries — only Rescan/Profiles/Quit remain — and
+      the unavailable presentation uses a dedicated orange-warning emphasis +
+      accessibility label, not the green success check. An O(1) `rowToNode`
+      index rebuilt atomically with items/tree in `replaceItems`/`beginScanning`
+      kills the old O(n^2) progress-path walk. **Coverage:** `SyncCompletionModel`
+      (row kinds, count mismatch, skipped≠failure, ZERO-getter-calls via a
+      Debug-only C counter, 5000-row set, row-index builder); coordinator
+      available/unavailable/abandoned/non-interactive-close/duplicate-reject and
+      wrong-`OperationID` rejection; the gate matrix and presentation descriptor;
+      the REAL bridge boundary via the Debug seam
+      (`unison_bridge_test_run_sync_snapshot` → real accessor→strdup→handler over
+      scanned rows) including accessor-raise and alloc-failure-after-first-row
+      (each → one unavailable, zero partial rows, runtime usable); AND the REAL
+      public path end-to-end — `unison_bridge_synchronize()` →
+      `do_unisonSynchronize` → `syncComplete !theState` (patch 0005's real
+      caller) → C marshaller → Swift handler — over conflict-free one-sided
+      files, asserting one ok=true snapshot, count == scanned, plausible fields,
+      and that the files actually propagated on disk. Debug getter/seam symbols
+      are absent from Release (verified via `nm`). Limitation: a full live
+      REMOTE (ssh) sync is still not driven by an automated harness; the
+      local-replica real path and the marshaller are covered.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
