@@ -219,6 +219,28 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(beginConnect(c.requestOpen(profile: "B")))  // refused after restart
     }
 
+    func test_engineBecameUncertain_fromReady_requiresRestart() {
+        // Blocker 4: a per-row mutation that failed after mutating engine state
+        // (reported while the session sits in .ready) must move the coordinator
+        // to restart-required and refuse further engine work.
+        let c = C()
+        _ = openToReady(c)
+        let e = c.engineBecameUncertain(reason: "ignore failed after mutating engine state")
+        XCTAssertTrue(hasRestart(e))
+        XCTAssertNil(beginConnect(c.requestOpen(profile: "B")))  // refused after restart
+    }
+
+    func test_engineBecameUncertain_ignoredWhenNotReady() {
+        // A stale mutation result arriving while a scan/sync is in flight (not
+        // .ready) must be a no-op — it must not clobber an active phase.
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!.1
+        let e = c.engineBecameUncertain(reason: "stale")
+        XCTAssertFalse(hasRestart(e))
+        XCTAssertEqual(c.phase, .scanning(s, scanOp))   // unchanged
+    }
+
     func test_failureAfterAbandon_stillReleasesLease() {
         let c = C()
         let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!

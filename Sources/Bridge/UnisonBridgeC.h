@@ -39,10 +39,25 @@ void unison_bridge_reset_child_registry_for_test(void);
  * deterministically without a raising OCaml stub in the vendored blob. */
 void unison_bridge_test_force_next_callbacks_raise(int n);
 int  unison_bridge_test_pending_forced_raises(void);
+/* Force the Kth wrapper callback after arming (1-based, counting only
+ * caml_callback invocations) to raise — lets a test fail a specific callback
+ * stage so post-first-mutation failures are exercisable. Single-shot. */
+void unison_bridge_test_force_raise_at_ordinal(int k);
 /* Test-only (Finding #1): run reloadTable's rooting pattern against row's real
  * progress/bytes callbacks with a forced moving collection interposed. Returns
  * true and fills `out` with the (still-valid) progress string on success. */
 bool unison_bridge_test_reload_under_gc(int row, char *out, size_t outlen);
+/* Test-only (Finding #1): build a KNOWN fresh young string, root it, force a
+ * relocating minor collection, then verify it survived. Fills `out` with the
+ * post-collection contents (must equal `in`) and sets *out_moved to whether the
+ * block's address actually changed (proving it was young and relocated). */
+bool unison_bridge_test_root_survives_gc(const char *in, char *out, size_t outlen,
+                                         bool *out_moved);
+/* Test-only (Blocker 3): install/clear a dummy preconnection so credential
+ * prompt/reply reach the exn wrapper. Pair with forced-raise ONLY. */
+void unison_bridge_test_set_fake_preconn(bool on);
+/* Test-only (Blocker 1): the currently-published per-row root count. */
+int unison_bridge_test_ri_count(void);
 
 /* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
 #define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */
@@ -97,8 +112,12 @@ void unison_bridge_test_status(const char *msg);
 
 /* Calls OCaml's unisonInit0, which (among other setup) wires
  * Trace.messageDisplayer := displayStatus. After this returns, any OCaml-side
- * Util.msg / Trace.message reaches the registered Swift status handler. */
-void unison_bridge_init0(void);
+ * Util.msg / Trace.message reaches the registered Swift status handler.
+ *
+ * Returns UNISON_BRIDGE_OK on success; a non-OK status (ERR_EXN / ERR_MISSING)
+ * means the runtime is only partly initialized. The caller MUST NOT continue a
+ * normal launch on failure — it must present an unrecoverable startup error. */
+int unison_bridge_init0(void);
 
 /* === Init1 — load profile, parse roots, open remote connection ===
  *
@@ -122,18 +141,44 @@ int unison_bridge_init1(const char *profile_name);
  * Remote.openConnection state machine — typically: SSH password,
  * passphrase, or host-key-authenticity confirmation.
  *
- * Usage loop:
- *   const char *p = unison_bridge_connection_prompt();
- *   if (p == NULL) { unison_bridge_connection_end(); }   // go to init2
- *   else {                                                // show UI with `p`
- *          unison_bridge_connection_reply(response);
- *          // loop back to prompt
- *   }
+ * Blocker 3: the result is EXPLICIT, so an OCaml exception is never confused
+ * with "no more prompts". The four outcomes are distinct:
+ *   AVAILABLE — `*out_prompt` holds the next prompt (bridge-owned, valid until
+ *               the next bridge call; copy to retain). Show UI, then reply.
+ *   DONE      — the prompt sequence finished normally. ONLY here may the caller
+ *               proceed to connection_end + init2.
+ *   NONE      — no preconnection is pending, or the callback is missing (stale
+ *               blob). Not a normal finish: the caller must NOT call
+ *               connection_end; treat as terminal.
+ *   EXN       — the OCaml prompt callback raised. The caller must NOT call
+ *               connection_end; retain the connect token, attempt preconnection
+ *               cleanup (connection_cancel) without declaring success, and route
+ *               an uncertain cleanup to restart-required.
  *
- * Returned prompt string is owned by the bridge and valid until the next
- * bridge call. Copy if you need to retain it. */
-const char *unison_bridge_connection_prompt(void);
-void unison_bridge_connection_reply(const char *response);
+ * Usage loop:
+ *   const char *p = NULL;
+ *   switch (unison_bridge_connection_prompt(&p)) {
+ *     case UNISON_PROMPT_AVAILABLE: show UI with p; reply; loop; break;
+ *     case UNISON_PROMPT_DONE:      connection_end(); go to init2; break;
+ *     default:                      terminal failure handling; break;
+ *   } */
+typedef enum {
+    UNISON_PROMPT_AVAILABLE = 0,
+    UNISON_PROMPT_DONE      = 1,
+    UNISON_PROMPT_NONE      = 2,
+    UNISON_PROMPT_EXN       = 3,
+} unison_prompt_result_t;
+unison_prompt_result_t unison_bridge_connection_prompt(const char **out_prompt);
+
+/* Send a credential reply. Explicit status (Blocker 3):
+ *   UNISON_REPLY_OK   (0)  — delivered; caller may loop back to prompt.
+ *   UNISON_REPLY_NONE (-1) — no preconnection / callback missing.
+ *   UNISON_REPLY_EXN  (2)  — OCaml raised. Caller must NOT continue the loop;
+ *                            attempt cleanup without declaring success. */
+#define UNISON_REPLY_OK    0
+#define UNISON_REPLY_NONE (-1)
+#define UNISON_REPLY_EXN   2
+int unison_bridge_connection_reply(const char *response);
 
 /* Finalize (end) or abort (cancel) the pending preconnection. Both are
  * exception-safe and status-returning, and release the stashed preconnection
@@ -188,10 +233,37 @@ typedef struct unison_state_item {
 typedef void (*unison_init2_complete_handler_t)(const unison_state_item_t *items,
                                                  size_t count);
 void unison_bridge_set_init2_complete_handler(unison_init2_complete_handler_t h);
+
+/* Terminal ASYNCHRONOUS scan failure (Blocker 2). Fired from the OCaml scan
+ * worker (unisonInit2Complete) when the completed scan's state could not be
+ * published — a missing accessor, an accessor raising, or OOM. The scan is over
+ * but produced no items, so the init2-complete handler will never fire; this is
+ * the terminal alternative. The handler must be token-bound (match the pending
+ * scan op) and route to operationFailed(engineIsQuiescent:false) so the
+ * coordinator leaves .scanning for restart-required rather than hanging. */
+typedef void (*unison_scan_failed_handler_t)(void);
+void unison_bridge_set_scan_failed_handler(unison_scan_failed_handler_t h);
+
 /* Return covers only the synchronous dispatch: UNISON_BRIDGE_OK once the scan
  * was launched, or UNISON_BRIDGE_ERR_EXN if the OCaml call raised before
- * launching (the init2-complete handler will then never fire). */
+ * launching (the init2-complete handler will then never fire). A scan that
+ * launches OK but then fails while publishing state reports terminally through
+ * the scan-failed handler above, not through this return value. */
 int unison_bridge_init2(void);
+
+/* Structured result for mutating per-row operations (Blocker 4). Distinguishes
+ * a benign validation/pre-mutation failure (safe to ignore) from a failure that
+ * struck AT or AFTER the OCaml state actually began changing (the ready UI must
+ * not stay live against uncertain state). A direction setter mutates its row
+ * before the direction readback; Ignore is a multi-step mutation (persist a
+ * pattern, then rewrite theState). So a raise partway through can leave the
+ * engine in a state the displayed rows no longer describe. */
+typedef enum {
+    UNISON_OP_OK           = 0,  /* success */
+    UNISON_OP_INVALID      = 1,  /* bad row / missing callback; NO mutation attempted */
+    UNISON_OP_FAILED_CLEAN = 2,  /* raised BEFORE any mutation began; engine unchanged */
+    UNISON_OP_FAILED_DIRTY = 3,  /* raised AT/AFTER mutation; engine state uncertain */
+} unison_op_result_t;
 
 /* === Per-row direction overrides ===
  *
@@ -199,24 +271,23 @@ int unison_bridge_init2(void);
  * The bridge keeps OCaml references to each row alive between calls until
  * the next init2 (then they're released and re-registered).
  *
- * Each function returns the row's new direction string in OCaml's raw
- * representation ("---->", "<----", "<-?->", "<-M->"). The returned
- * pointer is owned by the bridge and stable until the next call from the
- * same thread — copy it if you need to retain it.
- *
- * Returns NULL if the row is out of range or the OCaml call fails. */
-const char *unison_bridge_ri_set_to_remote(int row);  /* unisonRiSetRight: first wins */
-const char *unison_bridge_ri_set_to_local(int row);   /* unisonRiSetLeft:  second wins */
-const char *unison_bridge_ri_set_skip(int row);       /* unisonRiSetConflict */
-const char *unison_bridge_ri_set_merge(int row);      /* unisonRiSetMerge */
+ * On UNISON_OP_OK, `out_dir` (a caller-provided buffer of `out_dir_len` bytes)
+ * receives the row's new direction string in OCaml's raw representation
+ * ("---->", "<----", "<-?->", "<-M->"). On any non-OK result `out_dir` is set to
+ * the empty string. A setter mutates the row before the direction is read back,
+ * so any raise here is UNISON_OP_FAILED_DIRTY (never a silent "no change"): the
+ * caller must route it to restart-required rather than leave a stale-but-
+ * actionable row. UNISON_OP_INVALID (bad row / missing callback) mutated
+ * nothing and is safe to surface narrowly. */
+unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *out_dir, size_t out_dir_len);  /* unisonRiSetRight */
+unison_op_result_t unison_bridge_ri_set_to_local(int row, char *out_dir, size_t out_dir_len);   /* unisonRiSetLeft */
+unison_op_result_t unison_bridge_ri_set_skip(int row, char *out_dir, size_t out_dir_len);       /* unisonRiSetConflict */
+unison_op_result_t unison_bridge_ri_set_merge(int row, char *out_dir, size_t out_dir_len);      /* unisonRiSetMerge */
 /* Force-older / force-newer pick a direction based on mtime — the side
- * with the older (resp. newer) mtime wins. Calls `unisonRiForceOlder` /
- * `unisonRiForceNewer` and then reads back the resulting direction
- * via `unisonRiToDirection`, same as the ri_set_* functions. Useful
- * for "propagate the version I edited most recently" / "restore from
- * the older copy" without having to inspect the row first. */
-const char *unison_bridge_ri_force_older(int row);
-const char *unison_bridge_ri_force_newer(int row);
+ * with the older (resp. newer) mtime wins. Same mutation-then-readback contract
+ * and result semantics as the ri_set_* functions above. */
+unison_op_result_t unison_bridge_ri_force_older(int row, char *out_dir, size_t out_dir_len);
+unison_op_result_t unison_bridge_ri_force_newer(int row, char *out_dir, size_t out_dir_len);
 
 /* Calls OCaml's unisonRiToDetails for the given row and returns the
  * multi-line details string (path, both sides' size/mtime, conflict
@@ -260,11 +331,15 @@ void unison_bridge_set_diff_err_handler(unison_diff_err_handler_t h);
  * array. Swift handles the callback the same way as a rescan: replace the
  * table contents in place.
  *
- * Returns true on success; false if the row is out of range or any of the
- * required OCaml callbacks isn't registered (would indicate a build mismatch). */
-bool unison_bridge_ignore_path(int row);
-bool unison_bridge_ignore_ext(int row);
-bool unison_bridge_ignore_name(int row);
+ * Structured result (Blocker 4): this is a MULTI-STEP mutation. The path read is
+ * read-only (a raise there is UNISON_OP_FAILED_CLEAN — nothing changed); once
+ * the ignore pattern is persisted or theState is rewritten, a later failure —
+ * including a failure to publish the new state — is UNISON_OP_FAILED_DIRTY and
+ * the caller must route it to restart-required rather than leave stale rows
+ * live. UNISON_OP_INVALID (bad row / missing callback) mutated nothing. */
+unison_op_result_t unison_bridge_ignore_path(int row);
+unison_op_result_t unison_bridge_ignore_ext(int row);
+unison_op_result_t unison_bridge_ignore_name(int row);
 
 /* === Synchronize — run the transfer over the current direction overrides ===
  *
@@ -303,8 +378,12 @@ int unison_bridge_synchronize(void);
  *
  * Depends on the `abortAll` callback being registered in
  * `uimacbridge.ml` (local fork only — not in upstream Unison's
- * vanilla bridge). */
-void unison_bridge_abort_sync(void);
+ * vanilla bridge).
+ *
+ * Returns UNISON_BRIDGE_OK when the abort flag was set; a non-OK status
+ * (ERR_EXN / ERR_MISSING) means the flag was NOT reliably set, so the caller
+ * must NOT report that cancellation was successfully requested. */
+int unison_bridge_abort_sync(void);
 
 #ifdef __cplusplus
 }

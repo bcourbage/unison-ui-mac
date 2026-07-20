@@ -19,6 +19,11 @@ enum UnisonBridge {
     nonisolated(unsafe) static var progressHandler: ((Double) -> Void)?
     nonisolated(unsafe) static var init1CompleteHandler: ((Bool) -> Void)?
     nonisolated(unsafe) static var init2CompleteHandler: (([StateItem]) -> Void)?
+    /// Fires (main queue) when a scan completes in OCaml but its state could not
+    /// be published (Blocker 2) — the terminal alternative to
+    /// `init2CompleteHandler`. Routes to `operationFailed(engineIsQuiescent:
+    /// false)` so a stranded `.scanning` becomes restart-required.
+    nonisolated(unsafe) static var scanFailedHandler: (() -> Void)?
     nonisolated(unsafe) static var reloadRowHandler: ((_ row: Int, _ progress: String, _ bytes: Int64) -> Void)?
     nonisolated(unsafe) static var syncCompleteHandler: (() -> Void)?
 
@@ -82,6 +87,11 @@ enum UnisonBridge {
     static func installInit2CompleteHandler(_ handler: @escaping ([StateItem]) -> Void) {
         init2CompleteHandler = handler
         unison_bridge_set_init2_complete_handler(_swiftInit2CompleteTrampoline)
+    }
+
+    static func installScanFailedHandler(_ handler: @escaping () -> Void) {
+        scanFailedHandler = handler
+        unison_bridge_set_scan_failed_handler(_swiftScanFailedTrampoline)
     }
 
     static func installReloadRowHandler(_ handler: @escaping (Int, String, Int64) -> Void) {
@@ -171,6 +181,12 @@ private func _swiftInit2CompleteTrampoline(
     }
     DispatchQueue.main.async {
         UnisonBridge.init2CompleteHandler?(converted)
+    }
+}
+
+private func _swiftScanFailedTrampoline() {
+    DispatchQueue.main.async {
+        UnisonBridge.scanFailedHandler?()
     }
 }
 

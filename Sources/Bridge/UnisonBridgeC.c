@@ -7,7 +7,9 @@
 #include <caml/signals.h>
 #include <caml/threads.h>
 #if UNISON_DEBUG_HOOKS
+#include <stdatomic.h>       /* atomic fault-injection flags — Debug tests only */
 #include <caml/minor_gc.h>   /* caml_minor_collection — Finding #1 GC-rooting test */
+#include <caml/alloc.h>      /* caml_alloc_string — young-value GC probe */
 #endif
 
 #include <errno.h>
@@ -148,6 +150,7 @@ static unison_status_handler_t           g_status_handler          = NULL;
 static unison_progress_handler_t         g_progress_handler        = NULL;
 static unison_init1_complete_handler_t   g_init1_complete_handler  = NULL;
 static unison_init2_complete_handler_t   g_init2_complete_handler  = NULL;
+static unison_scan_failed_handler_t      g_scan_failed_handler     = NULL;
 static unison_reload_row_handler_t       g_reload_row_handler      = NULL;
 static unison_sync_complete_handler_t    g_sync_complete_handler   = NULL;
 static unison_diff_handler_t             g_diff_handler            = NULL;
@@ -167,6 +170,10 @@ void unison_bridge_set_init1_complete_handler(unison_init1_complete_handler_t ha
 
 void unison_bridge_set_init2_complete_handler(unison_init2_complete_handler_t handler) {
     g_init2_complete_handler = handler;
+}
+
+void unison_bridge_set_scan_failed_handler(unison_scan_failed_handler_t handler) {
+    g_scan_failed_handler = handler;
 }
 
 void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t handler) {
@@ -439,30 +446,55 @@ CAMLprim value unisonInit1Complete(value v) {
     CAMLreturn(Val_unit);
 }
 
-static void clear_ri_roots(void) {
-    for (size_t i = 0; i < g_ri_count; i++) {
-        caml_remove_generational_global_root(&g_ri_roots[i]);
+/* Unregister + free a root set (either the published globals or a temporary,
+ * not-yet-published candidate). Caller holds the runtime lock. */
+static void free_ri_root_set(value *roots, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        caml_remove_generational_global_root(&roots[i]);
     }
-    free(g_ri_roots);
+    free(roots);
+}
+
+static void clear_ri_roots(void) {
+    free_ri_root_set(g_ri_roots, g_ri_count);
     g_ri_roots = NULL;
     g_ri_count = 0;
 }
 
-static void register_ri_roots(value arr) {
-    /* Caller holds the runtime lock (we're invoked from unisonInit2Complete). */
-    clear_ri_roots();
+/* Build a fresh, fully-registered root set from `arr` WITHOUT touching the
+ * published globals. Returns true on success (out_roots/out_count set; n==0 is a
+ * valid empty set → NULL/0); false only on OOM. This is the "candidate" set that
+ * emit_state_items publishes atomically only after a complete, successful
+ * marshal — so a mid-marshal failure never leaves g_ri_roots pointing at a new
+ * array while Swift still shows the old rows. Caller holds the runtime lock. */
+static bool build_ri_root_set(value arr, value **out_roots, size_t *out_count) {
+    *out_roots = NULL;
+    *out_count = 0;
     const size_t n = (size_t)Wosize_val(arr);
-    if (n == 0) return;
-    g_ri_roots = calloc(n, sizeof(value));
-    if (g_ri_roots == NULL) {
+    if (n == 0) return true;
+    value *roots = calloc(n, sizeof(value));
+    if (roots == NULL) {
         fprintf(stderr, "unison-mac: OOM registering %zu ri roots\n", n);
-        return;
+        return false;
     }
-    g_ri_count = n;
     for (size_t i = 0; i < n; i++) {
-        g_ri_roots[i] = Field(arr, i);
-        caml_register_generational_global_root(&g_ri_roots[i]);
+        roots[i] = Field(arr, i);
+        caml_register_generational_global_root(&roots[i]);
     }
+    *out_roots = roots;
+    *out_count = n;
+    return true;
+}
+
+/* Publish a candidate root set as the live globals, freeing the old set. Caller
+ * holds the runtime lock. After this returns, g_ri_roots and the Swift row array
+ * delivered alongside it are the single successful publication. */
+static void install_ri_root_set(value *roots, size_t count) {
+    value *old = g_ri_roots;
+    size_t old_count = g_ri_count;
+    g_ri_roots = roots;
+    g_ri_count = count;
+    free_ri_root_set(old, old_count);
 }
 
 /* Shared between unisonInit2Complete (fired from OCaml when init2 finishes)
@@ -472,33 +504,40 @@ static void register_ri_roots(value arr) {
  * place" — so they go through the same handler. Caller must hold the OCaml
  * runtime lock.
  *
- * Returns true on success. Returns false if any per-item accessor callback
- * raised an OCaml exception: reachable both from unisonInit2Complete (an
- * OCaml→C→OCaml path where a raise would simply re-propagate) and from
- * _ocaml_ignore (a run_on_ocaml_thread entry point, where an unwind past
- * the request fn would strand the caller). Handling the exception here keeps
- * the ignore path safe without abandoning the g_ri_roots we just registered
- * (they stay valid; the caller reports the failure and the engine survives). */
+ * TRANSACTIONAL (Blocker 1): Swift's displayed row array and the published
+ * g_ri_roots must change together as one successful publication, or not at all.
+ * So this builds a *candidate* root set + marshals the complete C output first,
+ * and only swaps the globals into place immediately before a successful
+ * g_init2_complete_handler delivery. On ANY failure — a missing accessor, OOM,
+ * or an accessor raising mid-marshal — the candidate roots are unregistered and
+ * freed, the previously-published g_ri_roots is left intact, and no rows are
+ * delivered. That closes the window where g_ri_roots pointed at a new array
+ * while Swift still held the old rows (a later direction / Ignore / Details /
+ * Diff action could otherwise address the wrong OCaml item).
+ *
+ * Returns true on success; false on any failure. Reachable from both
+ * unisonInit2Complete (async OCaml→C, whose caller turns false into a terminal
+ * scan failure) and _ocaml_ignore (a run_on_ocaml_thread entry, whose caller
+ * turns false into a mutation-failure result). Caller holds the runtime lock. */
+static void free_state_items(unison_state_item_t *out, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        free((void *)out[i].path);
+        free((void *)out[i].left);
+        free((void *)out[i].right);
+        free((void *)out[i].direction);
+        free((void *)out[i].file_type);
+        free((void *)out[i].progress);
+    }
+    free(out);
+}
+
 static bool emit_state_items(value arr_in) {
     CAMLparam1(arr_in);
     CAMLlocal1(item);
 
-    register_ri_roots(arr_in);
-
-    if (g_init2_complete_handler == NULL) {
-        CAMLreturnT(bool, true);
-    }
-
-    const size_t n = (size_t)Wosize_val(arr_in);
-    unison_state_item_t *out = NULL;
-    if (n > 0) {
-        out = calloc(n, sizeof(*out));
-        if (out == NULL) {
-            fprintf(stderr, "unison-mac: OOM allocating %zu state items\n", n);
-            CAMLreturnT(bool, false);
-        }
-    }
-
+    /* 1. Resolve EVERY accessor before dereferencing any. A missing one is a
+     *    controlled failure (stale blob) — never a NULL-function call, and the
+     *    published globals stay untouched. */
     const value *fn_path      = caml_named_value("unisonRiToPath");
     const value *fn_left      = caml_named_value("unisonRiToLeft");
     const value *fn_right     = caml_named_value("unisonRiToRight");
@@ -507,16 +546,42 @@ static bool emit_state_items(value arr_in) {
     const value *fn_type      = caml_named_value("unisonRiToFileType");
     const value *fn_progress  = caml_named_value("unisonRiToProgress");
     const value *fn_bytes     = caml_named_value("unisonRiToBytesTransferred");
+    if (fn_path == NULL || fn_left == NULL || fn_right == NULL ||
+        fn_direction == NULL || fn_size == NULL || fn_type == NULL ||
+        fn_progress == NULL || fn_bytes == NULL) {
+        fprintf(stderr, "unison-mac: emit_state_items: a state accessor is not "
+                        "registered (stale blob?) — not publishing\n");
+        CAMLreturnT(bool, false);
+    }
+
+    const size_t n = (size_t)Wosize_val(arr_in);
+
+    /* 2. Build the candidate root set (NOT yet published). */
+    value *cand_roots = NULL;
+    size_t cand_count = 0;
+    if (!build_ri_root_set(arr_in, &cand_roots, &cand_count)) {
+        CAMLreturnT(bool, false);   /* OOM — globals untouched */
+    }
+
+    /* 3. Marshal the COMPLETE C output. Any accessor raise aborts before
+     *    publication; `item` is CAMLlocal-rooted so it survives the allocating
+     *    accessor calls. */
+    unison_state_item_t *out = NULL;
+    if (n > 0) {
+        out = calloc(n, sizeof(*out));
+        if (out == NULL) {
+            fprintf(stderr, "unison-mac: OOM allocating %zu state items\n", n);
+            free_ri_root_set(cand_roots, cand_count);
+            CAMLreturnT(bool, false);
+        }
+    }
 
     bool raised = false;
-    size_t built = 0;   /* number of fully/partially populated rows to free on abort */
+    size_t built = 0;
     for (size_t i = 0; i < n; i++) {
         item = Field(arr_in, i);
         built = i + 1;
         value v;
-        /* Each accessor result is consumed synchronously (String_val+strdup or
-         * Double_val) before the next callback, so no extra rooting is needed;
-         * a raise on any accessor aborts the build and frees what we have. */
         v = bridge_call1_exn(fn_path, item, &raised);      if (raised) break;
         out[i].path = strdup(String_val(v));
         v = bridge_call1_exn(fn_left, item, &raised);      if (raised) break;
@@ -535,34 +600,51 @@ static bool emit_state_items(value arr_in) {
         out[i].bytes_transferred = (int64_t)Double_val(v);
     }
 
-    if (!raised) {
+    if (raised) {
+        /* Roll back: drop the candidate roots and the partial output; the old
+         * published g_ri_roots and Swift's old rows both stay untouched. */
+        free_state_items(out, built);
+        free_ri_root_set(cand_roots, cand_count);
+        CAMLreturnT(bool, false);
+    }
+
+    /* 4. Success — publish atomically: swap the globals to the candidate set,
+     *    then deliver the matching rows. Both change together; nothing else can
+     *    run under the runtime lock in between. */
+    install_ri_root_set(cand_roots, cand_count);
+    if (g_init2_complete_handler != NULL) {
         /* Synchronous: the Swift trampoline must copy strings before returning. */
         g_init2_complete_handler(out, n);
     }
-
-    /* On the raise path only `built` rows were touched; strdup fields may be
-     * NULL where the raise cut a row short — free() tolerates NULL. */
-    const size_t to_free = raised ? built : n;
-    for (size_t i = 0; i < to_free; i++) {
-        free((void *)out[i].path);
-        free((void *)out[i].left);
-        free((void *)out[i].right);
-        free((void *)out[i].direction);
-        free((void *)out[i].file_type);
-        free((void *)out[i].progress);
-    }
-    free(out);
-
-    CAMLreturnT(bool, !raised);
+    free_state_items(out, n);
+    CAMLreturnT(bool, true);
 }
 
 CAMLprim value unisonInit2Complete(value arr) {
     CAMLparam1(arr);
-    /* OCaml→C→OCaml: a false return here means an accessor raised. There is no
-     * status channel back to the init2 driver on this path, so log it; the row
-     * roots are registered and the engine stays usable. */
+    /* This is the asynchronous scan-completion path (OCaml's doInOtherThread
+     * scan worker calls it). If emit_state_items fails — a missing accessor, an
+     * accessor raising, or OOM — the state was NOT published (Blocker 1) and the
+     * normal completion handler did NOT fire, so the coordinator would otherwise
+     * be stranded in .scanning forever. Deliver a terminal scan-failure instead
+     * (Blocker 2): the token-bound handler routes it to
+     * operationFailed(engineIsQuiescent:false) → restart-required. Never merely
+     * log and return — every asynchronous scan must produce either completion or
+     * a terminal failure. */
     if (!emit_state_items(arr)) {
-        fprintf(stderr, "unison-mac: unisonInit2Complete: state accessor raised\n");
+        fprintf(stderr, "unison-mac: unisonInit2Complete: state emission failed "
+                        "— delivering terminal scan failure\n");
+        if (g_scan_failed_handler != NULL) {
+            g_scan_failed_handler();
+        } else {
+            /* No handler installed (should not happen in the running app): the
+             * scan cannot be reported terminal. Abort loudly rather than leave a
+             * silently-wedged coordinator — this is a wiring bug, not a runtime
+             * condition. */
+            fprintf(stderr, "unison-mac: FATAL: no scan-failed handler installed; "
+                            "cannot report terminal scan failure\n");
+            abort();
+        }
     }
     CAMLreturn(Val_unit);
 }
@@ -796,6 +878,34 @@ void unison_bridge_reset_child_registry_for_test(void) {
     pthread_mutex_unlock(&g_child_mutex);
 }
 
+/* Test-only (Blocker 3): install/clear a dummy preconnection so the credential
+ * prompt/reply entry points pass their g_has_preconn guard and reach the exn
+ * wrapper. Intended for pairing with forced-raise ONLY — the wrapper
+ * short-circuits before the real OCaml call, so the Val_unit stand-in is never
+ * dereferenced. Registered/released like a real preconn (via release_preconn) so
+ * shutdown stays consistent. Runs on the OCaml thread for lock safety. */
+static void _ocaml_set_fake_preconn(void *user) {
+    bool on = *(bool *)user;
+    if (on) {
+        if (!g_has_preconn) {
+            g_preconn = Val_unit;
+            caml_register_generational_global_root(&g_preconn);
+            g_has_preconn = true;
+        }
+    } else {
+        release_preconn();
+    }
+}
+void unison_bridge_test_set_fake_preconn(bool on) {
+    run_on_ocaml_thread(_ocaml_set_fake_preconn, &on);
+}
+
+/* Test-only (Blocker 1): the currently-published per-row root count. Lets a test
+ * prove that a failed state publication left the OLD roots intact (rollback). */
+int unison_bridge_test_ri_count(void) {
+    return (int)g_ri_count;
+}
+
 /* Finding #1 GC-rooting probe. Faithfully reproduces reloadTable's rooting
  * pattern against the REAL registered progress/bytes callbacks on a live
  * g_ri_roots[row], but injects the exact adversarial condition reloadTable
@@ -840,6 +950,61 @@ bool unison_bridge_test_reload_under_gc(int row, char *out, size_t outlen) {
         strncpy(out, io.buf, outlen - 1);
         out[outlen - 1] = '\0';
     }
+    return io.ok;
+}
+
+/* Stronger, self-contained rooting proof. Unlike the reload probe (which reads
+ * whatever the real progress accessor returns — often "" or an interned/old
+ * string, so it can't prove the value was young or actually moved), this builds
+ * a KNOWN, freshly-allocated string (guaranteed young), roots it with CAMLlocal1
+ * exactly as reloadTable roots its accessor result, records the block address,
+ * churns + forces a minor collection to evacuate the young heap, and then checks
+ * both that the block's address CHANGED (proving it was young and relocated) and
+ * that String_val still yields the original bytes (proving the root tracked the
+ * move). *out_moved reports the relocation; the returned string must equal the
+ * input. Debug-only. */
+struct root_gc_io {
+    char in[256];
+    char out[1024];
+    bool moved;
+    bool ok;
+};
+
+static void _ocaml_test_root_survives_gc(void *user) {
+    CAMLparam0();
+    CAMLlocal1(v);
+    struct root_gc_io *io = user;
+    io->ok = false;
+    io->out[0] = '\0';
+    io->moved = false;
+
+    v = caml_copy_string(io->in);           /* fresh YOUNG block, known content */
+    uintptr_t before = (uintptr_t)v;
+    /* Fill the minor heap so the forced collection actually evacuates `v` to the
+     * major heap (relocating it); a CAMLlocal1 root is updated to the new
+     * address, an unrooted C value would be left dangling. */
+    for (int k = 0; k < 256; k++) { (void)caml_alloc_string(512); }
+    caml_minor_collection();
+    uintptr_t after = (uintptr_t)v;
+    io->moved = (before != after);
+
+    strncpy(io->out, String_val(v), sizeof(io->out) - 1);
+    io->out[sizeof(io->out) - 1] = '\0';
+    io->ok = true;
+    CAMLreturn0;
+}
+
+bool unison_bridge_test_root_survives_gc(const char *in, char *out, size_t outlen,
+                                         bool *out_moved) {
+    struct root_gc_io io;
+    memset(&io, 0, sizeof(io));
+    strncpy(io.in, in ? in : "", sizeof(io.in) - 1);
+    run_on_ocaml_thread(_ocaml_test_root_survives_gc, &io);
+    if (out != NULL && outlen > 0) {
+        strncpy(out, io.out, outlen - 1);
+        out[outlen - 1] = '\0';
+    }
+    if (out_moved != NULL) *out_moved = io.moved;
     return io.ok;
 }
 #endif
@@ -944,16 +1109,51 @@ void unison_bridge_shutdown(void) {
  * — their existing, separately-verified _exn + release_preconn cleanup is left
  * untouched. */
 #if UNISON_DEBUG_HOOKS
-static int g_test_force_raise = 0;   /* forge the next N callback results as exceptions */
+/* Two independent, atomic fault-injection modes (Debug-only). Atomics because
+ * the concurrent liveness test arms `force_raise` from one thread while callers
+ * consume it on the worker thread.
+ *   1. force_raise (count): the next N wrapper calls are forged as raised.
+ *      Used by concurrency/stress tests where the exact consuming call doesn't
+ *      matter.
+ *   2. ordinal: the Kth wrapper call after arming is forged as raised (1-based),
+ *      counting only wrapper (caml_callback) invocations, not caml_named_value
+ *      lookups. Lets a test fail a SPECIFIC callback stage — e.g. the direction
+ *      readback but not the setter, or the 3rd accessor of the 5th emitted row —
+ *      so post-first-mutation failures are exercisable. Single-armed (auto-
+ *      disarms on fire). Intended for single-threaded deterministic tests. */
+static atomic_int g_test_force_raise    = 0;
+static atomic_int g_test_ordinal_target = 0;   /* 0 = disabled */
+static atomic_int g_test_ordinal_count  = 0;   /* wrapper calls since arm */
+
 void unison_bridge_test_force_next_callbacks_raise(int n) {
-    g_test_force_raise = n < 0 ? 0 : n;
+    atomic_store(&g_test_force_raise, n < 0 ? 0 : n);
 }
-int unison_bridge_test_pending_forced_raises(void) { return g_test_force_raise; }
+int unison_bridge_test_pending_forced_raises(void) {
+    return atomic_load(&g_test_force_raise);
+}
+void unison_bridge_test_force_raise_at_ordinal(int k) {
+    atomic_store(&g_test_ordinal_count, 0);
+    atomic_store(&g_test_ordinal_target, k < 0 ? 0 : k);
+}
+
+/* Returns true (once) if the current wrapper call should be forged as raised. */
+static bool test_should_force_raise(void) {
+    int tgt = atomic_load(&g_test_ordinal_target);
+    if (tgt > 0) {
+        int c = atomic_fetch_add(&g_test_ordinal_count, 1) + 1;
+        if (c == tgt) { atomic_store(&g_test_ordinal_target, 0); return true; }
+    }
+    int n = atomic_load(&g_test_force_raise);
+    while (n > 0) {
+        if (atomic_compare_exchange_weak(&g_test_force_raise, &n, n - 1)) return true;
+    }
+    return false;
+}
 #endif
 
 static value bridge_call1_exn(const value *fn, value arg, bool *raised) {
 #if UNISON_DEBUG_HOOKS
-    if (g_test_force_raise > 0) { g_test_force_raise--; *raised = true; return Val_unit; }
+    if (test_should_force_raise()) { *raised = true; return Val_unit; }
 #endif
     value r = caml_callback_exn(*fn, arg);
     *raised = Is_exception_result(r);
@@ -962,7 +1162,7 @@ static value bridge_call1_exn(const value *fn, value arg, bool *raised) {
 
 static value bridge_call2_exn(const value *fn, value a, value b, bool *raised) {
 #if UNISON_DEBUG_HOOKS
-    if (g_test_force_raise > 0) { g_test_force_raise--; *raised = true; return Val_unit; }
+    if (test_should_force_raise()) { *raised = true; return Val_unit; }
 #endif
     value r = caml_callback2_exn(*fn, a, b);
     *raised = Is_exception_result(r);
@@ -1018,20 +1218,31 @@ const char *unison_bridge_unison_directory(void) {
     return io.buf[0] ? io.buf : NULL;
 }
 
+/* Shared {int status} shape for the status-returning phase entry points. */
+struct status_io { int status; };
+
 static void _ocaml_init0(void *user) {
-    (void)user;
+    struct status_io *io = user;
+    io->status = UNISON_BRIDGE_ERR_MISSING;
     const value *closure = caml_named_value("unisonInit0");
     if (closure == NULL) {
         fprintf(stderr, "unison-mac: unisonInit0 not registered\n");
-        return;
+        return;   /* ERR_MISSING — caller must abort launch */
     }
     bool raised = false;
     (void)bridge_call1_exn(closure, Val_unit, &raised);
-    if (raised) fprintf(stderr, "unison-mac: unisonInit0 raised (status wiring may be incomplete)\n");
+    if (raised) {
+        fprintf(stderr, "unison-mac: unisonInit0 raised — runtime not fully initialized\n");
+        io->status = UNISON_BRIDGE_ERR_EXN;
+        return;
+    }
+    io->status = UNISON_BRIDGE_OK;
 }
 
-void unison_bridge_init0(void) {
-    run_on_ocaml_thread(_ocaml_init0, NULL);
+int unison_bridge_init0(void) {
+    struct status_io io = { .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_init0, &io);
+    return io.status;
 }
 
 struct init1_io {
@@ -1071,51 +1282,66 @@ int unison_bridge_init1(const char *profile_name) {
 
 struct prompt_io {
     char prompt[4096];
-    bool has_prompt;
+    int  result;   /* unison_prompt_result_t */
 };
 
 static void _ocaml_connection_prompt(void *user) {
     struct prompt_io *io = user;
-    io->has_prompt = false;
     io->prompt[0] = '\0';
-    if (!g_has_preconn) return;
+    io->result = UNISON_PROMPT_NONE;
+    if (!g_has_preconn) return;                 /* NONE: nothing pending */
     const value *fn = caml_named_value("openConnectionPrompt");
-    if (fn == NULL) return;
+    if (fn == NULL) {                           /* NONE: stale blob */
+        fprintf(stderr, "unison-mac: openConnectionPrompt not registered\n");
+        return;
+    }
     bool raised = false;
     value result = bridge_call1_exn(fn, g_preconn, &raised);
-    if (raised) return;   /* has_prompt stays false → NULL (not an empty prompt) */
-    /* OCaml `string option`: None == Val_int(0); Some s is a block. */
-    if (result == Val_int(0)) return;
+    if (raised) { io->result = UNISON_PROMPT_EXN; return; }   /* EXN, never DONE */
+    /* OCaml `string option`: None == Val_int(0) → DONE; Some s → AVAILABLE. */
+    if (result == Val_int(0)) { io->result = UNISON_PROMPT_DONE; return; }
     value s = Field(result, 0);
     strncpy(io->prompt, String_val(s), sizeof(io->prompt) - 1);
     io->prompt[sizeof(io->prompt) - 1] = '\0';
-    io->has_prompt = true;
+    io->result = UNISON_PROMPT_AVAILABLE;
 }
 
-const char *unison_bridge_connection_prompt(void) {
+unison_prompt_result_t unison_bridge_connection_prompt(const char **out_prompt) {
     /* _Thread_local: per-caller return storage (see unison_bridge_get_version). */
     static _Thread_local struct prompt_io io;
     run_on_ocaml_thread(_ocaml_connection_prompt, &io);
-    return io.has_prompt ? io.prompt : NULL;
+    if (out_prompt != NULL) {
+        *out_prompt = (io.result == UNISON_PROMPT_AVAILABLE) ? io.prompt : NULL;
+    }
+    return (unison_prompt_result_t)io.result;
 }
 
-struct reply_io { const char *text; };
+struct reply_io {
+    const char *text;
+    int         status;   /* UNISON_REPLY_* */
+};
 
 static void _ocaml_connection_reply(void *user) {
     struct reply_io *io = user;
-    if (!g_has_preconn) return;
+    io->status = UNISON_REPLY_NONE;
+    if (!g_has_preconn) return;                 /* NONE: nothing to reply to */
     const value *fn = caml_named_value("openConnectionReply");
-    if (fn == NULL) return;
+    if (fn == NULL) {                           /* NONE: stale blob */
+        fprintf(stderr, "unison-mac: openConnectionReply not registered\n");
+        return;
+    }
     value v = caml_copy_string(io->text ? io->text : "");
     bool raised = false;
     (void)bridge_call2_exn(fn, g_preconn, v, &raised);
-    /* Best-effort: a raise here leaves the credential loop to be resolved by a
-     * subsequent prompt returning NULL / a user cancel; it can't strand us. */
+    /* A raise leaves the preconnection's auth state uncertain; the caller must
+     * stop looping and clean up rather than send another prompt/reply. */
+    io->status = raised ? UNISON_REPLY_EXN : UNISON_REPLY_OK;
 }
 
-void unison_bridge_connection_reply(const char *response) {
-    struct reply_io io = { .text = response };
+int unison_bridge_connection_reply(const char *response) {
+    struct reply_io io = { .text = response, .status = UNISON_REPLY_NONE };
     run_on_ocaml_thread(_ocaml_connection_reply, &io);
+    return io.status;
 }
 
 /* connection_end / connection_cancel are now status-returning and
@@ -1212,54 +1438,61 @@ struct ri_set_io {
     const char *setter_name;     /* OCaml callback name, e.g. "unisonRiSetRight" */
     int         row;
     char        direction[16];   /* Out: new direction in OCaml raw form */
-    bool        ok;
+    int         result;          /* unison_op_result_t */
 };
 
 static void _ocaml_ri_set(void *user) {
     struct ri_set_io *io = user;
     io->direction[0] = '\0';
-    io->ok = false;
+    io->result = UNISON_OP_INVALID;
 
     if (io->row < 0 || (size_t)io->row >= g_ri_count) {
         fprintf(stderr, "unison-mac: ri_set row %d out of range (count=%zu)\n",
                 io->row, g_ri_count);
-        return;
+        return;   /* INVALID — no mutation */
     }
 
+    /* Resolve BOTH callbacks before mutating: a missing readback is INVALID
+     * (nothing changed), never a null-deref after the setter already ran. */
     const value *setter = caml_named_value(io->setter_name);
-    if (setter == NULL) {
-        fprintf(stderr, "unison-mac: %s not registered\n", io->setter_name);
-        return;
+    const value *dir_fn = caml_named_value("unisonRiToDirection");
+    if (setter == NULL || dir_fn == NULL) {
+        fprintf(stderr, "unison-mac: ri_set callback missing (%s / unisonRiToDirection)\n",
+                io->setter_name);
+        return;   /* INVALID — no mutation */
     }
+
+    /* The setter IS the mutation. Any raise from here on is DIRTY: the row may
+     * have been partially mutated, so the engine's state is uncertain and the
+     * caller must not keep the old row live/actionable. */
     bool raised = false;
     (void)bridge_call1_exn(setter, g_ri_roots[io->row], &raised);
-    if (raised) return;   /* ok stays false → NULL; engine remains valid */
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; return; }
 
-    const value *dir_fn = caml_named_value("unisonRiToDirection");
-    if (dir_fn == NULL) return;
     value dir_v = bridge_call1_exn(dir_fn, g_ri_roots[io->row], &raised);
-    if (raised) return;
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; return; }  /* mutated, readback failed */
     strncpy(io->direction, String_val(dir_v), sizeof(io->direction) - 1);
     io->direction[sizeof(io->direction) - 1] = '\0';
-    io->ok = true;
+    io->result = UNISON_OP_OK;
 }
 
-static const char *_ri_set_via(const char *setter_name, int row) {
-    static _Thread_local char buf[16];
+static unison_op_result_t _ri_set_via(const char *setter_name, int row,
+                                      char *out_dir, size_t out_dir_len) {
     struct ri_set_io io = { .setter_name = setter_name, .row = row };
     run_on_ocaml_thread(_ocaml_ri_set, &io);
-    if (!io.ok) return NULL;
-    strncpy(buf, io.direction, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
+    if (out_dir != NULL && out_dir_len > 0) {
+        strncpy(out_dir, io.result == UNISON_OP_OK ? io.direction : "", out_dir_len - 1);
+        out_dir[out_dir_len - 1] = '\0';
+    }
+    return (unison_op_result_t)io.result;
 }
 
-const char *unison_bridge_ri_set_to_remote(int row) { return _ri_set_via("unisonRiSetRight",    row); }
-const char *unison_bridge_ri_set_to_local(int row)  { return _ri_set_via("unisonRiSetLeft",     row); }
-const char *unison_bridge_ri_set_skip(int row)      { return _ri_set_via("unisonRiSetConflict", row); }
-const char *unison_bridge_ri_set_merge(int row)     { return _ri_set_via("unisonRiSetMerge",    row); }
-const char *unison_bridge_ri_force_older(int row)   { return _ri_set_via("unisonRiForceOlder",  row); }
-const char *unison_bridge_ri_force_newer(int row)   { return _ri_set_via("unisonRiForceNewer",  row); }
+unison_op_result_t unison_bridge_ri_set_to_remote(int row, char *d, size_t n) { return _ri_set_via("unisonRiSetRight",    row, d, n); }
+unison_op_result_t unison_bridge_ri_set_to_local(int row, char *d, size_t n)  { return _ri_set_via("unisonRiSetLeft",     row, d, n); }
+unison_op_result_t unison_bridge_ri_set_skip(int row, char *d, size_t n)      { return _ri_set_via("unisonRiSetConflict", row, d, n); }
+unison_op_result_t unison_bridge_ri_set_merge(int row, char *d, size_t n)     { return _ri_set_via("unisonRiSetMerge",    row, d, n); }
+unison_op_result_t unison_bridge_ri_force_older(int row, char *d, size_t n)   { return _ri_set_via("unisonRiForceOlder",  row, d, n); }
+unison_op_result_t unison_bridge_ri_force_newer(int row, char *d, size_t n)   { return _ri_set_via("unisonRiForceNewer",  row, d, n); }
 
 /* Per-row Diff support. canDiff is a pure read (no mutation); runShowDiffs
  * kicks off the diff and returns immediately — the result comes back via
@@ -1322,7 +1555,13 @@ bool unison_bridge_run_show_diffs(int row) {
 }
 
 /* Per-row getter. Same dispatch pattern as the ri_set_* functions but
- * doesn't mutate state — just reads `unisonRiToDetails` for the row. */
+ * doesn't mutate state — just reads `unisonRiToDetails` for the row.
+ *
+ * Read-only (Blocker 4): a raise here mutates nothing, so it retains narrow
+ * failure handling — NULL to the caller. NULL already covers "out of range" and
+ * "no details", and the Details caller needs no finer distinction (it simply
+ * shows nothing); the exception is logged for diagnosis. The engine stays
+ * valid, so no restart routing. */
 struct ri_details_io {
     int  row;
     char buf[4096];
@@ -1336,7 +1575,10 @@ static void _ocaml_ri_get_details(void *user) {
     if (fn == NULL) return;
     bool raised = false;
     value result = bridge_call1_exn(fn, g_ri_roots[io->row], &raised);
-    if (raised) return;   /* buf stays empty → caller returns NULL; engine valid */
+    if (raised) {   /* buf stays empty → caller returns NULL; engine valid */
+        fprintf(stderr, "unison-mac: unisonRiToDetails raised for row %d\n", io->row);
+        return;
+    }
     strncpy(io->buf, String_val(result), sizeof(io->buf) - 1);
     io->buf[sizeof(io->buf) - 1] = '\0';
 }
@@ -1365,71 +1607,69 @@ const char *unison_bridge_ri_get_details(int row) {
 struct ignore_io {
     int         row;
     const char *ignore_fn_name;  /* "unisonIgnorePath" | "unisonIgnoreExt" | "unisonIgnoreName" */
-    bool        ok;
+    int         result;          /* unison_op_result_t */
 };
 
 static void _ocaml_ignore(void *user) {
     CAMLparam0();
     CAMLlocal2(path_v, arr);
     struct ignore_io *io = user;
-    io->ok = false;
+    io->result = UNISON_OP_INVALID;
 
     if (io->row < 0 || (size_t)io->row >= g_ri_count) {
         fprintf(stderr, "unison-mac: ignore row %d out of range (count=%zu)\n",
                 io->row, g_ri_count);
-        CAMLreturn0;
+        CAMLreturn0;   /* INVALID — no mutation */
+    }
+
+    /* Resolve EVERY callback before running any mutating step, so a missing one
+     * is INVALID (nothing changed) rather than a partial mutation. */
+    const value *path_fn   = caml_named_value("unisonRiToPath");
+    const value *ignore_fn = caml_named_value(io->ignore_fn_name);
+    const value *upd_fn    = caml_named_value("unisonUpdateForIgnore");
+    const value *state_fn  = caml_named_value("unisonState");
+    if (path_fn == NULL || ignore_fn == NULL || upd_fn == NULL || state_fn == NULL) {
+        fprintf(stderr, "unison-mac: ignore callback missing (path/%s/update/state)\n",
+                io->ignore_fn_name);
+        CAMLreturn0;   /* INVALID — no mutation */
     }
 
     bool raised = false;
 
-    const value *path_fn = caml_named_value("unisonRiToPath");
-    if (path_fn == NULL) {
-        fprintf(stderr, "unison-mac: unisonRiToPath not registered\n");
-        CAMLreturn0;
-    }
-    /* path_v is held across the ignore/update/state allocating callbacks below;
-     * CAMLlocal2 keeps it rooted so a compaction there can't invalidate it. */
+    /* Reading the path is read-only: a raise here changed nothing → CLEAN. */
     path_v = bridge_call1_exn(path_fn, g_ri_roots[io->row], &raised);
-    if (raised) CAMLreturn0;   /* ok stays false; engine untouched, still valid */
+    if (raised) { io->result = UNISON_OP_FAILED_CLEAN; CAMLreturn0; }
 
-    const value *ignore_fn = caml_named_value(io->ignore_fn_name);
-    if (ignore_fn == NULL) {
-        fprintf(stderr, "unison-mac: %s not registered\n", io->ignore_fn_name);
-        CAMLreturn0;
-    }
+    /* From here the operation mutates engine state — persisting the ignore
+     * pattern, then rewriting theState. Any raise, or a failure to publish the
+     * post-filter state, is DIRTY: theState no longer matches the displayed
+     * rows, so the caller must route to restart-required. path_v is held across
+     * these allocating callbacks; CAMLlocal2 keeps it rooted. */
     (void)bridge_call1_exn(ignore_fn, path_v, &raised);
-    if (raised) CAMLreturn0;
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; CAMLreturn0; }
 
-    const value *upd_fn = caml_named_value("unisonUpdateForIgnore");
-    if (upd_fn == NULL) {
-        fprintf(stderr, "unison-mac: unisonUpdateForIgnore not registered\n");
-        CAMLreturn0;
-    }
     (void)bridge_call1_exn(upd_fn, Val_int(0), &raised);
-    if (raised) CAMLreturn0;
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; CAMLreturn0; }
 
-    const value *state_fn = caml_named_value("unisonState");
-    if (state_fn == NULL) {
-        fprintf(stderr, "unison-mac: unisonState not registered\n");
-        CAMLreturn0;
-    }
     arr = bridge_call1_exn(state_fn, Val_unit, &raised);
-    if (raised) CAMLreturn0;
+    if (raised) { io->result = UNISON_OP_FAILED_DIRTY; CAMLreturn0; }
 
-    /* ok only becomes true if the fresh state was emitted without a raise. */
-    io->ok = emit_state_items(arr);
+    /* theState is already mutated; publishing it transactionally either fully
+     * succeeds (OK) or leaves the old rows in place while the engine has moved
+     * on (DIRTY — actionable stale UI, route to restart). */
+    io->result = emit_state_items(arr) ? UNISON_OP_OK : UNISON_OP_FAILED_DIRTY;
     CAMLreturn0;
 }
 
-static bool _ignore_via(const char *fn_name, int row) {
+static unison_op_result_t _ignore_via(const char *fn_name, int row) {
     struct ignore_io io = { .row = row, .ignore_fn_name = fn_name };
     run_on_ocaml_thread(_ocaml_ignore, &io);
-    return io.ok;
+    return (unison_op_result_t)io.result;
 }
 
-bool unison_bridge_ignore_path(int row) { return _ignore_via("unisonIgnorePath", row); }
-bool unison_bridge_ignore_ext(int row)  { return _ignore_via("unisonIgnoreExt",  row); }
-bool unison_bridge_ignore_name(int row) { return _ignore_via("unisonIgnoreName", row); }
+unison_op_result_t unison_bridge_ignore_path(int row) { return _ignore_via("unisonIgnorePath", row); }
+unison_op_result_t unison_bridge_ignore_ext(int row)  { return _ignore_via("unisonIgnoreExt",  row); }
+unison_op_result_t unison_bridge_ignore_name(int row) { return _ignore_via("unisonIgnoreName", row); }
 
 struct sync_io { int status; };
 
@@ -1468,23 +1708,26 @@ int unison_bridge_synchronize(void) {
  * is just `abortAll := true` — fast, no chance of deadlock against
  * the sync worker. */
 static void _ocaml_abort_all(void *user) {
-    (void)user;
+    struct status_io *io = user;
+    io->status = UNISON_BRIDGE_ERR_MISSING;
     const value *fn = caml_named_value("abortAll");
     if (fn == NULL) {
         fprintf(stderr, "unison-mac: abortAll not registered (uimacbridge.ml patch missing?)\n");
-        return;
+        return;   /* ERR_MISSING: the abort flag was NOT set — caller must not
+                   * claim the cancellation was requested. */
     }
-    /* abortAll is `abortAll := true` — it cannot itself raise in practice, but
-     * route it through the exn wrapper for uniformity. A raise here is logged
-     * and swallowed: abort is best-effort (the sync worker observes the flag at
-     * its next checkpoint), and the worker thread must not be stranded. */
+    /* abortAll is `abortAll := true` — fast, no deadlock against the sync worker;
+     * it cannot itself raise in practice, but route it through the exn wrapper
+     * for uniformity. On a raise the flag was NOT reliably set, so report EXN and
+     * let the caller surface that cancellation could not be requested rather than
+     * falsely claim success. The worker thread is never stranded either way. */
     bool raised = false;
     (void)bridge_call1_exn(fn, Val_unit, &raised);
-    if (raised) {
-        fprintf(stderr, "unison-mac: abortAll callback raised (ignored, abort is best-effort)\n");
-    }
+    io->status = raised ? UNISON_BRIDGE_ERR_EXN : UNISON_BRIDGE_OK;
 }
 
-void unison_bridge_abort_sync(void) {
-    run_on_ocaml_thread(_ocaml_abort_all, NULL);
+int unison_bridge_abort_sync(void) {
+    struct status_io io = { .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_abort_all, &io);
+    return io.status;
 }

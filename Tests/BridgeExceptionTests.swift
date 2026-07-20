@@ -27,12 +27,16 @@ final class BridgeExceptionTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Never leak a forced-raise count between tests.
+        // Never leak injection state between tests.
         unison_bridge_test_force_next_callbacks_raise(0)
+        unison_bridge_test_force_raise_at_ordinal(0)
     }
 
     override func tearDown() {
         unison_bridge_test_force_next_callbacks_raise(0)
+        unison_bridge_test_force_raise_at_ordinal(0)
+        // Ensure no dummy preconnection survives into another test.
+        unison_bridge_test_set_fake_preconn(false)
         super.tearDown()
     }
 
@@ -97,6 +101,100 @@ final class BridgeExceptionTests: XCTestCase {
         XCTAssertNotEqual(status, UNISON_BRIDGE_OK,
             "a raised sync start MUST NOT be misreported as a successful launch")
         XCTAssertEqual(status, UNISON_BRIDGE_ERR_EXN)
+    }
+
+    func test_forceRaise_init1_returnsExnStatusNotOK() {
+        // The forced raise short-circuits before the real unisonInit1 runs, so
+        // no profile is actually loaded — we only assert the status contract.
+        unison_bridge_test_force_next_callbacks_raise(1)
+        let status = "no-such-profile".withCString { unison_bridge_init1($0) }
+        XCTAssertNotEqual(status, UNISON_BRIDGE_OK,
+            "a raised connect init MUST NOT be misreported as a successful dispatch")
+        XCTAssertEqual(status, UNISON_BRIDGE_ERR_EXN)
+    }
+
+    func test_forceRaise_init0_returnsExnStatusThenRecovers() {
+        // init0 already ran successfully at host-app startup; a forced raise here
+        // short-circuits before re-invoking it, so this only exercises the status
+        // contract and does not disturb the live runtime.
+        unison_bridge_test_force_next_callbacks_raise(1)
+        XCTAssertEqual(unison_bridge_init0(), UNISON_BRIDGE_ERR_EXN,
+            "a raised init0 MUST report failure, never OK")
+        // A real init0 afterwards re-wires the status displayer cleanly.
+        XCTAssertEqual(unison_bridge_init0(), UNISON_BRIDGE_OK,
+            "worker must recover; init0 is idempotent")
+    }
+
+    func test_forceRaise_abort_returnsExnStatusNotOK() {
+        unison_bridge_test_force_next_callbacks_raise(1)
+        XCTAssertEqual(unison_bridge_abort_sync(), UNISON_BRIDGE_ERR_EXN,
+            "a raised abort MUST NOT claim the cancellation was requested")
+        // Worker survived; a real abort (no sync running) is a clean flag-flip.
+        XCTAssertEqual(unison_bridge_abort_sync(), UNISON_BRIDGE_OK)
+    }
+
+    // MARK: - Credential contracts (Blocker 3): exn ≠ "no more prompts"
+
+    func test_connectionPrompt_noPreconn_reportsNoneNotDone() {
+        // With no preconnection, the result is NONE (not DONE) — so the driver
+        // never mistakes it for "prompts finished" and calls connection_end.
+        var p: UnsafePointer<CChar>? = nil
+        XCTAssertEqual(unison_bridge_connection_prompt(&p), UNISON_PROMPT_NONE)
+        XCTAssertNil(p)
+    }
+
+    func test_forceRaise_connectionPrompt_reportsExnNotDone() {
+        // A prompt exception MUST surface as EXN, never DONE — a DONE here would
+        // falsely authorize connection finalization (connection_end).
+        unison_bridge_test_set_fake_preconn(true)
+        unison_bridge_test_force_next_callbacks_raise(1)
+        var p: UnsafePointer<CChar>? = nil
+        let r = unison_bridge_connection_prompt(&p)
+        unison_bridge_test_set_fake_preconn(false)
+        XCTAssertEqual(r, UNISON_PROMPT_EXN,
+            "a raised prompt must be EXN, never observed as normal completion (DONE)")
+        XCTAssertNotEqual(r, UNISON_PROMPT_DONE)
+        XCTAssertNil(p)
+    }
+
+    func test_forceRaise_connectionReply_reportsExnStatus() {
+        unison_bridge_test_set_fake_preconn(true)
+        unison_bridge_test_force_next_callbacks_raise(1)
+        let rc = unison_bridge_connection_reply("secret-not-inspected")
+        unison_bridge_test_set_fake_preconn(false)
+        XCTAssertEqual(rc, UNISON_REPLY_EXN,
+            "a raised reply must report EXN so the driver stops the loop and cleans up")
+    }
+
+    func test_connectionReply_noPreconn_reportsNone() {
+        XCTAssertEqual(unison_bridge_connection_reply("x"), UNISON_REPLY_NONE)
+    }
+
+    // MARK: - Ordinal targeting drains exactly the Kth wrapper call
+
+    func test_ordinalInjection_firesOnlyOnTargetCall() {
+        // Arm the 3rd wrapper call to raise; the 1st/2nd succeed, the 3rd fails,
+        // the 4th succeeds again (single-shot).
+        unison_bridge_test_force_raise_at_ordinal(3)
+        XCTAssertNotNil(unison_bridge_get_version(), "call 1 should succeed")
+        XCTAssertNotNil(unison_bridge_get_version(), "call 2 should succeed")
+        XCTAssertNil(unison_bridge_get_version(), "call 3 (target) should raise")
+        XCTAssertNotNil(unison_bridge_get_version(), "call 4 should succeed (single-shot)")
+    }
+
+    // MARK: - Finding #1: a known young value survives a relocating collection
+
+    func test_rootedYoungValue_survivesRelocatingCollection() {
+        let known = "progress-42%-\u{2713}-known-young-value"
+        var buf = [CChar](repeating: 0, count: 1024)
+        var moved = false
+        let ok = unison_bridge_test_root_survives_gc(known, &buf, buf.count, &moved)
+        XCTAssertTrue(ok, "rooting probe did not complete")
+        XCTAssertEqual(String(cString: buf), known,
+            "a CAMLlocal-rooted young value must read back byte-identical after GC")
+        XCTAssertTrue(moved,
+            "the fresh young block must actually relocate (major heap) — proving the "
+            + "test exercises real root tracking, not a value that never moved")
     }
 
     // MARK: - Worker liveness across many injected faults (no strand / deadlock)

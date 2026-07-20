@@ -120,10 +120,11 @@ final class BridgeTests: XCTestCase {
             // Copy immediately into a Swift String (owns its own storage).
             let v = unison_bridge_get_version().map { String(cString: $0) }
             let d = unison_bridge_unison_directory().map { String(cString: $0) }
-            // connection_prompt has no preconnection here → must stay NULL,
-            // concurrently, without crashing.
-            let p = unison_bridge_connection_prompt()
-            if v != versionRef || d != dirRef || p != nil {
+            // connection_prompt has no preconnection here → must report NONE
+            // (not AVAILABLE), concurrently, without crashing.
+            var pptr: UnsafePointer<CChar>? = nil
+            let pr = unison_bridge_connection_prompt(&pptr)
+            if v != versionRef || d != dirRef || pr != UNISON_PROMPT_NONE || pptr != nil {
                 lock.lock(); mismatches += 1; lock.unlock()
             }
         }
@@ -134,22 +135,25 @@ final class BridgeTests: XCTestCase {
     // MARK: - Per-row roots (require init1+init2 to have run)
 
     func test_b_riOps_failGracefullyWhenNoStateLoaded() {
-        // No init1/init2 has run in this test, so g_ri_count is 0.
-        // Out-of-range row should return NULL, not crash.
-        XCTAssertNil(unison_bridge_ri_set_to_remote(0))
-        XCTAssertNil(unison_bridge_ri_set_to_local(99999))
-        XCTAssertNil(unison_bridge_ri_set_skip(-1))
-        XCTAssertNil(unison_bridge_ri_set_merge(0))
+        // No init1/init2 has run in this test, so g_ri_count is 0. An out-of-
+        // range row is a validation failure (INVALID) — no mutation, no crash,
+        // and NOT the DIRTY result that would force restart-required.
+        var buf = [CChar](repeating: 0, count: 16)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_to_local(99999, &buf, buf.count), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_skip(-1, &buf, buf.count), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ri_set_merge(0, &buf, buf.count), UNISON_OP_INVALID)
+        // On a non-OK result the out buffer must be the empty string, never stale.
+        XCTAssertEqual(String(cString: buf), "")
     }
 
     func test_b_ignoreOps_failGracefullyWhenNoStateLoaded() {
-        // Same guard as the ri-set ops: with no reconcile state, the row
-        // is out of range so each ignore call should report failure rather
-        // than crash. Calling these is safe even when no profile is open
-        // (e.g. if a stale menu item is somehow invoked).
-        XCTAssertFalse(unison_bridge_ignore_path(0))
-        XCTAssertFalse(unison_bridge_ignore_ext(99999))
-        XCTAssertFalse(unison_bridge_ignore_name(-1))
+        // Same guard as the ri-set ops: with no reconcile state, the row is out
+        // of range → INVALID (no mutation), never DIRTY. Calling these is safe
+        // even when no profile is open (e.g. a stale menu item is invoked).
+        XCTAssertEqual(unison_bridge_ignore_path(0), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ignore_ext(99999), UNISON_OP_INVALID)
+        XCTAssertEqual(unison_bridge_ignore_name(-1), UNISON_OP_INVALID)
     }
 
     func test_b_canDiff_returnsFalseGracefullyOnOutOfRange() {
@@ -168,11 +172,13 @@ final class BridgeTests: XCTestCase {
         // (Real abort behavior — interrupting a sync mid-transfer —
         // requires a running sync to exercise; that's manual smoke
         // testing territory, not unit.)
-        unison_bridge_abort_sync()
-        // If we got here, the callback dispatch worked. If the
-        // `abortAll` callback weren't registered in the local
-        // upstream patch, the bridge would print "abortAll not
-        // registered" to stderr; the call still returns.
+        //
+        // Blocker 5: abort now returns a status. With the `abortAll` callback
+        // registered (current blob), the flag-flip succeeds → OK. A non-OK here
+        // would mean the callback is missing (stale blob) or raised — either way
+        // the caller must not claim cancellation was requested.
+        XCTAssertEqual(unison_bridge_abort_sync(), UNISON_BRIDGE_OK,
+            "abort dispatch should succeed (abortAll registered); non-OK = stale blob")
     }
 
     func test_b_closeConnection_isRegisteredAndSafeNoOp() {
@@ -389,6 +395,100 @@ final class BridgeTests: XCTestCase {
                 _ = String(cString: buf)
             }
         }
+    }
+
+    /// Drive a local fixture through init1 + init2 and return the row count.
+    /// Installs the init1/init2 handlers globally (fine — the host app's are
+    /// re-established per real session; tests run sequentially).
+    @discardableResult
+    private func scanFixtureRows(_ fixture: IntegrationFixture) -> Int {
+        let scanned = expectation(description: "init2 complete for fixture")
+        var rowCount = 0
+        UnisonBridge.installInit1CompleteHandler { needsPrompt in
+            XCTAssertFalse(needsPrompt, "local-only profile shouldn't need prompts")
+            _ = unison_bridge_init2()
+        }
+        UnisonBridge.installInit2CompleteHandler { items in
+            rowCount = items.count
+            scanned.fulfill()
+        }
+        fixture.profileName.withCString { _ = unison_bridge_init1($0) }
+        wait(for: [scanned], timeout: 15.0)
+        return rowCount
+    }
+
+    /// **Blocker 4 — mutation-stage failure classification.** Inject a raise at a
+    /// SPECIFIC callback ordinal (not merely the first) and prove a per-row
+    /// direction mutation reports DIRTY whether the raise strikes at the setter
+    /// (stage 1) or the direction readback (stage 2) — both are at/after mutation
+    /// — while the engine survives for a subsequent clean set.
+    func test_f_rowMutation_dirtyAtEachMutationStage() throws {
+        let fixture = try IntegrationFixture(name: "mutfail")
+        try fixture.populate(
+            aFiles: ["a.txt": "x\n", "both.txt": "a\n"],
+            bFiles: ["b.txt": "y\n", "both.txt": "b\n"])
+        let rows = scanFixtureRows(fixture)
+        XCTAssertGreaterThan(rows, 0)
+        var buf = [CChar](repeating: 0, count: 16)
+
+        // Stage 1: the setter (1st wrapper call) raises → DIRTY.
+        unison_bridge_test_force_raise_at_ordinal(1)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_FAILED_DIRTY)
+        XCTAssertEqual(String(cString: buf), "", "no stale direction handed back on failure")
+
+        // Stage 2: the setter runs, the direction readback (2nd wrapper) raises →
+        // still DIRTY (the row WAS mutated; we just can't read the new direction).
+        unison_bridge_test_force_raise_at_ordinal(2)
+        XCTAssertEqual(unison_bridge_ri_set_to_local(0, &buf, buf.count), UNISON_OP_FAILED_DIRTY)
+
+        // Worker survived: a clean set now succeeds and returns a direction.
+        unison_bridge_test_force_raise_at_ordinal(0)
+        XCTAssertEqual(unison_bridge_ri_set_to_remote(0, &buf, buf.count), UNISON_OP_OK)
+        XCTAssertFalse(String(cString: buf).isEmpty)
+
+        // Ignore: the path read (1st wrapper) is read-only → CLEAN (nothing
+        // changed); a raise at the pattern-persist step (2nd wrapper) is DIRTY.
+        unison_bridge_test_force_raise_at_ordinal(1)
+        XCTAssertEqual(unison_bridge_ignore_path(0), UNISON_OP_FAILED_CLEAN)
+        unison_bridge_test_force_raise_at_ordinal(2)
+        XCTAssertEqual(unison_bridge_ignore_ext(0), UNISON_OP_FAILED_DIRTY)
+        unison_bridge_test_force_raise_at_ordinal(0)
+    }
+
+    /// **Blocker 1 + 2 — failed publication rolls back roots and reports
+    /// terminally.** A first scan publishes N roots. A second scan whose state
+    /// emission fails (forced raise at emit's first accessor) must: (a) deliver
+    /// the terminal async scan-failure callback rather than the completion
+    /// handler, and (b) leave the previously-published roots intact (rollback).
+    func test_g_failedPublish_rollsBackRootsAndReportsTerminal() throws {
+        let fixture = try IntegrationFixture(name: "rollback")
+        try fixture.populate(
+            aFiles: ["a.txt": "x\n", "both.txt": "a\n"],
+            bFiles: ["b.txt": "y\n", "both.txt": "b\n"])
+        let rows = scanFixtureRows(fixture)
+        XCTAssertGreaterThan(rows, 0)
+        XCTAssertEqual(Int(unison_bridge_test_ri_count()), rows,
+                       "a successful scan publishes its roots")
+
+        let failed = expectation(description: "terminal async scan failure delivered")
+        UnisonBridge.installInit2CompleteHandler { _ in
+            XCTFail("init2 completion must NOT fire when state emission fails")
+        }
+        UnisonBridge.installScanFailedHandler { failed.fulfill() }
+
+        // Ordinal 2: wrapper #1 is init2's own dispatch (must succeed so the scan
+        // launches); wrapper #2 is emit_state_items' first accessor — force THAT
+        // to raise so publication fails after the scan completes.
+        unison_bridge_test_force_raise_at_ordinal(2)
+        _ = unison_bridge_init2()
+        wait(for: [failed], timeout: 15.0)
+        unison_bridge_test_force_raise_at_ordinal(0)
+
+        XCTAssertEqual(Int(unison_bridge_test_ri_count()), rows,
+            "a failed publication must preserve the previously-published roots (rollback)")
+        // Reinstall a benign init2 handler so later suites aren't tripped by the
+        // XCTFail stub above.
+        UnisonBridge.installInit2CompleteHandler { _ in }
     }
 }
 

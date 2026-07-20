@@ -44,11 +44,12 @@ enum IgnoreAction {
         }
     }
 
-    /// Returns true on success. Swallows the bool the bridge returns; the
-    /// caller already knows it acted on the only selected row, and a false
-    /// here means a build mismatch (the OCaml symbol wasn't registered) or
-    /// an out-of-range row — both should already have been guarded.
-    func invoke(row: Int32) -> Bool {
+    /// Returns the bridge's structured result (Blocker 4). Ignore is a
+    /// multi-step mutation: `UNISON_OP_INVALID`/`UNISON_OP_FAILED_CLEAN` changed
+    /// nothing (safe to surface narrowly), while `UNISON_OP_FAILED_DIRTY` means
+    /// engine state moved but the new rows couldn't be published — the caller
+    /// must route that to restart-required rather than leave stale rows live.
+    func invoke(row: Int32) -> unison_op_result_t {
         switch self {
         case .path: return unison_bridge_ignore_path(row)
         case .ext:  return unison_bridge_ignore_ext(row)

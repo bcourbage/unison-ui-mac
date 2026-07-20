@@ -29,6 +29,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// through the coordinator, which owns the abort + connection-close
     /// decision — the window never calls `unison_bridge_abort_sync()`.
     typealias SyncExitRequest = @MainActor (EngineSessionCoordinator.SyncExitIntent) -> Void
+    /// Invoked when a per-row mutation (direction / Ignore) fails AFTER OCaml
+    /// state began changing (Blocker 4). The engine is no longer provably
+    /// consistent with the displayed rows, so the window asks the coordinator to
+    /// enter restart-required rather than leave the ready UI actionable.
+    typealias EngineUncertainRequest = @MainActor (_ reason: String) -> Void
 
     private var items: [StateItem]
     private var tree = ReconcileTree(items: [])
@@ -61,6 +66,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onSyncStart: SyncStartRequest
     /// User chose how to leave a running sync; see `SyncExitRequest`.
     private let onSyncExit: SyncExitRequest
+    /// A row mutation left the engine uncertain; see `EngineUncertainRequest`.
+    private let onEngineUncertain: EngineUncertainRequest
     /// Terminal restart-required latch. Set by `showRestartRequired`; once
     /// set, all row/sync/rescan actions are disabled (the coordinator has
     /// declared the engine unsafe for reuse — the user must quit + reopen).
@@ -159,7 +166,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onRescanRequested: @escaping RescanRequest,
          onCancelScan: @escaping CancelScanRequest,
          onSyncStart: @escaping SyncStartRequest,
-         onSyncExit: @escaping SyncExitRequest) {
+         onSyncExit: @escaping SyncExitRequest,
+         onEngineUncertain: @escaping EngineUncertainRequest) {
         self.profile = profile
         self.items = []
         self.mergeConfigured = mergeConfigured
@@ -168,6 +176,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onCancelScan = onCancelScan
         self.onSyncStart = onSyncStart
         self.onSyncExit = onSyncExit
+        self.onEngineUncertain = onEngineUncertain
         // Default 1100×580. Width chosen to fit every toolbar item at
         // `.iconAndLabel` mode (Profiles, Rescan, direction group's 4
         // expanded subitems, Go, Stop) plus the unified-toolbar title
@@ -1093,17 +1102,31 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// leaves *underneath* selected folders. Single click on a folder thus
     /// becomes "apply this action to every file in that folder".
     func applyDirection(_ action: DirectionAction) {
+        guard !restartRequired else { NSSound.beep(); return }
         let rows = leafRowsInSelection()
         guard !rows.isEmpty else { NSSound.beep(); return }
         var changedRows: [Int] = []
         for row in rows {
             guard row < items.count else { continue }
-            let raw = action.invoke(row: Int32(row))
-            guard let raw, let str = String(validatingUTF8: raw) else {
-                TraceLog.shared.write("ri-set failed for row \(row) (\(action))")
+            let (result, dir) = action.invoke(row: Int32(row))
+            if result == UNISON_OP_FAILED_DIRTY {
+                // Blocker 4: the setter mutated (or may have mutated) this row's
+                // OCaml state before failing. The engine no longer provably
+                // matches the displayed rows, so stop the batch and hand the
+                // engine to the coordinator for restart-required rather than
+                // leave a stale-but-actionable table. Any rows already changed
+                // this batch are moot — the window is about to freeze.
+                TraceLog.shared.write("ri-set DIRTY on row \(row) (\(action)) — engine uncertain")
+                onEngineUncertain("direction override failed after mutating a row")
+                return
+            }
+            guard result == UNISON_OP_OK else {
+                // INVALID (bad row / missing callback) or FAILED_CLEAN (raised
+                // before any mutation) — nothing changed; skip this row.
+                TraceLog.shared.write("ri-set skipped row \(row) (\(action), result \(result.rawValue))")
                 continue
             }
-            items[row] = items[row].with(direction: str)
+            items[row] = items[row].with(direction: dir)
             // Update the row's pinned override based on the action. Skip
             // / Force Older / Force Newer are mutually exclusive — each
             // overwrites whichever flag was there before. Plain direction
@@ -1223,17 +1246,25 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// installed on AppDelegate fires re-entrantly and `replaceItems(_:)`
     /// repopulates the table with the post-filter list.
     func applyIgnore(_ action: IgnoreAction, row: Int?) {
-        guard !isSyncing else { NSSound.beep(); return }
+        guard !isSyncing, !restartRequired else { NSSound.beep(); return }
         guard let row, row >= 0, row < items.count else { NSSound.beep(); return }
         let path = items[row].path
         TraceLog.shared.write("ReconcileWindow: \(action.label) on row \(row) (\(path))")
-        if !action.invoke(row: Int32(row)) {
-            TraceLog.shared.write("  \(action.label) returned false — no state change")
+        let result = action.invoke(row: Int32(row))
+        if result == UNISON_OP_FAILED_DIRTY {
+            // Blocker 4: the ignore pattern was persisted / theState rewritten,
+            // but the post-filter rows couldn't be published — the table now
+            // lies about the engine. Route to restart-required.
+            TraceLog.shared.write("  \(action.label) DIRTY — engine uncertain")
+            onEngineUncertain("ignore failed after mutating engine state")
+        } else if result != UNISON_OP_OK {
+            // INVALID / FAILED_CLEAN — nothing changed; narrow no-op.
+            TraceLog.shared.write("  \(action.label) no-op (result \(result.rawValue))")
             NSSound.beep()
         }
-        // No explicit reload needed: the bridge invokes the init2-complete
-        // handler synchronously, which calls `endRescan` / `replaceItems` and
-        // clears rowOverrides + redraws the outline.
+        // On success no explicit reload is needed: the bridge invokes the
+        // init2-complete handler synchronously, which calls `endRescan` /
+        // `replaceItems` and clears rowOverrides + redraws the outline.
     }
 
     // MARK: - Direction menu actions
