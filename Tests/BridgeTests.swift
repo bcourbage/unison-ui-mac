@@ -398,8 +398,14 @@ final class BridgeTests: XCTestCase {
     }
 
     /// Drive a local fixture through init1 + init2 and return the row count.
-    /// Installs the init1/init2 handlers globally (fine — the host app's are
-    /// re-established per real session; tests run sequentially).
+    /// The bridge completion handlers are process-global and installed ONCE by
+    /// the host app at startup (`installPermanentBridgeHandlers`), NOT per
+    /// session — so overwriting them here replaces the app's handlers for the
+    /// rest of the process. That's acceptable in this hosted-XCTest bundle
+    /// because tests run sequentially and each test that needs a handler installs
+    /// its own; a test that relies on the app's real routing must not run after
+    /// one that clobbered it. (Where a test replaces a handler with an XCTFail
+    /// stub, it restores a benign one before returning.)
     @discardableResult
     private func scanFixtureRows(_ fixture: IntegrationFixture) -> Int {
         let scanned = expectation(description: "init2 complete for fixture")
@@ -489,6 +495,88 @@ final class BridgeTests: XCTestCase {
         // Reinstall a benign init2 handler so later suites aren't tripped by the
         // XCTFail stub above.
         UnisonBridge.installInit2CompleteHandler { _ in }
+    }
+
+    /// **Ignore publication fix.** A successful Ignore must deliver its fresh rows
+    /// through the DEDICATED ignore consumer (never the scan/init2 handler) and
+    /// update g_ri_roots to match. Asserts: the ignore handler fires with the
+    /// filtered rows, the init2 handler does NOT fire, and the published root
+    /// count matches the delivered row count (rows and roots agree).
+    func test_h_successfulIgnore_deliversViaIgnoreHandler_rootsMatchRows() throws {
+        let fixture = try IntegrationFixture(name: "ignoreok")
+        try fixture.populate(
+            aFiles: ["only-a.txt": "x\n", "both.txt": "a\n"],
+            bFiles: ["only-b.txt": "y\n", "both.txt": "b\n"])
+        let rows = scanFixtureRows(fixture)
+        XCTAssertGreaterThan(rows, 1)
+
+        let delivered = expectation(description: "ignore completion delivered")
+        var ignoredRows: [StateItem] = []
+        UnisonBridge.installInit2CompleteHandler { _ in
+            XCTFail("scan/init2 handler must NOT fire for an Ignore completion")
+        }
+        UnisonBridge.installIgnoreCompleteHandler { items in
+            ignoredRows = items
+            delivered.fulfill()
+        }
+        // Ignore row 0's exact path → that row is filtered out of theState.
+        let result = unison_bridge_ignore_path(0)
+        XCTAssertEqual(result, UNISON_OP_OK)
+        wait(for: [delivered], timeout: 15.0)
+
+        XCTAssertEqual(ignoredRows.count, rows - 1,
+                       "the ignored row should be dropped from the delivered set")
+        XCTAssertEqual(Int(unison_bridge_test_ri_count()), ignoredRows.count,
+                       "published roots must match the delivered rows")
+        UnisonBridge.installInit2CompleteHandler { _ in }
+        UnisonBridge.installIgnoreCompleteHandler { _ in }
+    }
+
+    /// **emit hardening — missing consumer.** With no completion consumer, emit
+    /// must NOT install the candidate roots: the previous publication (rows +
+    /// roots) is preserved. Exercised via the Debug suppress-consumer hook; the
+    /// Ignore mutated theState first, so the result is DIRTY (engine moved) while
+    /// the roots stay at the old count.
+    func test_i_emitMissingConsumer_preservesOldPublication() throws {
+        let fixture = try IntegrationFixture(name: "noconsumer")
+        try fixture.populate(
+            aFiles: ["only-a.txt": "x\n", "both.txt": "a\n"],
+            bFiles: ["only-b.txt": "y\n", "both.txt": "b\n"])
+        let rows = scanFixtureRows(fixture)
+        XCTAssertGreaterThan(rows, 0)
+
+        unison_bridge_test_suppress_consumer(1)
+        let result = unison_bridge_ignore_path(0)
+        unison_bridge_test_suppress_consumer(0)
+
+        XCTAssertEqual(result, UNISON_OP_FAILED_DIRTY,
+            "publish with no consumer must fail (DIRTY — mutation already happened)")
+        XCTAssertEqual(Int(unison_bridge_test_ri_count()), rows,
+            "no consumer → roots not installed → previous publication preserved")
+    }
+
+    /// **emit hardening — allocation failure.** A failed strdup mid-marshal must
+    /// free the partial output + candidate roots and preserve the previous
+    /// publication (roots unchanged).
+    func test_j_emitStrdupFailure_preservesOldPublication() throws {
+        let fixture = try IntegrationFixture(name: "strdupfail")
+        try fixture.populate(
+            aFiles: ["only-a.txt": "x\n", "both.txt": "a\n"],
+            bFiles: ["only-b.txt": "y\n", "both.txt": "b\n"])
+        let rows = scanFixtureRows(fixture)
+        XCTAssertGreaterThan(rows, 0)
+
+        // Fail the first strdup in the Ignore's emit marshal.
+        unison_bridge_test_fail_strdup_at(1)
+        let result = unison_bridge_ignore_path(0)
+        unison_bridge_test_fail_strdup_at(0)
+
+        XCTAssertEqual(result, UNISON_OP_FAILED_DIRTY,
+            "a failed allocation during publish must fail (DIRTY)")
+        XCTAssertEqual(Int(unison_bridge_test_ri_count()), rows,
+            "allocation failure must preserve the previously-published roots")
+        UnisonBridge.installInit2CompleteHandler { _ in }
+        UnisonBridge.installIgnoreCompleteHandler { _ in }
     }
 }
 

@@ -150,6 +150,7 @@ static unison_status_handler_t           g_status_handler          = NULL;
 static unison_progress_handler_t         g_progress_handler        = NULL;
 static unison_init1_complete_handler_t   g_init1_complete_handler  = NULL;
 static unison_init2_complete_handler_t   g_init2_complete_handler  = NULL;
+static unison_init2_complete_handler_t   g_ignore_complete_handler = NULL;
 static unison_scan_failed_handler_t      g_scan_failed_handler     = NULL;
 static unison_reload_row_handler_t       g_reload_row_handler      = NULL;
 static unison_sync_complete_handler_t    g_sync_complete_handler   = NULL;
@@ -174,6 +175,10 @@ void unison_bridge_set_init2_complete_handler(unison_init2_complete_handler_t ha
 
 void unison_bridge_set_scan_failed_handler(unison_scan_failed_handler_t handler) {
     g_scan_failed_handler = handler;
+}
+
+void unison_bridge_set_ignore_complete_handler(unison_init2_complete_handler_t handler) {
+    g_ignore_complete_handler = handler;
 }
 
 void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t handler) {
@@ -487,8 +492,12 @@ static bool build_ri_root_set(value arr, value **out_roots, size_t *out_count) {
 }
 
 /* Publish a candidate root set as the live globals, freeing the old set. Caller
- * holds the runtime lock. After this returns, g_ri_roots and the Swift row array
- * delivered alongside it are the single successful publication. */
+ * holds the runtime lock. emit_state_items calls this and then hands the matching
+ * rows to the consumer; the roots swap here on the OCaml thread while the rows
+ * reach Swift via the consumer's trampoline (which hops to the main thread). The
+ * two are NOT simultaneous on the Swift side — the caller (coordinator phase gate
+ * for scan; window mutation gate for Ignore) is responsible for ensuring no row
+ * action runs against the new roots until the delivered rows land. */
 static void install_ri_root_set(value *roots, size_t count) {
     value *old = g_ri_roots;
     size_t old_count = g_ri_count;
@@ -497,28 +506,6 @@ static void install_ri_root_set(value *roots, size_t count) {
     free_ri_root_set(old, old_count);
 }
 
-/* Shared between unisonInit2Complete (fired from OCaml when init2 finishes)
- * and unison_bridge_update_for_ignore (fired from Swift after the user picks
- * an Ignore action on a row). Both produce the same observable effect on
- * the Swift side: "here is a fresh state-item array, replace the table in
- * place" — so they go through the same handler. Caller must hold the OCaml
- * runtime lock.
- *
- * TRANSACTIONAL (Blocker 1): Swift's displayed row array and the published
- * g_ri_roots must change together as one successful publication, or not at all.
- * So this builds a *candidate* root set + marshals the complete C output first,
- * and only swaps the globals into place immediately before a successful
- * g_init2_complete_handler delivery. On ANY failure — a missing accessor, OOM,
- * or an accessor raising mid-marshal — the candidate roots are unregistered and
- * freed, the previously-published g_ri_roots is left intact, and no rows are
- * delivered. That closes the window where g_ri_roots pointed at a new array
- * while Swift still held the old rows (a later direction / Ignore / Details /
- * Diff action could otherwise address the wrong OCaml item).
- *
- * Returns true on success; false on any failure. Reachable from both
- * unisonInit2Complete (async OCaml→C, whose caller turns false into a terminal
- * scan failure) and _ocaml_ignore (a run_on_ocaml_thread entry, whose caller
- * turns false into a mutation-failure result). Caller holds the runtime lock. */
 static void free_state_items(unison_state_item_t *out, size_t count) {
     for (size_t i = 0; i < count; i++) {
         free((void *)out[i].path);
@@ -531,11 +518,74 @@ static void free_state_items(unison_state_item_t *out, size_t count) {
     free(out);
 }
 
-static bool emit_state_items(value arr_in) {
+#if UNISON_DEBUG_HOOKS
+/* Fault injection for emit_state_items (Debug only). */
+static atomic_int g_test_fail_strdup_ordinal = 0;  /* Nth bridge_strdup → NULL (0=off) */
+static atomic_int g_test_strdup_count        = 0;
+static atomic_int g_test_suppress_consumer   = 0;  /* treat the consumer as absent */
+void unison_bridge_test_fail_strdup_at(int k) {
+    atomic_store(&g_test_strdup_count, 0);
+    atomic_store(&g_test_fail_strdup_ordinal, k < 0 ? 0 : k);
+}
+void unison_bridge_test_suppress_consumer(int on) {
+    atomic_store(&g_test_suppress_consumer, on ? 1 : 0);
+}
+static bool test_should_fail_strdup(void) {
+    int tgt = atomic_load(&g_test_fail_strdup_ordinal);
+    if (tgt <= 0) return false;
+    int c = atomic_fetch_add(&g_test_strdup_count, 1) + 1;
+    if (c == tgt) { atomic_store(&g_test_fail_strdup_ordinal, 0); return true; }
+    return false;
+}
+#endif
+
+/* strdup with Debug-only failure injection, so the emit rollback path is
+ * testable without perturbing production (in Release this is a plain strdup). */
+static char *bridge_strdup(const char *s) {
+#if UNISON_DEBUG_HOOKS
+    if (test_should_fail_strdup()) return NULL;
+#endif
+    return strdup(s);
+}
+
+/* Publish a fresh state-item set to `consumer` and swap in the matching per-row
+ * roots — TRANSACTIONALLY. Reachable from unisonInit2Complete (consumer =
+ * g_init2_complete_handler) and _ocaml_ignore (consumer =
+ * g_ignore_complete_handler). Caller holds the OCaml runtime lock.
+ *
+ * The published g_ri_roots and the rows delivered to `consumer` must change
+ * together or not at all. So this: (1) requires a valid consumer up front — with
+ * no consumer to deliver rows to, installing new roots would strand the old
+ * Swift rows against new OCaml roots, so it fails without touching the globals;
+ * (2) resolves every accessor before dereferencing any; (3) builds a *candidate*
+ * root set and marshals the COMPLETE output, checking every allocation; (4) only
+ * on full success swaps the globals to the candidate and delivers the rows. On
+ * ANY failure — missing consumer, missing accessor, OOM, a failed strdup, or an
+ * accessor raising — the candidate roots and partial output are freed and the
+ * previously-published g_ri_roots (and the old Swift rows) are left intact.
+ *
+ * NOTE: the roots are installed on the OCaml thread and the rows are then handed
+ * to `consumer`, whose Swift trampoline copies them and hops to the main thread.
+ * The swap-then-deliver is atomic on the OCaml side; the caller is responsible
+ * for ensuring no row action runs against the new roots until the delivered rows
+ * land (init2 gates via the coordinator's .scanning→.ready transition; Ignore
+ * gates the window until its dedicated completion is applied). */
+static bool emit_state_items(value arr_in, unison_init2_complete_handler_t consumer) {
     CAMLparam1(arr_in);
     CAMLlocal1(item);
 
-    /* 1. Resolve EVERY accessor before dereferencing any. A missing one is a
+    /* 1. A valid completion consumer is required BEFORE anything is installed. */
+    bool have_consumer = (consumer != NULL);
+#if UNISON_DEBUG_HOOKS
+    if (atomic_load(&g_test_suppress_consumer)) have_consumer = false;
+#endif
+    if (!have_consumer) {
+        fprintf(stderr, "unison-mac: emit_state_items: no completion consumer — "
+                        "not publishing (old rows/roots preserved)\n");
+        CAMLreturnT(bool, false);
+    }
+
+    /* 2. Resolve EVERY accessor before dereferencing any. A missing one is a
      *    controlled failure (stale blob) — never a NULL-function call, and the
      *    published globals stay untouched. */
     const value *fn_path      = caml_named_value("unisonRiToPath");
@@ -556,16 +606,16 @@ static bool emit_state_items(value arr_in) {
 
     const size_t n = (size_t)Wosize_val(arr_in);
 
-    /* 2. Build the candidate root set (NOT yet published). */
+    /* 3. Build the candidate root set (NOT yet published). */
     value *cand_roots = NULL;
     size_t cand_count = 0;
     if (!build_ri_root_set(arr_in, &cand_roots, &cand_count)) {
         CAMLreturnT(bool, false);   /* OOM — globals untouched */
     }
 
-    /* 3. Marshal the COMPLETE C output. Any accessor raise aborts before
-     *    publication; `item` is CAMLlocal-rooted so it survives the allocating
-     *    accessor calls. */
+    /* 4. Marshal the COMPLETE C output. Any accessor raise or failed strdup
+     *    aborts before publication; `item` is CAMLlocal-rooted so it survives
+     *    the allocating accessor calls. */
     unison_state_item_t *out = NULL;
     if (n > 0) {
         out = calloc(n, sizeof(*out));
@@ -576,46 +626,45 @@ static bool emit_state_items(value arr_in) {
         }
     }
 
-    bool raised = false;
+    bool raised = false, oom = false;
     size_t built = 0;
     for (size_t i = 0; i < n; i++) {
         item = Field(arr_in, i);
         built = i + 1;
         value v;
         v = bridge_call1_exn(fn_path, item, &raised);      if (raised) break;
-        out[i].path = strdup(String_val(v));
+        out[i].path = bridge_strdup(String_val(v));        if (!out[i].path) { oom = true; break; }
         v = bridge_call1_exn(fn_left, item, &raised);      if (raised) break;
-        out[i].left = strdup(String_val(v));
+        out[i].left = bridge_strdup(String_val(v));        if (!out[i].left) { oom = true; break; }
         v = bridge_call1_exn(fn_right, item, &raised);     if (raised) break;
-        out[i].right = strdup(String_val(v));
+        out[i].right = bridge_strdup(String_val(v));       if (!out[i].right) { oom = true; break; }
         v = bridge_call1_exn(fn_direction, item, &raised); if (raised) break;
-        out[i].direction = strdup(String_val(v));
+        out[i].direction = bridge_strdup(String_val(v));   if (!out[i].direction) { oom = true; break; }
         v = bridge_call1_exn(fn_size, item, &raised);      if (raised) break;
         out[i].size_bytes = (int64_t)Double_val(v);
         v = bridge_call1_exn(fn_type, item, &raised);      if (raised) break;
-        out[i].file_type = strdup(String_val(v));
+        out[i].file_type = bridge_strdup(String_val(v));   if (!out[i].file_type) { oom = true; break; }
         v = bridge_call1_exn(fn_progress, item, &raised);  if (raised) break;
-        out[i].progress = strdup(String_val(v));
+        out[i].progress = bridge_strdup(String_val(v));    if (!out[i].progress) { oom = true; break; }
         v = bridge_call1_exn(fn_bytes, item, &raised);     if (raised) break;
         out[i].bytes_transferred = (int64_t)Double_val(v);
     }
 
-    if (raised) {
+    if (raised || oom) {
         /* Roll back: drop the candidate roots and the partial output; the old
          * published g_ri_roots and Swift's old rows both stay untouched. */
+        if (oom) fprintf(stderr, "unison-mac: emit_state_items: allocation failed — "
+                                 "preserving previous publication\n");
         free_state_items(out, built);
         free_ri_root_set(cand_roots, cand_count);
         CAMLreturnT(bool, false);
     }
 
-    /* 4. Success — publish atomically: swap the globals to the candidate set,
-     *    then deliver the matching rows. Both change together; nothing else can
-     *    run under the runtime lock in between. */
+    /* 5. Success — publish: swap the globals to the candidate set, then deliver
+     *    the matching rows to the consumer. */
     install_ri_root_set(cand_roots, cand_count);
-    if (g_init2_complete_handler != NULL) {
-        /* Synchronous: the Swift trampoline must copy strings before returning. */
-        g_init2_complete_handler(out, n);
-    }
+    /* Synchronous: the Swift trampoline must copy strings before returning. */
+    consumer(out, n);
     free_state_items(out, n);
     CAMLreturnT(bool, true);
 }
@@ -631,7 +680,7 @@ CAMLprim value unisonInit2Complete(value arr) {
      * operationFailed(engineIsQuiescent:false) → restart-required. Never merely
      * log and return — every asynchronous scan must produce either completion or
      * a terminal failure. */
-    if (!emit_state_items(arr)) {
+    if (!emit_state_items(arr, g_init2_complete_handler)) {
         fprintf(stderr, "unison-mac: unisonInit2Complete: state emission failed "
                         "— delivering terminal scan failure\n");
         if (g_scan_failed_handler != NULL) {
@@ -1654,10 +1703,13 @@ static void _ocaml_ignore(void *user) {
     arr = bridge_call1_exn(state_fn, Val_unit, &raised);
     if (raised) { io->result = UNISON_OP_FAILED_DIRTY; CAMLreturn0; }
 
-    /* theState is already mutated; publishing it transactionally either fully
-     * succeeds (OK) or leaves the old rows in place while the engine has moved
-     * on (DIRTY — actionable stale UI, route to restart). */
-    io->result = emit_state_items(arr) ? UNISON_OP_OK : UNISON_OP_FAILED_DIRTY;
+    /* theState is already mutated; publish it through the DEDICATED ignore
+     * consumer (never the init2/scan handler — an ignore completion must never
+     * satisfy pendingScan). On success the originating session's rows are
+     * updated; on failure the engine moved but the old rows stay published →
+     * DIRTY (route to restart). */
+    io->result = emit_state_items(arr, g_ignore_complete_handler)
+                     ? UNISON_OP_OK : UNISON_OP_FAILED_DIRTY;
     CAMLreturn0;
 }
 

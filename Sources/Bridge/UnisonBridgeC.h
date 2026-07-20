@@ -58,6 +58,12 @@ bool unison_bridge_test_root_survives_gc(const char *in, char *out, size_t outle
 void unison_bridge_test_set_fake_preconn(bool on);
 /* Test-only (Blocker 1): the currently-published per-row root count. */
 int unison_bridge_test_ri_count(void);
+/* Test-only: force the Kth bridge_strdup in emit_state_items to return NULL,
+ * exercising the allocation-failure rollback (single-shot, 1-based). */
+void unison_bridge_test_fail_strdup_at(int k);
+/* Test-only: make emit_state_items behave as if it has no completion consumer,
+ * exercising the "require a consumer before installing roots" guard. */
+void unison_bridge_test_suppress_consumer(int on);
 
 /* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
 #define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */
@@ -243,6 +249,14 @@ void unison_bridge_set_init2_complete_handler(unison_init2_complete_handler_t h)
  * coordinator leaves .scanning for restart-required rather than hanging. */
 typedef void (*unison_scan_failed_handler_t)(void);
 void unison_bridge_set_scan_failed_handler(unison_scan_failed_handler_t h);
+
+/* Dedicated completion for a successful Ignore (same row-array shape as the
+ * init2 handler, but a SEPARATE consumer). Ignore replaces theState and must
+ * update the originating session's rows — routing it through the scan handler
+ * would let it satisfy/clear a pending scan (or a later rescan) and drop when
+ * no scan is pending. The driver binds this to the exact session that invoked
+ * the Ignore and applies the rows there. */
+void unison_bridge_set_ignore_complete_handler(unison_init2_complete_handler_t h);
 
 /* Return covers only the synchronous dispatch: UNISON_BRIDGE_OK once the scan
  * was launched, or UNISON_BRIDGE_ERR_EXN if the OCaml call raised before

@@ -68,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var pendingScan: (SessionID, OperationID)?
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
+    /// The session whose successful Ignore is awaiting its dedicated completion.
+    /// Identity token (separate from `pendingScan`) so an Ignore completion can
+    /// never satisfy a pending scan/rescan, and a stale/duplicate completion for
+    /// a replaced session is dropped. Set by `performIgnore`, consumed by the
+    /// ignore-complete handler.
+    private var pendingIgnore: SessionID?
 
     /// Reconcile window per live session (keyed by SessionID, stable across
     /// connect→scan→ready→sync→rescan). Plus the single queued "waiting"
@@ -181,6 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) },
             onEngineUncertain: { [weak self] reason in
                 self?.run(self?.engine.engineBecameUncertain(reason: reason) ?? [])
+            },
+            onIgnore: { [weak self] action, row in
+                self?.performIgnore(session: s, action: action, row: row) ?? UNISON_OP_INVALID
             }
         )
     }
@@ -307,6 +316,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    /// Perform an Ignore for session `s` through the bridge, binding the
+    /// dedicated ignore completion to `s` first so its fresh rows are delivered
+    /// back to that exact session (via the ignore-complete handler →
+    /// `applyIgnoreResult`). Runs synchronously on the main thread (the bridge
+    /// call blocks briefly, as it did before); the completion arrives on the next
+    /// main turn. On any non-OK result no completion fires, so the token is
+    /// cleared to avoid mis-attributing a later completion.
+    private func performIgnore(session s: SessionID, action: IgnoreAction,
+                               row: Int) -> unison_op_result_t {
+        pendingIgnore = s
+        let result = action.invoke(row: Int32(row))
+        if result != UNISON_OP_OK { pendingIgnore = nil }
+        return result
+    }
+
     private func driveAbortSync(_ s: SessionID, _ op: OperationID) {
         // Blocker 5: route the abort through the SAME serial connectQueue that
         // driveBeginSync uses to launch the sync. Since the sync-launch was
@@ -360,7 +384,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             onCancelScan: {},
             onSyncStart: {},
             onSyncExit: { _ in },
-            onEngineUncertain: { _ in }
+            onEngineUncertain: { _ in },
+            onIgnore: { _, _ in UNISON_OP_INVALID }
         )
         waitingWindow = (id, controller)
         controller.showWindow(nil)
@@ -595,7 +620,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installInit2CompleteHandler { [weak self] items in
             guard let self else { return }
-            guard let (s, op) = self.pendingScan else {
+            // Routed via the extracted RowCompletionRouter (same logic the tests
+            // drive). A scan completion consumes ONLY pendingScan — an Ignore
+            // completion arrives on a separate handler/token and can never land
+            // here.
+            guard case let .scan(s, op) =
+                    RowCompletionRouter.routeScan(pendingScan: self.pendingScan) else {
                 self.log.write("dropping init2 completion — no pending scan"); return
             }
             self.pendingScan = nil
@@ -605,6 +635,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             #if DEBUG
             self.maybeRunAutotestHooks(reconcile: self.windowBySession[s], items: items)
             #endif
+        }
+        // Dedicated Ignore completion (separate token + handler from scan). Binds
+        // to the EXACT session that invoked the Ignore (pendingIgnore) and only
+        // if that session is still live — a completion for a closed/replaced
+        // session is dropped, never applied to a replacement. Updates that
+        // session's rows in place; the window's mutation gate is lifted here.
+        UnisonBridge.installIgnoreCompleteHandler { [weak self] items in
+            guard let self else { return }
+            let live = Set(self.windowBySession.keys)
+            guard case let .ignore(s) =
+                    RowCompletionRouter.routeIgnore(pendingIgnore: self.pendingIgnore,
+                                                    liveSessions: live) else {
+                self.log.write("dropping ignore completion — no live pending ignore")
+                self.pendingIgnore = nil
+                return
+            }
+            self.pendingIgnore = nil
+            self.log.write("ignore complete — \(items.count) items \(s)")
+            self.windowBySession[s]?.applyIgnoreResult(items)
         }
         // Terminal ASYNC scan failure (Blocker 2): a scan finished in OCaml but
         // its state could not be published, so init2CompleteHandler will never
