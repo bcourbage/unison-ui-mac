@@ -15,11 +15,19 @@ final class ProfileSaveTransactionTests: XCTestCase {
     private final class FakeFileOps: ProfileFileOps {
         var files: [String: String] = [:]
         private(set) var log: [String] = []
-        var faultOn: (op: String, suffix: String)?
+        /// One-shot faults; each matching (op, path-suffix) throws once and is
+        /// consumed, so a retry can succeed. A list (not a single slot) lets a
+        /// test inject a failure AND a subsequent rollback failure.
+        var faults: [(op: String, suffix: String)] = []
+        /// Convenience for the common single-fault case.
+        var faultOn: (op: String, suffix: String)? {
+            get { faults.first }
+            set { faults = newValue.map { [$0] } ?? [] }
+        }
 
         private func maybeFail(_ op: String, _ path: String) throws {
-            if let f = faultOn, f.op == op, path.hasSuffix(f.suffix) {
-                faultOn = nil            // one-shot, so a retry can succeed
+            if let i = faults.firstIndex(where: { $0.op == op && path.hasSuffix($0.suffix) }) {
+                faults.remove(at: i)     // one-shot
                 throw InjectedFault()
             }
         }
@@ -31,6 +39,9 @@ final class ProfileSaveTransactionTests: XCTestCase {
             try maybeFail("copy", to)
             files[to] = files[from]; log.append("copy \(from)->\(to)")
         }
+        // Models POSIX rename: an ATOMIC replace. The fault (if any) throws
+        // BEFORE any mutation, so a failed move never leaves a partial state —
+        // matching the real SystemFileOps.move (rename(2)).
         func move(from: String, to: String) throws {
             try maybeFail("move", to)
             files[to] = files[from]; files[from] = nil; log.append("move \(from)->\(to)")
@@ -63,15 +74,20 @@ final class ProfileSaveTransactionTests: XCTestCase {
         XCTAssertNil(ops.files["/u/p.prf.bak.tmp"], "temp backup is cleaned up")
     }
 
-    func test_rename_writesNewRemovesOldCarriesBackup() throws {
+    func test_rename_backsUpImmediatelyPreSaveSource_notPriorBak() throws {
+        // CORRECTED (Finding #11 review): the renamed profile's backup must be
+        // the IMMEDIATELY-PRE-SAVE source content ("A"), matching in-place
+        // overwrite semantics — NOT the source's stale prior `.bak` ("Abak").
         let ops = FakeFileOps()
         ops.files["/u/a.prf"] = "A"
         ops.files["/u/a.prf.bak"] = "Abak"
         try tx(ops).commit(oldName: "a", newName: "b", content: "B")
         XCTAssertEqual(ops.files["/u/b.prf"], "B")
         XCTAssertNil(ops.files["/u/a.prf"], "old profile removed")
-        XCTAssertEqual(ops.files["/u/b.prf.bak"], "Abak", "sidecar carried to new name")
-        XCTAssertNil(ops.files["/u/a.prf.bak"])
+        XCTAssertEqual(ops.files["/u/b.prf.bak"], "A",
+                       "backup holds the pre-save source content, not the stale prior .bak")
+        XCTAssertNil(ops.files["/u/a.prf.bak"], "orphaned old backup cleaned up")
+        XCTAssertNil(ops.files["/u/b.prf.bak.tmp"], "temp backup cleaned up")
     }
 
     func test_rename_writeBeforeRemove_originalRecoverableUntilDurable() throws {
@@ -178,6 +194,75 @@ final class ProfileSaveTransactionTests: XCTestCase {
         XCTAssertNil(ops.files["/u/a.prf"])
     }
 
+    func test_rename_refusedWhenDestinationBackupExists_noChange() {
+        // A stray <newName>.prf.bak must not be silently clobbered by the
+        // rename's own backup step.
+        let ops = FakeFileOps()
+        ops.files["/u/a.prf"] = "A"
+        ops.files["/u/b.prf.bak"] = "UNRELATED-BAK"
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "a", newName: "b", content: "B")) {
+            XCTAssertEqual($0 as? ProfileSaveError, .destinationBackupExists(name: "b"))
+        }
+        XCTAssertEqual(ops.files["/u/a.prf"], "A", "source untouched")
+        XCTAssertEqual(ops.files["/u/b.prf.bak"], "UNRELATED-BAK", "existing backup untouched")
+        XCTAssertNil(ops.files["/u/b.prf"], "no new file written")
+    }
+
+    func test_rename_backupFails_rollsBackNewFile_thenRetrySucceeds() throws {
+        let ops = FakeFileOps()
+        ops.files["/u/a.prf"] = "A"
+        ops.faultOn = ("copy", "b.prf.bak.tmp")   // backup copy fails
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "a", newName: "b", content: "B")) {
+            guard case .backupFailed = ($0 as? ProfileSaveError) else { return XCTFail() }
+        }
+        // New file rolled back → exact pre-save state (old-only).
+        XCTAssertEqual(ops.files["/u/a.prf"], "A")
+        XCTAssertNil(ops.files["/u/b.prf"], "new file rolled back after backup failure")
+        XCTAssertNil(ops.files["/u/b.prf.bak"])
+        // Retry (fault one-shot) completes the rename.
+        try tx(ops).commit(oldName: "a", newName: "b", content: "B")
+        XCTAssertEqual(ops.files["/u/b.prf"], "B")
+        XCTAssertEqual(ops.files["/u/b.prf.bak"], "A")
+        XCTAssertNil(ops.files["/u/a.prf"])
+    }
+
+    func test_rename_removeOldFails_andRollbackAlsoFails_reportsResidueHonestly() {
+        // remove(old) fails AND the rollback removal of the new file also fails.
+        // The transaction must NOT claim a clean pre-save state; it reports
+        // .rollbackFailed and the disk genuinely holds BOTH files.
+        let ops = FakeFileOps()
+        ops.files["/u/a.prf"] = "A"
+        ops.faults = [("remove", "a.prf"),      // step 3 remove-old fails
+                      ("remove", "b.prf")]        // rollback of new file also fails
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "a", newName: "b", content: "B")) {
+            guard case .rollbackFailed(let detail) = ($0 as? ProfileSaveError) else {
+                return XCTFail("expected rollbackFailed, got \($0)")
+            }
+            XCTAssertTrue(detail.contains("b.prf"), "message names the residual new file")
+        }
+        // Honest residue: both files present (the backup rollback succeeded).
+        XCTAssertEqual(ops.files["/u/a.prf"], "A")
+        XCTAssertEqual(ops.files["/u/b.prf"], "B")
+        XCTAssertNil(ops.files["/u/b.prf.bak"], "the new backup was rolled back")
+    }
+
+    // MARK: - Real filesystem: move is an atomic replace
+
+    func test_real_moveReplacesExistingDestinationAtomically() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ProfileSaveTxMove-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let from = base.appendingPathComponent("from").path
+        let to = base.appendingPathComponent("to").path
+        try "NEW".write(toFile: from, atomically: true, encoding: .utf8)
+        try "OLD".write(toFile: to, atomically: true, encoding: .utf8)
+        try SystemFileOps().move(from: from, to: to)
+        XCTAssertEqual(try String(contentsOfFile: to, encoding: .utf8), "NEW",
+                       "rename replaced the existing destination")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: from), "source gone after move")
+    }
+
     // MARK: - Real filesystem (SystemFileOps) happy paths, temp dir only
 
     func test_real_newOverwriteRename() throws {
@@ -199,11 +284,15 @@ final class ProfileSaveTransactionTests: XCTestCase {
         XCTAssertEqual(read("p.prf"), "root = /b\n")
         XCTAssertEqual(read("p.prf.bak"), "root = /a\n")
 
-        // Rename → new present, old gone, sidecar carried
+        // Rename → new present, old gone, backup holds the IMMEDIATELY-PRE-SAVE
+        // source content ("root = /b\n" — p's content just before this rename),
+        // NOT p's stale prior .bak ("root = /a\n"). The orphaned p.prf.bak is
+        // cleaned up.
         try t.commit(oldName: "p", newName: "q", content: "root = /c\n")
         XCTAssertEqual(read("q.prf"), "root = /c\n")
         XCTAssertNil(read("p.prf"))
-        XCTAssertEqual(read("q.prf.bak"), "root = /a\n")
+        XCTAssertEqual(read("q.prf.bak"), "root = /b\n")
+        XCTAssertNil(read("p.prf.bak"), "orphaned old backup cleaned up")
 
         // Rename onto an existing unrelated file is refused
         try "OTHER".write(toFile: base.appendingPathComponent("r.prf").path,

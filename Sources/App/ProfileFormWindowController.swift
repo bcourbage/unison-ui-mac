@@ -1375,6 +1375,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             showAlert(text: "Profile already exists",
                       info: "\(name).prf is already in the Unison directory. Pick a different name.",
                       style: .warning)
+        case .destinationBackupExists:
+            showAlert(text: "A backup already exists at that name",
+                      info: "\(name).prf.bak is already in the Unison directory. Renaming to “\(name)” would overwrite it, so nothing was changed. Remove or rename that backup, or pick a different name.",
+                      style: .warning)
         case .backupFailed(let detail):
             showAlert(text: "Couldn't back up the existing profile",
                       info: "Nothing was changed. \(detail)", style: .critical)
@@ -1384,6 +1388,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         case .renameCleanupFailed(let detail):
             showAlert(text: "Couldn't complete the rename",
                       info: "The profile was left under its original name. \(detail)",
+                      style: .critical)
+        case .rollbackFailed(let detail):
+            showAlert(text: "The rename failed and could not be fully undone",
+                      info: "The Unison directory may now contain both the old and the new profile. Check it before retrying. \(detail)",
                       style: .critical)
         }
     }

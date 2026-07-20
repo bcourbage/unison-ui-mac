@@ -92,6 +92,34 @@ section at the bottom so this list stays scannable.
       happy paths in a temp dir. Pure/unit-level; the AppKit save button itself
       is not driven by a UI harness (unchanged posture).
 
+      **Atomicity-correction pass (2026-07-20, review of Finding #11):**
+      (1) `SystemFileOps.move` now uses POSIX `rename(2)` (atomic same-fs
+      replace) instead of delete-then-`moveItem` — the old form left the
+      destination momentarily ABSENT, so a crash/failure between the delete and
+      the move could destroy an existing backup. The fake already modelled an
+      atomic replace, so fake and real semantics now agree (previously the
+      backup-move-failure test was a false positive against the real code).
+      (2) A rename now backs up the IMMEDIATELY-PRE-SAVE source content under the
+      new name (matching in-place-overwrite semantics), not the source's stale
+      prior `.bak`; and it refuses up front (`destinationBackupExists`) rather
+      than clobbering an existing `<newName>.prf.bak`.
+      (3) Rollback is explicit and honest: on a rename-cleanup failure it rolls
+      back the new file (and, in step 3, the new backup); if the rollback ITSELF
+      fails it throws `.rollbackFailed` describing the true residue (both files
+      present) instead of silently `try?`-ignoring it and claiming a clean
+      pre-save state.
+      (4) Crash-scope claims tightened: each INDIVIDUAL step is crash-atomic,
+      but the multi-step rename is NOT one crash-atomic transaction — a hard
+      crash between steps leaves a well-defined recoverable intermediate, not
+      all-or-nothing atomicity. In-process failures are handled all-or-nothing
+      via the rollbacks.
+      (5) New tests: destination-backup collision refused; rename backup holds
+      the immediately-pre-save source; rename-backup failure rolls the new file
+      back then retry succeeds; remove-old-fails AND rollback-fails reports
+      residue honestly (both files present); real `move` replaces an existing
+      destination atomically. `presentSaveError` gains the two new cases. Full
+      suite 565 tests, 0 failures.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
