@@ -107,8 +107,23 @@ final class EngineSessionCoordinator {
         case abortSync(SessionID, OperationID)               // cooperative Abort.all on the running sync
         case showWaiting(OpenRequestID, profile: String)     // queued behind a busy op
         case presentScanResults(SessionID)
-        case presentSyncResults(SessionID)
+        /// Sync completed and its per-row snapshot marshalled — present results.
+        case presentSyncResults(SessionID, [SyncSnapshotRow])
+        /// Sync completed but its per-row results could not be produced. The
+        /// engine is quiescent (sync + archive commit finished); this is a
+        /// read-only-results failure, NOT engine contamination — so it does NOT
+        /// go through `restartRequired`.
+        case presentSyncUnavailable(SessionID, reason: String)
         case restartRequired(reason: String)
+    }
+
+    /// Outcome of the post-sync completion snapshot, delivered to
+    /// `syncCompleted`. Both cases consume the same pending `(session, op)` and
+    /// release the sync lease exactly once; they differ only in which present
+    /// effect fires.
+    enum SyncResults: Equatable {
+        case available([SyncSnapshotRow])
+        case unavailable(reason: String)
     }
 
     private(set) var phase: Phase = .idle
@@ -338,16 +353,28 @@ final class EngineSessionCoordinator {
         return [.presentScanResults(session)]
     }
 
-    func syncCompleted(_ session: SessionID, _ op: OperationID) -> [Effect] {
+    func syncCompleted(_ session: SessionID, _ op: OperationID,
+                       results: SyncResults) -> [Effect] {
+        // Bind to the EXACT pending sync; stale / duplicate / wrong-operation
+        // completions match no phase and are dropped (lease released once).
         guard case .syncing(session, op) = phase else { return [] }
         if abandoned { return beginClose(session, outcome: .toIdle) }
         phase = .ready(session)
+        // `.available` and `.unavailable` follow the IDENTICAL lifecycle: the
+        // engine is quiescent and the archive is committed either way, so an
+        // unavailable snapshot must NOT enter restartRequired. Only the present
+        // effect differs.
+        let present: Effect
+        switch results {
+        case .available(let snapshot):     present = .presentSyncResults(session, snapshot)
+        case .unavailable(let reason):     present = .presentSyncUnavailable(session, reason: reason)
+        }
         // Auth-cost policy (2b): non-interactive closes now (window stays);
         // interactive holds until leave.
         if case .open(interactive: false) = connection {
-            return [.presentSyncResults(session)] + beginClose(session, outcome: .backToReady)
+            return [present] + beginClose(session, outcome: .backToReady)
         }
-        return [.presentSyncResults(session)]
+        return [present]
     }
 
     /// Result of a `closeConnection` effect. Guarded on the exact close op

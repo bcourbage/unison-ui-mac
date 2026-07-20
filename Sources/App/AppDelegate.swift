@@ -130,8 +130,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // Handled by the init2 completion handler, which holds the items
             // (see `runScanEffects(_:items:)`). No session-global work here.
             break
-        case .presentSyncResults(let s):
-            windowBySession[s]?.finalizeSyncUI()
+        case .presentSyncResults(let s, let snapshot):
+            windowBySession[s]?.finalizeSyncUI(snapshot: snapshot)
+        case .presentSyncUnavailable(let s, let reason):
+            windowBySession[s]?.finalizeSyncUnavailable(reason: reason)
         case .restartRequired(let reason):
             driveRestartRequired(reason: reason)
         }
@@ -692,14 +694,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 s, op, reason: "scan state could not be published",
                 engineIsQuiescent: false))
         }
-        UnisonBridge.installSyncCompleteHandler { [weak self] in
+        UnisonBridge.installSyncCompleteHandler { [weak self] ok, rows in
             guard let self else { return }
             guard let (s, op) = self.pendingSync else {
                 self.log.write("dropping sync completion — no pending sync"); return
             }
             self.pendingSync = nil
-            self.log.write("sync complete \(s)/\(op)")
-            self.run(self.engine.syncCompleted(s, op))
+            self.log.write("sync complete \(s)/\(op) ok=\(ok) rows=\(rows.count)")
+            // Bind the snapshot to the exact pending (s, op) via the coordinator.
+            // ok == false ⇒ the per-row results couldn't be marshalled (engine is
+            // quiescent — a read-only-results failure, not contamination).
+            let results: EngineSessionCoordinator.SyncResults =
+                ok ? .available(rows)
+                   : .unavailable(reason: "the engine could not produce per-file results")
+            self.run(self.engine.syncCompleted(s, op, results: results))
         }
 
         // Modal warning sheet. The OCaml worker parks on a condvar until the

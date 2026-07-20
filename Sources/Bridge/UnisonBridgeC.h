@@ -64,6 +64,12 @@ void unison_bridge_test_fail_strdup_at(int k);
 /* Test-only: make emit_state_items behave as if it has no completion consumer,
  * exercising the "require a consumer before installing roots" guard. */
 void unison_bridge_test_suppress_consumer(int on);
+/* Test-only (Finding #10): number of times `unison_bridge_ri_get_details` has
+ * been called since the last reset. Proves the completion path makes ZERO
+ * per-row getter calls (test_ri_count only reports rooted rows and can't prove
+ * that). Debug-only symbol — absent from Release. */
+void unison_bridge_test_reset_ri_get_details_count(void);
+int  unison_bridge_test_ri_get_details_count(void);
 
 /* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
 #define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */
@@ -398,7 +404,25 @@ typedef struct unison_row_state {
 } unison_row_state_t;
 
 typedef void (*unison_reload_row_handler_t)(int row, const unison_row_state_t *state);
-typedef void (*unison_sync_complete_handler_t)(void);
+
+/* One row of the post-sync completion snapshot (Finding #10). Built once, in
+ * bulk, from the final post-sync `!theState` while it is GC-rooted — so the UI
+ * no longer makes O(n) per-row `unison_bridge_ri_get_details` calls at
+ * completion. `progress`/`details` are valid only for the duration of the
+ * handler call; the handler MUST copy them before returning. */
+typedef struct unison_sync_row {
+    const char *progress;          /* final unisonRiToProgress (e.g. "done"/"FAILED") */
+    const char *details;           /* final unisonRiToDetails  */
+    int64_t     bytes_transferred; /* final unisonRiToBytesTransferred */
+} unison_sync_row_t;
+
+/* Fires once when sync + archive commit have completed and the engine is
+ * quiescent. `ok == true`: `rows` is a complete `count`-row snapshot. `ok ==
+ * false`: the snapshot could not be marshalled (an accessor raised, OOM, or a
+ * stale blob missing an accessor) — `rows` is NULL, `count` is 0, and there are
+ * NEVER partial rows. A false result is a read-only-results failure, NOT engine
+ * contamination. */
+typedef void (*unison_sync_complete_handler_t)(bool ok, int count, const unison_sync_row_t *rows);
 
 void unison_bridge_set_reload_row_handler(unison_reload_row_handler_t h);
 void unison_bridge_set_sync_complete_handler(unison_sync_complete_handler_t h);

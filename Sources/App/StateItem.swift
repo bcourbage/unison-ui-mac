@@ -3,7 +3,7 @@ import Foundation
 /// Swift-side mirror of the bridge's `unison_state_item_t`. Plain value
 /// type — once we receive the array from OCaml we copy the strings in
 /// (via String(cString:)) and the bridge's C-owned memory can be freed.
-struct StateItem: Sendable {
+struct StateItem: Sendable, Equatable {
     let path: String
     let left: String
     let right: String

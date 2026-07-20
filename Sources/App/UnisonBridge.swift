@@ -1,6 +1,16 @@
 import Foundation
 import AppKit
 
+/// One row of the post-sync completion snapshot (Finding #10), copied out of the
+/// C `unison_sync_row_t` before the bridge frees it. Carries each row's final
+/// progress + details + bytes so `finalizeSyncUI` needs ZERO per-row bridge
+/// calls at completion.
+struct SyncSnapshotRow: Sendable, Equatable {
+    let progress: String
+    let details: String
+    let bytesTransferred: Int64
+}
+
 /// Swift-side façade around the C bridge to OCaml. All OCaml callbacks are
 /// registered through this single chokepoint. Each trampoline (below) copies
 /// any C-owned payload off OCaml's pointers and delivers the handler on the
@@ -30,7 +40,10 @@ enum UnisonBridge {
     /// that invoked the Ignore.
     nonisolated(unsafe) static var ignoreCompleteHandler: (([StateItem]) -> Void)?
     nonisolated(unsafe) static var reloadRowHandler: ((_ row: Int, _ progress: String, _ bytes: Int64) -> Void)?
-    nonisolated(unsafe) static var syncCompleteHandler: (() -> Void)?
+    /// Fires (main queue) when sync + archive commit complete. `ok == true`
+    /// delivers the full per-row completion snapshot; `ok == false` means the
+    /// snapshot couldn't be marshalled (results unavailable — never partial).
+    nonisolated(unsafe) static var syncCompleteHandler: ((_ ok: Bool, _ rows: [SyncSnapshotRow]) -> Void)?
 
     /// Fires when OCaml's `displayDiff` callback completes. `title` is
     /// the file's relative path; `text` is the diff output (typically
@@ -109,7 +122,7 @@ enum UnisonBridge {
         unison_bridge_set_reload_row_handler(_swiftReloadRowTrampoline)
     }
 
-    static func installSyncCompleteHandler(_ handler: @escaping () -> Void) {
+    static func installSyncCompleteHandler(_ handler: @escaping (Bool, [SyncSnapshotRow]) -> Void) {
         syncCompleteHandler = handler
         unison_bridge_set_sync_complete_handler(_swiftSyncCompleteTrampoline)
     }
@@ -231,9 +244,24 @@ private func _swiftReloadRowTrampoline(row: Int32, state: UnsafePointer<unison_r
     }
 }
 
-private func _swiftSyncCompleteTrampoline() {
+/* Called synchronously on the OCaml thread; the bridge frees the C snapshot
+ * array after we return, so we must copy every string before async-dispatching. */
+private func _swiftSyncCompleteTrampoline(
+    ok: Bool, count: Int32, rows: UnsafePointer<unison_sync_row_t>?
+) {
+    var converted: [SyncSnapshotRow] = []
+    if ok, let rows, count > 0 {
+        converted.reserveCapacity(Int(count))
+        for i in 0..<Int(count) {
+            let r = rows[i]
+            converted.append(SyncSnapshotRow(
+                progress: r.progress.map { String(cString: $0) } ?? "",
+                details: r.details.map { String(cString: $0) } ?? "",
+                bytesTransferred: r.bytes_transferred))
+        }
+    }
     DispatchQueue.main.async {
-        UnisonBridge.syncCompleteHandler?()
+        UnisonBridge.syncCompleteHandler?(ok, converted)
     }
 }
 

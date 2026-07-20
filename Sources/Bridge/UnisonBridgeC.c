@@ -27,6 +27,8 @@
  * contract is documented at their definitions. */
 static value bridge_call1_exn(const value *fn, value arg, bool *raised);
 static value bridge_call2_exn(const value *fn, value a, value b, bool *raised);
+static char *bridge_strdup(const char *s);
+static void free_sync_rows(unison_sync_row_t *rows, size_t count);
 
 /* =====================================================================
  * Threading model
@@ -412,11 +414,70 @@ CAMLprim value reloadTable(value row) {
     CAMLreturn(Val_unit);
 }
 
-CAMLprim value syncComplete(value unit) {
-    CAMLparam1(unit);
-    if (g_sync_complete_handler) {
-        g_sync_complete_handler();
+/* Finding #10: sync completion now carries the final post-sync state array
+ * (`!theState`, patch 0005). Marshal ONE bulk snapshot — every row's final
+ * progress + details + bytes — TRANSACTIONALLY: resolve accessors first, build
+ * the complete C array (any accessor raise / OOM aborts before publishing), and
+ * deliver exactly once. On failure deliver an explicit `ok=false` result with
+ * NO partial rows — never interpreted as "no failures". This snapshot is a
+ * read-only completion result, kept entirely separate from `g_ri_roots` (the
+ * scan-state publication). Swift copies all strings before this returns. */
+CAMLprim value syncComplete(value state) {
+    CAMLparam1(state);
+    CAMLlocal1(item);
+
+    if (g_sync_complete_handler == NULL) {
+        CAMLreturn(Val_unit);
     }
+
+    const value *fn_progress = caml_named_value("unisonRiToProgress");
+    const value *fn_details  = caml_named_value("unisonRiToDetails");
+    const value *fn_bytes    = caml_named_value("unisonRiToBytesTransferred");
+    if (fn_progress == NULL || fn_details == NULL || fn_bytes == NULL) {
+        fprintf(stderr, "unison-mac: syncComplete: a result accessor is not "
+                        "registered (stale blob?) — results unavailable\n");
+        g_sync_complete_handler(false, 0, NULL);
+        CAMLreturn(Val_unit);
+    }
+
+    const size_t n = (size_t)Wosize_val(state);
+    unison_sync_row_t *out = NULL;
+    if (n > 0) {
+        out = calloc(n, sizeof(*out));
+        if (out == NULL) {
+            fprintf(stderr, "unison-mac: syncComplete: OOM allocating %zu result "
+                            "rows — results unavailable\n", n);
+            g_sync_complete_handler(false, 0, NULL);
+            CAMLreturn(Val_unit);
+        }
+    }
+
+    bool raised = false, oom = false;
+    size_t built = 0;
+    for (size_t i = 0; i < n; i++) {
+        item = Field(state, i);   /* CAMLlocal-rooted across the allocating calls */
+        built = i + 1;
+        value v;
+        v = bridge_call1_exn(fn_progress, item, &raised); if (raised) break;
+        out[i].progress = bridge_strdup(String_val(v));   if (!out[i].progress) { oom = true; break; }
+        v = bridge_call1_exn(fn_details, item, &raised);  if (raised) break;
+        out[i].details = bridge_strdup(String_val(v));    if (!out[i].details) { oom = true; break; }
+        v = bridge_call1_exn(fn_bytes, item, &raised);    if (raised) break;
+        out[i].bytes_transferred = (int64_t)Double_val(v);
+    }
+
+    if (raised || oom) {
+        fprintf(stderr, "unison-mac: syncComplete: snapshot marshalling failed "
+                        "(%s) — results unavailable, no partial rows\n",
+                        raised ? "accessor raised" : "allocation");
+        free_sync_rows(out, built);
+        g_sync_complete_handler(false, 0, NULL);
+        CAMLreturn(Val_unit);
+    }
+
+    /* Success — deliver the complete snapshot exactly once. */
+    g_sync_complete_handler(true, (int)n, out);
+    free_sync_rows(out, n);
     CAMLreturn(Val_unit);
 }
 
@@ -517,6 +578,29 @@ static void free_state_items(unison_state_item_t *out, size_t count) {
     }
     free(out);
 }
+
+/* Free a partially- or fully-built sync-completion snapshot (Finding #10).
+ * `count` is the number of rows whose strings were strdup'd (so a mid-build
+ * failure frees exactly what was allocated, no more). */
+static void free_sync_rows(unison_sync_row_t *rows, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        free((void *)rows[i].progress);
+        free((void *)rows[i].details);
+    }
+    free(rows);
+}
+
+#if UNISON_DEBUG_HOOKS
+/* Finding #10: count per-row `unison_bridge_ri_get_details` calls so a test can
+ * prove the completion path makes ZERO of them. Debug-only. */
+static atomic_int g_test_ri_get_details_calls = 0;
+void unison_bridge_test_reset_ri_get_details_count(void) {
+    atomic_store(&g_test_ri_get_details_calls, 0);
+}
+int unison_bridge_test_ri_get_details_count(void) {
+    return atomic_load(&g_test_ri_get_details_calls);
+}
+#endif
 
 #if UNISON_DEBUG_HOOKS
 /* Fault injection for emit_state_items (Debug only). */
@@ -1658,6 +1742,9 @@ static void _ocaml_ri_get_details(void *user) {
 
 const char *unison_bridge_ri_get_details(int row) {
     static _Thread_local char buf[4096];
+#if UNISON_DEBUG_HOOKS
+    atomic_fetch_add(&g_test_ri_get_details_calls, 1);
+#endif
     struct ri_details_io io = { .row = row };
     run_on_ocaml_thread(_ocaml_ri_get_details, &io);
     if (io.buf[0] == '\0') return NULL;

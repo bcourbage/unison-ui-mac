@@ -73,6 +73,30 @@ section at the bottom so this list stays scannable.
       heuristic is gone — a permitted rebuild only runs on fully managed documents,
       where each managed include's comment is unambiguously its own.
 
+      **Finding #10 (2026-07-20, vendored blob bumped a57f5c4e → 2f345306):**
+      sync completion no longer makes O(n) per-row `unison_bridge_ri_get_details`
+      bridge calls on the main thread. New patch `0005` changes `syncComplete` to
+      carry the final post-sync `stateItem array`; the C `syncComplete` marshals
+      ONE bulk snapshot (each row's final progress + details + bytes) via the
+      already-registered accessors while the array is GC-rooted, TRANSACTIONALLY
+      (accessor raise / OOM / count → explicit `ok=false`, never partial, never
+      "no failures"). Delivered bound to the exact pending `(SessionID,
+      OperationID)`; the coordinator gained `SyncResults .available/.unavailable`
+      → effects `.presentSyncResults(s, snapshot)` / `.presentSyncUnavailable(s,
+      reason)`, both releasing the lease once and NEITHER entering
+      `restartRequired` (engine is quiescent post-commit). `finalizeSyncUI(
+      snapshot:)` applies the cached snapshot once on main (pure
+      `SyncCompletionModel`, same details-based failure synthesis, zero bridge
+      calls), a count mismatch routes to `finalizeSyncUnavailable` (safe actions
+      only: Rescan/Profiles/Quit). Added an O(1) `rowToNode` index rebuilt
+      atomically with items/tree in `replaceItems`/`beginScanning` (kills the old
+      O(n²) progress-path walk). **Coverage:** `SyncCompletionModel` (row kinds,
+      count mismatch, skipped≠failure, ZERO-getter-calls via a Debug-only C
+      counter, 5000-row set, row-index builder) + coordinator available/
+      unavailable/abandoned/non-interactive-close/duplicate-reject. Debug getter
+      counter is Debug-only (absent from Release, verified via `nm`). NOT
+      field-proven against a live remote sync.
+
 - [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
       Today, pressing Stop *during the connect/scan phase* (`isScanning &&
       !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
