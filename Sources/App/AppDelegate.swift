@@ -65,7 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     /// Pure crash-recovery transform. If `content` ends with EXACTLY the
     /// app-owned injected suffix, return the content with precisely those
-    /// characters removed (everything preceding restored byte-for-byte).
+    /// characters removed (the preceding UTF-8 content restored unchanged,
+    /// character-for-character — including LF/CRLF and trailing-newline
+    /// structure; this operates on the decoded Swift string, not raw bytes).
     /// Otherwise return nil — meaning "no mutation required". Deliberately
     /// anchored to the end of the document: it never scans for the marker
     /// substring or an isolated marker line elsewhere, so a user's own comment
@@ -1358,7 +1360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// restore the original `.prf` the instant init1 has consumed it. The
     /// in-memory pref outlives the file edit — init2 and the subsequent
     /// sync still ignore the archive and rebuild it — but the profile on
-    /// disk is left byte-for-byte unchanged. No OCaml bridge change is
+    /// disk is left character-for-character unchanged. No OCaml bridge change is
     /// needed, which is why this is a `.prf` edit rather than a pref call.
     /// `failedReason` labels the coordinator transition that releases the
     /// current session before the fresh reopen. It's carried through to
@@ -1440,8 +1442,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(name)
             guard let content = try? String(contentsOf: url, encoding: .utf8),
                   let restored = contentByStrippingInjectedSuffix(content) else { continue }
-            try? restored.write(to: url, atomically: true, encoding: .utf8)
-            TraceLog.shared.write("ignorearchives: cleaned stray injected suffix from \(name)")
+            do {
+                try restored.write(to: url, atomically: true, encoding: .utf8)
+                TraceLog.shared.write("ignorearchives: cleaned stray injected suffix from \(name)")
+            } catch {
+                TraceLog.shared.write(
+                    "ignorearchives: cleanup FAILED for \(name): \(error.localizedDescription)")
+            }
         }
     }
 

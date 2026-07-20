@@ -5,9 +5,10 @@ import XCTest
 /// `AppDelegate.contentByStrippingInjectedSuffix` removes the injected block
 /// ONLY when the profile content ends with EXACTLY the app-owned suffix
 /// (`ignoreArchivesInjectedSuffix`), restoring everything preceding it
-/// byte-for-byte; it never scans for the marker substring or an isolated
-/// marker line elsewhere. Injection and cleanup share one suffix definition so
-/// they cannot drift.
+/// character-for-character (the decoded Swift string content, including LF/CRLF
+/// and trailing-newline structure — not raw bytes); it never scans for the
+/// marker substring or an isolated marker line elsewhere. Injection and cleanup
+/// share one suffix definition so they cannot drift.
 final class IgnoreArchivesCleanupTests: XCTestCase {
 
     private typealias AD = AppDelegate
@@ -38,7 +39,7 @@ final class IgnoreArchivesCleanupTests: XCTestCase {
     func test_originalCRLF_restoredExactly() {
         let original = "root = /a\r\n# c\r\nroot = /b\r\n"   // CRLF throughout
         let restored = AD.contentByStrippingInjectedSuffix(inject(original))
-        XCTAssertEqual(restored, original, "CRLF content preserved byte-for-byte")
+        XCTAssertEqual(restored, original, "CRLF content preserved character-for-character")
     }
 
     // MARK: - No mutation for user content (never touch a user's own lines)

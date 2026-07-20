@@ -248,8 +248,10 @@ section at the bottom so this list stays scannable.
       definition (`AppDelegate.ignoreArchivesInjectedSuffix` =
       `"\n<marker>\nignorearchives = true\n"`) so they can't drift. The pure
       `contentByStrippingInjectedSuffix(_:)` removes the block ONLY when the
-      file ENDS WITH that exact suffix (restoring the preceding bytes verbatim)
-      and returns nil ("no mutation") otherwise — it no longer substring-scans
+      file ENDS WITH that exact suffix (restoring the preceding UTF-8 content
+      unchanged, character-for-character — the decoded Swift string, not raw
+      bytes) and returns nil ("no mutation") otherwise — it no longer
+      substring-scans
       for the marker or an isolated marker line, so a user's own comment or
       `ignorearchives` line is never touched, and absent-suffix files are not
       rewritten at all. Covered by pure tests: intended suffix removed; exact
