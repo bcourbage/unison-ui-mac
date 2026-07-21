@@ -50,11 +50,12 @@ If the file for your architecture isn't here, you have two options:
 | Field | Value |
 | --- | --- |
 | Upstream source | [`doc/unison-manual.tex`](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex) |
-| Upstream commit | `745dccd3ba31c5cf0b89b41f3487091b4871ad31` (**not** the same as the blob's `91421d0…`; the blob is 19 commits newer). The rendered HTML still documents the `mergebatch` preference, which upstream later removed from `doc/unison-manual.tex` in `b088176` — a commit that is an ancestor of the blob's `91421d0` but a descendant of this manual's `745dccd`. Regenerate the manual to match the blob commit on the next vendor bump. |
+| Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` — the **same** commit as the vendored blob. (Regenerated from `745dccd` to match the blob; the obsolete `mergebatch` preference that upstream removed in `b088176` is now absent from the rendered HTML.) |
 | Renderer | hevea 2.38 (`brew install hevea`) — upstream's own TeX→HTML tool, see their `doc/Makefile` |
-| Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`) |
+| Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`), i.e. `make vendor-manual` |
 | Output | self-contained single-file HTML, UTF-8, inlined CSS, no companion assets |
-| Size | ~197 KB |
+| SHA-256 | `f18ca92da3a53a6623f2100f1c31c4e0c7bd649fcff1840fffbe707798ed2879` |
+| Size | 133402 bytes (~130 KB; smaller than the prior `745dccd` render — a hevea-output difference, content is complete: all preference/section entries present, `mergebatch` removed) |
 | Copyright | "Copyright 1998-2023, Benjamin C. Pierce" (preserved inline as required by GPLv3 §4) |
 
 ## License
