@@ -75,7 +75,8 @@ These belong upstream, on `bcpierce00/unison`:
 - **Fixes to `src/uimacbridge.ml`** beyond the minimal local fork
   patches in `patches/`. The local patches exist only because they
   enable GUI features the upstream UI doesn't need (e.g., the
-  `abortAll` callback for real mid-sync abort). Anything broader
+  `closeConnection` callback and the transport-child reaper hooks).
+  Anything broader
   than that — fixing a bug in the existing `uimacbridge` callback
   set, adding a callback that would belong in upstream's
   long-term API — is upstream work, not ours.
@@ -105,7 +106,7 @@ Code PRs are accepted with a few caveats:
 2. **No expectation of acceptance.** This is a personal-use project.
    The maintainer reviews on availability and may reject contributions
    that don't fit the project's direction without much explanation.
-3. **CI hygiene**: `make test` must pass (286 tests at last count,
+3. **CI hygiene**: `make test` must pass (696 tests at last count,
    ~1 s on M-series Macs). New behavior should add tests where the
    existing patterns (pure-function helpers + XCTest pinning) apply.
 4. **GPLv3 inbound = outbound**: by submitting a PR you certify the

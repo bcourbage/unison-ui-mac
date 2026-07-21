@@ -47,8 +47,10 @@ this machine is *not* required for the app to run.
 
 ### Unison version
 
-This project embeds upstream Unison at **v2.54.0** (commit `745dccd`,
-which is 11 commits past the `v2.54.0` tag on `master`). The
+This project embeds upstream Unison at **v2.54.0** (commit `91421d0`,
+i.e. `v2.54.0-19-g91421d0`, 19 commits past the `v2.54.0` tag on
+`master` — see [`vendor/README.md`](vendor/README.md) for the
+authoritative blob provenance). The
 `MAJORVERSION=2.54` value is significant: an SSH peer running a different
 major version will be flagged by the in-app version-mismatch check
 (`VersionCheck.swift`) on profile open. The Unison wire protocol
@@ -106,7 +108,7 @@ beyond what the legacy uimac app offered in several places. Highlights:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **286 unit tests** in ~1 s via `make test`. Pure-logic modules
+- **696 unit tests** in ~1 s via `make test`. Pure-logic modules
   (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
   `ProfilePreferences`, `RowSelectionRules`, `ReconcileSummary`,
   `SettingsModel`, `ArchiveCleanup`, etc.) carry exhaustive coverage;
@@ -165,14 +167,21 @@ Xcode, `xcodegen`, and `ocaml` (`brew install xcodegen ocaml`).
 ### Local fork patches
 
 This project applies a small set of patches to the upstream Unison
-source — currently just one, registering an `abortAll` callback so
-the GUI's Stop button can do a real mid-sync abort. Patch files live
-in [`patches/`](patches/). They're already baked into the vendored
-`unison-blob.o`; you only need to re-apply them if you're rebuilding
-the blob from an upstream clone (`make vendor-blob` does this
-automatically as a prereq). Patches stay LOCAL — never proposed back
-to bcpierce00/unison, per this project's LLM-usage posture (see
-[NOTICE.md](NOTICE.md)).
+source — currently **four** (see [`patches/`](patches/) and the
+authoritative list in [`vendor/README.md`](vendor/README.md)):
+`0002` registers a `closeConnection` callback for connection teardown
+on leave; `0003` adds `Remote.drainDroppedConnectionThreads` and
+drives it from the close paths; `0004` adds transport-child reaper
+hooks (the bridge tracks the exact ssh child PID and SIGKILLs it at
+teardown — see [`docs/ssh-reaper-design.md`](docs/ssh-reaper-design.md));
+`0005` carries a post-sync state snapshot on `syncComplete` to avoid
+per-row bridge round-trips. (The former `0001` `abortAll` patch was
+**retired** — mid-sync abort was merged upstream in PR #1198.) The
+patches are already baked into the vendored `unison-blob.o`; you only
+need to re-apply them if you're rebuilding the blob from an upstream
+clone (`make vendor-blob` does this automatically as a prereq).
+Patches stay LOCAL — never proposed back to bcpierce00/unison, per
+this project's LLM-usage posture (see [NOTICE.md](NOTICE.md)).
 
 ## How it works (architecture sketch)
 
@@ -252,7 +261,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (286 tests, ~1 s)
+├── Tests/                               XCTest bundle (696 tests, ~1 s)
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── AppIcon.icns                     From upstream uimac

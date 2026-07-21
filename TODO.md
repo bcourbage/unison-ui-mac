@@ -6,8 +6,8 @@ section at the bottom so this list stays scannable.
 ## To Do
 
 - [ ] **True in-process interruption of a wedged engine op (issue #24 follow-up)** —
-      The init2/scan stall detector (`ScanStallTimer`; landed in the issue #24
-      draft PR) bounds a post-authentication transport wedge → restart-required
+      The init2/scan stall detector (`ScanStallTimer`; landed via the issue #24
+      fix, PR #25, merged to `main`) bounds a post-authentication transport wedge → restart-required
       (120 s, reset on scan-status, operation-bound and retained across UI
       abandonment). It is the *automatic* recovery. Two user-facing escape
       hatches already work: while the modal credential sheet is up its **Cancel**
@@ -905,7 +905,7 @@ landed across the bring-up and follow-on sessions.*
 
 ### Test suite
 
-- [x] **286 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
+- [x] **696 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
       for `leaks(1)`-based release checks. Coverage (illustrative —
       counts are at-last-tally and grow with each pure-logic
       extraction):

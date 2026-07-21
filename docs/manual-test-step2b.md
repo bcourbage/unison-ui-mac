@@ -304,7 +304,7 @@ the retained detector carries the op to restart-required; a waiting replacement
 profile is carried to restart-required rather than stranded; and quit+reopen
 recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 
-> **Fix (issue #24, in a draft PR — not yet merged).** A Swift-only,
+> **Fix (issue #24, PR #25 — merged to `main`).** A Swift-only,
 > operation-bound init2/scan stall detector (`ScanStallTimer`): armed for remote
 > scans via `pendingScan.didSet`, reset on scan-status delivery, and on expiry it
 > fails the exact scan op with quiescence UNPROVEN → coordinator restart-required.
