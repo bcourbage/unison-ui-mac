@@ -711,55 +711,62 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.propagationPromptActive = false
             guard resp == .alertFirstButtonReturn else { return }
-            let n = self.propagateLoggingToAllProfiles(mode: mode)
-            self.reportPropagation(count: n)
+            let result = self.propagateLoggingToAllProfiles(mode: mode)
+            self.reportPropagation(result: result)
         }
         if let window { alert.beginSheetModal(for: window, completionHandler: act) }
         else { act(alert.runModal()) }
     }
 
     /// Rewrite the `logfile` of every profile with logging on to match the
-    /// shared mode. Returns the number of profiles updated.
-    private func propagateLoggingToAllProfiles(mode: SettingsModel.LoggingMode) -> Int {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: unisonDirectory) else { return 0 }
-        var count = 0
-        for file in names where (file as NSString).pathExtension == "prf" {
-            let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent(file)
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            var doc = ProfileDocument.parse(text)
-            guard doc.firstValue(forKey: "log") == "true" else { continue }
-            let newLogfile: String
-            switch mode {
-            case .sameFile:
-                newLogfile = SettingsModel.sharedLogFile()
-            case .sameDirectory:
-                let existing = doc.firstValue(forKey: "logfile") ?? ""
+    /// shared mode, with honest structured accounting. Reads and writes go
+    /// through real filesystem seams; writes use the established transactional
+    /// writer (`ProfileSaveTransaction`) so a partial failure never silently
+    /// looks like success. Profile directives/raw content round-trip through
+    /// `ProfileDocument`.
+    private func propagateLoggingToAllProfiles(mode: SettingsModel.LoggingMode)
+        -> BulkLogPropagation.Result {
+        let dir = unisonDirectory
+        let tx = ProfileSaveTransaction(ops: SystemFileOps(), unisonDirectory: dir)
+        return BulkLogPropagation.run(
+            mode: mode,
+            sharedFile: SettingsModel.sharedLogFile(),
+            sharedDirectory: SettingsModel.sharedLogDirectory(),
+            defaultLogName: { SettingsModel.defaultLogName(forProfile: $0) },
+            listProfileFileNames: { try? FileManager.default.contentsOfDirectory(atPath: dir) },
+            read: {
+                try? String(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent($0),
+                            encoding: .utf8)
+            },
+            write: { file, content in
                 let base = (file as NSString).deletingPathExtension
-                let name = existing.isEmpty ? SettingsModel.defaultLogName(forProfile: base)
-                                            : (existing as NSString).lastPathComponent
-                newLogfile = (SettingsModel.sharedLogDirectory() as NSString)
-                    .appendingPathComponent(name)
-            case .perProfile:
-                continue
-            }
-            guard doc.firstValue(forKey: "logfile") != newLogfile else { continue }
-            doc.setValue(newLogfile, forKey: "logfile")
-            if (try? doc.serialized.write(to: url, atomically: true, encoding: .utf8)) != nil {
-                count += 1
-            }
-        }
-        return count
+                do {
+                    // In-place overwrite (oldName == newName): backup + atomic
+                    // install + rollback via the shared transaction.
+                    try tx.commit(oldName: base, newName: base, content: content)
+                    return nil
+                } catch {
+                    return error
+                }
+            })
     }
 
-    private func reportPropagation(count: Int) {
+    /// Present the five-way outcome (nothing-needed / complete-success /
+    /// partial-success / complete-failure / cannot-enumerate) from the
+    /// structured result — never "nothing needed updating" for a failure.
+    private func reportPropagation(result: BulkLogPropagation.Result) {
+        let outcome = BulkLogPropagation.classify(result)
+        let (title, body) = BulkLogPropagation.present(outcome)
         let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = count == 0 ? "No profiles needed updating"
-            : (count == 1 ? "1 profile updated" : "\(count) profiles updated")
-        alert.informativeText = count == 0
-            ? "No profiles with logging on needed a change."
-            : "Their log file setting now matches the shared location."
+        alert.alertStyle = {
+            switch outcome {
+            case .cannotEnumerate, .completeFailure: return .critical
+            case .partialSuccess: return .warning
+            case .nothingNeeded, .completeSuccess: return .informational
+            }
+        }()
+        alert.messageText = title
+        alert.informativeText = body
         alert.addButton(withTitle: "OK")
         if let window { alert.beginSheetModal(for: window) { _ in } }
         else { alert.runModal() }
