@@ -23,6 +23,12 @@ protocol ProfileFileOps {
     /// failure and the residual temp (not reduced to `.destinationExists` /
     /// `.writeFailed`). Used for new profiles and renames, where clobbering an
     /// unrelated file that appeared mid-flight would be data loss.
+    ///
+    /// A conforming implementation MUST also verify the write completed fully
+    /// (every byte; a positive-length `write` returning 0 is a failure) and make
+    /// the installed content durable (fsync) BEFORE the atomic install — a
+    /// staging file whose write/fsync/close did not succeed is never renamed
+    /// into place. `SystemFileOps` does exactly this.
     func installExclusive(_ content: String, to path: String) throws
     func copy(from: String, to: String) throws
     func move(from: String, to: String) throws
@@ -332,27 +338,18 @@ struct SystemFileOps: ProfileFileOps {
         }
         let tmp = String(cString: tmplBytes)
 
-        // Write the full content to THIS exact fd, then close it. Profiles are
-        // config files; 0644 matches typical .prf perms (mkstemp opens 0600).
-        _ = fchmod(fd, 0o644)
-        let data = Data(content.utf8)
-        var writeErrno: Int32 = 0
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard var ptr = raw.baseAddress else { return }   // empty content: 0-byte file
-            var remaining = raw.count
-            while remaining > 0 {
-                let n = write(fd, ptr, remaining)
-                if n < 0 { if errno == EINTR { continue }; writeErrno = errno; return }
-                if n == 0 { break }
-                ptr = ptr.advanced(by: n); remaining -= n
-            }
-        }
-        close(fd)
-        if writeErrno != 0 {
+        // Write the full content to THIS exact fd, verify EVERY byte landed, set
+        // its mode, fsync for durability, and close — surfacing every failure.
+        // Profiles are config files; 0644 matches typical .prf perms (mkstemp
+        // opens 0600). A positive-length write returning 0, or a fchmod/fsync/
+        // close failure, is a hard failure: we must NEVER rename a staging file
+        // whose write did not fully complete and durably land.
+        if let werr = StagingFileWriter.writeAllAndFinalize(
+            fd: fd, data: Data(content.utf8), mode: 0o644) {
+            // Remove OUR OWN private staging file; the destination is untouched.
             try removePrivateStagingOrThrow(
-                tmp, primary: "writing the staging file failed: \(String(cString: strerror(writeErrno)))",
-                dest: path)
-            throw ProfileFileOpsError(operation: "write", from: tmp, to: path, code: writeErrno)
+                tmp, primary: "staging \(path) failed: \(werr.message)", dest: path)
+            throw ProfileFileOpsError(operation: werr.operation, from: tmp, to: path, code: werr.code)
         }
 
         if renamex_np(tmp, path, UInt32(RENAME_EXCL)) != 0 {
@@ -367,6 +364,14 @@ struct SystemFileOps: ProfileFileOps {
             throw ProfileFileOpsError(operation: "renamex_np(RENAME_EXCL)",
                                       from: tmp, to: path, code: code)
         }
+
+        // Make the new directory entry durable too: the file content was already
+        // fsync'd before the rename, and fsyncing the containing directory
+        // persists the rename itself so the committed profile survives a crash.
+        // Best-effort — the rename has already succeeded atomically, so a
+        // directory-fsync failure does not invalidate the (committed) install.
+        let dfd = open(dir, O_RDONLY)
+        if dfd >= 0 { _ = fsync(dfd); close(dfd) }
     }
 
     /// Remove our own private staging file. On a removal failure, throw an
