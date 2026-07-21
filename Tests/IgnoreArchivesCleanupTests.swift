@@ -87,4 +87,115 @@ final class IgnoreArchivesCleanupTests: XCTestCase {
         let original = "root = /x\n"
         XCTAssertEqual(AD.contentByStrippingInjectedSuffix(inject(original)), original)
     }
+
+    // MARK: - External-edit-safe restoration (PR: reread-at-restore)
+
+    // The restore path re-reads the CURRENT file and strips exactly the
+    // app-owned trailing suffix, never writing back a saved snapshot. The pure
+    // decision `ignoreArchivesRestoreAction(currentContent:)` and the seam
+    // `performIgnoreArchivesRestore(read:write:)` capture that behavior.
+
+    func test_restoreAction_ordinaryInjected_writesStrippedOriginal() {
+        let original = "root = /a\nroot = /b\n"
+        XCTAssertEqual(AD.ignoreArchivesRestoreAction(currentContent: inject(original)),
+                       .write(original))
+    }
+
+    func test_restoreAction_externalEditBeforeSuffix_preservesEditedPrefix() {
+        // User edited the profile WHILE recovery was active: the prefix differs
+        // from what we injected, but our suffix is still trailing. Restoration
+        // must strip only the suffix and keep the EDITED prefix verbatim — never
+        // clobber it with the pre-edit snapshot.
+        let edited = "root = /a\nroot = /b\n# user added this mid-recovery\nlog = true\n"
+        XCTAssertEqual(AD.ignoreArchivesRestoreAction(currentContent: inject(edited)),
+                       .write(edited))
+    }
+
+    func test_restoreAction_suffixAlreadyRemovedExternally_noWrite() {
+        let content = "root = /a\nroot = /b\n"   // no trailing app suffix
+        XCTAssertEqual(AD.ignoreArchivesRestoreAction(currentContent: content), .noWriteAbsent)
+    }
+
+    func test_restoreAction_unexpectedModifiedContentWithoutSuffix_noWrite() {
+        // Wholly replaced content that does not end with our suffix → we must
+        // NOT write anything (and never a saved original).
+        let content = "completely different\ncontent the user wrote\n"
+        XCTAssertEqual(AD.ignoreArchivesRestoreAction(currentContent: content), .noWriteAbsent)
+    }
+
+    func test_restoreAction_readFailure_isUnreadableNoWrite() {
+        XCTAssertEqual(AD.ignoreArchivesRestoreAction(currentContent: nil), .noWriteUnreadable)
+    }
+
+    // Seam: full read→decide→write behavior, incl. read/write failure, via closures.
+
+    func test_perform_restore_success_writesStrippedAndReportsRestored() {
+        let original = "root = /a\n"
+        var written: String?
+        let result = AD.performIgnoreArchivesRestore(
+            read: { self.inject(original) },
+            write: { written = $0 })
+        XCTAssertEqual(result, .restored)
+        XCTAssertEqual(written, original, "wrote exactly the stripped current content")
+    }
+
+    func test_perform_restore_suffixAbsent_nothingToDo_noWriteCall() {
+        var wrote = false
+        let result = AD.performIgnoreArchivesRestore(
+            read: { "root = /a\n" },
+            write: { _ in wrote = true })
+        XCTAssertEqual(result, .nothingToDo)
+        XCTAssertFalse(wrote, "no write is attempted when the suffix is absent")
+    }
+
+    func test_perform_restore_readFailure_preservesFile_notRestored() {
+        var wrote = false
+        let result = AD.performIgnoreArchivesRestore(
+            read: { nil },
+            write: { _ in wrote = true })
+        XCTAssertEqual(result, .readFailed)
+        XCTAssertFalse(wrote, "an unreadable file is never overwritten with a saved original")
+    }
+
+    func test_perform_restore_writeFailure_reportedAsFailed_notRestored() {
+        struct WriteError: Error {}
+        let result = AD.performIgnoreArchivesRestore(
+            read: { self.inject("root = /a\n") },
+            write: { _ in throw WriteError() })
+        XCTAssertEqual(result, .writeFailed,
+                       "a failed write leaves the suffix for launch cleanup and is NOT reported restored")
+    }
+
+    func test_perform_restore_repeated_secondPassIsNothingToDo() {
+        // First pass strips and "persists" into a tiny in-memory file; a second
+        // restore over the now-stripped content is a benign no-op.
+        var file = inject("root = /a\n")
+        let first = AD.performIgnoreArchivesRestore(read: { file }, write: { file = $0 })
+        XCTAssertEqual(first, .restored)
+        XCTAssertEqual(file, "root = /a\n")
+        let second = AD.performIgnoreArchivesRestore(read: { file }, write: { file = $0 })
+        XCTAssertEqual(second, .nothingToDo)
+        XCTAssertEqual(file, "root = /a\n", "unchanged on the idempotent second pass")
+    }
+
+    func test_perform_restore_crlfAndNoTrailingNewline_preservedThroughSeam() {
+        for original in ["root = /a\r\nroot = /b\r\n", "root = /a\nroot = /b", "only one line no newline"] {
+            var file = inject(original)
+            let r = AD.performIgnoreArchivesRestore(read: { file }, write: { file = $0 })
+            XCTAssertEqual(r, .restored)
+            XCTAssertEqual(file, original, "content shape preserved verbatim through restore")
+        }
+    }
+
+    func test_perform_restore_neverRemovesUserAuthoredSimilarMarker() {
+        // A user profile that merely CONTAINS the marker text (not as the trailing
+        // app block) must be left byte-for-byte untouched by restore.
+        let userContent = "# I referenced \(marker) in a note\nignorearchives = true\nroot = /a\n"
+        var file = userContent
+        var wrote = false
+        let r = AD.performIgnoreArchivesRestore(read: { file }, write: { file = $0; wrote = true })
+        XCTAssertEqual(r, .nothingToDo)
+        XCTAssertFalse(wrote)
+        XCTAssertEqual(file, userContent)
+    }
 }
