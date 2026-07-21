@@ -22,9 +22,9 @@ index caddeef..0dc8a7a 100644
 + *
 + * Returns: 0 = ok (closed, or nothing to close), 2 = exception (logged).
 + *
-+ * NOT in upstream uimac — local patch in this fork, applied after
-+ * 0001-...-abortAll. May be proposed upstream later; see the GUI repo's
-+ * vendoring notes. *)
++ * NOT in upstream uimac — local patch in this fork (patch 0002). The
++ * former 0001 abortAll patch is retired (mid-sync abort was upstreamed
++ * in PR #1198); see the GUI repo's vendoring notes. *)
 +let unisonCloseConnection () =
 +  try
 +    (match Globals.rootsInCanonicalOrder () with

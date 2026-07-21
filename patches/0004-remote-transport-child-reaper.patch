@@ -17,9 +17,9 @@ index 6a4807d..dcd77c6 100644
 +   [registerTransportChild pid] records the child right after spawn.
 +   [retireTransportChild pid] is called by teardown BEFORE it waitpid/
 +   close_sessions the child: the bridge SIGKILLs the exact pid and removes it
-+   from the registry atomically, so the child is already dead when it leaves
-+   the registry (no live-untracked window) and no reused pid is ever signalled.
-+   See docs/ssh-reaper-design.md in unison-ui-mac. *)
++   from the registry atomically. SIGKILL is issued BEFORE the pid is removed,
++   so a removed pid is one already signalled and irrevocably terminating; its
++   pid stays reserved until waitpid, so no reused pid is signalled. See docs. *)
 +let registerTransportChild : (int -> unit) ref = ref (fun _ -> ())
 +let retireTransportChild : (int -> unit) ref = ref (fun _ -> ())
 +
@@ -54,9 +54,9 @@ index 6a4807d..dcd77c6 100644
          if s <> "" then Util.msg "Received from remote shell process:\n%s\n" s);
        Lwt.return ());
 +    (* Retire (SIGKILL + remove under the registry mutex) strictly before the
-+       reap. This guarantees the child is dead before we drop it from the
-+       registry, so there is no window where a still-live child is untracked,
-+       and no reused PID can be signalled. Default no-op in CLI/GTK builds. *)
++       reap. SIGKILL is issued before the pid leaves the registry, so a removed
++       pid is already signalled and irrevocably terminating; it stays reserved
++       until waitpid, so no reused PID can be signalled. No-op in CLI/GTK. *)
 +    !retireTransportChild termPid;
      if term = None then
        try ignore (Terminal.safe_waitpid termPid) with Unix.Unix_error _ -> ()
@@ -76,9 +76,9 @@ index 6a4807d..dcd77c6 100644
        Unix.close i1; Unix.close o2;
        let cleanup () =
 +        (* Retire (SIGKILL + remove atomically under the registry mutex)
-+           before reaping: the child is dead before it leaves the registry, so
-+           no live-untracked window and no reused-PID signal. Default no-op in
-+           CLI/GTK builds. *)
++           before reaping: SIGKILL is issued before the pid leaves the registry,
++           so a removed pid is already signalled and irrevocably terminating and
++           stays reserved until waitpid — no reused-PID signal. No-op CLI/GTK. *)
 +        !retireTransportChild pid;
          try Terminal.close_session pid with Unix.Unix_error _ -> ()
        in

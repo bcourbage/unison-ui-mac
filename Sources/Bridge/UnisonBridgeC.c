@@ -975,9 +975,11 @@ void unison_bridge_startup(int argc, char *argv[]) {
  *     registered (hence still un-reaped and reserved by the OS). SIGKILL is
  *     ISSUED before the pid is removed: the child is thereafter irrevocably
  *     terminating (SIGKILL cannot be caught/blocked), though it may not have
- *     exited the instant kill() returns; its pid stays reserved until the
- *     following waitpid. This closes the "unregistered-but-still-alive"
- *     window -- a pid is never removed before it has been signalled.
+ *     exited the instant kill() returns; its pid stays reserved by the OS until
+ *     the following waitpid, so a reused pid is never signalled. A removed pid
+ *     is thus always one that has ALREADY been signalled and is dying -- never a
+ *     live child that a racing shutdown could miss (a pid is signalled before
+ *     it is removed).
  *   - reap(): the pure-C shutdown pass SIGKILLs every still-registered pid.
  *
  * Every kill(2) is issued WHILE HOLDING the mutex, before the pid is removed.
@@ -1941,7 +1943,7 @@ static void _ocaml_abort_all(void *user) {
     io->status = UNISON_BRIDGE_ERR_MISSING;
     const value *fn = caml_named_value("abortAll");
     if (fn == NULL) {
-        fprintf(stderr, "unison-mac: abortAll not registered (uimacbridge.ml patch missing?)\n");
+        fprintf(stderr, "unison-mac: abortAll not registered (vendored blob out of date / built without upstream mid-sync abort?)\n");
         return;   /* ERR_MISSING: the abort flag was NOT set — caller must not
                    * claim the cancellation was requested. */
     }

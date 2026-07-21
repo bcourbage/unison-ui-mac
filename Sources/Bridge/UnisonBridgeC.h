@@ -453,9 +453,10 @@ int unison_bridge_synchronize(void);
  * has unwound. Safe to call multiple times — idempotent on the
  * OCaml side (just re-assigns the flag).
  *
- * Depends on the `abortAll` callback being registered in
- * `uimacbridge.ml` (local fork only — not in upstream Unison's
- * vanilla bridge).
+ * Depends on the `abortAll` callback in `uimacbridge.ml`, which is
+ * provided by UPSTREAM Unison (mid-sync abort, PR #1198) and is present
+ * in the vendored blob at commit 91421d0. The former local `0001` patch
+ * that registered it is retired — no local patch registers it now.
  *
  * Returns UNISON_BRIDGE_OK when the abort flag was set; a non-OK status
  * (ERR_EXN / ERR_MISSING) means the flag was NOT reliably set, so the caller
