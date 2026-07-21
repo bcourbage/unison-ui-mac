@@ -5,20 +5,25 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **`Stop` reliability during a wedged connect/scan (issue #24 follow-up)** —
+- [ ] **True in-process interruption of a wedged engine op (issue #24 follow-up)** —
       The init2/scan stall detector (`ScanStallTimer`; landed in the issue #24
       draft PR) bounds a post-authentication transport wedge → restart-required
       (120 s, reset on scan-status, operation-bound and retained across UI
-      abandonment). `Stop` in the no-sheet wedge already returns to the picker.
-      Still open: making `Stop` *universally* reliable during connect — it is
-      (correctly) disabled behind a modal credential sheet, so there is no
-      in-app abort while awaiting input, and `connection_cancel` cannot
-      interrupt a wedged op on the serial `connectQueue` (true in-place
+      abandonment). It is the *automatic* recovery. Two user-facing escape
+      hatches already work: while the modal credential sheet is up its **Cancel**
+      button is an in-app exit from credential entry (the sheet intentionally
+      disables the underlying toolbar only while it's showing — Cancel is not
+      blocked); and in the no-sheet wedge, **Stop** performs visible-session
+      abandonment and returns to the picker. Neither of those, however, unwinds
+      the already-issued engine operation. The genuinely unresolved limitation
+      is *true in-process interruption of an already-wedged engine op*:
+      `connection_cancel` cannot interrupt an op blocked on a round-trip on the
+      serial `connectQueue`, so the abandoned scan runs to completion (or stays
+      wedged) in the background regardless of the UI action. Real in-place
       cancellation needs engine-level interruptibility / process isolation —
-      see the PR #9 note below). The detector is the automatic recovery;
-      revisit `Stop` in that architectural context. Also revisit the auth-
-      *failure* interactive path (a wrong password re-prompts; confirm it never
-      wedges post-submit — TC11b).
+      see the PR #9 note below. Also revisit the auth-*failure* interactive path
+      (confirm a wrong password re-prompts and never wedges post-submit —
+      TC11b).
 
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,

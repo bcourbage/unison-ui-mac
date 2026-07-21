@@ -1354,13 +1354,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     // MARK: - Connect attempt lifecycle (watchdog)
     //
-    // `driveBeginConnect` arms the watchdog when a connect actually starts.
-    // The watchdog covers ONLY the connect phase (init1 + the credential
-    // prompt fetch); it's disarmed before init2. Update detection can run
-    // silently for a long time on a large remote tree, so watchdogging it
-    // would false-fire, and the timeout poking the engine mid-scan is unsafe
-    // (it can trip an `update.ml` assertion or an Lwt "wakeup"). A hung scan
-    // is instead handled by off-main init2 + the Stop button.
+    // Two independent, complementary detectors cover the connect/scan path:
+    //
+    //   1. This connect watchdog covers ONLY the connect phase (init1 + the
+    //      credential prompt fetch); it's disarmed at `connection_end`, before
+    //      init2 begins. It never pokes the engine mid-scan (that could trip
+    //      an `update.ml` assertion or an Lwt "wakeup").
+    //
+    //   2. `ScanStallTimer` (armed via `pendingScan.didSet`) covers the
+    //      init2/scan phase — the first server round-trip, where a
+    //      post-authentication transport stall wedges (issue #24). It is
+    //      remote-only (local scans can't stall on a transport) and
+    //      operation-bound to the exact (SessionID, OperationID); it resets on
+    //      each scan status message and fires after `scanStallTimeout` of no
+    //      progress. On fire it drives `operationFailed(engineIsQuiescent:
+    //      false)`, which transitions the coordinator to `.restartRequired`
+    //      (the wedged in-process op cannot be safely unwound — quit + reopen
+    //      is the recovery). The detector is deliberately retained across UI
+    //      abandonment (Stop), so it still fires for a session the user has
+    //      already returned to the picker on.
 
     /// (Re)schedule the watchdog for the current connect op. Replaces any
     /// existing timer, so callers can use it both to reset the clock at each

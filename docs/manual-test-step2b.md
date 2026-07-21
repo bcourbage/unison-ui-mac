@@ -1,41 +1,57 @@
-# Manual test plan — connection lifecycle (issue #6, steps 1–3)
+# Manual test plan — connection lifecycle (issue #6 steps 1–3; issue #24)
 
-Covers the behaviors the headless autotest harness can't drive. The
-**non-interactive close-on-sync-end + ssh-child reap** path is already
-verified live (see PR #7); everything below still needs a hands-on pass
-before merge.
+Covers the behaviors the headless autotest harness can't drive. Some cases now
+have recorded evidence (see **Evidence provenance** at the bottom, which
+separates *live*, *automated*, and *pending* results); the interactive cases
+still need a hands-on pass with a human entering the SSH password. Nothing here
+gates a merge on its own — treat it as the live-validation record.
 
-Estimated time: ~20–30 min.
+Estimated time for a full hands-on pass: ~20–30 min.
+
+Placeholders used below (substitute your own): `<repo>` = the unison-ui-mac
+working copy; `<remote-host>` = the SSH host for the key/non-interactive
+profile; `<pw-host>` = the SSH host for the password/interactive profile;
+`~/.ssh/<key>` = your SSH private key; `<server-unison>` = the remote `unison`
+binary path (e.g. a Homebrew path). Never record a real password anywhere.
 
 ---
 
 ## 0. Prerequisites
 
-### Build & run the Debug build (has the autotest hooks; not required here but consistent)
+### Build & run
+
+Debug build (has the `UNISON_AUTOTEST_*` hooks; step-2b/issue-24 logic is
+identical in both configs):
 
 ```sh
-cd ~/Documents/Sources/unison-ui-mac
+cd <repo>
 make build
 open .build/derived/Build/Products/Debug/unison-ui-mac.app
 ```
 
-Or test the release build you'll actually ship — both contain the step-2b
-logic; only the `UNISON_AUTOTEST_*` hooks are Debug-only.
+Release build (what actually ships — use this for the production-bound checks):
+
+```sh
+cd <repo>
+make build CONFIG=Release
+open .build/derived/Build/Products/Release/unison-ui-mac.app
+```
+
+Only the `UNISON_AUTOTEST_*` hooks are Debug-only; the connection lifecycle and
+the issue-24 scan-stall detector are present and identical in both.
 
 ### Two SSH profiles
 
 You need **both** auth styles, because the whole point of 2b is that the
 close policy differs by auth cost:
 
-1. **Key/agent profile (non-interactive)** — e.g. a profile to Demeter with
-   `sshargs = -i /Users/bcourbage/.ssh/Demeter` and
-   `servercmd = /opt/homebrew/bin/unison`. Connecting shows **no** password
-   sheet.
+1. **Key/agent profile (non-interactive)** — e.g. a profile to `<remote-host>`
+   with `sshargs = -i ~/.ssh/<key>` and `servercmd = <server-unison>`.
+   Connecting shows **no** password sheet.
 2. **Password profile (interactive)** — a profile whose SSH connection
    **prompts for a password**. Easiest ways to get one:
    - Point at a host/account that has no key installed, or
-   - Temporarily rename your key so the agent can't offer it (e.g.
-     `sshargs = -i /nonexistent` forcing password fallback), or
+   - Temporarily force password fallback (e.g. `sshargs = -i /nonexistent`), or
    - Any remote where you normally type a password.
    The test only needs the connect to pop the password sheet once.
 
@@ -51,10 +67,10 @@ For each remote profile, use two scratch dirs with a difference to sync, e.g.:
 # local side
 rm -rf /tmp/u2b-local && mkdir -p /tmp/u2b-local && date > /tmp/u2b-local/a.txt
 # remote side (adjust host)
-ssh demeter 'rm -rf /tmp/u2b-remote && mkdir -p /tmp/u2b-remote && date > /tmp/u2b-remote/b.txt'
+ssh <remote-host> 'rm -rf /tmp/u2b-remote && mkdir -p /tmp/u2b-remote && date > /tmp/u2b-remote/b.txt'
 ```
 
-Point the profile's roots at these (`ssh://demeter//tmp/u2b-remote`).
+Point the profile's roots at these (`ssh://<remote-host>//tmp/u2b-remote`).
 
 ### Observation tools (keep both open in a second Terminal)
 
@@ -75,7 +91,7 @@ Watch for these lines:
 **B. SSH children** (should appear on connect, vanish on close). Re-run after each step:
 
 ```sh
-pgrep -af ssh | grep -i demeter          # adjust host
+pgrep -af ssh | grep -i <remote-host>          # adjust host
 ```
 
 ---
@@ -163,6 +179,7 @@ running transport; both closing choices reap the child at the right time).
 1. Open the **local-only** profile, sync, then leave.
 2. **Expect (log):** `closeConnection (…) -> status 0` is harmless (status 0)
    and there is **no** error; no ssh child ever appears.
+3. **Expect:** the scan-stall detector never arms (it is remote-only).
 
 **PASS =** no errors, no spurious ssh processes.
 
@@ -170,7 +187,7 @@ running transport; both closing choices reap the child at the right time).
 
 1. From the picker, open the **key** profile, sync, return to Profiles.
 2. Repeat 3–4 times with different profiles (or the same one).
-3. After each return to the picker, check `pgrep -af ssh | grep -i <host>`.
+3. After each return to the picker, check `pgrep -af ssh | grep -i <remote-host>`.
 
 **PASS =** at most one ssh child at a time; **zero** while sitting on the
 picker. (Pre-fix, these accumulated for the life of the app.)
@@ -197,7 +214,7 @@ This is the step-3 behavior. Two sub-cases.
 
 ### TC10 — Wedged-sync stall hint (steps 4–5)
 
-A transport that wedges mid-sync (connection died) can't be unblocked in-process — this test is about the *hint*, not a rescue.
+A transport that wedges mid-*sync* (connection died) can't be unblocked in-process — this test is about the *hint*, not a rescue. (This is the **transfer** phase; the scan phase is covered separately by TC11.)
 
 1. Open a **remote** profile with enough data to transfer for a while (a few hundred MB+).
 2. Start the sync. While it's transferring, kill the connection in a way that hangs rather than cleanly errors — e.g. on the remote host, `kill -STOP $(pgrep -f "server __new-rpc-mode")` to freeze the remote server (or pull the network / sleep the remote).
@@ -218,22 +235,32 @@ must not leave the app hung with no recovery. The wedge lands in **`init2`**
 (the scan / update-detection phase): `connection_end` does not do a blocking
 server round-trip (it returns `status 0` regardless of server state), so the
 first round-trip that can hang is the scan. The connect watchdog is disarmed by
-then, so the scan needs its own bound.
+then, so the scan needs its own bound — which is what the issue-24 detector adds.
 
 > **Terminology correction (2026-07-20).** An earlier draft of TC11 called the
-> unattended public-key case a "wedge". That was wrong. Re-examination showed:
-> a public-key/`BatchMode` profile that can't authenticate surfaces a
-> **credential sheet** (`connection_prompt` returns a prompt); the app then
-> correctly **waits for input** — the toolbar is disabled because a **modal
-> sheet** is open, and the connect watchdog is (correctly) disarmed so it can't
-> time out the user's typing. That is a legitimate credential-sheet wait, **not**
-> a wedge. The confirmed original defect is the **no-sheet, post-credential-
-> submission** hang, which occurs in `init2` on a dead/wedged transport.
+> unattended public-key case a "wedge" and described a deterministic
+> `BatchMode` auth failure. That was wrong. Re-examination showed: a
+> public-key profile that can't authenticate surfaces a **credential sheet**
+> (`connection_prompt` returns a prompt); the app then correctly **waits for
+> input** — the toolbar is disabled because a **modal sheet** is open (its
+> **Cancel** button is still an in-app exit), and the connect watchdog is
+> disarmed so it can't time out the user's typing. That is a legitimate
+> credential-sheet wait, **not** a wedge. The confirmed defect is the
+> **no-sheet, post-credential-submission** hang, which occurs in `init2` on a
+> dead/wedged transport.
+
+> **Proxy caveat.** TC11a below freezes a healthy server mid-scan to produce a
+> *controlled proxy* for a post-auth transport wedge. It reliably reproduces
+> the **init2 no-progress** condition and exercises the detector, but it is
+> **not proof of identical root cause** with the original field incident (an
+> inconsistently reproduced, misconfigured-auth report). Treat TC11a as
+> "the detector correctly bounds a post-auth init2 stall", not as "the original
+> incident is reproduced".
 
 **TC11a — deterministic post-auth init2 wedge (controlled proxy).** Because the
 auth-failure path parks at a credential sheet, the reliable *unattended* proxy
-for the real wedge is a **key profile** (authenticates via key, no prompt) whose
-transport freezes mid-scan:
+for a post-auth wedge is a **key profile** (authenticates via key, no prompt)
+whose transport freezes mid-scan:
 
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. On the remote, freeze the server mid-scan: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
@@ -241,50 +268,66 @@ transport freezes mid-scan:
    detector resets on every scan-status message, so a healthy scan is never
    killed) the window shows *"Couldn't reach the remote (no scan progress for
    N seconds)… quit Unison and reopen"* and the app enters **restart-required**.
-4. **Expect:** **no credential sheet**; the toolbar `Stop` **is** enabled during
-   the wedge (no modal sheet), and clicking it returns to the picker.
-5. **Recovery:** Quit (clean) + reopen connects fresh and scans; on the remote,
+4. **Expect:** **no credential sheet**; because no modal sheet is up, the
+   toolbar `Stop` is enabled during the wedge.
+5. **`Stop` semantics (important):** clicking `Stop` performs **visible-session
+   abandonment** — it returns you to the picker. It does **not** unwind the
+   in-flight `init2` operation (the wedged round-trip on the serial queue is not
+   interruptible in-process). The scan-stall detector is deliberately
+   **retained** across this abandonment, so it still fires for the abandoned op
+   and drives it to **restart-required**. `Stop` is therefore *not* an engine
+   terminal action; the detector is what terminates the operation.
+6. **Recovery:** Quit (clean) + reopen connects fresh and scans; on the remote,
    `kill -CONT` / `kill -9` the frozen server afterward.
-6. **Same-process-after-Stop:** if you hit Stop (→ picker) and immediately open
+7. **Same-process-after-Stop:** if you hit `Stop` (→ picker) and immediately open
    another profile, it shows "Waiting for the previous operation to finish…"
-   and then, when the detector fires, transitions to restart-required — the
-   abandoned scan's detector is **retained** (abandonment is not idleness), so a
-   replacement profile never waits forever.
+   and then, when the retained detector fires, transitions to restart-required —
+   because the abandoned op's detector is retained (abandonment is not
+   idleness), a replacement profile is carried to restart-required rather than
+   stranded waiting forever.
 
 **TC11b — interactive auth failure (live).** A real password profile with a
 wrong/failing password. Enter the wrong password.
-1. **Expect:** the credential sheet is re-presented (or an auth-failure error);
-   this is a legitimate credential wait, not a wedge. Cancelling returns to the
-   picker.
-2. If a run somehow gets *past* auth and then wedges in the scan, the init2
+1. **Record which happens:** the credential sheet is re-presented, an
+   auth-failure error is surfaced, or the connect proceeds into scan. Any of the
+   first two is a legitimate credential wait/error, **not** a wedge.
+2. **Confirm** `Cancel` on the sheet returns cleanly to the picker.
+3. If a run somehow gets *past* auth and then wedges in the scan, the init2
    scan-stall detector bounds it exactly as TC11a. **Identify which phase TC11b
-   occupies** and confirm it has a bounded terminal path.
+   occupies** and confirm it has a bounded terminal path. Never conflate a modal
+   credential wait with a transport wedge.
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan
-timeout (never an indefinite "Opening…"/"Looking for changes…"); `Stop` is
-enabled and effective in the no-sheet wedge; a waiting replacement profile is
-carried to restart-required rather than stranded; and quit+reopen recovers
-cleanly. A credential-sheet wait is expected behavior, not a failure.
+timeout (never an indefinite "Opening…"/"Looking for changes…"); in the
+no-sheet wedge `Stop` returns to the picker (visible-session abandonment) while
+the retained detector carries the op to restart-required; a waiting replacement
+profile is carried to restart-required rather than stranded; and quit+reopen
+recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 
 > **Fix (issue #24, in a draft PR — not yet merged).** A Swift-only,
 > operation-bound init2/scan stall detector (`ScanStallTimer`): armed for remote
 > scans via `pendingScan.didSet`, reset on scan-status delivery, and on expiry it
 > fails the exact scan op with quiescence UNPROVEN → coordinator restart-required.
 > Bound to the retained `pendingScan` op token, so it survives UI abandonment.
-> No C/OCaml/blob change. `Stop`-during-connect reliability is a separate
-> follow-up (the control is unreliable behind a modal sheet, and
-> `connection_cancel` cannot interrupt a wedged op on the serial queue).
+> No C/OCaml/blob change. True in-process interruption of an already-wedged op
+> is a separate follow-up (`connection_cancel` cannot interrupt a wedged op on
+> the serial queue).
 
 ---
 
-## Known limitations (do NOT file as bugs — tracked in issue #6)
+## Known limitations (do NOT file as bugs — tracked in issues #6 / #24)
 
-- **Recovering a wedged sync requires quit + reopen.** A sync on a connection
-  that died (sleep / network drop / frozen remote) can't be unblocked
-  in-process — proven infeasible (a `select()` blocked on a dead connection
-  can't be woken from another thread by closing the fd or killing ssh). The
-  stall hint (TC10) detects it after 45 s and points the user to quit +
-  reopen, which is clean now. SSH keepalive prevention is deferred.
+- **Recovering a wedged sync/scan requires quit + reopen.** A connection that
+  died (sleep / network drop / frozen remote) can't be unblocked in-process —
+  proven infeasible (a `select()` blocked on a dead connection can't be woken
+  from another thread by closing the fd or killing ssh). The sync-phase stall
+  hint (TC10, 45 s) and the scan-phase detector (TC11, 120 s) both detect it and
+  point the user to quit + reopen, which is clean now. SSH keepalive prevention
+  is deferred.
+- **`Stop` / sheet `Cancel` do not unwind a wedged engine op.** Both are
+  in-app UI exits (abandonment / cancelling credential entry); neither
+  interrupts an operation already blocked on a serial-queue round-trip. True
+  in-place cancellation is the tracked follow-up.
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
   later reopen re-prompts. Keychain/ControlMaster caching is a separate
   future item.
@@ -295,18 +338,39 @@ cleanly. A credential-sheet wait is expected behavior, not a failure.
 
 | Case | Behavior | PASS / FAIL | Notes |
 |---|---|---|---|
-| TC1 | non-interactive close on sync-end | | |
+| TC1 | non-interactive close on sync-end | PASS | live + automated regression |
 | TC2 | non-interactive Rescan reopens silently | | |
-| TC3 | interactive held through sync-end | | |
-| TC4 | interactive Rescan no re-prompt | | |
-| TC5 | interactive closes on leave | | |
+| TC3 | interactive held through sync-end | pending live (needs password entry) | |
+| TC4 | interactive Rescan no re-prompt | pending live (needs password entry) | |
+| TC5 | interactive closes on leave | pending live (needs password entry) | |
 | TC6a | Keep Syncing | | |
 | TC6b | Abort & Close | | |
 | TC6c | Close (let it run) | | |
-| TC7 | local-only sanity | | |
-| TC8 | no ssh pile-up | | |
+| TC7 | local-only sanity (detector never arms) | PASS | live + automated regression |
+| TC8 | no ssh pile-up | PASS | live regression |
 | TC9a | gate: pick during background sync | | |
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
-| TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | scan-stall detector fires at 120s → restart-required; Stop enabled+effective; same-process-after-Stop carries replacement to restart-required; clean reopen. (Earlier "auth-failure wedge" reclassified: that is a benign credential-sheet wait.) |
-| TC11b | interactive auth failure | pending live (needs password entry) | expected: credential-sheet wait, not a wedge; confirm phase + bounded terminal path |
+| TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
+| TC11b | interactive auth failure | pending live (needs password entry) | expected: credential-sheet wait/error, not a wedge; confirm phase + bounded terminal path + clean Cancel |
+
+---
+
+## Evidence provenance
+
+Results above come from three distinct sources — do not conflate them:
+
+- **Automated (deterministic unit/integration tests, run in CI):** the
+  coordinator state machine and `ScanStallTimer` behaviors — arm/reset/disarm,
+  operation-bound firing, restart-required transition, late-completion
+  suppression, retention across abandonment, healthy-scan control. These use an
+  injected fake scheduler (no real timeouts) and run on every build.
+- **Live (hands-on, recorded this pass):** TC1/TC7/TC8 regression; TC10 stall
+  hint; TC11a frozen-remote proxy on the **Release** build at the production
+  **120 s** bound (scan detector arms, restart-required at the bound, clean
+  targeted quit, app-owned child reaped, fresh reopen succeeds); healthy-scan
+  control (max inter-status silence observed ≈1 s against the 120 s bound → no
+  false fire). Caveat: the healthy control was a fast scan with a large margin;
+  a genuinely ~120 s-silent healthy scan was not constructed.
+- **Pending (require a human to type the SSH password — cannot run
+  unattended):** TC3, TC4, TC5, TC11b.
