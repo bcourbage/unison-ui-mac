@@ -54,14 +54,17 @@ why removal is coupled to `SIGKILL` rather than to "we asked it to stop".
 
 Let `C` be a transport child at any instant.
 
-**No live-untracked window.** `C` leaves the registry only via `retire`/`reap`,
-each of which `SIGKILL`s it in the same locked section that removes it. So the
-transition "in registry" → "not in registry" is simultaneous with "signalled
-with SIGKILL". There is no reachable state where `C` is running and absent from
-the registry: while registered it is covered by `reap`; once removed it has
-already been `SIGKILL`ed. (Contrast the earlier unregister-before-waitpid
-design, where a child could be removed while still alive and then be missed by
-a racing shutdown — that window is gone.)
+**Signalled-before-removal.** `C` leaves the registry only via `retire`/`reap`,
+each of which `SIGKILL`s it in the same locked section that removes it — the
+`SIGKILL` is issued *before* the pid is removed. So once `C` is absent from the
+registry it has already been `SIGKILL`ed and is therefore irrevocably
+terminating (SIGKILL cannot be caught or blocked), even though it may not have
+*fully exited* the instant `kill(2)` returns. The claim is not that no
+running-but-unregistered instant can ever exist; it is that any such instant is
+a child that has already been signalled and is dying — never a live child that a
+racing shutdown could miss. (Contrast the earlier unregister-before-waitpid
+design, where a child could be removed while still alive and *un-signalled*,
+then be missed by a racing shutdown — that window is gone.)
 
 **No PID-reuse signal.** A pid is `SIGKILL`ed only while it is present in the
 registry (in `retire`/`reap`), and it is present only while un-reaped: OCaml
