@@ -5,6 +5,21 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
+- [ ] **`Stop` reliability during a wedged connect/scan (issue #24 follow-up)** —
+      The init2/scan stall detector (`ScanStallTimer`; landed in the issue #24
+      draft PR) bounds a post-authentication transport wedge → restart-required
+      (120 s, reset on scan-status, operation-bound and retained across UI
+      abandonment). `Stop` in the no-sheet wedge already returns to the picker.
+      Still open: making `Stop` *universally* reliable during connect — it is
+      (correctly) disabled behind a modal credential sheet, so there is no
+      in-app abort while awaiting input, and `connection_cancel` cannot
+      interrupt a wedged op on the serial `connectQueue` (true in-place
+      cancellation needs engine-level interruptibility / process isolation —
+      see the PR #9 note below). The detector is the automatic recovery;
+      revisit `Stop` in that architectural context. Also revisit the auth-
+      *failure* interactive path (a wrong password re-prompts; confirm it never
+      wedges post-submit — TC11b).
+
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
