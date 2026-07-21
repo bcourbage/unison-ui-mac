@@ -5,25 +5,62 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **True in-process interruption of a wedged engine op (issue #24 follow-up)** —
-      The init2/scan stall detector (`ScanStallTimer`; landed via the issue #24
-      fix, PR #25, merged to `main`) bounds a post-authentication transport wedge → restart-required
-      (120 s, reset on scan-status, operation-bound and retained across UI
-      abandonment). It is the *automatic* recovery. Two user-facing escape
-      hatches already work: while the modal credential sheet is up its **Cancel**
-      button is an in-app exit from credential entry (the sheet intentionally
-      disables the underlying toolbar only while it's showing — Cancel is not
-      blocked); and in the no-sheet wedge, **Stop** performs visible-session
-      abandonment and returns to the picker. Neither of those, however, unwinds
-      the already-issued engine operation. The genuinely unresolved limitation
-      is *true in-process interruption of an already-wedged engine op*:
-      `connection_cancel` cannot interrupt an op blocked on a round-trip on the
-      serial `connectQueue`, so the abandoned scan runs to completion (or stays
-      wedged) in the background regardless of the UI action. Real in-place
-      cancellation needs engine-level interruptibility / process isolation —
-      see the PR #9 note below. Also revisit the auth-*failure* interactive path
-      (confirm a wrong password re-prompts and never wedges post-submit —
-      TC11b).
+- [ ] **True in-process interruption of a wedged / in-flight engine scan
+      (issue #24 follow-up; also makes scan-phase Stop a real cancel)** —
+      *(This is the single consolidated follow-up; it supersedes the former
+      separate "Make scan-phase Stop a true cancel" item.)*
+
+      **What already works.** The init2/scan stall detector (`ScanStallTimer`,
+      PR #25, merged) bounds a post-authentication remote transport wedge →
+      restart-required (120 s, reset on scan-status, operation-bound, retained
+      across UI abandonment) — the *automatic* recovery. Two user-facing escape
+      hatches also work: while the modal credential sheet is up, its **Cancel**
+      is an in-app exit from credential entry (the sheet disables the toolbar
+      only while showing; Cancel is not blocked); and in the no-sheet
+      connect/scan phase, **Stop** performs visible-session abandonment —
+      `onCancelScan` → `leaveSession` → `engine.abandon()` (coordinator) → back
+      to the picker. The coordinator's engine-idle gate makes a replacement
+      profile open **wait for quiescence**, so a quick Stop-then-reopen does
+      NOT leave two scans racing. (The old epoch/bookkeeping mechanisms —
+      `abortAllInFlight`, `connectGeneration`, `invalidateConnect` — no longer
+      exist; that architecture was replaced by the coordinator.)
+
+      **The genuine open limitation.** None of Cancel / Stop / the detector
+      *unwinds the already-issued OCaml operation*. The in-flight
+      update-detection (`init2`) runs to completion in the background — for a
+      remote/ssh profile that means a lingering remote `unison` child and
+      wasted bandwidth until it finishes (or until quit+reopen). `connection_
+      cancel` is scoped to the credential-prompt phase, not an `init2` op
+      blocked on a round-trip on the serial `connectQueue`. And the scan is not
+      interruptible via the propagation `Abort` mechanism: `Abort.check`/
+      `checkAll` are consulted only in propagation (`copy.ml`/`files.ml`), never
+      in `update.ml`; setting the propagation abort flag *during a scan* trips
+      `update.ml:1027 Assertion failed`, so that flag must stay gated on
+      `isSyncing` (a scan must never flag abort).
+
+      **Prerequisite already satisfied — build on it, do not re-derive.**
+      Exception hardening (PR #11 bridge-safety): every Swift→OCaml callback
+      goes through the `caml_callback*_exn` wrappers; `init2` has terminal
+      failure routing (dispatch status + a token-bound async scan-failed
+      callback → `operationFailed(engineIsQuiescent:false)`); state publication
+      is transactional. A scan-phase raise is therefore *safe to trigger* now.
+
+      **Remaining work / architectural options.** The only honest way to truly
+      stop an in-flight scan is to tear down the bridge connection / kill the
+      remote child mid-`init2` — i.e. engine-level interruptibility or process
+      isolation. Paired with that, fix the scan-phase Stop **honesty**: during a
+      scan the affordance still reads "Stop" / "Cancel the running
+      synchronization" and the summary says "Cancelling…", but no sync is
+      running and the scan isn't actually aborted (only the UI is abandoned) —
+      relabel to e.g. "Cancel" / "Stop connecting and return to profiles" with a
+      "Returning to profiles…" summary. **Keep the escape hatch** — do not grey
+      Stop out; it lets the user bail out of a slow/wedged connect/scan
+      immediately instead of waiting for the detector.
+
+      **Auth-failure interactive path:** confirmed live (TC11b) — a wrong
+      password stays in the bounded credential-prompt flow (re-presents) and a
+      subsequent correct password authenticates and completes the scan normally;
+      no post-submit wedge. No further action unless that regresses.
 
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
@@ -281,140 +318,6 @@ section at the bottom so this list stays scannable.
       blob provenance enforcement remains explicitly DEFERRED until the next
       engine rebuild / upstream bump; the current blob is manually verified at
       `2f345306…` and release builds do not regenerate it.)
-
-- [ ] **Make scan-phase Stop a true cancel (tear down the connection)** —
-      Today, pressing Stop *during the connect/scan phase* (`isScanning &&
-      !isSyncing` in `ReconcileWindowController.cancelSync`) does **not**
-      actually stop the scan. It routes through `onCancelScan()` →
-      `AppDelegate.cancelConnectInProgress` → `abortAllInFlight(forceClose:
-      true)`, which bumps the connect-generation epoch (so the eventual
-      `init2` callback is ignored), disarms the watchdog, and closes the
-      reconcile window to return to the picker. None of that calls into
-      OCaml — `invalidateConnect()` is pure Swift bookkeeping — so the
-      OCaml-side update-detection scan keeps running to completion in the
-      background. For local profiles that's a brief invisible waste; for
-      remote/ssh profiles it means a lingering remote `unison` process and
-      wasted bandwidth, and a quick Stop-then-reopen can leave two scans
-      racing.
-      **Wording issue:** because of the above, the button's label/tooltip
-      lie during the scan phase. The toolbar item is "Stop" /
-      "Cancel the running synchronization" (`ReconcileToolbar.swift:203`)
-      and `cancelSync` sets the summary to "Cancelling…" — but there is no
-      synchronization running during a scan, and the scan isn't actually
-      cancelled, only the UI is abandoned. The scan-phase affordance should
-      read honestly (e.g. "Cancel" / "Stop connecting and return to
-      profiles") and the summary should say something like "Returning to
-      profiles…".
-      **Keep the escape hatch:** do NOT simply grey Stop out during the
-      scan. Even though it doesn't truly abort the scan, it serves a real
-      purpose — it lets the user bail out of a slow or wedged connect/scan
-      and get back to the picker immediately, instead of waiting for the
-      watchdog timeout. The goal here is to make that cancel *real* (and
-      honestly labelled), not to remove it.
-      **Why it's hard:** the scan genuinely isn't interruptible via the
-      `Abort` mechanism — `Abort.check`/`checkAll` are only consulted during
-      propagation (`copy.ml`/`files.ml`), never in `update.ml`, and the
-      `abortAll` callback we registered only sets the propagation flag. The
-      only honest way to stop an in-flight scan is to tear down the bridge
-      connection / kill the remote child process. `unison_bridge_connection_
-      cancel()` exists but is currently scoped to the password-prompt phase,
-      not an in-progress `init2` — extending a real teardown to the scan
-      phase is the actual work item.
-
-      **Findings (2026-06-27, v0.2.0):** two confirmations + a new constraint.
-      1. The warn dialog's **"Cancel sync" now shares this exact limitation.**
-         It used to make the OCaml engine `exit()` — quitting the whole app
-         (clean exit, no crash report). v0.2.0 changed it to answer the engine
-         "proceed" and tear the UI down to the picker, same as scan-phase
-         Stop. So the background scan runs to completion either way; neither
-         Stop nor warn-Cancel truly aborts a scan.
-      2. Setting the propagation abort flag (`unison_bridge_abort_sync`)
-         **during a scan is not a harmless no-op — it trips
-         `update.ml:1027 Assertion failed`** (surfaced as a "Unison error /
-         uncaught exception" fatal). So the abort flag must be gated on
-         `isSyncing` (transport only); a scan must NOT flag abort.
-      3. **Exception-hardening prerequisite (satisfied 2026-07-19,
-         `fix/bridge-safety`):** tearing down the connection mid-`init2` makes
-         OCaml raise, and `_ocaml_init2` formerly used plain `caml_callback`, so
-         an uncaught exception there aborted the process (SIGABRT). The
-         exception-containment groundwork this needs is now in place:
-         - every Swift→OCaml bridge callback goes through the shared
-           `caml_callback*_exn` wrappers;
-         - both scan outcomes are terminal — `_ocaml_init2` returns a dispatch
-           status routed by `AppDelegate.driveBeginScan`, AND a failure while
-           *publishing* the completed scan's state fires a token-bound
-           async scan-failed callback → `operationFailed(engineIsQuiescent:
-           false)` (no more silent strand in `.scanning`);
-         - state publication is transactional (the row roots and the Swift table
-           swap atomically or roll back together), so a mid-scan raise can't
-           leave `g_ri_roots` describing rows Swift never received.
-
-         This makes a scan-phase raise *safe to trigger*. It is NOT the whole
-         task: the mid-`init2` connection teardown that would *cause* the raise
-         (killing the transport / remote child so the scan actually stops) is
-         still unwired, and making the scan-phase Stop honest (label + true
-         cancel) remains to be done. Build on the hardened phase calls; do not
-         re-derive the exception handling. **This item stays open.**
-
-      **Findings #8 + #12 (2026-07-20):** the advisory SSH version probe was
-      redesigned as a lifecycle-owned subprocess. #8: `StrictHostKeyChecking`
-      changed from `accept-new` to **`yes`** (placed before profile `sshargs` so
-      it wins) — the probe never writes a host key; an unknown/changed host makes
-      it skip, leaving host-key confirmation to the real Unison connection. #12:
-      a true **wall-clock deadline** (`defaultDeadline`=20s) now covers launch +
-      I/O + exit (not just `ConnectTimeout`), with terminate→SIGKILL→**reap of the
-      exact child** so a wedged ProxyCommand/`servercmd -version` can't hang a
-      worker or orphan a process; each probe returns a `Handle` bound to its
-      `SessionID`, and `run` delivers only when the probe is neither cancelled
-      nor superseded (`isCurrent`), so a slow result can't update a replacement
-      profile. AppDelegate cancels the probe on profile replacement, window
-      close, and shutdown. Failure kinds are now distinguished (timeout,
-      cancellation, host-key rejection, auth failure, generic ssh failure, launch
-      failure, malformed output) via a pure `classifyRaw`. Process execution is
-      behind an injectable `VersionProbeExecutor`. **Coverage:** 21
-      deterministic tests (fake executors for identity/cancellation/late-
-      completion/timeout + real-subprocess terminate/reap/launch-fail against
-      `/bin/sleep`,`/bin/echo`); NOT field-proven against a live wedged remote.
-
-      **Lifecycle-correction pass (2026-07-20, review of Findings #8/#12):**
-      centralized probe lifecycle ownership and made termination deterministic.
-      (1) The probe is now cancelled inside `leaveSession` (the common
-      session-leave path), so BOTH window-close AND the programmatic Stop-
-      during-scan path tear it down — previously Stop-during-scan detached the
-      window delegate before closing, so `handleWindowClosed` (which held the
-      cancel) never fired and the probe leaked. (2) `runVersionCheckIfNeeded`
-      supersedes the old probe BEFORE the `unison_bridge_get_version()` guard,
-      so a failed version lookup on a replacement open still invalidates the
-      previous session's probe. (3) The executor checks cancellation BEFORE
-      launch (never spawns an already-abandoned child) and immediately AFTER
-      `Process.run()`. (4) Cancellation is DETERMINISTIC: a new `ProbeCanceller`
-      fires a registered teardown (SIGTERM) SYNCHRONOUSLY inside `cancel()`
-      (not on a later background poll tick), and `applicationWillTerminate`
-      waits (bounded) on `Handle.waitUntilFinished` so the app doesn't exit
-      mid-teardown. (5) Active-probe state is cleared on completion only when
-      the delivering probe is still current (a newer probe is never clobbered).
-      (6) Corrected teardown CLAIMS: the deadline is measured from just after
-      launch (not "launch + I/O + exit"); the final SIGKILL reap-wait result is
-      not asserted; and terminating ssh does NOT guarantee its ProxyCommand /
-      remote descendants are reaped. (7) Added lifecycle tests: cancel-before-
-      launch never launches; teardown fires synchronously on cancel; late
-      registration fires immediately; cancel is idempotent (teardown once);
-      wait wakes on cancel / times out otherwise; shutdown `waitUntilFinished`
-      completes after cancel. Full suite 576 tests, 0 failures.
-
-      **argv-ordering correction (2026-07-20):** `buildConfig` put `--` AFTER
-      the destination (`ssh … dest -- servercmd -version`). OpenSSH treats
-      every token after the destination as the remote command, so the remote
-      shell was asked to run `-- servercmd -version` — wrong. `--` now comes
-      BEFORE the destination (`ssh … -- dest servercmd -version`): it ends
-      ssh's own option parsing and protects an option-like destination, and the
-      remote command is exactly `servercmd -version`. Corrected the unit-test
-      suffix assertion and the misleading comment, and added an end-to-end argv
-      test that runs the real `SubprocessProbeExecutor` against a temporary
-      fake ssh which parses local options, rejects a stray leading remote `--`,
-      requires the remote command to be exactly `servercmd -version`, and (as a
-      guard proof) rejects the old ordering. Lifecycle design unchanged. Full
-      suite 577 tests, 0 failures.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`) — as *mitigation* for wedged connections:

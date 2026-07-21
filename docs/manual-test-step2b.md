@@ -358,7 +358,16 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 
 ## Evidence provenance
 
-Results above come from three distinct sources — do not conflate them:
+Every result is tagged with exactly one of three evidence classes — do not
+conflate them:
+
+1. **Live-tested** — exercised by hand against a real app build and a real
+   remote (the "Live — unattended" and "Live — interactive" bullets below).
+2. **Deterministic automated** — covered by an XCTest that runs in CI (the
+   "Automated" bullet below).
+3. **Code-inspection-only** — verified by reading the code, with no dedicated
+   live run and no dedicated automated test (the "Code-inspection-only" bullet
+   below).
 
 - **Automated (deterministic unit/integration tests, run in CI):** the
   coordinator state machine and `ScanStallTimer` behaviors — arm/reset/disarm,
@@ -382,5 +391,15 @@ Results above come from three distinct sources — do not conflate them:
   password authenticates and the scan completes normally (bounded credential
   flow; no storm/wedge/leak); (b) cancellation: Cancel at the sheet returns
   cleanly to the picker and reaps the ssh child.
+- **Code-inspection-only (no live run, no dedicated automated test):** within
+  this validation matrix the TC-series is entirely live and/or automated, so
+  nothing here is code-inspection-only. The one code-inspection-only item in the
+  broader engineering audit is the vendored-engine **build provenance** (audit
+  L3): `make vendor-blob` provenance is manual/documentary (verified by reading
+  `Makefile` + `vendor/README.md`), not enforced by a clean-worktree build or a
+  machine-generated manifest, and is explicitly deferred. Finding-level evidence
+  classes (which of #1–#13, L1–L3 are automated-tested vs live vs
+  code-inspection-only) are enumerated in the separate re-audit disposition
+  artifact, not in this file.
 - **Pending:** none of the TC-series remain. (TC6a/b/c and TC9a/b are older
   step-2/step-3 cases outside the issue #24 scope and were not re-run this pass.)

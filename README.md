@@ -180,8 +180,12 @@ per-row bridge round-trips. (The former `0001` `abortAll` patch was
 patches are already baked into the vendored `unison-blob.o`; you only
 need to re-apply them if you're rebuilding the blob from an upstream
 clone (`make vendor-blob` does this automatically as a prereq).
-Patches stay LOCAL — never proposed back to bcpierce00/unison, per
-this project's LLM-usage posture (see [NOTICE.md](NOTICE.md)).
+These patch **files** are local implementation/provenance artifacts and
+are **not** submitted upstream directly — they are LLM-touched (see
+[NOTICE.md](NOTICE.md) and [CONTRIBUTING.md](CONTRIBUTING.md)). That
+restriction is about these diffs, not a claim that a clean,
+independently developed, human-authored contribution could never be
+proposed upstream through upstream's own contribution process.
 
 ## How it works (architecture sketch)
 
