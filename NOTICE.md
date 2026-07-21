@@ -63,10 +63,15 @@ If you redistribute this software (modified or unmodified):
 ## Compatibility note
 
 Unison's own [CONTRIBUTING document](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md)
-states that LLM-generated code is unwelcome upstream. **This UI project was
-written with substantial LLM assistance and is therefore intentionally NOT
-proposed for inclusion in the upstream Unison repository.** It exists as a
-separate downstream work.
+states that LLM-generated code is unwelcome upstream. This UI project was
+written with substantial LLM assistance and exists as a separate downstream
+work. **Its LLM-touched artifacts — the `patches/` diffs and this fork's
+code — are local implementation and provenance artifacts and are not
+submitted upstream directly.** This is not a claim that an idea can never
+reach upstream: a separately developed, fully understood, human-authored
+contribution may be proposed by the maintainer in accordance with upstream's
+CONTRIBUTING policy, developed clean rather than by laundering this repo's
+LLM-touched diffs.
 
 ## Acknowledgments
 

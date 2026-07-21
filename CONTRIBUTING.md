@@ -28,19 +28,22 @@ has an explicit policy under "LLM usage":
 > is simply not acceptable for submission to the project*.
 
 This is not a position I argue with — it's the upstream maintainer's
-call about their own codebase. **`unison-ui-mac` therefore lives
-permanently downstream and will never propose changes to
-`bcpierce00/unison`.** Anything in this repo that would otherwise be
-useful upstream (a generic bug fix, a portable feature, a doc
-correction) is *still* off-limits for upstream contribution from this
-fork, because contributors here have no way to attest the code is
-human-authored.
+call about their own codebase. So the rule for this repo is narrow and
+specific: **the LLM-touched artifacts here — the `patches/` diffs and
+the code in this fork — are local implementation and provenance
+artifacts, and must not be submitted upstream directly**, because their
+audit trail shows LLM involvement.
 
-If you have a contribution that genuinely belongs upstream, the right
-path is to **start clean against `bcpierce00/unison`** (no consultation
-of this repo's diffs) and submit there directly. Don't route
-LLM-touched code through this fork to upstream by way of cleaning it
-up — the audit trail still shows you saw the LLM output.
+That is *not* a blanket claim that an idea can never reach upstream. If
+a change genuinely belongs upstream, the maintainer may propose a
+**separately developed, fully understood, human-authored** contribution
+in accordance with upstream's own
+[`CONTRIBUTING.md`](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md)
+— developed clean against `bcpierce00/unison`, without consulting or
+laundering this repo's LLM-touched diffs. What is off-limits is routing
+this fork's LLM-touched code upstream by "cleaning it up" (the audit
+trail still shows you saw the LLM output); an independent, human-authored
+implementation is a separate thing and is upstream's normal path.
 
 ## What to file here
 
@@ -75,7 +78,8 @@ These belong upstream, on `bcpierce00/unison`:
 - **Fixes to `src/uimacbridge.ml`** beyond the minimal local fork
   patches in `patches/`. The local patches exist only because they
   enable GUI features the upstream UI doesn't need (e.g., the
-  `abortAll` callback for real mid-sync abort). Anything broader
+  `closeConnection` callback and the transport-child reaper hooks).
+  Anything broader
   than that — fixing a bug in the existing `uimacbridge` callback
   set, adding a callback that would belong in upstream's
   long-term API — is upstream work, not ours.
@@ -105,7 +109,7 @@ Code PRs are accepted with a few caveats:
 2. **No expectation of acceptance.** This is a personal-use project.
    The maintainer reviews on availability and may reject contributions
    that don't fit the project's direction without much explanation.
-3. **CI hygiene**: `make test` must pass (286 tests at last count,
+3. **CI hygiene**: `make test` must pass (696 tests at last count,
    ~1 s on M-series Macs). New behavior should add tests where the
    existing patterns (pure-function helpers + XCTest pinning) apply.
 4. **GPLv3 inbound = outbound**: by submitting a PR you certify the
