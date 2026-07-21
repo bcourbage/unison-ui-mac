@@ -352,7 +352,7 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
-| TC11b | interactive auth failure | pending live (needs password entry) | expected: credential-sheet wait/error, not a wedge; confirm phase + bounded terminal path + clean Cancel |
+| TC11b | interactive auth failure | partial live; wrong-password entry pending | Confirmed live: opening the password profile surfaces a **modal credential sheet** ("Permission denied (publickey)" → Password field, Cancel/OK) over an "Opening…" summary with the toolbar disabled *because the sheet is modal* — a credential-sheet wait, NOT a wedge. **Cancel** returns cleanly to the Profiles picker (no sheet, no ssh child leaked). Still pending (needs password entry): whether a WRONG password re-presents the sheet, surfaces an error, or proceeds into scan. |
 
 ---
 
@@ -371,6 +371,11 @@ Results above come from three distinct sources — do not conflate them:
   targeted quit, app-owned child reaped, fresh reopen succeeds); healthy-scan
   control (max inter-status silence observed ≈1 s against the 120 s bound → no
   false fire). Caveat: the healthy control was a fast scan with a large margin;
-  a genuinely ~120 s-silent healthy scan was not constructed.
+  a genuinely ~120 s-silent healthy scan was not constructed. TC11b non-password
+  parts: the credential sheet appears (modal, toolbar disabled because the sheet
+  is up — not a wedge) and its Cancel returns cleanly to the picker with no ssh
+  child leaked.
 - **Pending (require a human to type the SSH password — cannot run
-  unattended):** TC3, TC4, TC5, TC11b.
+  unattended):** the password-entry outcomes of TC3, TC4, TC5 (correct
+  credentials: held connection, rescan reuse, close on leave) and TC11b (wrong
+  credentials: re-present vs error vs proceed into scan).
