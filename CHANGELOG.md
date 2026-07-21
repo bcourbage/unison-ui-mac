@@ -9,6 +9,88 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.3.0] — 2026-07-21
+
+A large reliability, data-integrity, and correctness release rolling up the
+post-0.2.2 engine-bridge hardening, the cumulative code-review remediation, and
+the post-authentication scan-stall fix.
+
+### Fixed
+- **OCaml GC-rooting in `reloadTable`** — callback results are now rooted across
+  allocation, closing an intermittent crash/memory-corruption risk during
+  progress updates.
+- **Bridge exception containment** — Swift↔OCaml entry points route through the
+  `caml_callback*_exn` family with per-operation status; an OCaml raise can no
+  longer strand a worker or abort the process.
+- **"Revert to Unison's Recommendation" is a real engine inverse**
+  (`unisonRiRevert`) instead of a Swift-only override delete.
+- **Profile save preserves all directives** (`source`, `include?`, `source?`)
+  and unknown/raw lines verbatim — a no-op save no longer disables config.
+- **Failure-safe, retry-consistent profile save/rename** — temp-file-first with
+  backup, rollback, and honest residue reporting.
+- **`installExclusive` write-completion hardening** — a short `write()` is a
+  failure, all bytes are verified, and `fchmod`/`fsync`/`close` failures are
+  surfaced; an incomplete staging file is never installed.
+- **External-edit-safe one-shot `ignorearchives` recovery** — restoration
+  re-reads the current file and strips only the app-owned suffix, never
+  clobbering an edit made during recovery; crash cleanup is anchored to the
+  exact app-owned suffix.
+- **Clean Stale Archives resolves `include`/`source` roots recursively** and
+  marks uncertain attribution instead of risking a wrong delete.
+- **Post-authentication scan-stall detector** (issue #24) — a remote transport
+  that wedges during `init2`/scan is bounded (120 s, operation-bound) to a
+  clear restart-required state instead of hanging in "Opening…".
+- **SSH version probe** — `StrictHostKeyChecking=yes` (never writes a host key),
+  a real wall-clock deadline with terminate→kill→reap, and session-bound
+  identity so a stale result cannot update a replacement profile.
+- **Diff-request identity broker** — a slower earlier diff result can no longer
+  overwrite a newer request.
+
+### Changed
+- **Honest "Update All" shared-logging propagation** — structured accounting
+  with five distinct outcomes (nothing-needed / complete-success /
+  partial-success / complete-failure / cannot-enumerate); a partial or total
+  failure is never reported as success.
+- **Bulk post-sync completion snapshot** replaces per-row blocking bridge calls
+  at sync completion (large reconciliations no longer freeze); vendored blob
+  updated accordingly.
+- Connection teardown on leave, close-and-drain reconnect, and an SSH
+  transport-child reaper (SIGKILL under a mutex; pid reserved until `waitpid`).
+- Debug builds sign with a stable Apple Development identity (TCC grants survive
+  rebuilds); CI matrix hardening.
+- Bundled Unison manual regenerated from the vendored engine's commit
+  (`91421d0`, hevea 2.38); the obsolete `mergebatch` preference is gone.
+- Documentation/provenance accuracy pass (patch set `0002`–`0005`; upstream
+  contribution policy wording; reaper/patch comments).
+
+### Security / Privacy
+- Crash-report copy no longer claims "no personal data"; it names what a macOS
+  incident report can contain (account name, file paths, process arguments,
+  system details) and keeps the Finder-review step. Log values are
+  private-by-default (`%{private}@`).
+
+### Deferred / known limitations
+- **L3 vendored-engine build provenance** (clean disposable worktree at a pinned
+  base commit + machine-generated manifest) is **not implemented** — provenance
+  is currently manual/documentary.
+- **Cross-process archive-mutation safety** and the **credential-reply watchdog**
+  gap are **deferred to a separate upcoming cycle**.
+- **True in-process interruption of a wedged/in-flight scan** remains open — the
+  scan-stall detector plus quit/reopen is the recovery; `Stop` and the
+  credential sheet's `Cancel` are visible-session abandonment, not an engine
+  unwind.
+- The **vendored blob carries `LC_BUILD_VERSION minos 26.0`** (build-host
+  metadata); this is cosmetic — the shipped executable is `minos 15.0` with no
+  post-macOS-15 symbols. Optional provenance hygiene only.
+- **Distribution is ad-hoc-signed and unnotarized** by design (installed via the
+  Homebrew cask); first launch requires the usual Gatekeeper approval.
+- Some AppKit window/menu wiring is verified by **code inspection** (its
+  pure/presentation models are unit-tested). Issue #24's TC11a used a controlled
+  frozen-remote proxy — reproducing the `init2` no-progress condition, not proof
+  of an identical root cause with the original inconsistently-reproduced
+  incident; the interactive lifecycle cases (TC3/TC4/TC5/TC11b) were verified
+  live with a human-entered password.
+
 ## [0.2.2] — 2026-06-29
 
 ### Changed
@@ -511,7 +593,8 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.2.2...v0.3.0
 [0.1.3]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.0...v0.1.1
