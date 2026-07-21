@@ -352,7 +352,7 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
-| TC11b | interactive auth failure | PASS (characterized) | live (Release, user typed a WRONG password, → .241 VM). **Wrong password → the credential sheet RE-PRESENTS** (ssh's standard multi-attempt behavior): it does NOT immediately show an error dialog and does NOT proceed into scan; the summary stays "Opening…" (credential-wait phase). **Cancel** returns cleanly to the Profiles picker and the ssh connection is reaped (verified: no `unison -server` child, no ssh to .241 left). **No no-sheet post-auth stuck state** — the flow stays in the credential-prompt phase throughout. Correction: an apparent ssh "storm" while the sheet was up was a **measurement artifact** (a `pgrep` pattern matching the test harness's own diagnostic commands); resolving each pid showed a **single, stable** ssh connection blocked on the askpass prompt. (In one run the session eventually reached "up to date", i.e. the connection authenticated — keychain-cached credential or a valid entry — with no wedge and no leak on quit; not a defect.) |
+| TC11b | interactive auth: retry recovery + cancel | PASS | live (Release, user typed passwords directly → .241 VM). **Two separate runs.** **(a) Retry-recovery run:** wrong password #1 → credential sheet re-presented; wrong password #2 → credential sheet re-presented; correct password #3 → **authentication succeeded and the scan completed normally**. Repeated wrong credentials stayed within the bounded credential-prompt flow, and a subsequent correct credential transitioned into and completed scanning. No prompt storm, no wedge, no process leak. (An apparent ssh "storm" seen while diagnosing was a **measurement artifact** — a `pgrep` pattern matching the harness's own commands; resolving each pid showed a single, stable ssh connection.) **(b) Cancellation run (separate):** at the credential sheet, clicking **Cancel** returned cleanly to the Profiles picker and the ssh child was reaped (no `unison -server` child, no ssh to .241 left). |
 
 ---
 
@@ -377,7 +377,10 @@ Results above come from three distinct sources — do not conflate them:
 - **Live — interactive (user typed the password directly; never captured,
   logged, or stored; Release build, → .241 VM):** TC3 (connection held through
   sync completion), TC4 (same-session Rescan reuses it, no re-prompt), TC5
-  (leaving closes and reaps it), TC11b (wrong password re-presents the sheet;
-  Cancel returns cleanly; no ssh child left; no no-sheet post-auth wedge).
+  (leaving closes and reaps it), TC11b in **two separate runs** — (a)
+  retry-recovery: two wrong passwords each re-present the sheet, a third correct
+  password authenticates and the scan completes normally (bounded credential
+  flow; no storm/wedge/leak); (b) cancellation: Cancel at the sheet returns
+  cleanly to the picker and reaps the ssh child.
 - **Pending:** none of the TC-series remain. (TC6a/b/c and TC9a/b are older
   step-2/step-3 cases outside the issue #24 scope and were not re-run this pass.)
