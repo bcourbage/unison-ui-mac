@@ -339,7 +339,7 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 | Case | Behavior | PASS / FAIL | Notes |
 |---|---|---|---|
 | TC1 | non-interactive close on sync-end | PASS | live + automated regression |
-| TC2 | non-interactive Rescan reopens silently | | |
+| TC2 | non-interactive Rescan reopens silently | PASS | live (Release): initial ssh child reaped on sync-end; Rescan reconnects with NO credential sheet and scan completes; connection reused across a further rescan (same pid) then reaped again on the next sync-end. Child lifecycle correct. |
 | TC3 | interactive held through sync-end | pending live (needs password entry) | |
 | TC4 | interactive Rescan no re-prompt | pending live (needs password entry) | |
 | TC5 | interactive closes on leave | pending live (needs password entry) | |
@@ -365,7 +365,9 @@ Results above come from three distinct sources — do not conflate them:
   operation-bound firing, restart-required transition, late-completion
   suppression, retention across abandonment, healthy-scan control. These use an
   injected fake scheduler (no real timeouts) and run on every build.
-- **Live (hands-on, recorded this pass):** TC1/TC7/TC8 regression; TC10 stall
+- **Live (hands-on, recorded this pass):** TC1/TC7/TC8 regression; TC2
+  non-interactive close+silent-reopen (child reaped on sync-end, Rescan
+  reconnects with no sheet, reused across rescans); TC10 stall
   hint; TC11a frozen-remote proxy on the **Release** build at the production
   **120 s** bound (scan detector arms, restart-required at the bound, clean
   targeted quit, app-owned child reaped, fresh reopen succeeds); healthy-scan
