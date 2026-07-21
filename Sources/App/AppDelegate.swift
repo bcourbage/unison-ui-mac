@@ -39,13 +39,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var diffBroker = DiffRequestBroker()
     private var diffRequestOwner: SessionID?
 
-    /// Pending restore for a one-shot `-ignorearchives` rescan: the
-    /// `.prf` we temporarily injected `ignorearchives = true` into, plus
-    /// its exact original contents. Restored the moment init1 has loaded
-    /// the pref into Unison's memory (the in-memory value then survives
-    /// init2 + the sync, so the archive still rebuilds — but the file is
-    /// never permanently changed). See `rescanIgnoringArchives`.
-    private var ignoreArchivesRestore: (url: URL, original: String)?
+    /// Pending restore for a one-shot `-ignorearchives` rescan: the `.prf`
+    /// we temporarily appended the injected suffix to. Cleaned up the moment
+    /// init1 has loaded the pref into Unison's memory (the in-memory value
+    /// then survives init2 + the sync, so the archive still rebuilds — but the
+    /// file is left as the user has it). We deliberately store ONLY the URL,
+    /// not a saved copy of the original bytes: restoration re-reads the current
+    /// file and strips exactly the app-owned trailing suffix, so it preserves
+    /// any external edit made during the recovery window instead of clobbering
+    /// it with a stale snapshot. See `rescanIgnoringArchives`.
+    private var ignoreArchivesPendingRestore: URL?
 
     /// Sentinel comment bracketing our injected line, so a stray copy
     /// (e.g. left by a crash mid-rescan) can be detected + stripped on
@@ -76,6 +79,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     nonisolated static func contentByStrippingInjectedSuffix(_ content: String) -> String? {
         guard content.hasSuffix(ignoreArchivesInjectedSuffix) else { return nil }
         return String(content.dropLast(ignoreArchivesInjectedSuffix.count))
+    }
+
+    /// The action `restoreIgnoreArchivesPrfIfNeeded` should take, decided purely
+    /// from the CURRENT on-disk content re-read at restore time (never from a
+    /// saved snapshot of the original). This is what makes restoration
+    /// external-edit-safe: it strips exactly the app-owned trailing suffix off
+    /// whatever the prefix currently is, so an edit made during the recovery
+    /// window is preserved character-for-character.
+    enum IgnoreArchivesRestoreAction: Equatable {
+        /// Current content ends with the exact injected suffix → write this
+        /// stripped content (its prefix is the current file's prefix verbatim).
+        case write(String)
+        /// Readable, but the injected suffix is already absent → no write, and
+        /// this is NOT a failure (nothing to restore).
+        case noWriteAbsent
+        /// The file could not be read → never write a saved original over it;
+        /// preserve the current file and log a cleanup FAILURE (not "restored").
+        case noWriteUnreadable
+    }
+
+    /// Pure restore decision. `currentContent` is the freshly re-read file
+    /// contents, or `nil` if the read failed. Reuses
+    /// `contentByStrippingInjectedSuffix` for the exact-suffix match so the
+    /// inject/cleanup/restore paths can never drift.
+    nonisolated static func ignoreArchivesRestoreAction(
+        currentContent: String?
+    ) -> IgnoreArchivesRestoreAction {
+        guard let content = currentContent else { return .noWriteUnreadable }
+        if let stripped = contentByStrippingInjectedSuffix(content) {
+            return .write(stripped)
+        }
+        return .noWriteAbsent
+    }
+
+    /// Outcome of a restore attempt, for accurate logging and testability.
+    enum IgnoreArchivesRestoreResult: Equatable {
+        case restored        // stripped current content written OK
+        case nothingToDo     // suffix already absent — no write, benign
+        case writeFailed     // decided to write but the write threw — suffix
+                             // left in place for launch-time cleanup; NOT restored
+        case readFailed      // file unreadable — current file preserved; NOT restored
+    }
+
+    /// Restore over injectable read/write seams so the full behavior (including
+    /// read-failure and write-failure) is deterministically testable without a
+    /// filesystem or an `AppDelegate` instance. `read` returns the current file
+    /// contents (or nil on read failure); `write` persists the stripped content
+    /// (throwing on write failure). Never writes anything except the stripped
+    /// current content, and only when the exact suffix is present.
+    nonisolated static func performIgnoreArchivesRestore(
+        read: () -> String?,
+        write: (String) throws -> Void
+    ) -> IgnoreArchivesRestoreResult {
+        switch ignoreArchivesRestoreAction(currentContent: read()) {
+        case .write(let stripped):
+            do { try write(stripped); return .restored }
+            catch { return .writeFailed }
+        case .noWriteAbsent:
+            return .nothingToDo
+        case .noWriteUnreadable:
+            return .readFailed
+        }
     }
 
     private let log = TraceLog.shared
@@ -1472,18 +1537,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             NSSound.beep()
             return
         }
-        ignoreArchivesRestore = (url, original)
         // Same single definition the crash-cleanup transform strips, so the two
         // can never drift.
         let injected = original + Self.ignoreArchivesInjectedSuffix
+        // Bounded stale-read guard: this method reads `original` and then writes
+        // `injected` with no in-process suspension between, so an in-process
+        // change is impossible. Re-read immediately before the write to catch a
+        // cross-process edit that landed in the tiny window since our read, and
+        // abort rather than clobber it. This is best-effort — it cannot be
+        // cross-process atomic (an edit after this re-read but before the write
+        // still races), which is acceptable because a lost one-shot rescan is
+        // recoverable, whereas silently overwriting the user's edit is not.
+        if let recheck = try? String(contentsOf: url, encoding: .utf8), recheck != original {
+            log.write("ignorearchives: \(profile).prf changed under us before injection — aborting to avoid clobbering an external edit")
+            NSSound.beep()
+            return
+        }
         do {
             try injected.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             log.write("ignorearchives: write failed for \(url.path): \(error)")
-            ignoreArchivesRestore = nil
             NSSound.beep()
             return
         }
+        ignoreArchivesPendingRestore = url
         log.write("ignorearchives: injected into \(profile).prf — reopening profile fresh")
         // Reopen fresh so init1 re-reads the injected .prf; the injection is
         // restored the instant init1 has consumed it (see the init1-complete
@@ -1491,16 +1568,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         reopenCurrentProfileFresh(profile, failedReason: failedReason)
     }
 
-    /// Restore the `.prf` we injected into, if any. Idempotent — safe to
-    /// call from every completion/teardown path.
+    /// Restore the `.prf` we injected into, if any. Idempotent — safe to call
+    /// from every completion/teardown path.
+    ///
+    /// External-edit-safe: it RE-READS the current file and strips exactly the
+    /// app-owned trailing suffix off whatever the prefix now is, rather than
+    /// writing back a saved snapshot. So an edit made during the recovery window
+    /// is preserved. It never writes a saved original over the current file:
+    /// - suffix still present → write the stripped current content;
+    /// - suffix already absent → no write (benign, nothing to restore);
+    /// - file unreadable → no write, logged as a FAILURE (not "restored");
+    /// - write fails → the injected suffix is left in place for the launch-time
+    ///   exact-suffix cleanup (`cleanupStrayIgnoreArchivesMarkers`), and is NOT
+    ///   reported as restored.
     private func restoreIgnoreArchivesPrfIfNeeded() {
-        guard let (url, original) = ignoreArchivesRestore else { return }
-        ignoreArchivesRestore = nil
-        do {
-            try original.write(to: url, atomically: true, encoding: .utf8)
-            log.write("ignorearchives: restored \(url.lastPathComponent)")
-        } catch {
-            log.write("ignorearchives: RESTORE FAILED for \(url.path): \(error)")
+        guard let url = ignoreArchivesPendingRestore else { return }
+        ignoreArchivesPendingRestore = nil
+        let result = Self.performIgnoreArchivesRestore(
+            read: { try? String(contentsOf: url, encoding: .utf8) },
+            write: { try $0.write(to: url, atomically: true, encoding: .utf8) })
+        switch result {
+        case .restored:
+            log.write("ignorearchives: restored \(url.lastPathComponent) (stripped injected suffix, current prefix preserved)")
+        case .nothingToDo:
+            log.write("ignorearchives: nothing to restore for \(url.lastPathComponent) — injected suffix already absent (no write)")
+        case .writeFailed:
+            log.write("ignorearchives: RESTORE WRITE FAILED for \(url.path) — injected suffix left for launch-time cleanup, NOT restored")
+        case .readFailed:
+            log.write("ignorearchives: RESTORE READ FAILED for \(url.path) — preserving current file, NOT writing a saved original, NOT restored")
         }
     }
 
