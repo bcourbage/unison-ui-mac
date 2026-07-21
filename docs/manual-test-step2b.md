@@ -340,9 +340,9 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 |---|---|---|---|
 | TC1 | non-interactive close on sync-end | PASS | live + automated regression |
 | TC2 | non-interactive Rescan reopens silently | PASS | live (Release): initial ssh child reaped on sync-end; Rescan reconnects with NO credential sheet and scan completes; connection reused across a further rescan (same pid) then reaped again on the next sync-end. Child lifecycle correct. |
-| TC3 | interactive held through sync-end | pending live (needs password entry) | |
-| TC4 | interactive Rescan no re-prompt | pending live (needs password entry) | |
-| TC5 | interactive closes on leave | pending live (needs password entry) | |
+| TC3 | interactive held through sync-end | PASS | live (Release, user typed password, → .241 VM): connection authenticated; the ssh child **persisted** through the entire Go/sync and after "Synchronization complete" (3 items, 74 bytes) — held, NOT closed on sync-end (interactive-auth close policy). |
+| TC4 | interactive Rescan no re-prompt | PASS | live: same-session Rescan reused the held connection (same ssh pid, **no** second credential sheet), scan completed ("Everything is up to date"). |
+| TC5 | interactive closes on leave | PASS | live: clicking Profiles (leave) closed the connection and reaped the ssh child within ~1 s; returned to the picker. |
 | TC6a | Keep Syncing | | |
 | TC6b | Abort & Close | | |
 | TC6c | Close (let it run) | | |
@@ -352,7 +352,7 @@ recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
-| TC11b | interactive auth failure | partial live; wrong-password entry pending | Confirmed live: opening the password profile surfaces a **modal credential sheet** ("Permission denied (publickey)" → Password field, Cancel/OK) over an "Opening…" summary with the toolbar disabled *because the sheet is modal* — a credential-sheet wait, NOT a wedge. **Cancel** returns cleanly to the Profiles picker (no sheet, no ssh child leaked). Still pending (needs password entry): whether a WRONG password re-presents the sheet, surfaces an error, or proceeds into scan. |
+| TC11b | interactive auth failure | PASS (characterized) | live (Release, user typed a WRONG password, → .241 VM). **Wrong password → the credential sheet RE-PRESENTS** (ssh's standard multi-attempt behavior): it does NOT immediately show an error dialog and does NOT proceed into scan; the summary stays "Opening…" (credential-wait phase). **Cancel** returns cleanly to the Profiles picker and the ssh connection is reaped (verified: no `unison -server` child, no ssh to .241 left). **No no-sheet post-auth stuck state** — the flow stays in the credential-prompt phase throughout. Correction: an apparent ssh "storm" while the sheet was up was a **measurement artifact** (a `pgrep` pattern matching the test harness's own diagnostic commands); resolving each pid showed a **single, stable** ssh connection blocked on the askpass prompt. (In one run the session eventually reached "up to date", i.e. the connection authenticated — keychain-cached credential or a valid entry — with no wedge and no leak on quit; not a defect.) |
 
 ---
 
@@ -365,19 +365,19 @@ Results above come from three distinct sources — do not conflate them:
   operation-bound firing, restart-required transition, late-completion
   suppression, retention across abandonment, healthy-scan control. These use an
   injected fake scheduler (no real timeouts) and run on every build.
-- **Live (hands-on, recorded this pass):** TC1/TC7/TC8 regression; TC2
-  non-interactive close+silent-reopen (child reaped on sync-end, Rescan
-  reconnects with no sheet, reused across rescans); TC10 stall
-  hint; TC11a frozen-remote proxy on the **Release** build at the production
-  **120 s** bound (scan detector arms, restart-required at the bound, clean
-  targeted quit, app-owned child reaped, fresh reopen succeeds); healthy-scan
-  control (max inter-status silence observed ≈1 s against the 120 s bound → no
-  false fire). Caveat: the healthy control was a fast scan with a large margin;
-  a genuinely ~120 s-silent healthy scan was not constructed. TC11b non-password
-  parts: the credential sheet appears (modal, toolbar disabled because the sheet
-  is up — not a wedge) and its Cancel returns cleanly to the picker with no ssh
-  child leaked.
-- **Pending (require a human to type the SSH password — cannot run
-  unattended):** the password-entry outcomes of TC3, TC4, TC5 (correct
-  credentials: held connection, rescan reuse, close on leave) and TC11b (wrong
-  credentials: re-present vs error vs proceed into scan).
+- **Live — unattended (hands-on, recorded this pass, Release build):**
+  TC1/TC7/TC8 regression; TC2 non-interactive close+silent-reopen (child reaped
+  on sync-end, Rescan reconnects with no sheet, reused across rescans); TC10
+  stall hint; TC11a frozen-remote proxy at the production **120 s** bound (scan
+  detector arms, restart-required at the bound, clean targeted quit, app-owned
+  child reaped, fresh reopen succeeds); healthy-scan control (max inter-status
+  silence observed ≈1 s against the 120 s bound → no false fire). Caveat: the
+  healthy control was a fast scan with a large margin; a genuinely ~120 s-silent
+  healthy scan was not constructed.
+- **Live — interactive (user typed the password directly; never captured,
+  logged, or stored; Release build, → .241 VM):** TC3 (connection held through
+  sync completion), TC4 (same-session Rescan reuses it, no re-prompt), TC5
+  (leaving closes and reaps it), TC11b (wrong password re-presents the sheet;
+  Cancel returns cleanly; no ssh child left; no no-sheet post-auth wedge).
+- **Pending:** none of the TC-series remain. (TC6a/b/c and TC9a/b are older
+  step-2/step-3 cases outside the issue #24 scope and were not re-run this pass.)
