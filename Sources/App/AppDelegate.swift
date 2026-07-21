@@ -1069,6 +1069,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     self.cancelPreconnection(s, op, reason: "connect abandoned before credential prompt")
                     return
                 }
+                // Issue #35: a FATAL ssh transport error (login-grace timeout →
+                // broken pipe / connection closed) is surfaced by the engine
+                // through the SAME prompt channel as a real credential request.
+                // Do NOT re-present it as a password sheet. Terminal evidence —
+                // the tracked ssh child has gone/zombied — is authoritative; a
+                // fatal-looking string is only a supplement. On fatal, tear the
+                // half-open preconnection down and return to the picker with an
+                // error dialog (no connection was established, so the engine is
+                // quiescent once the cancel is acknowledged).
+                let transportGone = unison_bridge_transport_child_terminated() != 0
+                if case .fatal(let reason) = ConnectPromptClassifier.classify(
+                    prompt: prompt, transportTerminated: transportGone) {
+                    self.log.write("connect \(s)/\(op): fatal ssh output surfaced as a prompt "
+                        + "(transportGone=\(transportGone)) — not re-prompting; teardown → picker")
+                    self.failConnectFatal(s, op, message: reason)
+                    return
+                }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
                 self.log.write("connection prompt: \(prompt)")
@@ -1110,8 +1127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                             if rc == UNISON_REPLY_OK {
                                 self.drivePromptLoop(s, op)
                             } else {
-                                self.log.write("credential reply failed (rc \(rc)) — cleanup, no loop")
-                                self.cancelPreconnection(s, op, reason: "credential reply failed")
+                                // Issue #35: a reply that raised (e.g. EPIPE
+                                // writing into an ssh that closed under us) is a
+                                // fatal connect, not a loop-able retry. Fast-fail
+                                // through the same teardown → picker + dialog path
+                                // rather than a silent cleanup.
+                                self.log.write("credential reply failed (rc \(rc)) — fatal connect; teardown → picker")
+                                self.failConnectFatal(
+                                    s, op, message: "The connection was lost during authentication.")
                             }
                         }
                     }
@@ -1155,6 +1178,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                         engineIsQuiescent: false))
                 }
             }
+        }
+    }
+
+    /// Issue #35: a connect attempt hit a FATAL ssh transport error — the child
+    /// closed (login-grace timeout / broken pipe / connection reset) and the
+    /// engine surfaced that as a credential prompt, OR a credential reply raised.
+    /// We must NOT re-prompt. Tear the half-open preconnection down
+    /// (`connection_cancel` reaps the ssh child) and — only once the cancel is
+    /// ACKNOWLEDGED (status 0), proving no connection was established and the
+    /// engine is quiescent — return to the profile picker with an error dialog.
+    /// A cancel that cannot prove quiescence routes to restart-required instead
+    /// (the runtime may be contaminated). The op lease + a re-armed watchdog are
+    /// retained across the cancel so a wedged cancel still resolves (the
+    /// finding-2 cancel pattern). Presentation and destination FOLLOW the
+    /// coordinator's quiescence decision; the dialog never decides it.
+    private func failConnectFatal(_ s: SessionID, _ op: OperationID, message: String) {
+        guard pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
+        armConnectWatchdog()   // cover a wedged cancel
+        connectQueue.async { [weak self] in
+            let status = unison_bridge_connection_cancel()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else {
+                    self.log.write("connect fatal cancel (\(s)/\(op)) -> \(status) after invalidation — ignored")
+                    return
+                }
+                self.pendingConnect = nil
+                self.disarmConnectWatchdog()
+                let profile = self.profileBySession[s]
+                if status == 0 {
+                    // Quiescent: no connection established. Tear the "Opening…"
+                    // window down, idle the coordinator, return to the picker,
+                    // THEN present the error over the picker.
+                    if let w = self.windowBySession[s] {
+                        w.window?.delegate = nil
+                        self.windowBySession[s] = nil
+                        self.profileBySession[s] = nil
+                        w.close()
+                    }
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: message, engineIsQuiescent: true))
+                    self.showProfilePicker(select: profile)
+                    self.presentConnectErrorDialog(message: message, profile: profile)
+                } else {
+                    self.log.write("connect fatal cancel (\(s)/\(op)) failed status \(status) — restart required")
+                    self.run(self.engine.operationFailed(
+                        s, op, reason: message, engineIsQuiescent: false))
+                }
+            }
+        }
+    }
+
+    /// Modal OK dialog for a fatal connect failure (issue #35). Anchored to the
+    /// profile picker when present, else app-modal. Purely presentation: the
+    /// engine state and destination were already decided by the coordinator, so
+    /// this dialog only informs — it does not decide quiescence.
+    private func presentConnectErrorDialog(message: String, profile: String?) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = profile.map { "Couldn’t connect to “\($0)”." }
+            ?? "Couldn’t connect to the remote."
+        let tail = "The connection closed before it could be established. "
+            + "Returning to the profile list."
+        alert.informativeText = message.isEmpty ? tail : "\(message)\n\n\(tail)"
+        alert.addButton(withTitle: "OK")
+        if let anchor = profileWindowController?.window {
+            alert.beginSheetModal(for: anchor) { _ in }
+        } else {
+            alert.runModal()
         }
     }
 
