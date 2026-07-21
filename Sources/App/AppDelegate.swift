@@ -106,7 +106,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// completion callback. Never "whatever op is active now". Not cleared
     /// on abandon — the terminal callback still owns the lease.
     private var pendingConnect: (SessionID, OperationID)?
-    private var pendingScan: (SessionID, OperationID)?
+    /// Assigning/clearing this slot is the single choke point for the init2/scan
+    /// stall detector (issue #24): assigning a scan op arms it (remote scans
+    /// only); clearing it — on success, failure, take-in-flight, or stall fire —
+    /// disarms it. Crucially, `abandon()` does NOT clear this slot (abandonment
+    /// is not idleness: the coordinator keeps the `.scanning(s,op)` phase), so the
+    /// detector is RETAINED across UI abandonment and still fires
+    /// `operationFailed` for the exact op → restart-required. Routing arm/disarm
+    /// through `didSet` covers every existing `pendingScan = …` site.
+    private var pendingScan: (SessionID, OperationID)? {
+        didSet {
+            if let (s, op) = pendingScan {
+                if scanIsRemote { scanStall.arm(s, op) }
+            } else {
+                scanStall.disarm()
+            }
+        }
+    }
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
     /// The session whose successful Ignore is awaiting its dedicated completion.
@@ -378,9 +394,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Same contract as init1: on success installInit2CompleteHandler fires
         // later; a non-OK status means the scan raised on dispatch and that
         // completion will never arrive, so route the failure immediately (with
-        // quiescence UNproven → coordinator restart). No watchdog change here:
-        // scan-phase no-progress is already covered by the 45s stall detector,
-        // and this failure fires synchronously off the returned status.
+        // quiescence UNproven → coordinator restart). That handles a scan that
+        // fails to LAUNCH; a scan that launches but then wedges on a dead/wedged
+        // transport (issue #24) is covered separately by the init2 scan stall
+        // detector, armed for remote scans via `pendingScan.didSet`. (The 45s
+        // stall detector in ReconcileWindowController covers only the SYNC/
+        // transfer phase, NOT this scan phase — the earlier comment claiming it
+        // did was wrong.)
         connectQueue.async { [weak self] in
             let status = unison_bridge_init2()
             guard status != UNISON_BRIDGE_OK else { return }
@@ -690,6 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.noteConnectProgress()
+                self.noteScanProgress()   // issue #24: scan status resets the scan stall timer (no-op outside .scanning)
                 if let s = self.engine.currentSession, self.engine.isVisible(s) {
                     self.windowBySession[s]?.updateScanStatus(msg)
                 }
@@ -744,6 +765,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.log.write("dropping init1 completion — no pending connect"); return
             }
             self.log.write("init1 complete (needs_prompt=\(needsPrompt)) \(s)/\(op)")
+            // `needs_prompt` is true iff a remote preconnection was walked, so it
+            // is the reliable remote-vs-local signal for this connect (the else
+            // branch finalizes `.local`). The scan stall detector (issue #24) is
+            // remote-only, so record it before the scan starts.
+            self.scanIsRemote = needsPrompt
             // init1 loaded the profile; restore any one-shot ignorearchives .prf.
             self.restoreIgnoreArchivesPrfIfNeeded()
             if needsPrompt {
@@ -1108,6 +1134,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// generous value works for every profile without a per-profile knob.
     private let connectStallTimeout: TimeInterval = 60
 
+    /// Init2/scan stall detector (issue #24). The connect watchdog is disarmed
+    /// once `connection_end` returns; the scan (`init2`, update detection) that
+    /// follows is otherwise un-timed, so a connection whose transport dies or
+    /// freezes after auth (verified via a controlled frozen-remote proxy) hangs
+    /// the `.scanning` phase with no automatic recovery. This is a no-progress
+    /// timer bound to the exact scan `(SessionID, OperationID)`: armed when a
+    /// REMOTE scan starts, reset on scan-status delivery, and on expiry it fails
+    /// the op with quiescence UNPROVEN → coordinator restart-required. Local
+    /// scans never arm it (`scanIsRemote`); it uses the monotonic
+    /// `DispatchQueue.main.asyncAfter` clock.
+    /// True iff the current/last connect established a REMOTE session (a
+    /// preconnection was walked — the `needs_prompt` path; the else branch
+    /// finalizes `.local`). Set in the init1 completion handler; gates the scan
+    /// stall detector to remote scans so a fast local scan can never trip it.
+    private var scanIsRemote = false
+    /// Conservative bound: a wedged remote scan recovers within this window,
+    /// while a valid large/slow scan that keeps delivering status is never
+    /// false-failed (every status resets the timer).
+    private let scanStallTimeout: TimeInterval = 120
+    /// The detector instance. Armed/reset/disarmed via `pendingScan.didSet` and
+    /// `noteScanProgress`; on expiry it routes the exact scan op to
+    /// restart-required through `handleScanStall`.
+    private lazy var scanStall = ScanStallTimer(timeout: scanStallTimeout) { [weak self] s, op in
+        self?.handleScanStall(s, op)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.write("applicationDidFinishLaunching start")
 
@@ -1302,13 +1354,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     // MARK: - Connect attempt lifecycle (watchdog)
     //
-    // `driveBeginConnect` arms the watchdog when a connect actually starts.
-    // The watchdog covers ONLY the connect phase (init1 + the credential
-    // prompt fetch); it's disarmed before init2. Update detection can run
-    // silently for a long time on a large remote tree, so watchdogging it
-    // would false-fire, and the timeout poking the engine mid-scan is unsafe
-    // (it can trip an `update.ml` assertion or an Lwt "wakeup"). A hung scan
-    // is instead handled by off-main init2 + the Stop button.
+    // Two independent, complementary detectors cover the connect/scan path:
+    //
+    //   1. This connect watchdog covers ONLY the connect phase (init1 + the
+    //      credential prompt fetch); it's disarmed at `connection_end`, before
+    //      init2 begins. It never pokes the engine mid-scan (that could trip
+    //      an `update.ml` assertion or an Lwt "wakeup").
+    //
+    //   2. `ScanStallTimer` (armed via `pendingScan.didSet`) covers the
+    //      init2/scan phase — the first server round-trip, where a
+    //      post-authentication transport stall wedges (issue #24). It is
+    //      remote-only (local scans can't stall on a transport) and
+    //      operation-bound to the exact (SessionID, OperationID); it resets on
+    //      each scan status message and fires after `scanStallTimeout` of no
+    //      progress. On fire it drives `operationFailed(engineIsQuiescent:
+    //      false)`, which transitions the coordinator to `.restartRequired`
+    //      (the wedged in-process op cannot be safely unwound — quit + reopen
+    //      is the recovery). The detector is deliberately retained across UI
+    //      abandonment (Stop), so it still fires for a session the user has
+    //      already returned to the picker on.
 
     /// (Re)schedule the watchdog for the current connect op. Replaces any
     /// existing timer, so callers can use it both to reset the clock at each
@@ -1347,6 +1411,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             s, op,
             reason: "Couldn’t connect to the remote (no progress for "
                 + "\(Int(connectStallTimeout)) seconds). The connection may be wedged — "
+                + "quit Unison and reopen the profile.",
+            engineIsQuiescent: false))
+    }
+
+    // MARK: - Init2/scan stall detector (issue #24)
+
+    /// Reset the scan stall timer on scan-specific progress. No-op unless a
+    /// remote scan is pending, so unrelated bridge status (connect-phase or
+    /// sync) can never reset it (`ScanStallTimer.reset()` is itself a no-op when
+    /// not armed).
+    private func noteScanProgress() {
+        guard pendingScan != nil, scanIsRemote else { return }
+        scanStall.reset()
+    }
+
+    /// The scan made no progress for `scanStallTimeout`. The transport is dead or
+    /// wedged and the init2 worker cannot be proven unwound, so fail the EXACT
+    /// scan op with quiescence UNPROVEN → the coordinator enters restart-required
+    /// (never a premature idle / next-profile open). Exact-(s,op) guarded: a
+    /// stale/duplicate expiry for a scan that already ended matches nothing and
+    /// is a no-op. Because `abandon()` keeps the `.scanning(s,op)` phase and does
+    /// not clear `pendingScan`, this still fires after UI abandonment and the
+    /// coordinator's `operationFailed` matches — so an abandoned wedged scan is
+    /// carried to restart-required rather than stranding a busy engine. Clearing
+    /// `pendingScan` also disarms (didSet) and blocks any late scan callback from
+    /// publishing stale results.
+    private func handleScanStall(_ s: SessionID, _ op: OperationID) {
+        guard pendingScan.map({ $0 == (s, op) }) ?? false else { return }
+        log.write("scan watchdog: \(s)/\(op) stalled \(Int(scanStallTimeout))s — restart required")
+        pendingScan = nil          // didSet → disarmScanStall()
+        run(engine.operationFailed(
+            s, op,
+            reason: "Couldn’t reach the remote (no scan progress for "
+                + "\(Int(scanStallTimeout)) seconds). The connection may be wedged — "
                 + "quit Unison and reopen the profile.",
             engineIsQuiescent: false))
     }

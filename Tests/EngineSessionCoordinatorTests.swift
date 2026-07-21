@@ -708,4 +708,70 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(c.isIdle)
         XCTAssertTrue(c.allowsDestructiveArchiveMutation)
     }
+
+    // MARK: - Issue #24: scan-stall terminal contract (detector → coordinator)
+
+    private func hasPresentScan(_ e: [Effect]) -> Bool {
+        e.contains { if case .presentScanResults = $0 { return true }; return false }
+    }
+    /// Drive to `.scanning` and return (session, scanOp) WITHOUT completing.
+    private func openToScanning(_ c: C, interactive: Bool = false) -> (C.SessionID, C.OperationID) {
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        return beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: interactive)))!
+    }
+
+    /// The detector's expiry routes through `operationFailed` on the exact scan
+    /// op with quiescence UNPROVEN → restart-required (never a premature idle).
+    func test_scanStallExpiry_onScanning_entersRestartRequired() {
+        let c = C()
+        let (s, scanOp) = openToScanning(c)
+        XCTAssertTrue(hasRestart(c.operationFailed(s, scanOp, reason: "scan stalled",
+                                                   engineIsQuiescent: false)))
+    }
+
+    /// A stale/wrong-operation expiry (op that isn't the current scan) is a no-op.
+    func test_scanStallExpiry_wrongOperation_isNoOp() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let (_, scanOp) = beginScan(c.connectFinished(s, connectOp, result: .remote(interactive: false)))!
+        // connectOp is not the scan op; firing it against `.scanning(scanOp)` matches nothing.
+        XCTAssertTrue(c.operationFailed(s, connectOp, reason: "stale", engineIsQuiescent: false).isEmpty)
+        _ = scanOp
+    }
+
+    /// A duplicate expiry after the first already reached restart-required is a no-op.
+    func test_scanStallExpiry_duplicate_isNoOp() {
+        let c = C()
+        let (s, scanOp) = openToScanning(c)
+        XCTAssertTrue(hasRestart(c.operationFailed(s, scanOp, reason: "stall", engineIsQuiescent: false)))
+        XCTAssertTrue(c.operationFailed(s, scanOp, reason: "stall again", engineIsQuiescent: false).isEmpty)
+    }
+
+    /// A late scan completion arriving AFTER restart-required cannot publish results.
+    func test_lateScanCompleted_afterRestartRequired_cannotPublish() {
+        let c = C()
+        let (s, scanOp) = openToScanning(c)
+        _ = c.operationFailed(s, scanOp, reason: "stall", engineIsQuiescent: false)   // → restartRequired
+        XCTAssertTrue(c.scanCompleted(s, scanOp).isEmpty, "no presentScanResults after restart-required")
+    }
+
+    /// Abandonment is not idleness: after Stop/close abandons a scanning op, the
+    /// op token is retained, so a later stall expiry still transitions to
+    /// restart-required (the same-process-after-Stop gate, at the reducer level).
+    func test_abandonDuringScanning_thenStallExpiry_reachesRestartRequired() {
+        let c = C()
+        let (s, scanOp) = openToScanning(c)
+        XCTAssertTrue(c.abandon(reason: "user hit Stop").isEmpty)   // deferred, phase stays .scanning
+        XCTAssertTrue(hasRestart(c.operationFailed(s, scanOp, reason: "scan stalled",
+                                                   engineIsQuiescent: false)))
+    }
+
+    /// A healthy scan that completes is unaffected — it reaches results, not restart.
+    func test_healthyScanCompleted_presentsResults_notRestart() {
+        let c = C()
+        let (s, scanOp) = openToScanning(c)
+        let e = c.scanCompleted(s, scanOp)
+        XCTAssertTrue(hasPresentScan(e))
+        XCTAssertFalse(hasRestart(e))
+    }
 }

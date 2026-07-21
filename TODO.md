@@ -5,6 +5,26 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
+- [ ] **True in-process interruption of a wedged engine op (issue #24 follow-up)** —
+      The init2/scan stall detector (`ScanStallTimer`; landed in the issue #24
+      draft PR) bounds a post-authentication transport wedge → restart-required
+      (120 s, reset on scan-status, operation-bound and retained across UI
+      abandonment). It is the *automatic* recovery. Two user-facing escape
+      hatches already work: while the modal credential sheet is up its **Cancel**
+      button is an in-app exit from credential entry (the sheet intentionally
+      disables the underlying toolbar only while it's showing — Cancel is not
+      blocked); and in the no-sheet wedge, **Stop** performs visible-session
+      abandonment and returns to the picker. Neither of those, however, unwinds
+      the already-issued engine operation. The genuinely unresolved limitation
+      is *true in-process interruption of an already-wedged engine op*:
+      `connection_cancel` cannot interrupt an op blocked on a round-trip on the
+      serial `connectQueue`, so the abandoned scan runs to completion (or stays
+      wedged) in the background regardless of the UI action. Real in-place
+      cancellation needs engine-level interruptibility / process isolation —
+      see the PR #9 note below. Also revisit the auth-*failure* interactive path
+      (confirm a wrong password re-prompts and never wedges post-submit —
+      TC11b).
+
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,
