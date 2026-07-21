@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>      /* KERN_PROC_PID + struct kinfo_proc — issue #35 */
+#include <sys/proc.h>        /* SZOMB — zombie-state detection for #35 */
 #include <time.h>
 
 /* Forward declarations for the exception-safe callback wrappers (Finding #6).
@@ -1035,6 +1037,43 @@ void unison_bridge_retire_child(pid_t pid) {
         g_child_count = w;
     }
     pthread_mutex_unlock(&g_child_mutex);
+}
+
+/* True if `pid` no longer names a live, non-zombie process: it is gone (sysctl
+ * reports ESRCH / no record) or a zombie awaiting reap (p_stat == SZOMB). Uses
+ * sysctl rather than kill(pid, 0) precisely because a just-exited-but-unreaped
+ * child is a zombie that kill(pid, 0) still reports as alive — the exact state
+ * a login-grace-timed-out ssh child is in while OCaml's prompt reader has not
+ * yet waitpid'd it. Never reaps. On any unexpected sysctl error other than
+ * "no such process", errs conservative and reports NOT terminated, so we never
+ * fabricate terminal evidence. Caller must hold g_child_mutex. */
+static bool pid_terminated_locked(pid_t pid) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0) {
+        return errno == ESRCH || errno == ENOENT;   /* gone */
+    }
+    if (len == 0) return true;                       /* no record → gone */
+    return kp.kp_proc.p_stat == SZOMB;               /* zombie → terminated */
+}
+
+/* Terminal evidence for the connect prompt loop (issue #35): the transport
+ * (ssh) child has gone away. Returns 1 iff at least one child is tracked AND
+ * every tracked child has terminated (gone or zombie); 0 if any tracked child
+ * is still live, or if none is tracked (no evidence either way). "All" rather
+ * than "any" so a transient multi-child state is never misjudged as fatal;
+ * during a connect there is exactly one transport child, so all == any there.
+ * Never reaps. */
+int unison_bridge_transport_child_terminated(void) {
+    pthread_mutex_lock(&g_child_mutex);
+    int count = g_child_count;
+    bool all_terminated = (count > 0);
+    for (int i = 0; i < count; i++) {
+        if (!pid_terminated_locked(g_children[i])) { all_terminated = false; break; }
+    }
+    pthread_mutex_unlock(&g_child_mutex);
+    return all_terminated ? 1 : 0;
 }
 
 /* Pure-C shutdown reaper. Enters the `closing` state and SIGKILLs every

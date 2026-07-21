@@ -29,6 +29,17 @@ void unison_bridge_shutdown(void);
 void unison_bridge_track_child(pid_t pid);
 void unison_bridge_retire_child(pid_t pid);
 int  unison_bridge_reap_transport_children(void);
+/* Terminal evidence for the connect prompt loop (issue #35). Returns 1 iff at
+ * least one transport (ssh) child is tracked AND every tracked child has
+ * terminated — gone, or a zombie awaiting reap. Returns 0 if any tracked child
+ * is still live, or if none is tracked (no evidence). Uses sysctl (not
+ * kill(pid,0)) so a just-exited-but-unreaped child is correctly seen as
+ * terminated. Never reaps — OCaml owns waitpid on its transport child. A
+ * credential "prompt" arriving while this is true is post-mortem ssh output
+ * (login-grace timeout, broken pipe, connection closed), NOT a real credential
+ * request, and must not be re-presented as a password prompt. Defined in all
+ * configs (runtime code, unlike the Debug-only test helpers below). */
+int  unison_bridge_transport_child_terminated(void);
 /* Declared unconditionally so every target/config sees the prototype; only
  * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls them,
  * so a Release build links fine with no definition and the symbols are absent. */

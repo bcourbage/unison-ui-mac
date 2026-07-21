@@ -62,6 +62,21 @@ section at the bottom so this list stays scannable.
       subsequent correct password authenticates and completes the scan normally;
       no post-submit wedge. No further action unless that regresses.
 
+      **Fatal-ssh-as-prompt (issue #35) — DONE.** A fatal transport error
+      (login-grace timeout → broken pipe / connection closed) that the engine
+      surfaces through the credential-prompt channel is no longer re-presented as
+      a password sheet: `ConnectPromptClassifier` classifies it — authoritative
+      terminal evidence is `unison_bridge_transport_child_terminated()` (the
+      tracked ssh child gone/zombie, via sysctl `SZOMB`, not kill(pid,0)), with a
+      conservative fatal-string list only as a supplement — and `failConnectFatal`
+      tears the half-open preconnection down (`connection_cancel` reaps the
+      child) and, only once the cancel is ACKNOWLEDGED (engine quiescent),
+      returns to the picker with a modal OK dialog. A cancel that can't prove
+      quiescence still routes to restart-required. Known residual: the string
+      supplement is heuristic (backstopped by the child-exit signal); a fatal
+      occurring after a connection is partly established is handled by the
+      cancel-status gate (non-zero → restart-required), not assumed quiescent.
+
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
       `ArchiveCleanup`, `ArchiveRecovery`, `ProfileDocument`,

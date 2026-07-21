@@ -184,4 +184,61 @@ final class TransportChildReaperTests: XCTestCase {
             if let i = spawned.firstIndex(of: unrelated) { spawned.remove(at: i) }
         }
     }
+
+    // MARK: terminal-evidence predicate (issue #35)
+
+    /// Reap `pid` (removing it from `spawned`) so a zombie doesn't linger.
+    private func hardReap(_ pid: pid_t) {
+        var st: Int32 = 0
+        _ = waitpid(pid, &st, 0)
+        if let i = spawned.firstIndex(of: pid) { spawned.remove(at: i) }
+    }
+
+    /// No tracked children → no evidence either way → 0.
+    func test_terminated_noChildren_isZero() {
+        XCTAssertEqual(unison_bridge_transport_child_terminated(), 0)
+    }
+
+    /// A live tracked child is not terminated.
+    func test_terminated_liveChild_isZero() {
+        let pid = spawnSleeper()
+        unison_bridge_track_child(pid)
+        XCTAssertEqual(unison_bridge_transport_child_terminated(), 0,
+                       "a running ssh child must not read as terminated")
+    }
+
+    /// A killed-but-unreaped child is a ZOMBIE: kill(pid,0) still reports it as
+    /// alive, but the sysctl-based predicate correctly sees it as terminated.
+    /// This is the exact state a login-grace-timed-out ssh child is in when the
+    /// engine surfaces its post-mortem output as a "prompt" (issue #35).
+    func test_terminated_zombieChild_isOne_whereKillZeroIsFooled() {
+        let pid = spawnSleeper()
+        unison_bridge_track_child(pid)
+        kill(pid, SIGKILL)            // exits, but we deliberately do NOT waitpid
+        // Allow the kernel to transition it to zombie, then assert.
+        var terminated = false
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            if unison_bridge_transport_child_terminated() != 0 { terminated = true; break }
+            usleep(10_000)
+        }
+        XCTAssertTrue(terminated, "a killed-unreaped (zombie) child must read as terminated")
+        XCTAssertTrue(isAlive(pid), "kill(pid,0) is fooled by a zombie — sysctl is why we don't use it")
+        hardReap(pid)
+    }
+
+    /// "All tracked terminated" semantics: one live + one zombie → NOT all
+    /// terminated → 0, so a transient multi-child state is never misjudged fatal.
+    func test_terminated_mixedLiveAndZombie_isZero() {
+        let live = spawnSleeper()
+        let dead = spawnSleeper()
+        unison_bridge_track_child(live)
+        unison_bridge_track_child(dead)
+        kill(dead, SIGKILL)
+        // Give `dead` time to become a zombie; `live` stays running.
+        usleep(200_000)
+        XCTAssertEqual(unison_bridge_transport_child_terminated(), 0,
+                       "not all tracked children terminated → 0")
+        hardReap(dead)
+    }
 }
