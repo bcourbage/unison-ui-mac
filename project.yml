@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.2.2"
-    CURRENT_PROJECT_VERSION: "12"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "13"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEAD_CODE_STRIPPING: NO
@@ -45,6 +45,12 @@ targets:
           fi
     sources:
       - path: Sources/App
+        # Never let a stray build/coverage artifact in the source dir leak into
+        # the .app bundle: xcodegen globs this directory wholesale, and an
+        # untracked `default.profraw` (LLVM coverage output from `make test`)
+        # was otherwise copied into Contents/Resources of a local package.
+        excludes:
+          - "**/*.profraw"
       - path: Sources/Bridge
       - path: Resources/AppIcon.icns
       # The rendered Unison reference manual. Lives in vendor/ rather
