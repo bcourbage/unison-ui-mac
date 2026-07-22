@@ -620,10 +620,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// profiles) don't stack duplicate alerts.
     private var restartAlertVisible = false
 
-    /// Application-level restart-required notice used when there is no
-    /// reconcile/waiting window to latch the message into. Anchored to the
-    /// picker when it's up, else app-modal. Offers Quit (the actual recovery)
-    /// and Later (dismiss) — Quit stays available either way.
+    /// The single modal restart-required notice (issue #35 correction 3): shown
+    /// for every `.restartRequired`, including when a reconcile/waiting window is
+    /// open, so a fatal/restart condition is never conveyed by inline text alone.
+    /// Offers Quit (the actual recovery) and Later (dismiss) — Quit stays
+    /// available either way. Deduplicated by `restartAlertVisible` so repeated
+    /// `.restartRequired` effects can't stack a second dialog.
+    ///
+    /// Anchor by VISIBILITY, not by mere existence (correction 1): the modal
+    /// attaches to a visible reconcile/waiting window if any, else a visible
+    /// picker, else app-modal. `profileWindowController` may still own a closed,
+    /// invisible picker window, so anchoring blindly to it would put the sheet on
+    /// a window the user cannot see.
     private func presentAppLevelRestartRequired(reason: String) {
         guard !restartAlertVisible else { return }
         restartAlertVisible = true
@@ -639,9 +647,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self?.restartAlertVisible = false
             if resp == .alertFirstButtonReturn { NSApp.terminate(nil) }
         }
-        if let anchor = profileWindowController?.window {
-            alert.beginSheetModal(for: anchor, completionHandler: handler)
-        } else {
+        // Ordered candidate windows: reconcile session windows, then the waiting
+        // window. The pure selector picks the first VISIBLE one.
+        let candidates: [NSWindow] = windowBySession.values.compactMap { $0.window }
+            + [waitingWindow?.controller.window].compactMap { $0 }
+        let pickerWindow = profileWindowController?.window
+        switch RestartModalAnchor.choose(
+            candidatesVisible: candidates.map { $0.isVisible },
+            pickerVisible: pickerWindow?.isVisible ?? false) {
+        case .window(let i):
+            alert.beginSheetModal(for: candidates[i], completionHandler: handler)
+        case .picker:
+            alert.beginSheetModal(for: pickerWindow!, completionHandler: handler)
+        case .appModal:
             handler(alert.runModal())
         }
     }
@@ -1254,8 +1272,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         alert.alertStyle = .warning
         alert.messageText = profile.map { "Couldn’t connect to “\($0)”." }
             ?? "Couldn’t connect to the remote."
-        let tail = "The connection closed before it could be established. "
-            + "Returning to the profile list."
+        // Neutral wording (correction 2): after acknowledgement the app may
+        // return to the picker OR continue a queued replacement, so the copy must
+        // not assert "Returning to the profile list." "The connection closed
+        // before it could be established." is true for both outcomes.
+        let tail = "The connection closed before it could be established."
         alert.informativeText = message.isEmpty ? tail : "\(message)\n\n\(tail)"
         alert.addButton(withTitle: "OK")
         alert.runModal()

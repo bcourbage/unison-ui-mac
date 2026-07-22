@@ -1617,12 +1617,29 @@ static void _ocaml_connection_cancel(void *user) {
     /* Nothing to cancel is a benign, idempotent success (the preconnection is
      * already gone) — status 0, so an abandoned connect with no live
      * preconnection still resolves cleanly. */
-    if (!g_has_preconn) { io->status = 0; return; }
-    const value *fn = caml_named_value("openConnectionCancel");
-    if (fn == NULL) { release_preconn(); io->status = -1; return; }
-    value r = caml_callback_exn(*fn, g_preconn);
-    release_preconn();                       /* release on every terminal path */
-    io->status = Is_exception_result(r) ? 2 : 0;
+    if (!g_has_preconn) {
+        io->status = 0;
+    } else {
+        const value *fn = caml_named_value("openConnectionCancel");
+        if (fn == NULL) {
+            release_preconn();
+            io->status = -1;
+        } else {
+            value r = caml_callback_exn(*fn, g_preconn);
+            release_preconn();               /* release on every terminal path */
+            io->status = Is_exception_result(r) ? 2 : 0;
+        }
+    }
+#ifdef UNISON_DEBUG_HOOKS
+    /* Issue #35 scenario-6 hook (Debug ONLY): drive the non-quiescent path by
+     * forcing the REPORTED cancel status to "failed" while the real cancel above
+     * still runs (so nothing leaks). Compiled out entirely in Release
+     * (UNISON_DEBUG_HOOKS is set only by project.yml's Debug config), so neither
+     * this behavior nor the env-var string exists in a Release binary and the
+     * hook is impossible to activate there. */
+    const char *force = getenv("UNISON_TEST_FORCE_CANCEL_FAIL");
+    if (force != NULL && force[0] == '1') { io->status = 2; }
+#endif
 }
 
 int unison_bridge_connection_cancel(void) {
