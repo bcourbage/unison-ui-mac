@@ -135,19 +135,20 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let detailsTextView = NSTextView()
     private let detailsScroll = NSScrollView()
 
-    /// Sync-phase stall detector (issue #6, steps 4–5). A wedged transport
-    /// (connection died mid-sync) can't be rescued in-process — closing
-    /// the connection or killing ssh doesn't wake a blocked `select()`, so
-    /// the sync hangs indefinitely. Instead of a false rescue, we detect
-    /// the stall (no progress for `syncStallTimeout`) and tell the user to
-    /// quit + reopen, which is the actual recovery (clean since #5 and the
-    /// step 1–3 teardown). Reset on every progress event; a healthy
-    /// transfer always emits something well within the window.
-    private var syncStallTimer: DispatchWorkItem?
+    /// Sync-phase no-progress detector (issues #6 / #34). Progress-callback
+    /// silence is NOT proof of a wedged transport — a healthy transfer of many
+    /// small files can be callback-sparse — so this detector is ADVISORY and
+    /// NON-fatal (issue #34): on expiry it shows an informational notice
+    /// (`SyncStallNotice`) and does NOT mutate coordinator/engine state or tell
+    /// the user to abort. It clears on the next progress event and on any sync
+    /// terminal. A real operation-bound liveness signal would need an engine
+    /// heartbeat (vendored-blob change) and is tracked as a post-release
+    /// follow-up. Reset on every progress event.
     private let syncStallTimeout: TimeInterval = 45
-    /// Set once the stall hint has been shown, so per-progress resets and
-    /// completion can tell whether to clear the warning styling.
-    private var syncStalled = false
+    private lazy var syncStall = SyncStallDetector(
+        timeout: syncStallTimeout,
+        onStall: { [weak self] in self?.showSyncStallNotice() },
+        onResume: { [weak self] in self?.clearSyncStallNotice() })
     private let toolbarDelegate = ReconcileToolbarDelegate()
     private(set) var isSyncing = false
     /// True when the user pressed Stop during the current sync. Read at
@@ -577,7 +578,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         setSummary(summaryText())
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: entering syncing UI")
-        noteSyncProgress()   // arm the stall detector for the transfer
+        syncStall.start()   // arm the advisory no-progress detector for the transfer
     }
 
     /// Toolbar "Profiles" action — return to the picker.
@@ -869,52 +870,45 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         noteSyncProgress()
     }
 
-    /// (Re)arm the sync-stall detector. Called at sync start and on every
-    /// progress event, so only genuine silence (a wedged transport) trips
-    /// it. If a prior stall warning was showing and progress resumed,
-    /// clear it.
+    /// Forward a progress event to the advisory detector. Called at sync start
+    /// and on every progress event; the detector clears a shown notice on resume
+    /// and re-arms.
     private func noteSyncProgress() {
         guard isSyncing else { return }
-        if syncStalled {
-            syncStalled = false
-            statusIcon.isHidden = true
-            setSummary(summaryText())
-        }
-        syncStallTimer?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.handleSyncStall() }
-        syncStallTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + syncStallTimeout, execute: item)
+        syncStall.noteProgress()
     }
 
     private func cancelSyncStallDetector() {
-        syncStallTimer?.cancel()
-        syncStallTimer = nil
-        syncStalled = false
+        syncStall.stop()
     }
 
-    /// No sync progress for `syncStallTimeout`. The transport is almost
-    /// certainly wedged on a dead connection, which can't be broken
-    /// in-process. Surface a warning telling the user how to recover
-    /// (quit + reopen) rather than leaving them at an endless spinner.
-    private func handleSyncStall() {
+    /// No sync progress observed for `syncStallTimeout` (issue #34). This is
+    /// ADVISORY and NON-fatal: callback silence is not evidence the transport is
+    /// wedged (a healthy many-small-file transfer can be callback-sparse). We do
+    /// NOT mutate coordinator/engine state and do NOT tell the user to abort —
+    /// just surface an informational notice that progress hasn't been observed
+    /// and the transfer may still be running. It clears on the next progress
+    /// event (`clearSyncStallNotice`) and on completion (`cancelSyncStallDetector`).
+    private func showSyncStallNotice() {
         guard isSyncing else { return }
-        syncStalled = true
-        Log.reconcile.notice("sync stalled — no progress for \(Int(self.syncStallTimeout))s; surfacing quit+reopen hint")
-        TraceLog.shared.write("ReconcileWindow: sync stalled \(Int(syncStallTimeout))s — connection likely wedged")
+        Log.reconcile.notice("sync: no progress observed for \(Int(self.syncStallTimeout))s — advisory notice (nonfatal; transfer may still be running)")
         // setSummary() clears completion emphasis (hides + nils statusIcon), so
-        // it MUST run before we install the warning icon — otherwise the icon
-        // is set and then immediately cleared and the user sees text with no
-        // triangle.
-        setSummary("Sync appears stuck: no progress for \(Int(syncStallTimeout)) seconds. "
-                   + "The remote connection was likely lost. Quit Unison and reopen the "
-                   + "profile to recover (a wedged transfer can't be stopped from here).")
+        // it MUST run before we install the attention icon — otherwise the icon
+        // is set and then immediately cleared.
+        setSummary(SyncStallNotice.message(seconds: Int(syncStallTimeout)))
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
         statusIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
-                                   accessibilityDescription: "stalled")?
+                                   accessibilityDescription: "no progress observed")?
             .withSymbolConfiguration(config)
         statusIcon.isHidden = false
+    }
+
+    /// Progress resumed after an advisory notice — clear it.
+    private func clearSyncStallNotice() {
+        statusIcon.isHidden = true
+        setSummary(summaryText())
     }
 
     /// Forwarded by AppDelegate's permanent reload-row handler for the live
