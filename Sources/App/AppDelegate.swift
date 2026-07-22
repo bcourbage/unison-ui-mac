@@ -603,17 +603,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // keeps no parallel "restartRequired" boolean, and each window latches
         // its own display-gating flag in `showRestartRequired`.
         log.write("engine restart required: \(reason)")
-        var shownSomewhere = false
-        for (_, w) in windowBySession { w.showRestartRequired(reason: reason); shownSomewhere = true }
-        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason); shownSomewhere = true }
-        // If no reconcile/waiting window exists — the user closed the window and
-        // is back at the picker (e.g. a background "Close and Let Run" sync then
-        // failed with uncertain quiescence) — the per-window latch above shows
-        // nothing, so a picker selection would appear to do nothing. Surface an
-        // application-level alert instead, while still allowing Quit.
-        if !shownSomewhere {
-            presentAppLevelRestartRequired(reason: reason)
-        }
+        for (_, w) in windowBySession { w.showRestartRequired(reason: reason) }
+        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason) }
+        // Always surface a modal notice, not only the inline window text (issue
+        // #35 correction 3): a fatal/restart condition must be unmissable even
+        // when a reconcile or waiting window is open. Deduplicated by
+        // `restartAlertVisible` so repeated `.restartRequired` effects (e.g. the
+        // user keeps picking profiles) never stack a second dialog. The inline
+        // latch above stays so the window still reflects the state behind/after
+        // the modal (e.g. if the user chooses "Later").
+        presentAppLevelRestartRequired(reason: reason)
     }
 
     /// True while the app-level restart-required alert is on screen, so
@@ -621,10 +620,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// profiles) don't stack duplicate alerts.
     private var restartAlertVisible = false
 
-    /// Application-level restart-required notice used when there is no
-    /// reconcile/waiting window to latch the message into. Anchored to the
-    /// picker when it's up, else app-modal. Offers Quit (the actual recovery)
-    /// and Later (dismiss) — Quit stays available either way.
+    /// The single modal restart-required notice (issue #35 correction 3): shown
+    /// for every `.restartRequired`, including when a reconcile/waiting window is
+    /// open, so a fatal/restart condition is never conveyed by inline text alone.
+    /// Offers Quit (the actual recovery) and Later (dismiss) — Quit stays
+    /// available either way. Deduplicated by `restartAlertVisible` so repeated
+    /// `.restartRequired` effects can't stack a second dialog.
+    ///
+    /// Anchor by VISIBILITY, not by mere existence (correction 1): the modal
+    /// attaches to a visible reconcile/waiting window if any, else a visible
+    /// picker, else app-modal. `profileWindowController` may still own a closed,
+    /// invisible picker window, so anchoring blindly to it would put the sheet on
+    /// a window the user cannot see.
     private func presentAppLevelRestartRequired(reason: String) {
         guard !restartAlertVisible else { return }
         restartAlertVisible = true
@@ -640,9 +647,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self?.restartAlertVisible = false
             if resp == .alertFirstButtonReturn { NSApp.terminate(nil) }
         }
-        if let anchor = profileWindowController?.window {
-            alert.beginSheetModal(for: anchor, completionHandler: handler)
-        } else {
+        // Ordered candidate windows: reconcile session windows, then the waiting
+        // window. The pure selector picks the first VISIBLE one.
+        let candidates: [NSWindow] = windowBySession.values.compactMap { $0.window }
+            + [waitingWindow?.controller.window].compactMap { $0 }
+        let pickerWindow = profileWindowController?.window
+        switch RestartModalAnchor.choose(
+            candidatesVisible: candidates.map { $0.isVisible },
+            pickerVisible: pickerWindow?.isVisible ?? false) {
+        case .window(let i):
+            alert.beginSheetModal(for: candidates[i], completionHandler: handler)
+        case .picker:
+            alert.beginSheetModal(for: pickerWindow!, completionHandler: handler)
+        case .appModal:
             handler(alert.runModal())
         }
     }
@@ -1208,20 +1225,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.disarmConnectWatchdog()
                 let profile = self.profileBySession[s]
                 if status == 0 {
-                    // Quiescent: no connection established. Tear the "Opening…"
-                    // window down, idle the coordinator, return to the picker,
-                    // THEN present the error over the picker.
+                    // Quiescent: no connection was established. Close the failed
+                    // "Opening…" window, then present the OLD attempt's fatal
+                    // notice EXACTLY ONCE and block on it (issue #35 correction
+                    // 2). Only AFTER the user acknowledges do we advance the
+                    // coordinator — so a queued replacement (the user's newer
+                    // intent) is promoted and shown VISIBLY, never started hidden
+                    // behind this dialog, and the picker is not reopened over it.
                     if let w = self.windowBySession[s] {
                         w.window?.delegate = nil
                         self.windowBySession[s] = nil
                         self.profileBySession[s] = nil
                         w.close()
                     }
+                    self.presentConnectFatalModal(message: message, profile: profile)
+                    // Post-acknowledgement: the coordinator promotes a queued open
+                    // (→ showSession + beginConnect for it) or idles. If it idled
+                    // (nothing queued, or the queued waiting window was closed
+                    // before now → no ownerless start), show the picker. If a
+                    // replacement was promoted, its own window is now up; do NOT
+                    // reopen the picker over it.
                     self.run(self.engine.operationFailed(
                         s, op, reason: message, engineIsQuiescent: true))
-                    self.showProfilePicker(select: profile)
-                    self.presentConnectErrorDialog(message: message, profile: profile)
+                    if self.engine.isIdle {
+                        self.showProfilePicker(select: profile)
+                    }
                 } else {
+                    // Teardown could not prove quiescence: route through the
+                    // coordinator to restart-required, which now surfaces a single
+                    // modal notice even with a window open (correction 3).
                     self.log.write("connect fatal cancel (\(s)/\(op)) failed status \(status) — restart required")
                     self.run(self.engine.operationFailed(
                         s, op, reason: message, engineIsQuiescent: false))
@@ -1230,24 +1262,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
-    /// Modal OK dialog for a fatal connect failure (issue #35). Anchored to the
-    /// profile picker when present, else app-modal. Purely presentation: the
-    /// engine state and destination were already decided by the coordinator, so
-    /// this dialog only informs — it does not decide quiescence.
-    private func presentConnectErrorDialog(message: String, profile: String?) {
+    /// Modal OK dialog for a fatal connect failure (issue #35). Synchronous
+    /// (`runModal`) on purpose: the caller must present it EXACTLY ONCE and only
+    /// continue — idle to the picker, or promote a queued replacement — after the
+    /// user acknowledges. Purely presentation: the engine state and destination
+    /// are decided by the coordinator; this dialog only informs.
+    private func presentConnectFatalModal(message: String, profile: String?) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = profile.map { "Couldn’t connect to “\($0)”." }
             ?? "Couldn’t connect to the remote."
-        let tail = "The connection closed before it could be established. "
-            + "Returning to the profile list."
+        // Neutral wording (correction 2): after acknowledgement the app may
+        // return to the picker OR continue a queued replacement, so the copy must
+        // not assert "Returning to the profile list." "The connection closed
+        // before it could be established." is true for both outcomes.
+        let tail = "The connection closed before it could be established."
         alert.informativeText = message.isEmpty ? tail : "\(message)\n\n\(tail)"
         alert.addButton(withTitle: "OK")
-        if let anchor = profileWindowController?.window {
-            alert.beginSheetModal(for: anchor) { _ in }
-        } else {
-            alert.runModal()
-        }
+        alert.runModal()
     }
 
     /// A `connection_end` that returned status 0 AFTER its connect op was

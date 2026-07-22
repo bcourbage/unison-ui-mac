@@ -14,22 +14,27 @@ import Foundation
 /// child-exit / transport status is the authority, string matching only a
 /// supplement):
 ///   1. `transportTerminated` (the tracked ssh child has gone/zombied) is
-///      authoritative: any prompt arriving now is post-mortem output → `.fatal`.
-///   2. A host-key authenticity yes/no question → `.hostKeyQuestion` (an
+///      authoritative: any prompt arriving now is post-mortem output → `.fatal`,
+///      no matter what the string looks like.
+///   2. An UNMISTAKABLE ssh transport-failure phrase → `.fatal`. Checked BEFORE
+///      any credential heuristic, so a stray "password" substring inside a fatal
+///      message (e.g. an auth-method list) can never flip it back to a prompt.
+///      The phrase list is deliberately precise: only strings that cannot occur
+///      in a real credential/host-key prompt.
+///   3. A host-key authenticity yes/no question → `.hostKeyQuestion` (an
 ///      editable, non-secure response — preserves the legacy behavior).
-///   3. A string that positively reads as a credential request ("password",
-///      "passphrase", a verification/one-time code) → `.credential`, so a
-///      legitimate wrong-password RE-PROMPT is never mistaken for a fatal.
-///   4. A string that clearly reads as an ssh transport failure (and did NOT
-///      read as a credential request) → `.fatal` — the supplement, covering the
-///      brief window before the child registers as terminated.
-///   5. Anything else → `.credential` (display verbatim), preserving today's
-///      behavior for anything not positively identified as fatal.
+///   4. Everything else → `.credential`, shown verbatim. This preserves genuine
+///      password / passphrase / MFA / keyboard-interactive / PAM prompts (e.g.
+///      "Approve this connection to …") and the wrong-password RE-PROMPT, none
+///      of which we need to positively enumerate: anything not proven fatal or a
+///      host-key question is safe to present as a prompt.
 ///
-/// Deliberately NOT treated as fatal here: "Permission denied, please try
-/// again." — that precedes a genuine re-prompt. True auth exhaustion makes ssh
-/// EXIT, which rule 1 catches via the terminated child; we never need to guess
-/// it from the string.
+/// Deliberately NOT fatal here: "Permission denied, please try again." — that
+/// precedes a genuine re-prompt. True auth exhaustion makes ssh EXIT, which
+/// rule 1 catches via the terminated child; we never guess it from the string.
+/// The former overly broad "connection to " marker was removed precisely
+/// because it matched benign keyboard-interactive text like "Approve this
+/// connection to …".
 enum ConnectPromptClassifier {
 
     enum Verdict: Equatable {
@@ -47,42 +52,31 @@ enum ConnectPromptClassifier {
             return .fatal(reason: trimmed.isEmpty ? "The remote connection was lost." : trimmed)
         }
 
-        // 2. Host-key yes/no question (matches PasswordSheet's own heuristic).
-        if lower.contains("authenticity")
-            || lower.contains("(yes/no")
-            || lower.contains("yes/no)") {
-            return .hostKeyQuestion
-        }
-
-        // 3. A positive credential request — never let the fatal supplement
-        //    swallow a legitimate re-prompt.
-        if looksLikeCredentialRequest(lower) {
-            return .credential
-        }
-
-        // 4. Supplemental: an unmistakable ssh transport failure.
+        // 2. Unmistakable transport failure — checked before any credential
+        //    consideration so a "password" substring cannot suppress it.
         if isFatalTransportText(lower) {
             return .fatal(reason: trimmed)
         }
 
-        // 5. Default: display verbatim as a credential prompt.
+        // 3. Host-key yes/no question (matches PasswordSheet's own heuristic).
+        if isHostKeyQuestion(lower) {
+            return .hostKeyQuestion
+        }
+
+        // 4. Default: present verbatim as a credential prompt.
         return .credential
     }
 
-    /// A prompt that positively asks for a secret the user can type.
-    private static func looksLikeCredentialRequest(_ lower: String) -> Bool {
-        // Deliberately specific multi-word markers: a bare short token like
-        // "otp" could appear inside a hostname in a fatal string and wrongly
-        // suppress the fatal verdict.
-        return lower.contains("password")
-            || lower.contains("passphrase")
-            || lower.contains("verification code")
-            || lower.contains("one-time password")
-            || lower.contains("authentication code")
+    private static func isHostKeyQuestion(_ lower: String) -> Bool {
+        return lower.contains("authenticity")
+            || lower.contains("(yes/no")
+            || lower.contains("yes/no)")
     }
 
-    /// ssh terminal output that means the transport died — never part of a
-    /// genuine credential prompt. Kept conservative on purpose.
+    /// ssh terminal output that means the transport died or was refused — none
+    /// of these can appear in a genuine credential or host-key prompt. Kept
+    /// precise on purpose (no generic "connection to " / "port 22" substrings,
+    /// which also match benign keyboard-interactive prompts).
     private static func isFatalTransportText(_ lower: String) -> Bool {
         let markers = [
             "broken pipe",
@@ -90,13 +84,13 @@ enum ConnectPromptClassifier {
             "connection reset",
             "connection refused",
             "connection timed out",
-            "connection to ",
             "ssh_dispatch_run_fatal",
+            "ssh_exchange_identification",
             "kex_exchange_identification",
             "no route to host",
+            "network is unreachable",
             "host key verification failed",
             "remote host identification has changed",
-            "network is unreachable",
             "operation timed out",
         ]
         return markers.contains { lower.contains($0) }

@@ -113,4 +113,57 @@ final class ConnectPromptClassifierTests: XCTestCase {
                 prompt: "Please authenticate:", transportTerminated: false),
             .credential)
     }
+
+    // MARK: corrections (issue #35 correction 1)
+
+    /// Keyboard-interactive / PAM text containing "connection to …" must NOT be
+    /// classified fatal — this is the regression the removed "connection to "
+    /// marker would have caused. It's a live prompt the user answers.
+    func test_pamApproveConnection_isCredential_notFatal() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Approve this connection to gateway.example.com from 10.0.0.5?",
+                transportTerminated: false),
+            .credential)
+    }
+
+    /// A Duo-style keyboard-interactive MFA prompt is a credential prompt.
+    func test_keyboardInteractiveMFA_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Duo two-factor login for bcourbage\r\n\r\n"
+                    + "Enter a passcode or select one of the following options:\r\n1. Duo Push",
+                transportTerminated: false),
+            .credential)
+    }
+
+    /// Fatal text carrying auth-method names ("password", "keyboard-interactive")
+    /// must be fatal once the child terminated — terminal evidence is
+    /// authoritative and the substrings do not flip it to a credential prompt.
+    func test_permissionDeniedMethodList_terminated_isFatal() {
+        let prompt = "Permission denied (publickey,password,keyboard-interactive)."
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(prompt: prompt, transportTerminated: true),
+            .fatal(reason: prompt))
+    }
+
+    /// A generic "password" substring inside an UNMISTAKABLE fatal transport
+    /// message must not suppress the fatal verdict, even without terminal
+    /// evidence (fatal-transport is checked before any credential heuristic).
+    func test_fatalTransportWithPasswordSubstring_notSuppressed() {
+        let prompt = "packet_write_wait: Connection to 10.0.0.5 port 22: "
+            + "Broken pipe (while waiting for password)"
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(prompt: prompt, transportTerminated: false),
+            .fatal(reason: prompt))
+    }
+
+    /// ssh_exchange_identification failure (peer reset during banner) is fatal.
+    func test_sshExchangeIdentification_isFatal() {
+        guard case .fatal = ConnectPromptClassifier.classify(
+            prompt: "ssh_exchange_identification: read: Connection reset by peer",
+            transportTerminated: false) else {
+            return XCTFail("expected .fatal")
+        }
+    }
 }

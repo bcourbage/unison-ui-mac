@@ -110,6 +110,63 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(c.isIdle)
     }
 
+    // MARK: - Fatal connect recovery (issue #35 correction 2)
+
+    /// Quiescent fatal connect with a queued replacement promotes the queued
+    /// profile (the user's newer intent), not idle-to-picker.
+    func test_fatalConnect_quiescent_withQueued_promotesQueued() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        XCTAssertNotNil(waitingID(c.requestOpen(profile: "B")))   // queued while connecting
+        let e = c.operationFailed(s, connectOp, reason: "broken pipe", engineIsQuiescent: true)
+        XCTAssertNotNil(beginConnect(e))                          // B promoted → fresh connect
+        XCTAssertFalse(c.isIdle)
+    }
+
+    /// Quiescent fatal connect with nothing queued idles (caller shows picker).
+    func test_fatalConnect_quiescent_noQueue_idles() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let e = c.operationFailed(s, connectOp, reason: "broken pipe", engineIsQuiescent: true)
+        XCTAssertEqual(e, [])
+        XCTAssertTrue(c.isIdle)
+    }
+
+    /// A queued replacement CLOSED before the fatal completes must not start an
+    /// ownerless session: after cancel the coordinator idles, not promotes.
+    func test_fatalConnect_quiescent_queuedThenCancelled_idles() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        let reqID = waitingID(c.requestOpen(profile: "B"))!
+        _ = c.cancelQueuedOpen(reqID)                             // waiting window closed
+        let e = c.operationFailed(s, connectOp, reason: "broken pipe", engineIsQuiescent: true)
+        XCTAssertEqual(e, [])
+        XCTAssertTrue(c.isIdle)
+    }
+
+    /// Non-quiescent fatal connect goes to restart-required and drops any queue
+    /// (regardless of a pending replacement).
+    func test_fatalConnect_nonQuiescent_restartRequired_dropsQueue() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        _ = c.requestOpen(profile: "B")                          // queued
+        let e = c.operationFailed(s, connectOp, reason: "cancel failed", engineIsQuiescent: false)
+        XCTAssertTrue(hasRestart(e))
+        XCTAssertTrue(c.isRestartRequired)
+    }
+
+    /// A duplicate/stale fatal callback for an op that is no longer active is a
+    /// no-op — the coordinator never idles or promotes twice.
+    func test_fatalConnect_duplicateCallback_ignored() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        _ = c.operationFailed(s, connectOp, reason: "broken pipe", engineIsQuiescent: true)
+        XCTAssertTrue(c.isIdle)
+        let e = c.operationFailed(s, connectOp, reason: "broken pipe", engineIsQuiescent: true)
+        XCTAssertEqual(e, [])                                    // ignored: op no longer active
+        XCTAssertTrue(c.isIdle)
+    }
+
     // MARK: - 2b auth-cost policy
 
     func test_nonInteractive_closesOnSyncEnd_backToReady() {
