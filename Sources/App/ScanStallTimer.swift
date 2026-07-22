@@ -7,9 +7,15 @@ import Foundation
 /// connection whose transport dies or freezes *after* authentication hangs the
 /// `.scanning` phase. This timer bounds it: `arm`ed when a remote scan starts,
 /// `reset` on each scan-status delivery, `disarm`ed on any scan terminal, and on
-/// expiry it invokes `onFire` with the exact `(SessionID, OperationID)` — which
-/// the caller routes to `operationFailed(..., engineIsQuiescent: false)` →
-/// coordinator restart-required.
+/// expiry it invokes `onFire` with the exact `(SessionID, OperationID)`.
+///
+/// The `onFire` handler is PHASE-AWARE (issue #33, see `ScanStallPolicy`): it
+/// routes to `operationFailed(..., engineIsQuiescent: false)` → coordinator
+/// restart-required ONLY when the engine has signalled it is waiting on the
+/// remote round-trip; a stall still in the local-replica walk (e.g. a TCC
+/// pause) is not a remote wedge, so the handler keeps waiting without mutating
+/// coordinator state. This timer stays a pure no-progress clock; the fatal-vs-
+/// keep-waiting decision lives in the handler + `ScanStallPolicy`.
 ///
 /// Extracted from `AppDelegate` so the arm/reset/disarm/fire behavior is
 /// unit-testable with an injected scheduler (no real 120s waits). The default

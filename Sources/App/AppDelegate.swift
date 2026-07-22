@@ -182,12 +182,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var pendingScan: (SessionID, OperationID)? {
         didSet {
             if let (s, op) = pendingScan {
-                if scanIsRemote { scanStall.arm(s, op) }
+                if scanIsRemote {
+                    // New scan op: reset the phase flag. The op starts in the
+                    // local-replica walk; it only becomes "waiting on remote
+                    // transport" once the engine emits the remote-wait marker
+                    // (issue #33). Reset only on a genuinely new op so a
+                    // reset/re-arm of the same op keeps the phase.
+                    if oldValue.map({ $0 != (s, op) }) ?? true {
+                        scanSawRemoteWait = false
+                    }
+                    scanStall.arm(s, op)
+                }
             } else {
                 scanStall.disarm()
             }
         }
     }
+    /// Phase flag for the scan-stall policy (issue #33): set once the engine
+    /// signals it is waiting on the remote (local-replica walk complete). Only
+    /// then may a scan stall be treated as a fatal remote wedge; before it, a
+    /// stall is a local/TCC pause and must not mutate coordinator state. Reset
+    /// per scan op in `pendingScan.didSet`.
+    private var scanSawRemoteWait = false
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
     /// The session whose successful Ignore is awaiting its dedicated completion.
@@ -792,6 +808,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.noteConnectProgress()
+                // Issue #33: the engine emits this marker only after the local
+                // replica walk completes and it begins waiting on the remote
+                // round-trip. Latch it so a later stall is treated as a genuine
+                // remote wedge; before it, a stall is a local/TCC pause.
+                if ScanStallPolicy.marksRemoteWait(msg) { self.scanSawRemoteWait = true }
                 self.noteScanProgress()   // issue #24: scan status resets the scan stall timer (no-op outside .scanning)
                 if let s = self.engine.currentSession, self.engine.isVisible(s) {
                     self.windowBySession[s]?.updateScanStatus(msg)
@@ -1556,12 +1577,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     //      remote-only (local scans can't stall on a transport) and
     //      operation-bound to the exact (SessionID, OperationID); it resets on
     //      each scan status message and fires after `scanStallTimeout` of no
-    //      progress. On fire it drives `operationFailed(engineIsQuiescent:
-    //      false)`, which transitions the coordinator to `.restartRequired`
-    //      (the wedged in-process op cannot be safely unwound — quit + reopen
-    //      is the recovery). The detector is deliberately retained across UI
-    //      abandonment (Stop), so it still fires for a session the user has
-    //      already returned to the picker on.
+    //      progress. On fire it is PHASE-AWARE (issue #33, `ScanStallPolicy`):
+    //      it drives `operationFailed(engineIsQuiescent: false)` →
+    //      `.restartRequired` ONLY if the engine has signalled it is waiting on
+    //      the remote (the "Waiting for changes from server" marker, emitted
+    //      only after the local-replica walk completes). Otherwise the silence
+    //      is a local/TCC pause (e.g. a Photo Library prompt during the local
+    //      walk), which is NOT a remote wedge — the detector then does NOT touch
+    //      coordinator state; it just keeps waiting (re-arms). The detector is
+    //      deliberately retained across UI abandonment (Stop), so the fatal case
+    //      still fires for a session the user has already returned to the picker
+    //      on.
 
     /// (Re)schedule the watchdog for the current connect op. Replaces any
     /// existing timer, so callers can use it both to reset the clock at each
@@ -1628,14 +1654,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// publishing stale results.
     private func handleScanStall(_ s: SessionID, _ op: OperationID) {
         guard pendingScan.map({ $0 == (s, op) }) ?? false else { return }
-        log.write("scan watchdog: \(s)/\(op) stalled \(Int(scanStallTimeout))s — restart required")
-        pendingScan = nil          // didSet → disarmScanStall()
-        run(engine.operationFailed(
-            s, op,
-            reason: "Couldn’t reach the remote (no scan progress for "
-                + "\(Int(scanStallTimeout)) seconds). The connection may be wedged — "
-                + "quit Unison and reopen the profile.",
-            engineIsQuiescent: false))
+        switch ScanStallPolicy.actionOnStall(sawRemoteWait: scanSawRemoteWait) {
+        case .restartRequired:
+            // Reliable evidence the op is waiting on remote transport (the
+            // engine emitted the remote-wait marker, i.e. the local walk is
+            // done). Prolonged silence now is a wedged transport → fail the
+            // exact op with quiescence UNPROVEN → coordinator restart-required
+            // (issue #24 recovery). Fatal presentation follows the coordinator
+            // and uses the central modal (issue #35).
+            log.write("scan watchdog: \(s)/\(op) stalled \(Int(scanStallTimeout))s while waiting on remote — restart required")
+            pendingScan = nil          // didSet → disarmScanStall()
+            run(engine.operationFailed(
+                s, op,
+                reason: "Couldn’t reach the remote (no scan progress for "
+                    + "\(Int(scanStallTimeout)) seconds). The connection may be wedged — "
+                    + "quit Unison and reopen the profile.",
+                engineIsQuiescent: false))
+        case .keepWaiting:
+            // The op has NOT reached the remote-wait phase — this is a local
+            // replica walk that is slow or paused (most often a macOS TCC
+            // authorization prompt under a synced local root). Silence here is
+            // NOT a remote wedge (issue #33): do NOT mutate coordinator/engine
+            // state. Keep waiting — re-arm so a genuine remote wedge later still
+            // fires. A local-status message will reset it the moment the walk
+            // resumes.
+            log.write("scan watchdog: \(s)/\(op) silent \(Int(scanStallTimeout))s but not yet waiting on remote (local/TCC pause) — not fatal; continuing to wait")
+            scanStall.arm(s, op)
+        }
     }
 
     // MARK: - One-shot -ignorearchives recovery
