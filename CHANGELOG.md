@@ -9,11 +9,12 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
-## [0.3.0] — 2026-07-21
+## [0.3.0] — 2026-07-22
 
 A large reliability, data-integrity, and correctness release rolling up the
 post-0.2.2 engine-bridge hardening, the cumulative code-review remediation, and
-the post-authentication scan-stall fix.
+the connection-lifecycle stall/fatal-error fixes. (Build 14 supersedes the
+held build 13 with the connect/scan/sync stall fixes below.)
 
 ### Fixed
 - **OCaml GC-rooting in `reloadTable`** — callback results are now rooted across
@@ -40,6 +41,25 @@ the post-authentication scan-stall fix.
 - **Post-authentication scan-stall detector** (issue #24) — a remote transport
   that wedges during `init2`/scan is bounded (120 s, operation-bound) to a
   clear restart-required state instead of hanging in "Opening…".
+- **Fatal SSH errors during connect are no longer shown as a password
+  re-prompt** (issue #35) — a broken pipe / "connection closed" (e.g. after the
+  ssh login-grace timeout) is recognized as terminal via the ssh child's state,
+  not re-presented as another password sheet. Because no connection was
+  established the app returns to the profile picker with a single dismissible
+  error, instead of hanging in "Opening…" and demanding a restart. A cancel that
+  cannot prove the engine is quiescent still routes to restart-required, now
+  shown as a single modal even when a window is open.
+- **Scan-stall detection is phase-aware** (issue #33) — a stall is treated as a
+  wedged remote transport (fatal restart-required) only once the engine is
+  actually waiting on the remote round-trip. A slow local-replica walk or a
+  macOS TCC authorization prompt (e.g. a Photo Library under a synced local
+  root) no longer false-positives as a lost connection; the detector keeps
+  waiting without touching engine state.
+- **Sync-stall notice is advisory, not a false alarm** (issue #34) — during a
+  transfer, no-progress silence (common for many-small-file syncs) is reported
+  as an informational "no progress observed; the transfer may still be running"
+  notice that clears on resume, instead of claiming the connection was lost and
+  telling the user to quit. It never changes engine state.
 - **SSH version probe** — `StrictHostKeyChecking=yes` (never writes a host key),
   a real wall-clock deadline with terminate→kill→reap, and session-bound
   identity so a stale result cannot update a replacement profile.
@@ -73,12 +93,21 @@ the post-authentication scan-stall fix.
 - **L3 vendored-engine build provenance** (clean disposable worktree at a pinned
   base commit + machine-generated manifest) is **not implemented** — provenance
   is currently manual/documentary.
-- **Cross-process archive-mutation safety** and the **credential-reply watchdog**
-  gap are **deferred to a separate upcoming cycle**.
+- **Cross-process archive-mutation safety** is **deferred to a separate
+  upcoming cycle**. (The connect-phase credential/fatal-error handling is
+  addressed in this release; see issue #35 above.)
 - **True in-process interruption of a wedged/in-flight scan** remains open — the
   scan-stall detector plus quit/reopen is the recovery; `Stop` and the
   credential sheet's `Cancel` are visible-session abandonment, not an engine
   unwind.
+- **A real transport-liveness heartbeat** (superseding the advisory sync-stall
+  notice of #34 and the status-string proxy of #33) is **deferred** — it needs a
+  vendored-engine change. Until then the sync-stall notice stays advisory and
+  the scan-stall fatal path keys on the engine's "waiting on server" status.
+- **Returning to the profile picker is disabled during the connect phase**
+  (post-release UX polish; the navigation is intended always-available). A slow
+  or interactive connect must be exited via the credential sheet's Cancel, the
+  connect watchdog, or quitting.
 - The **vendored blob carries `LC_BUILD_VERSION minos 26.0`** (build-host
   metadata); this is cosmetic — the shipped executable is `minos 15.0` with no
   post-macOS-15 symbols. Optional provenance hygiene only.
