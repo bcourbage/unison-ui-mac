@@ -13,8 +13,9 @@ across releases per Apple's bundle-version rules.
 
 A large reliability, data-integrity, and correctness release rolling up the
 post-0.2.2 engine-bridge hardening, the cumulative code-review remediation, and
-the connection-lifecycle stall/fatal-error fixes. (Build 14 supersedes the
-held build 13 with the connect/scan/sync stall fixes below.)
+the connection-lifecycle stall/fatal-error fixes. (Build 15 supersedes build 14
+with a restart-message copy fix; build 14 superseded the held build 13 with the
+connect/scan/sync stall fixes below.)
 
 ### Fixed
 - **OCaml GC-rooting in `reloadTable`** — callback results are now rooted across
