@@ -1625,8 +1625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         run(engine.operationFailed(
             s, op,
             reason: "Couldn’t connect to the remote (no progress for "
-                + "\(Int(connectStallTimeout)) seconds). The connection may be wedged — "
-                + "quit Unison and reopen the profile.",
+                + "\(Int(connectStallTimeout)) seconds). The connection may be stuck.",
             engineIsQuiescent: false))
     }
 
@@ -1667,8 +1666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             run(engine.operationFailed(
                 s, op,
                 reason: "Couldn’t reach the remote (no scan progress for "
-                    + "\(Int(scanStallTimeout)) seconds). The connection may be wedged — "
-                    + "quit Unison and reopen the profile.",
+                    + "\(Int(scanStallTimeout)) seconds). The connection may be stuck.",
                 engineIsQuiescent: false))
         case .keepWaiting:
             // The op has NOT reached the remote-wait phase — this is a local
