@@ -2,7 +2,9 @@
 #
 # Mirrors ci.yml's build environment but builds the Release configuration,
 # packages the ad-hoc-signed .app with `ditto`, and attaches the zip to a
-# GitHub Release whose notes come from the matching CHANGELOG section.
+# GitHub Release whose notes come from `release-notes/<version>.md` when that
+# approved, version-specific file is present, otherwise from the matching
+# CHANGELOG section (fallback).
 #
 # This replaces the manual flow (`make build CONFIG=Release` → `ditto` →
 # `gh release create`). The Homebrew cask is NOT bumped here — the tap
@@ -129,20 +131,28 @@ jobs:
           echo "Built $zip"
           shasum -a 256 "$zip"
 
-      - name: Extract release notes from CHANGELOG
+      - name: Resolve release notes
         id: notes
         run: |
           v="${{ steps.ver.outputs.version }}"
-          # Lines between this version's `## [x.y.z]` header and the next
-          # `## [` header.
-          awk -v ver="$v" '
-            $0 ~ ("^## \\[" ver "\\]") {f=1; next}
-            /^## \[/ {f=0}
-            f
-          ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            echo "Release $v." > notes.md
-            echo "::warning::no CHANGELOG section for $v — using a stub note."
+          approved="release-notes/${v}.md"
+          if [ -s "$approved" ]; then
+            # Approved, version-specific release notes take precedence when
+            # present. Used verbatim — never rewritten here.
+            cp "$approved" notes.md
+            echo "Using approved release notes: $approved"
+          else
+            # Fallback: lines between this version's `## [x.y.z]` header and
+            # the next `## [` header in the CHANGELOG.
+            awk -v ver="$v" '
+              $0 ~ ("^## \\[" ver "\\]") {f=1; next}
+              /^## \[/ {f=0}
+              f
+            ' CHANGELOG.md > notes.md
+            if [ ! -s notes.md ]; then
+              echo "Release $v." > notes.md
+              echo "::warning::no approved notes and no CHANGELOG section for $v — using a stub note."
+            fi
           fi
 
       # Dry run (workflow_dispatch with dry_run=true): keep the artifact
