@@ -2,10 +2,13 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// Coordinator + harness integration coverage for the Phase 0 scan-interruption
-/// wiring (§7). These replay the EXACT `EngineSessionCoordinator` call sequence
-/// the driver performs in each phase, against a REAL coordinator, so they catch
-/// the token-identity defects that pure-harness tests cannot:
+/// Coordinator **contract** coverage for the Phase 0 scan-interruption wiring
+/// (§7). These do NOT execute the AppDelegate driver (no AppKit host); they
+/// replay the exact `EngineSessionCoordinator` call sequence the driver
+/// performs, against a REAL coordinator, and — for the driver's pending-slot
+/// selection — test the extracted pure `ScanInterruptRestartTarget.select`
+/// composed with the coordinator. Together these catch the token-identity
+/// defects that pure-harness tests cannot:
 ///
 /// - Blocker 1: a quarantine must fail the coordinator with the exact in-flight
 ///   token, or the coordinator stays stuck in `.scanning`.
@@ -173,6 +176,52 @@ final class ScanInterruptionCoordinatorTests: XCTestCase {
 
     private func b() -> H.Binding {
         .init(session: SID(raw: 1), op: OID(raw: 1), pid: 1, startSec: 0, startUsec: 0, armedAt: 0)
+    }
+
+    // MARK: - Pending-slot selection helper (the driver's quarantine choice)
+
+    func test_selectTarget_scanning_failsScanToken_leavesScanning() {
+        let (c, s, scanOp) = scanning()
+        let t = ScanInterruptRestartTarget.select(scan: (s, scanOp), connect: nil, close: nil)
+        XCTAssertEqual(t, .failOp(s, scanOp))
+        guard case .failOp(let fs, let fop) = t else { return XCTFail() }
+        XCTAssertTrue(hasRestart(c.operationFailed(fs, fop, reason: "", engineIsQuiescent: false)))
+        XCTAssertTrue(c.isRestartRequired)
+    }
+
+    func test_selectTarget_connect_failsConnectToken() {
+        // A replacement in the opening (connect) phase.
+        let c = Coord()
+        let e1 = c.requestOpen(profile: "p")
+        let (s, connectOp) = connectTok(e1)!
+        let t = ScanInterruptRestartTarget.select(scan: nil, connect: (s, connectOp), close: nil)
+        XCTAssertEqual(t, .failOp(s, connectOp))
+        guard case .failOp(let fs, let fop) = t else { return XCTFail() }
+        XCTAssertTrue(hasRestart(c.operationFailed(fs, fop, reason: "", engineIsQuiescent: false)))
+    }
+
+    func test_selectTarget_close_failsCloseToken() {
+        let (c, s, scanOp) = scanning()
+        let eClose = c.operationFailed(s, scanOp, reason: "", engineIsQuiescent: true)
+        let (cs, closeOp) = closeTok(eClose)!
+        _ = c.requestOpen(profile: "p")
+        let t = ScanInterruptRestartTarget.select(scan: nil, connect: nil, close: (cs, closeOp))
+        XCTAssertEqual(t, .failClose(cs, closeOp))
+        guard case .failClose(let fs, let fop) = t else { return XCTFail() }
+        XCTAssertTrue(hasRestart(c.closeCompleted(fs, fop, status: 998)))
+        XCTAssertTrue(c.isRestartRequired)
+    }
+
+    func test_selectTarget_priority_scanBeatsConnectBeatsClose() {
+        let s = SID(raw: 1), a = OID(raw: 1), b2 = OID(raw: 2), d = OID(raw: 3)
+        XCTAssertEqual(ScanInterruptRestartTarget.select(
+            scan: (s, a), connect: (s, b2), close: (s, d)), .failOp(s, a))
+        XCTAssertEqual(ScanInterruptRestartTarget.select(
+            scan: nil, connect: (s, b2), close: (s, d)), .failOp(s, b2))
+        XCTAssertEqual(ScanInterruptRestartTarget.select(
+            scan: nil, connect: nil, close: (s, d)), .failClose(s, d))
+        XCTAssertEqual(ScanInterruptRestartTarget.select(
+            scan: nil, connect: nil, close: nil), .abandon)
     }
 }
 #endif

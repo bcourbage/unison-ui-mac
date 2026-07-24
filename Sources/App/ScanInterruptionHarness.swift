@@ -289,4 +289,34 @@ final class ScanInterruptionHarness {
     /// Clear for the next cycle. The only exit from `quarantined`.
     func reset() { state = .idle }
 }
+
+/// Pure selection of the coordinator call the driver must make to force
+/// restart-required from whatever phase is currently in flight. Priority
+/// scan > connect > close mirrors the coordinator's phase order: the original
+/// scan token is failed while still scanning; after it is consumed the
+/// replacement connect/scan token is failed; a stuck close (no `operationFailed`
+/// entry) is escalated via a non-zero `closeCompleted`. Extracted so the
+/// driver's pending-slot selection is testable against a real coordinator
+/// without an AppKit harness.
+enum ScanInterruptRestartTarget: Equatable {
+    typealias SessionID = EngineSessionCoordinator.SessionID
+    typealias OperationID = EngineSessionCoordinator.OperationID
+
+    /// `operationFailed(session, op, engineIsQuiescent: false)` — a scanning or
+    /// opening (connect) phase.
+    case failOp(SessionID, OperationID)
+    /// `closeCompleted(session, op, status: <non-zero>)` — a stuck close.
+    case failClose(SessionID, OperationID)
+    /// No phase token in flight — fall back to `abandon`.
+    case abandon
+
+    static func select(scan: (SessionID, OperationID)?,
+                       connect: (SessionID, OperationID)?,
+                       close: (SessionID, OperationID)?) -> ScanInterruptRestartTarget {
+        if let (s, op) = scan { return .failOp(s, op) }
+        if let (s, op) = connect { return .failOp(s, op) }
+        if let (s, op) = close { return .failClose(s, op) }
+        return .abandon
+    }
+}
 #endif

@@ -395,3 +395,13 @@ the app + `TraceLog` (`scan-interrupt:` lines record signal outcome, terminal
 latency, reap state, and the close/reopen or quarantine decision) → repeat.
 Everything runs against the throwaway `.241` VM with disposable profiles, never
 Demeter. Debug launch via `open` for correct TCC attribution.
+
+**Deadlines.** The terminal-unwind and close phases use a 10 s bound. The
+replacement-scan phase uses a **no-progress** bound (default 120 s) that RESETS
+on every replacement scan-status message, so a legitimately long replacement
+scan (Case 2's multi-GB slow scan) is never falsely quarantined — only a
+genuine stall trips it. The bound is also overridable without rebuilding:
+
+```
+UNISON_SPIKE_REPLACEMENT_DEADLINE=600 open …/unison-ui-mac.app
+```

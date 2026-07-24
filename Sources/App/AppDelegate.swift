@@ -652,8 +652,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // interruption cycle (non-zero close, replacement init1/connect/scan
         // failure, or a replacement fatal routed normally), the harness must
         // quarantine so the cycle is never mistaken for success. Idempotent /
-        // no-op when the harness is idle/done/already-quarantined.
+        // no-op when the harness is idle/done/already-quarantined. Cancel any
+        // outstanding phase deadline so no stale work item lingers.
         scanInterruptHarness.noteCoordinatorRestart()
+        if scanInterruptHarness.isQuarantined { cancelScanInterruptDeadline() }
         #endif
         // Presentation only. The coordinator's `.restartRequired` phase is the
         // single source of truth (it refuses all new engine work); AppDelegate
@@ -855,6 +857,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // remote wedge; before it, a stall is a local/TCC pause.
                 if ScanStallPolicy.marksRemoteWait(msg) { self.scanSawRemoteWait = true }
                 self.noteScanProgress()   // issue #24: scan status resets the scan stall timer (no-op outside .scanning)
+                #if DEBUG
+                // Phase 0 spike: replacement scan-status is progress — reset the
+                // replacement deadline so a legitimately long replacement scan
+                // (Case 2) is not falsely quarantined. No-op unless reopening.
+                self.scanInterruptNoteReplacementProgress()
+                #endif
                 if let s = self.engine.currentSession, self.engine.isVisible(s) {
                     self.windowBySession[s]?.updateScanStatus(msg)
                 }
@@ -2483,6 +2491,14 @@ extension AppDelegate {
     /// Repeatable Debug trigger for the attended matrix (§17):
     ///     notifyutil -p net.courbage.unison-ui.debugInterruptScan
     func installScanInterruptTrigger() {
+        // Matrix-configurable WITHOUT rebuilding: the operator can widen the
+        // replacement no-progress bound via the environment before launch, e.g.
+        //   UNISON_SPIKE_REPLACEMENT_DEADLINE=600 open …/unison-ui-mac.app
+        if let v = ProcessInfo.processInfo.environment["UNISON_SPIKE_REPLACEMENT_DEADLINE"],
+           let seconds = TimeInterval(v), seconds > 0 {
+            scanInterruptReplacementDeadline = seconds
+            log.write("scan-interrupt: replacement deadline overridden to \(Int(seconds))s via env")
+        }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterAddObserver(
             center, Unmanaged.passUnretained(self).toOpaque(),
@@ -2646,29 +2662,36 @@ extension AppDelegate {
     /// Priority scan > connect > close mirrors the coordinator's phase order.
     private func enterScanInterruptQuarantine() {
         cancelScanInterruptDeadline()
-        if let (s, op) = pendingScan {
-            // Still scanning (original, pre-close) OR the replacement scan.
-            pendingScan = nil
-            log.write("scan-interrupt: quarantine → operationFailed(scan) \(s)/\(op)")
+        // Pure selection (tested against the coordinator) picks the phase-
+        // appropriate token; the driver clears the matching pending slot and
+        // performs the call.
+        switch ScanInterruptRestartTarget.select(
+                   scan: pendingScan, connect: pendingConnect, close: pendingClose) {
+        case .failOp(let s, let op):
+            pendingScan = nil; pendingConnect = nil
+            log.write("scan-interrupt: quarantine → operationFailed \(s)/\(op)")
             run(engine.operationFailed(s, op,
                                        reason: "scan interruption could not be confirmed quiescent",
                                        engineIsQuiescent: false))
-        } else if let (s, op) = pendingConnect {
-            pendingConnect = nil
-            log.write("scan-interrupt: quarantine → operationFailed(connect) \(s)/\(op)")
-            run(engine.operationFailed(s, op,
-                                       reason: "replacement connect did not complete",
-                                       engineIsQuiescent: false))
-        } else if let (s, op) = pendingClose {
-            // A stuck close has no operationFailed entry; drive a non-zero
-            // closeCompleted so the coordinator escalates to restart-required.
+        case .failClose(let s, let op):
+            // A stuck close has no operationFailed entry; a non-zero
+            // closeCompleted escalates the coordinator to restart-required.
             pendingClose = nil
             log.write("scan-interrupt: quarantine → closeCompleted(fail) \(s)/\(op)")
             run(engine.closeCompleted(s, op, status: 998))
-        } else {
+        case .abandon:
             log.write("scan-interrupt: quarantine → abandon (no phase token)")
             run(engine.abandon(reason: "scan interruption quarantine"))
         }
+    }
+
+    /// Reset the replacement-scan deadline on replacement scan-status progress
+    /// (§ matrix-validity fix): the bound is a NO-PROGRESS interval, not a total
+    /// cap, so a legitimately long replacement scan (Case 2's multi-GB slow
+    /// scan) is never falsely quarantined. Only active while reopening.
+    func scanInterruptNoteReplacementProgress() {
+        guard scanInterruptHarness.isReopening else { return }
+        armScanInterruptDeadline(scanInterruptReplacementDeadline)
     }
 }
 #endif
