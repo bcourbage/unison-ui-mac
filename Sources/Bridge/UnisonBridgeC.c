@@ -1076,6 +1076,77 @@ int unison_bridge_transport_child_terminated(void) {
     return all_terminated ? 1 : 0;
 }
 
+#if UNISON_DEBUG_HOOKS
+/* === Phase 0 scan-interruption spike (issue #24 follow-up) ===
+ * Debug-only harness primitives. See docs/scan-interruption-design.md §6/§8.
+ * The production app never calls these; Release omits the definitions. */
+
+/* Read pid's start identity via sysctl. Returns 1 present (fills stat +
+ * starttime), 0 gone (ESRCH/ENOENT/no record), -1 other error (inconclusive).
+ * No mutex needed: a read-only sysctl on a pid we hold reserved. */
+static int proc_identity_debug(pid_t pid, int *out_stat,
+                               int64_t *out_sec, int32_t *out_usec) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0)
+        return (errno == ESRCH || errno == ENOENT) ? 0 : -1;
+    if (len == 0) return 0;
+    if (out_stat) *out_stat = kp.kp_proc.p_stat;
+    if (out_sec)  *out_sec  = (int64_t)kp.kp_proc.p_starttime.tv_sec;
+    if (out_usec) *out_usec = (int32_t)kp.kp_proc.p_starttime.tv_usec;
+    return 1;
+}
+
+/* SIGKILL the single tracked transport child, capturing its identity first.
+ * Refuses unless exactly one child is tracked and still live. Leaves the pid
+ * REGISTERED and does NOT waitpid — OCaml stays the owner of retirement/reap
+ * (design §6); the killed-but-unremoved pid cannot be reused before OCaml
+ * reaps it, so the registry's pid-reuse guarantee is preserved. */
+unison_scan_signal_result_t unison_bridge_signal_scan_transport(void) {
+    unison_scan_signal_result_t r = { UNISON_SIGNAL_NO_CHILD, 0, 0, 0 };
+    pthread_mutex_lock(&g_child_mutex);
+    if (g_child_count == 0) {
+        r.outcome = UNISON_SIGNAL_NO_CHILD;
+    } else if (g_child_count > 1) {
+        r.outcome = UNISON_SIGNAL_MULTIPLE_CHILDREN;   /* never guess which */
+    } else {
+        pid_t pid = g_children[0];
+        int stat = 0; int64_t sec = 0; int32_t usec = 0;
+        int present = proc_identity_debug(pid, &stat, &sec, &usec);
+        r.pid = (int32_t)pid; r.start_sec = sec; r.start_usec = usec;
+        if (present <= 0 || stat == SZOMB) {
+            r.outcome = UNISON_SIGNAL_ALREADY_DEAD;    /* nothing live to kill */
+        } else if (kill(pid, SIGKILL) == 0) {
+            r.outcome = UNISON_SIGNAL_SIGNALLED;
+        } else {
+            r.outcome = UNISON_SIGNAL_FAILED;
+        }
+    }
+    pthread_mutex_unlock(&g_child_mutex);
+    return r;
+}
+
+/* Classify whether the captured identity was reaped. Poll this over a bounded
+ * grace period (design §8) rather than trusting one snapshot. */
+unison_reap_state_t unison_bridge_classify_reap(int32_t pid, int64_t start_sec,
+                                                int32_t start_usec) {
+    int stat = 0; int64_t sec = 0; int32_t usec = 0;
+    int present = proc_identity_debug((pid_t)pid, &stat, &sec, &usec);
+    if (present < 0) return UNISON_REAP_UNKNOWN;
+    if (present == 0) return UNISON_REAP_ABSENT;                 /* reaped */
+    if (sec != start_sec || usec != start_usec)
+        return UNISON_REAP_REUSED;                              /* pid recycled */
+    if (stat == SZOMB) return UNISON_REAP_ZOMBIE;               /* original, unreaped */
+    return UNISON_REAP_LIVE;                                    /* original, running */
+}
+
+bool unison_bridge_capture_identity(int32_t pid, int64_t *out_sec, int32_t *out_usec) {
+    int stat = 0;
+    return proc_identity_debug((pid_t)pid, &stat, out_sec, out_usec) == 1;
+}
+#endif /* UNISON_DEBUG_HOOKS */
+
 /* Pure-C shutdown reaper. Enters the `closing` state and SIGKILLs every
  * still-registered pid WHILE HOLDING the mutex (so no concurrent retire+waitpid
  * can free a pid out from under a signal), then clears the set and unlocks.

@@ -40,6 +40,56 @@ int  unison_bridge_reap_transport_children(void);
  * request, and must not be re-presented as a password prompt. Defined in all
  * configs (runtime code, unlike the Debug-only test helpers below). */
 int  unison_bridge_transport_child_terminated(void);
+
+/* === Phase 0 scan-interruption spike (issue #24 follow-up) ===
+ * Debug-only harness primitives for docs/scan-interruption-design.md. Declared
+ * unconditionally (types + prototypes) so every config parses the header; the
+ * functions are DEFINED only under UNISON_DEBUG_HOOKS (like the test helpers
+ * below), so Release links with the symbols absent and no production caller. */
+
+/* Outcome of signalling the single tracked transport child. */
+typedef enum {
+    UNISON_SIGNAL_SIGNALLED         = 0, /* exactly one live child; SIGKILL issued */
+    UNISON_SIGNAL_NO_CHILD          = 1, /* nothing tracked */
+    UNISON_SIGNAL_MULTIPLE_CHILDREN = 2, /* >1 tracked — refuse (never guess) */
+    UNISON_SIGNAL_ALREADY_DEAD      = 3, /* the one tracked child is already gone/zombie */
+    UNISON_SIGNAL_FAILED            = 4, /* kill(2) failed unexpectedly */
+} unison_signal_outcome_t;
+
+/* Process identity captured at signal time so a later reap check can tell an
+ * original zombie from a reused pid. tv_* come from extern_proc.p_starttime. */
+typedef struct {
+    unison_signal_outcome_t outcome;
+    int32_t pid;        /* meaningful when SIGNALLED/ALREADY_DEAD */
+    int64_t start_sec;  /* p_starttime.tv_sec  */
+    int32_t start_usec; /* p_starttime.tv_usec */
+} unison_scan_signal_result_t;
+
+/* Reap classification for a captured identity (rung 4). */
+typedef enum {
+    UNISON_REAP_ABSENT  = 0, /* pid gone → reaped */
+    UNISON_REAP_REUSED  = 1, /* pid present, different start identity → reaped + reused */
+    UNISON_REAP_ZOMBIE  = 2, /* same identity, SZOMB → not yet reaped */
+    UNISON_REAP_LIVE    = 3, /* same identity, running → teardown did not kill it */
+    UNISON_REAP_UNKNOWN = 4, /* sysctl error other than not-found → inconclusive */
+} unison_reap_state_t;
+
+/* SIGKILL the single tracked transport child under the registry mutex WITHOUT
+ * removing it and WITHOUT waitpid (OCaml stays the owner of retirement/reap).
+ * Refuses unless exactly one live child is tracked. Captures the child's pid +
+ * start identity for later reap classification. Debug-only. */
+unison_scan_signal_result_t unison_bridge_signal_scan_transport(void);
+
+/* Re-query the captured identity and classify whether it was reaped. Polled by
+ * the harness over a bounded grace period rather than trusted from one shot.
+ * Debug-only. */
+unison_reap_state_t unison_bridge_classify_reap(int32_t pid, int64_t start_sec, int32_t start_usec);
+
+/* Capture pid's process start identity without signalling. Returns true if the
+ * pid is present. Used by the harness before signalling and by tests to build
+ * known-good / deliberately-mismatched identities for classify. Debug-only. */
+bool unison_bridge_capture_identity(int32_t pid, int64_t *out_sec, int32_t *out_usec);
+
 /* Declared unconditionally so every target/config sees the prototype; only
  * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls them,
  * so a Release build links fine with no definition and the symbols are absent. */
