@@ -605,9 +605,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // picker. Lets the user bail out of a slow/wedged connect without
         // waiting for the watchdog timeout.
         if isScanning && !isSyncing {
-            Log.reconcile.notice("user requested Stop during connect/scan — aborting")
-            TraceLog.shared.write("ReconcileWindow: Stop during connect/scan — cancelling")
-            setSummary("Cancelling…")
+            // Honest copy: this abandons the connect and returns to the picker;
+            // it does not abort a running sync (there is none). See
+            // StopItemAppearance / issue #24 follow-up.
+            Log.reconcile.notice("user requested Return to Profiles during connect/scan")
+            TraceLog.shared.write("ReconcileWindow: Return to Profiles during connect/scan")
+            setSummary(StopItemAppearance.returnToProfiles.progressSummary)
             onCancelScan()
             return
         }
@@ -1744,6 +1747,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// + selection state and returns the correct `isEnabled` value.
     private func refreshToolbarEnabled() {
         window?.toolbar?.validateVisibleItems()
+    }
+
+    /// Phase-appropriate copy for the Stop toolbar item. Read by the toolbar
+    /// delegate during validation so the item is relabelled "Return to
+    /// Profiles" during the connect/scan phase (where it does not abort a
+    /// sync) and "Stop" during an actual sync. Pure decision in
+    /// `StopItemAppearance`.
+    var stopItemAppearance: StopItemAppearance {
+        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing)
     }
 
     /// True when the current *selection* (ignoring any clicked row) is
