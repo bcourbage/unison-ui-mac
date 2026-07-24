@@ -194,9 +194,9 @@ final class ScanInterruptionHarness {
 
     enum ReplacementDecision: Equatable { case completed, ignore }
 
-    /// The replacement scan completed. Only reaches `.done` when it matches the
-    /// recorded replacement identity (completion + verification). Anything else
-    /// is ignored (stale / not-yet-recorded).
+    /// The replacement scan completed SUCCESSFULLY. Only reaches `.done` when it
+    /// matches the recorded replacement identity (completion + verification).
+    /// Anything else is ignored (stale / not-yet-recorded).
     @discardableResult
     func noteReplacementScanComplete(session: SessionID, op: OperationID) -> ReplacementDecision {
         if case .reopening(_, let r?) = state, r.session == session, r.op == op {
@@ -204,6 +204,33 @@ final class ScanInterruptionHarness {
             return .completed
         }
         return .ignore
+    }
+
+    enum ReplacementFailureDecision: Equatable { case quarantined, ignore }
+
+    /// The replacement scan FAILED (scan-failed callback / fatal). A matching
+    /// replacement failure is NOT success — it quarantines so the cycle never
+    /// falsely reports `.done`. (Blocker 3.)
+    @discardableResult
+    func noteReplacementScanFailed(session: SessionID, op: OperationID) -> ReplacementFailureDecision {
+        if case .reopening(_, let r?) = state, r.session == session, r.op == op {
+            state = .quarantined(reason: "replacement scan failed")
+            return .quarantined
+        }
+        return .ignore
+    }
+
+    /// The coordinator entered `.restartRequired` during the cycle (a non-zero
+    /// close, a replacement init1/connect/scan failure, or a replacement fatal
+    /// routed through normal handling). Quarantine so the outcome is never
+    /// mistaken for success. No-op once idle/done/quarantined.
+    func noteCoordinatorRestart() {
+        switch state {
+        case .awaitingTerminal, .awaitingReap, .closing, .reopening:
+            state = .quarantined(reason: "coordinator entered restart-required during the cycle")
+        default:
+            break
+        }
     }
 
     /// Verification or an effect failed during close/reopen.
