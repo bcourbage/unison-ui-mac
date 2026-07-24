@@ -25,6 +25,15 @@ enum StopItemAppearance: Equatable {
     /// Connect/scan phase, nothing to abort: the item returns to the picker.
     case returnToProfiles
 
+    /// Semantic tint, mapped to a concrete `NSColor` by the toolbar. Kept as a
+    /// value (not `NSColor`) so this type stays AppKit-free and the tint is
+    /// exactly assertable in tests. `.destructive` → red; `.normal` → the
+    /// default toolbar tint (no accent).
+    enum Tint: Equatable {
+        case normal
+        case destructive
+    }
+
     var label: String {
         switch self {
         case .stopSync:         return "Stop"
@@ -36,6 +45,25 @@ enum StopItemAppearance: Equatable {
         switch self {
         case .stopSync:         return "Cancel the running synchronization"
         case .returnToProfiles: return "Return to the profile list"
+        }
+    }
+
+    /// SF Symbol for the item. The connect/scan affordance uses a neutral
+    /// back-navigation glyph, NOT the red stop sign, because it does not
+    /// interrupt the scan — it returns to the picker.
+    var systemSymbol: String {
+        switch self {
+        case .stopSync:         return "stop.fill"
+        case .returnToProfiles: return "chevron.backward"
+        }
+    }
+
+    /// Only a real sync-abort is destructive-tinted (red). Return-to-profiles
+    /// is ordinary navigation and takes the normal tint.
+    var tint: Tint {
+        switch self {
+        case .stopSync:         return .destructive
+        case .returnToProfiles: return .normal
         }
     }
 

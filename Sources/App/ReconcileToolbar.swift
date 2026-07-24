@@ -368,15 +368,23 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @MainActor
     @objc func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        // The Stop item is relabelled per phase: "Return to Profiles" during
-        // connect/scan (it abandons the connect, aborts no sync) and "Stop"
-        // during an actual sync. Validation fires on every phase transition
-        // (via `validateVisibleItems()`), so this stays in sync. Pure copy
-        // decision in `StopItemAppearance`.
+        // The Stop item is relabelled AND re-iconed per phase: during connect/
+        // scan it is "Return to Profiles" with a neutral back glyph and normal
+        // tint (it abandons the connect, aborts no sync); during an actual sync
+        // it is the red "Stop" that aborts. Validation fires on every phase
+        // transition (via `validateVisibleItems()`), so this stays in sync.
+        // Pure decision in `StopItemAppearance`.
         if item.itemIdentifier == DirectionAction.stopIdentifier,
            let appearance = controller?.stopItemAppearance {
             item.label = appearance.label
             item.toolTip = appearance.toolTip
+            let tint: NSColor?
+            switch appearance.tint {
+            case .destructive: tint = .systemRed
+            case .normal:      tint = nil
+            }
+            item.image = symbolImage(appearance.systemSymbol,
+                                     accessibility: appearance.label, tint: tint)
         }
         return controller?.canPerformToolbarAction(item.itemIdentifier) ?? false
     }

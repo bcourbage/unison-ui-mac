@@ -56,6 +56,32 @@ final class StopItemAppearanceTests: XCTestCase {
         XCTAssertEqual(a.toolTip, "Cancel the running synchronization")
     }
 
+    // MARK: - Icon + tint
+
+    func test_returnToProfiles_icon_isNeutralNavGlyph_normalTint() {
+        let a = StopItemAppearance.returnToProfiles
+        // A neutral back-navigation glyph, NOT the red stop sign — the action
+        // does not interrupt the scan.
+        XCTAssertEqual(a.systemSymbol, "chevron.backward")
+        XCTAssertNotEqual(a.systemSymbol, "stop.fill")
+        XCTAssertEqual(a.tint, .normal)
+        XCTAssertNotEqual(a.tint, .destructive)
+    }
+
+    func test_stopSync_icon_isRedStop() {
+        let a = StopItemAppearance.stopSync
+        XCTAssertEqual(a.systemSymbol, "stop.fill")
+        XCTAssertEqual(a.tint, .destructive)
+    }
+
+    func test_phasesDifferInIconAndTint() {
+        // The two phases must be visually distinct, not just relabelled.
+        XCTAssertNotEqual(StopItemAppearance.returnToProfiles.systemSymbol,
+                          StopItemAppearance.stopSync.systemSymbol)
+        XCTAssertNotEqual(StopItemAppearance.returnToProfiles.tint,
+                          StopItemAppearance.stopSync.tint)
+    }
+
     func test_noEmDashInAnyCopy() {
         for a in [StopItemAppearance.stopSync, .returnToProfiles] {
             for s in [a.label, a.toolTip, a.progressSummary] {
