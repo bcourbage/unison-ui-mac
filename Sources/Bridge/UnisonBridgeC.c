@@ -1115,8 +1115,13 @@ unison_scan_signal_result_t unison_bridge_signal_scan_transport(void) {
         int stat = 0; int64_t sec = 0; int32_t usec = 0;
         int present = proc_identity_debug(pid, &stat, &sec, &usec);
         r.pid = (int32_t)pid; r.start_sec = sec; r.start_usec = usec;
-        if (present <= 0 || stat == SZOMB) {
-            r.outcome = UNISON_SIGNAL_ALREADY_DEAD;    /* nothing live to kill */
+        if (present < 0) {
+            /* Unexpected sysctl error — inconclusive, NOT proof the child is
+             * gone. Report FAILED so the caller never treats an unknown as a
+             * clean already-dead. */
+            r.outcome = UNISON_SIGNAL_FAILED;
+        } else if (present == 0 || stat == SZOMB) {
+            r.outcome = UNISON_SIGNAL_ALREADY_DEAD;    /* proven gone/zombie */
         } else if (kill(pid, SIGKILL) == 0) {
             r.outcome = UNISON_SIGNAL_SIGNALLED;
         } else {

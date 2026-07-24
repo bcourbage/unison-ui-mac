@@ -483,6 +483,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     private func driveBeginScan(_ s: SessionID, _ op: OperationID) {
         pendingScan = (s, op)
+        #if DEBUG
+        // Phase 0 spike (§7, correction #4): if a scan-interruption reopen is in
+        // flight, record this as the replacement scan's identity so its
+        // completion can drive the harness to `.done`.
+        harnessNoteReplacementOpen(s, op)
+        #endif
         // Show the scanning spinner for a rescan (the initial scan already
         // shows it via beginInitialScan). Idempotent — guarded on isScanning.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
@@ -542,6 +548,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 guard let self else { return }
                 self.pendingClose = nil
                 self.run(self.engine.closeCompleted(s, op, status: status))
+                #if DEBUG
+                // Phase 0 spike (§7, correction #4): observe the exact close
+                // status. Status 0 → the harness advances to awaiting the
+                // replacement scan; non-zero → quarantine (reopen stays refused).
+                self.harnessNoteCloseCompleted(status: status)
+                #endif
             }
         }
     }
@@ -899,6 +911,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installInit2CompleteHandler { [weak self] items in
             guard let self else { return }
+            #if DEBUG
+            // Phase 0 spike (§7, correction #2): route a matching init2-complete
+            // through the harness FIRST. If the harness owns it (the original
+            // op's terminal), suppress the normal scan presentation/coordinator
+            // completion; a replacement-scan completion returns false so the
+            // reopened window presents normally.
+            if let (ps, pop) = self.pendingScan,
+               self.harnessRouteScanTerminal(ps, pop) { return }
+            #endif
             // Routed via the extracted RowCompletionRouter (same logic the tests
             // drive). A scan completion consumes ONLY pendingScan — an Ignore
             // completion arrives on a separate handler/token and can never land
@@ -941,6 +962,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // .scanning rather than hanging. Token-bound via pendingScan.
         UnisonBridge.installScanFailedHandler { [weak self] in
             guard let self else { return }
+            #if DEBUG
+            // Phase 0 spike (§7, correction #2): a matching scan-failed is the
+            // original op's terminal — route through the harness first and, if
+            // owned, suppress the normal restart-required routing below.
+            if let (ps, pop) = self.pendingScan,
+               self.harnessRouteScanTerminal(ps, pop) { return }
+            #endif
             guard let (s, op) = self.pendingScan else {
                 self.log.write("dropping scan-failed — no pending scan"); return
             }
@@ -1035,6 +1063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
         #if DEBUG
         installScanInterruptFatalInterceptor()
+        installScanInterruptTrigger()
         #endif
     }
 
@@ -2406,34 +2435,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 // MARK: - Phase 0 scan-interruption spike driver (§7)
 //
 // Debug-only. Composes the C signal primitive + reap classifier with the pure
-// `ScanInterruptionHarness` state machine, mapping its decisions onto the
-// existing coordinator-driven effects: `reopenCurrentProfileFresh` (the
-// close→reopen that the coordinator gates on the close returning status 0) and
-// `failCurrentOp(engineIsQuiescent: false)` (→ `.restartRequired`). Never merges
-// to main as-is; see docs/scan-interruption-design.md.
+// `ScanInterruptionHarness`, mapping its decisions onto the coordinator with
+// the EXACT scan binding (no rediscovery) and observing the full close→reopen
+// lifecycle before reaching `.done`. Never merges to main as-is. See
+// docs/scan-interruption-design.md §7/§16.
 @MainActor
 extension AppDelegate {
 
     private static func monoNow() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
 
     /// Install the fatal interceptor once at launch. Consulted at the top of
-    /// the fatal trampoline: when the harness is armed for the in-flight scan,
-    /// the expected fatal is acknowledged + recorded here and shows NO modal;
-    /// any unrelated fatal returns false and gets the normal production modal.
+    /// the fatal trampoline, before any modal.
     func installScanInterruptFatalInterceptor() {
         UnisonBridge.fatalInterceptor = { [weak self] _, opaque in
             guard let self, let b = self.scanInterruptHarness.armedBinding else { return false }
-            // Correlate to the armed op: intercept only while that scan is the
-            // in-flight one, or after it terminated (pendingScan cleared) as a
-            // late duplicate. A fatal belonging to a DIFFERENT in-flight op
-            // passes through to the normal modal.
-            if let cur = self.pendingScan, cur != (b.session, b.op) { return false }
+            // Once close/reopen is underway the harness returns passThroughToModal
+            // for any fatal (it may belong to the replacement op) — so this only
+            // intercepts pre-reopen fatals for the original op.
             switch self.scanInterruptHarness.observeFatal(
                        session: b.session, op: b.op, at: AppDelegate.monoNow()) {
             case .interceptAcknowledge:
                 unison_bridge_fatal_response(opaque)      // wake worker, no modal
                 self.cancelScanInterruptDeadline()
-                self.onScanInterruptTerminal()
+                self.onScanInterruptOriginalTerminal()
                 return true
             case .duplicateIgnore:
                 unison_bridge_fatal_response(opaque)      // ack, no modal, no re-drive
@@ -2444,37 +2468,63 @@ extension AppDelegate {
         }
     }
 
-    /// Debug entry point (invoked from a test hook / debug affordance):
-    /// interrupt the in-flight remote scan by SIGKILLing its ssh transport
-    /// child. Arms only on a clean single-child signal; a scan that already
-    /// completed (NO_CHILD / ALREADY_DEAD) is left alone — the
-    /// scan-completes-before-signal race.
+    /// Repeatable Debug trigger for the attended matrix (§16 invocation): a
+    /// Darwin-notification observer so the operator can fire an interruption
+    /// from the terminal, cycle after cycle, with:
+    ///
+    ///     notifyutil -p net.courbage.unison-ui.debugInterruptScan
+    ///
+    /// No window focus / AX / lldb needed; scriptable in a loop. Debug-only.
+    func installScanInterruptTrigger() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        CFNotificationCenterAddObserver(
+            center, Unmanaged.passUnretained(self).toOpaque(),
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let app = Unmanaged<AppDelegate>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { app.debugBeginScanInterruption() }
+            },
+            "net.courbage.unison-ui.debugInterruptScan" as CFString,
+            nil, .deliverImmediately)
+    }
+
+    /// Debug entry point for the attended matrix. Interrupts the in-flight
+    /// remote scan by SIGKILLing its ssh transport child.
     func debugBeginScanInterruption() {
+        // Correction #5: refuse (and issue NO signal) unless the harness is
+        // idle/done. A busy harness must never signal a child.
+        guard scanInterruptHarness.canArm else {
+            log.write("scan-interrupt: harness busy (\(scanInterruptHarness.state)) — no signal issued")
+            return
+        }
         guard let (s, op) = pendingScan, scanIsRemote else {
             log.write("scan-interrupt: no in-flight remote scan to interrupt"); return
         }
         let r = unison_bridge_signal_scan_transport()
         guard r.outcome == UNISON_SIGNAL_SIGNALLED else {
-            log.write("scan-interrupt: signal outcome=\(r.outcome.rawValue) — not arming "
-                      + "(scan already ended or not a single tracked child)")
+            // NO_CHILD / MULTIPLE_CHILDREN / ALREADY_DEAD / FAILED — nothing to
+            // arm (scan-completes-before-signal, or not a single tracked child).
+            log.write("scan-interrupt: signal outcome=\(r.outcome.rawValue) — not arming")
             return
         }
         let b = ScanInterruptionHarness.Binding(
             session: s, op: op, pid: r.pid,
             startSec: r.start_sec, startUsec: r.start_usec, armedAt: AppDelegate.monoNow())
         guard scanInterruptHarness.arm(b) == .armed else {
-            log.write("scan-interrupt: harness busy — refused"); return
+            log.write("scan-interrupt: arm refused — no signal consumed"); return
         }
-        log.write("scan-interrupt: armed \(s)/\(op) pid=\(r.pid); SIGKILL issued, awaiting terminal")
-        armScanInterruptDeadline(s, op)
+        log.write("scan-interrupt: armed \(s)/\(op) pid=\(r.pid); SIGKILL issued")
+        armScanInterruptDeadline()
     }
 
-    private func armScanInterruptDeadline(_ s: SessionID, _ op: OperationID) {
+    // MARK: deadline
+
+    private func armScanInterruptDeadline() {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             if self.scanInterruptHarness.deadlineElapsed() {
-                self.log.write("scan-interrupt: terminal deadline elapsed → quarantine")
-                self.enterScanInterruptQuarantine(s, op)
+                self.log.write("scan-interrupt: phase deadline elapsed → quarantine")
+                self.enterScanInterruptQuarantine()
             }
         }
         scanInterruptDeadlineWork = work
@@ -2487,24 +2537,50 @@ extension AppDelegate {
         scanInterruptDeadlineWork = nil
     }
 
-    /// The matching worker terminal arrived. Clear the in-flight scan (disarms
-    /// the stall timer via `pendingScan.didSet`) and poll reap before any
-    /// close/drain.
-    private func onScanInterruptTerminal() {
+    // MARK: original-scan terminal (fatal OR async init2-complete / scan-failed)
+
+    /// Route an async ORIGINAL-scan terminal (init2-complete / scan-failed) or a
+    /// replacement-scan completion through the harness. Returns true iff the
+    /// harness OWNS the event and the normal scan presentation/coordinator
+    /// completion must be SUPPRESSED. Replacement completion returns false so
+    /// the reopened window presents normally.
+    private func harnessRouteScanTerminal(_ s: SessionID, _ op: OperationID) -> Bool {
+        // Replacement scan completing → verify → done (let normal presentation
+        // proceed for the reopened session).
+        if scanInterruptHarness.isReopening {
+            if scanInterruptHarness.noteReplacementScanComplete(session: s, op: op) == .completed {
+                cancelScanInterruptDeadline()
+                log.write("scan-interrupt: replacement scan complete + verified → done")
+            }
+            return false
+        }
+        switch scanInterruptHarness.observeScanTerminal(session: s, op: op, at: AppDelegate.monoNow()) {
+        case .accepted:
+            cancelScanInterruptDeadline()
+            onScanInterruptOriginalTerminal()
+            return true
+        case .duplicate:
+            return true
+        case .unrelated:
+            return false
+        }
+    }
+
+    private func onScanInterruptOriginalTerminal() {
         let armedAt = scanInterruptHarness.armedBinding?.armedAt ?? AppDelegate.monoNow()
-        let latencyMs = Double(AppDelegate.monoNow() &- armedAt) / 1e6
-        log.write(String(format: "scan-interrupt: terminal in %.0f ms — polling reap", latencyMs))
-        pendingScan = nil       // scan is over; didSet disarms the stall timer
+        let ms = Double(AppDelegate.monoNow() &- armedAt) / 1e6
+        log.write(String(format: "scan-interrupt: original terminal in %.0f ms — polling reap", ms))
         pollScanInterruptReap(startedAt: AppDelegate.monoNow())
     }
 
-    /// Poll the reap classifier over a bounded grace period (§8) — never a
-    /// single immediate snapshot — then resolve.
+    // MARK: reap poll (§8 / correction #3)
+
     private func pollScanInterruptReap(startedAt: UInt64) {
         guard let b = scanInterruptHarness.armedBinding else { return }
         let reap = unison_bridge_classify_reap(b.pid, b.startSec, b.startUsec)
         let elapsed = Double(AppDelegate.monoNow() &- startedAt) / 1e9
-        if reap == UNISON_REAP_LIVE && elapsed < scanInterruptReapGrace {
+        if ScanInterruptionHarness.shouldKeepPolling(
+               reap, elapsed: elapsed, grace: scanInterruptReapGrace) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.pollScanInterruptReap(startedAt: startedAt)
             }
@@ -2512,33 +2588,68 @@ extension AppDelegate {
         }
         log.write("scan-interrupt: reap settled=\(reap.rawValue) after \(Int(elapsed * 1000)) ms")
         switch scanInterruptHarness.resolveReap(reap) {
-        case .proceed:
-            guard let profile = lastAttemptedProfile else {
-                scanInterruptHarness.noteCleanupFailure(reason: "no profile to reopen")
-                enterScanInterruptQuarantine(b.session, b.op)
-                return
-            }
-            // Confirmed terminal + reap: drive the coordinator-gated
-            // close→reopen (fails the op quiescent, then requestOpen only after
-            // the close returns status 0 — never a drain before the terminal).
-            log.write("scan-interrupt: reap confirmed → close/drain + reopen '\(profile)'")
-            reopenCurrentProfileFresh(profile, failedReason: "scan interrupted (Phase 0 spike)")
-            scanInterruptHarness.noteReopenComplete()
-        case .quarantine:
-            enterScanInterruptQuarantine(b.session, b.op)
+        case .proceed:  beginScanInterruptCloseReopen(b)
+        case .quarantine: enterScanInterruptQuarantine()
         }
     }
 
-    /// Deadline / ambiguous reap / cleanup failure: route to restart-required
-    /// with quiescence UNPROVEN. The coordinator refuses reopen in
-    /// `.restartRequired` and never presents the picker as if quiescent; the
-    /// SIGKILLed child stays a quarantined zombie owned by OCaml / process exit
-    /// (§6).
-    private func enterScanInterruptQuarantine(_ s: SessionID, _ op: OperationID) {
-        log.write("scan-interrupt: quarantine → restart-required for \(s)/\(op)")
+    // MARK: close → reopen (corrections #1, #4)
+
+    private func beginScanInterruptCloseReopen(_ b: ScanInterruptionHarness.Binding) {
+        guard let profile = lastAttemptedProfile else {
+            scanInterruptHarness.noteCleanupFailure(reason: "no profile to reopen")
+            enterScanInterruptQuarantine()
+            return
+        }
+        // Consume the EXACT scan token at the coordinator (no rediscovery), with
+        // quiescence PROVEN. This emits the close; requestOpen queues behind it.
+        // The coordinator gates the reopen on the close returning status 0.
+        log.write("scan-interrupt: reap confirmed → operationFailed(quiescent) \(b.session)/\(b.op), reopen '\(profile)'")
+        pendingScan = nil       // token consumed; disarms the stall timer
+        run(engine.operationFailed(b.session, b.op,
+                                   reason: "scan interrupted (Phase 0 spike)",
+                                   engineIsQuiescent: true))
+        run(engine.requestOpen(profile: profile))
+        armScanInterruptDeadline()   // cover the close + reopen phases
+    }
+
+    /// Called from the close-completion path while the harness is `closing`.
+    func harnessNoteCloseCompleted(status: Int32) {
+        guard case .closing = scanInterruptHarness.state else { return }
+        switch scanInterruptHarness.noteCloseCompleted(status: status) {
+        case .proceedReopen:
+            log.write("scan-interrupt: close status 0 → awaiting replacement scan")
+            armScanInterruptDeadline()
+        case .quarantine:
+            log.write("scan-interrupt: close status \(status) → quarantine")
+            // Coordinator already escalates a non-zero close to restart-required;
+            // the harness is now quarantined, so reopen stays refused.
+            cancelScanInterruptDeadline()
+        }
+    }
+
+    /// Called when the replacement scan BEGINS (driveBeginScan) while reopening.
+    private func harnessNoteReplacementOpen(_ s: SessionID, _ op: OperationID) {
+        scanInterruptHarness.noteReplacementOpen(session: s, op: op)
+    }
+
+    // MARK: quarantine
+
+    private func enterScanInterruptQuarantine() {
+        cancelScanInterruptDeadline()
+        guard let b = scanInterruptHarness.armedBinding else {
+            // Already quarantined/cleared — nothing to route.
+            return
+        }
+        log.write("scan-interrupt: quarantine → restart-required for \(b.session)/\(b.op)")
         pendingScan = nil
-        failCurrentOp(reason: "scan interruption could not be confirmed quiescent",
-                      engineIsQuiescent: false)
+        // Report the EXACT binding with quiescence UNPROVEN → .restartRequired.
+        // The coordinator refuses reopen there and never shows the picker as if
+        // quiescent; the SIGKILLed child stays a quarantined zombie owned by
+        // OCaml / process exit (§6).
+        run(engine.operationFailed(b.session, b.op,
+                                   reason: "scan interruption could not be confirmed quiescent",
+                                   engineIsQuiescent: false))
     }
 }
 #endif

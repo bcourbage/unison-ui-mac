@@ -368,3 +368,30 @@ to trigger it.
    **configurable** and record actual latency.
 3. The independent "Return to Profiles" / "Returning to profiles…" copy PR
    (Phase 1b) is approved to proceed now, ahead of the spike.
+
+## 17. Attended-matrix invocation mechanism (Debug-only)
+
+The harness has no production trigger. For the attended matrix the interruption
+is fired by a **Darwin notification** observed only in Debug builds
+(`AppDelegate.installScanInterruptTrigger`), so a cycle is a single, repeatable,
+focus-free terminal command:
+
+```
+notifyutil -p net.courbage.unison-ui.debugInterruptScan
+```
+
+Each post calls `AppDelegate.debugBeginScanInterruption()` on the main queue,
+which:
+
+- refuses (and issues **no** SIGKILL) unless the harness is idle/done and a
+  remote scan is in flight;
+- otherwise SIGKILLs the single tracked ssh child, arms the harness, and lets
+  the fatal interceptor / async-terminal routing drive reap → close → reopen (or
+  quarantine).
+
+Repeatable-cycle procedure per matrix case: open the profile → let the scan
+begin (or wedge it, per the case) → `notifyutil -p …` → observe the outcome in
+the app + `TraceLog` (`scan-interrupt:` lines record signal outcome, terminal
+latency, reap state, and the close/reopen or quarantine decision) → repeat.
+Everything runs against the throwaway `.241` VM with disposable profiles, never
+Demeter. Debug launch via `open` for correct TCC attribution.

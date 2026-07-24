@@ -5,56 +5,57 @@ import Foundation
 /// docs/scan-interruption-design.md.
 ///
 /// Pure state machine for the Debug-only "expected scan interruption" harness.
-/// It encodes every decision the design requires; the AppDelegate glue is thin
-/// and just performs the effects (SIGKILL via the C primitive, ack the worker,
-/// poll reap, drive close/drain/reopen). Keeping the decisions here — clock-free
-/// and effect-free — makes them deterministically testable without a live ssh
-/// transport or an AppKit run loop (same posture as `EngineSessionCoordinator`
-/// and `DiffRequestBroker`).
+/// It models the WHOLE cycle — original-scan terminal → reap → coordinator
+/// close (status 0) → replacement open → replacement scan completion — and only
+/// then reaches `.done`. Every failure (deadline, ambiguous reap, non-zero
+/// close, replacement failure, cleanup failure) funnels to a one-way
+/// `quarantined` state. Clock-free and effect-free, so all decisions are
+/// deterministically testable; the AppDelegate glue performs the effects and
+/// feeds lifecycle events back in.
 ///
 /// The whole type is `#if DEBUG`, so it and its hooks are absent from Release.
 ///
-/// Invariants enforced here:
-/// - A terminal is recorded **exactly once** per armed cycle; later matching
-///   fatals/terminals are swallowed as duplicates (never a second record, never
-///   a modal).
-/// - Close/drain is only *reachable* after a matching worker terminal
-///   (`awaitingReap` → `closingReopen`); it is never authorized from
-///   `awaitingTerminal`.
-/// - Deadline, ambiguous reap, duplicate/mismatched terminal at the wrong time,
-///   and cleanup failure all funnel to `quarantined`, which is one-way: reopen
-///   is refused and the picker is never presented as if quiescence were proven.
-/// - Timestamps are injected by the caller (monotonic on the real path) so
-///   latency is recorded without the state machine reading a clock.
+/// Key invariants (verified by tests):
+/// - Exactly one terminal is recorded per cycle; later matching terminals are
+///   duplicates (no modal, no re-record, no second drive).
+/// - The coordinator close is only *requested* after a matching terminal AND a
+///   confirmed reap (`awaitingReap` → `closing`); close/drain never precedes the
+///   terminal.
+/// - `.done` is reached ONLY after a status-0 close AND a completed replacement
+///   scan (`reopening` → `done`) — never at reopen-request time.
+/// - Once close/reopen begins (`closing`/`reopening`), a fatal is NOT swallowed
+///   as a duplicate: it follows normal production routing (it may belong to the
+///   replacement op).
+/// - `arm` is refused unless idle/done, so a busy harness never signals a child.
 final class ScanInterruptionHarness {
 
     typealias SessionID = EngineSessionCoordinator.SessionID
     typealias OperationID = EngineSessionCoordinator.OperationID
 
-    /// Exact identity the interruption is bound to. PID + start identity are the
-    /// reap-classification key; session + op match the worker terminal.
     struct Binding: Equatable {
         let session: SessionID
         let op: OperationID
         let pid: Int32
         let startSec: Int64
         let startUsec: Int32
-        /// Injected monotonic timestamp at arm time (for latency accounting).
-        let armedAt: UInt64
+        let armedAt: UInt64          // injected monotonic timestamp (latency)
+    }
+
+    struct ReplacementID: Equatable {
+        let session: SessionID
+        let op: OperationID
     }
 
     enum State: Equatable {
         case idle
-        /// Child signalled; waiting for the matching worker terminal, bounded by
-        /// the caller's deadline.
         case awaitingTerminal(Binding)
-        /// Terminal recorded; caller is polling reap classification.
         case awaitingReap(Binding, terminalAt: UInt64)
-        /// Reap confirmed; caller is verifying + close/drain + reopen.
-        case closingReopen(Binding)
-        /// One-way failure: reopen refused, quiescence never claimed.
+        /// Reap confirmed; the exact op was reported `operationFailed(quiescent:
+        /// true)` and a reopen requested. Awaiting the close's status.
+        case closing(Binding)
+        /// Close returned status 0; awaiting the replacement scan to complete.
+        case reopening(Binding, replacement: ReplacementID?)
         case quarantined(reason: String)
-        /// A cycle completed cleanly; ready to arm the next one.
         case done
     }
 
@@ -62,105 +63,94 @@ final class ScanInterruptionHarness {
 
     // MARK: - Arm
 
-    enum ArmResult: Equatable {
-        case armed
-        /// Not idle/done — a cycle is already in flight or quarantined.
-        case refusedBusy
-    }
+    enum ArmResult: Equatable { case armed, refusedBusy }
 
-    /// Arm for a freshly-signalled child. Only valid from `idle`/`done`; a
-    /// quarantined or in-flight harness refuses (the caller must `reset()` a
-    /// quarantine explicitly for the next cycle).
-    @discardableResult
-    func arm(_ binding: Binding) -> ArmResult {
+    /// True only when a new cycle may start. The driver MUST check this before
+    /// invoking the C signal primitive so a busy harness never signals a child.
+    var canArm: Bool {
         switch state {
-        case .idle, .done:
-            state = .awaitingTerminal(binding)
-            return .armed
-        default:
-            return .refusedBusy
+        case .idle, .done: return true
+        default:           return false
         }
     }
 
-    // MARK: - Terminal observation
-
-    /// Decision for a fatal delivered through the bridge trampoline.
-    enum FatalDecision: Equatable {
-        /// Matching expected fatal, first one: caller acks the worker WITHOUT a
-        /// modal and the terminal is now recorded.
-        case interceptAcknowledge
-        /// Matching, but a terminal was already recorded: swallow it (still no
-        /// modal) without double-recording.
-        case duplicateIgnore
-        /// Not armed, or session/op does not match: normal production modal.
-        case passThroughToModal
+    @discardableResult
+    func arm(_ binding: Binding) -> ArmResult {
+        guard canArm else { return .refusedBusy }
+        state = .awaitingTerminal(binding)
+        return .armed
     }
 
-    /// Observe a fatal for `(session, op)`. Only the exact armed identity is
-    /// intercepted; everything else passes through to the production modal.
+    // MARK: - Original-scan terminal
+
+    enum FatalDecision: Equatable {
+        case interceptAcknowledge   // first matching fatal → ack worker, no modal
+        case duplicateIgnore        // matching, terminal already recorded, pre-reopen → swallow
+        case passThroughToModal     // unrelated / not armed / reopen underway → normal modal
+    }
+
     func observeFatal(session: SessionID, op: OperationID,
                       at now: UInt64 = 0) -> FatalDecision {
         switch state {
         case .awaitingTerminal(let b) where b.session == session && b.op == op:
             state = .awaitingReap(b, terminalAt: now)
             return .interceptAcknowledge
-        case .awaitingReap(let b, _) where b.session == session && b.op == op,
-             .closingReopen(let b) where b.session == session && b.op == op:
-            // Terminal already recorded for this binding — a late/duplicate
-            // fatal for the same op. Swallow (no modal, no re-record).
+        case .awaitingReap(let b, _) where b.session == session && b.op == op:
+            // Terminal recorded, but the replacement op has NOT begun yet — a
+            // late duplicate of the original fatal. Swallow (no modal).
             return .duplicateIgnore
         default:
+            // Includes closing/reopening: once close/reopen is underway an
+            // unattributed fatal may belong to the replacement op, so it must
+            // get normal routing (never swallowed).
             return .passThroughToModal
         }
     }
 
-    /// Decision for a non-fatal async terminal (e.g. the scan-failed / init2
-    /// completion callback) matching the binding.
-    enum TerminalDecision: Equatable {
-        case accepted        // first matching terminal → recorded
-        case duplicate       // terminal already recorded for this binding
-        case unrelated       // not armed / mismatched op → ignore
-    }
+    enum TerminalDecision: Equatable { case accepted, duplicate, unrelated }
 
-    /// Observe an async worker terminal for `(session, op)`.
+    /// Async worker terminal for the ORIGINAL op (init2-complete / scan-failed).
     func observeScanTerminal(session: SessionID, op: OperationID,
                              at now: UInt64 = 0) -> TerminalDecision {
         switch state {
         case .awaitingTerminal(let b) where b.session == session && b.op == op:
             state = .awaitingReap(b, terminalAt: now)
             return .accepted
-        case .awaitingReap(let b, _) where b.session == session && b.op == op,
-             .closingReopen(let b) where b.session == session && b.op == op:
+        case .awaitingReap(let b, _) where b.session == session && b.op == op:
             return .duplicate
         default:
             return .unrelated
         }
     }
 
-    // MARK: - Deadline
+    // MARK: - Deadline (covers every non-terminal in-flight phase)
 
-    /// The caller's terminal-wait deadline elapsed. Only meaningful while still
-    /// `awaitingTerminal`: tips into quarantine. A no-op (returns false) once a
-    /// terminal has arrived or the harness is otherwise not waiting.
     @discardableResult
     func deadlineElapsed() -> Bool {
-        if case .awaitingTerminal = state {
-            state = .quarantined(reason: "no worker terminal within the deadline")
+        switch state {
+        case .awaitingTerminal, .awaitingReap, .closing, .reopening:
+            state = .quarantined(reason: "scan-interrupt phase exceeded its deadline")
             return true
+        default:
+            return false
         }
-        return false
     }
 
     // MARK: - Reap resolution
 
-    enum ReapDecision: Equatable {
-        case proceed       // reaped (or pid reused) → safe to verify + close/reopen
-        case quarantine    // zombie / live / unknown → ambiguous, refuse reopen
+    /// Poll decision (§8, correction #3): ABSENT/REUSED resolve immediately as
+    /// success; LIVE/ZOMBIE/UNKNOWN keep polling until the grace deadline, then
+    /// resolve (→ quarantine). Pure so the polling contract is testable without
+    /// the driver's async loop.
+    static func shouldKeepPolling(_ reap: unison_reap_state_t,
+                                  elapsed: TimeInterval, grace: TimeInterval) -> Bool {
+        if reap == UNISON_REAP_ABSENT || reap == UNISON_REAP_REUSED { return false }
+        return elapsed < grace
     }
 
-    /// Resolve the (already-polled) final reap classification. Only valid while
-    /// `awaitingReap`; any other state is a programming error and quarantines
-    /// defensively.
+    enum ReapDecision: Equatable { case proceed, quarantine }
+
+    /// Resolve the (polled) reap classification. Only valid in `awaitingReap`.
     @discardableResult
     func resolveReap(_ reap: unison_reap_state_t) -> ReapDecision {
         guard case .awaitingReap(let b, _) = state else {
@@ -169,7 +159,7 @@ final class ScanInterruptionHarness {
         }
         switch reap {
         case UNISON_REAP_ABSENT, UNISON_REAP_REUSED:
-            state = .closingReopen(b)
+            state = .closing(b)
             return .proceed
         default: // ZOMBIE / LIVE / UNKNOWN
             state = .quarantined(reason: "ambiguous reap state (\(reap.rawValue))")
@@ -177,44 +167,88 @@ final class ScanInterruptionHarness {
         }
     }
 
-    // MARK: - Cleanup / completion
+    // MARK: - Close / reopen lifecycle
 
-    /// Verification or close/drain failed during `closingReopen`.
-    func noteCleanupFailure(reason: String) {
-        if case .closingReopen = state {
-            state = .quarantined(reason: "cleanup failed: \(reason)")
+    enum CloseDecision: Equatable { case proceedReopen, quarantine }
+
+    /// The coordinator close completed. Only valid in `closing`. Status 0 →
+    /// `reopening`; any non-zero close is unsafe → quarantine.
+    @discardableResult
+    func noteCloseCompleted(status: Int32) -> CloseDecision {
+        guard case .closing(let b) = state else { return .quarantine }
+        if status == 0 {
+            state = .reopening(b, replacement: nil)
+            return .proceedReopen
+        }
+        state = .quarantined(reason: "connection close failed (status \(status))")
+        return .quarantine
+    }
+
+    /// Record the replacement session/op once it opens. Only valid in
+    /// `reopening` before a replacement is recorded.
+    func noteReplacementOpen(session: SessionID, op: OperationID) {
+        if case .reopening(let b, nil) = state {
+            state = .reopening(b, replacement: ReplacementID(session: session, op: op))
         }
     }
 
-    /// The verified close/drain + reopen completed successfully.
-    func noteReopenComplete() {
-        if case .closingReopen = state { state = .done }
+    enum ReplacementDecision: Equatable { case completed, ignore }
+
+    /// The replacement scan completed. Only reaches `.done` when it matches the
+    /// recorded replacement identity (completion + verification). Anything else
+    /// is ignored (stale / not-yet-recorded).
+    @discardableResult
+    func noteReplacementScanComplete(session: SessionID, op: OperationID) -> ReplacementDecision {
+        if case .reopening(_, let r?) = state, r.session == session, r.op == op {
+            state = .done
+            return .completed
+        }
+        return .ignore
+    }
+
+    /// Verification or an effect failed during close/reopen.
+    func noteCleanupFailure(reason: String) {
+        switch state {
+        case .closing, .reopening, .awaitingReap:
+            state = .quarantined(reason: "cleanup failed: \(reason)")
+        default:
+            break
+        }
     }
 
     // MARK: - Queries
 
-    /// The binding currently armed/in-flight, if any. The caller uses `.op` to
-    /// disarm ONLY the matching scan-stall timer (never a different op's).
     var armedBinding: Binding? {
         switch state {
-        case .awaitingTerminal(let b), .awaitingReap(let b, _), .closingReopen(let b):
+        case .awaitingTerminal(let b), .awaitingReap(let b, _),
+             .closing(let b), .reopening(let b, _):
             return b
         default:
             return nil
         }
     }
 
-    /// True when a racing scan-stall timer for `(session, op)` must defer to the
-    /// harness (the harness owns the terminal decision for the armed op, so the
-    /// stall timer must not also fire one — "exactly one terminal authority").
+    /// True while a racing scan-stall timer for `(session, op)` must defer to
+    /// the harness (exactly one terminal authority for the armed op).
     func stallTimerShouldDefer(session: SessionID, op: OperationID) -> Bool {
         guard let b = armedBinding else { return false }
         return b.session == session && b.op == op
     }
 
-    /// Reopen is allowed unless we are quarantined. (In `closingReopen` the
-    /// caller is *performing* the reopen; a fresh open is only gated by the
-    /// coordinator, which already refuses in `.restartRequired`.)
+    /// True once the close/reopen phase has begun — the interceptor uses this to
+    /// stop swallowing fatals as duplicates.
+    var replacementUnderway: Bool {
+        switch state {
+        case .closing, .reopening: return true
+        default:                   return false
+        }
+    }
+
+    var isReopening: Bool {
+        if case .reopening = state { return true }
+        return false
+    }
+
     var reopenAllowed: Bool {
         if case .quarantined = state { return false }
         return true
@@ -225,9 +259,7 @@ final class ScanInterruptionHarness {
         return false
     }
 
-    /// Clear the harness for the next spike cycle. The only exit from
-    /// `quarantined` (a deliberate, explicit reset — quarantine is one-way for
-    /// the cycle it ends).
+    /// Clear for the next cycle. The only exit from `quarantined`.
     func reset() { state = .idle }
 }
 #endif
