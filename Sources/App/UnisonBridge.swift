@@ -57,6 +57,19 @@ enum UnisonBridge {
     /// Also mirrored to the status log via the C bridge for diagnosis.
     nonisolated(unsafe) static var diffErrHandler: ((_ msg: String) -> Void)?
 
+    #if DEBUG
+    /// Phase 0 scan-interruption spike (§7). Consulted at the TOP of the fatal
+    /// trampoline, on the main queue, BEFORE any modal. When armed, the harness
+    /// interceptor inspects `(message, opaque)`; if this is the expected fatal
+    /// for the interrupted scan it acknowledges the worker itself (via
+    /// `unison_bridge_fatal_response`), records the terminal, and returns true
+    /// so the trampoline shows NO modal and returns. Any unrelated fatal (or an
+    /// unarmed harness) returns false and gets the normal production modal.
+    /// Absent from Release.
+    nonisolated(unsafe) static var fatalInterceptor:
+        ((_ message: String, _ opaque: UnsafeMutableRawPointer) -> Bool)?
+    #endif
+
     /// Called on the main queue *after* the warning sheet is dismissed.
     /// `cancelled = true` means the user chose "Cancel sync" — OCaml will
     /// typically exit the process; nothing more to do. `cancelled = false`
@@ -348,6 +361,16 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
     let recovery = ArchiveRecovery.parse(message: text, unisonDirectory: unisonDir)
 
     DispatchQueue.main.async {
+        #if DEBUG
+        // Phase 0 spike (§7): a matching expected scan-interruption fatal is
+        // acknowledged + recorded by the harness and shows NO modal. Unrelated
+        // fatals fall through to the normal presentation below.
+        if let intercept = UnisonBridge.fatalInterceptor,
+           let opaquePtr = UnsafeMutableRawPointer(bitPattern: opaqueBits),
+           intercept(text, opaquePtr) {
+            return
+        }
+        #endif
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Unison error"

@@ -162,6 +162,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// back in. No lifecycle decision is made outside the coordinator.
     private let engine = EngineSessionCoordinator()
 
+    #if DEBUG
+    /// Phase 0 scan-interruption spike (§7 of docs/scan-interruption-design.md).
+    /// Debug-only harness state + tunables. Absent from Release.
+    let scanInterruptHarness = ScanInterruptionHarness()
+    /// Terminal-wait deadline (configurable per §16; latency is logged).
+    var scanInterruptTerminalDeadline: TimeInterval = 10
+    /// Bounded grace over which reap classification is polled (§8) before it is
+    /// resolved — never a single immediate snapshot.
+    var scanInterruptReapGrace: TimeInterval = 2
+    /// The pending terminal-deadline work item, cancelled when the terminal
+    /// arrives.
+    private var scanInterruptDeadlineWork: DispatchWorkItem?
+    #endif
+
     private typealias SessionID = EngineSessionCoordinator.SessionID
     private typealias OperationID = EngineSessionCoordinator.OperationID
     private typealias OpenRequestID = EngineSessionCoordinator.OpenRequestID
@@ -1018,6 +1032,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self.rescanIgnoringArchives(profile: profile,
                                         failedReason: "retrying with ignorearchives")
         }
+
+        #if DEBUG
+        installScanInterruptFatalInterceptor()
+        #endif
     }
 
     /// SSH credential prompt loop for connect op `(s, op)`. On "no more
@@ -1653,6 +1671,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// publishing stale results.
     private func handleScanStall(_ s: SessionID, _ op: OperationID) {
         guard pendingScan.map({ $0 == (s, op) }) ?? false else { return }
+        #if DEBUG
+        // Phase 0 spike (§7): exactly one terminal authority per op. If the
+        // scan-interruption harness is armed for THIS op, it owns the terminal
+        // decision — the stall timer must defer (only for the matching op;
+        // any other op's stall fires normally).
+        if scanInterruptHarness.stallTimerShouldDefer(session: s, op: op) {
+            log.write("scan watchdog: \(s)/\(op) deferring to scan-interrupt harness")
+            return
+        }
+        #endif
         switch ScanStallPolicy.actionOnStall(sawRemoteWait: scanSawRemoteWait) {
         case .restartRequired:
             // Reliable evidence the op is waiting on remote transport (the
@@ -2373,3 +2401,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         ])
     }
 }
+
+#if DEBUG
+// MARK: - Phase 0 scan-interruption spike driver (§7)
+//
+// Debug-only. Composes the C signal primitive + reap classifier with the pure
+// `ScanInterruptionHarness` state machine, mapping its decisions onto the
+// existing coordinator-driven effects: `reopenCurrentProfileFresh` (the
+// close→reopen that the coordinator gates on the close returning status 0) and
+// `failCurrentOp(engineIsQuiescent: false)` (→ `.restartRequired`). Never merges
+// to main as-is; see docs/scan-interruption-design.md.
+@MainActor
+extension AppDelegate {
+
+    private static func monoNow() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    /// Install the fatal interceptor once at launch. Consulted at the top of
+    /// the fatal trampoline: when the harness is armed for the in-flight scan,
+    /// the expected fatal is acknowledged + recorded here and shows NO modal;
+    /// any unrelated fatal returns false and gets the normal production modal.
+    func installScanInterruptFatalInterceptor() {
+        UnisonBridge.fatalInterceptor = { [weak self] _, opaque in
+            guard let self, let b = self.scanInterruptHarness.armedBinding else { return false }
+            // Correlate to the armed op: intercept only while that scan is the
+            // in-flight one, or after it terminated (pendingScan cleared) as a
+            // late duplicate. A fatal belonging to a DIFFERENT in-flight op
+            // passes through to the normal modal.
+            if let cur = self.pendingScan, cur != (b.session, b.op) { return false }
+            switch self.scanInterruptHarness.observeFatal(
+                       session: b.session, op: b.op, at: AppDelegate.monoNow()) {
+            case .interceptAcknowledge:
+                unison_bridge_fatal_response(opaque)      // wake worker, no modal
+                self.cancelScanInterruptDeadline()
+                self.onScanInterruptTerminal()
+                return true
+            case .duplicateIgnore:
+                unison_bridge_fatal_response(opaque)      // ack, no modal, no re-drive
+                return true
+            case .passThroughToModal:
+                return false
+            }
+        }
+    }
+
+    /// Debug entry point (invoked from a test hook / debug affordance):
+    /// interrupt the in-flight remote scan by SIGKILLing its ssh transport
+    /// child. Arms only on a clean single-child signal; a scan that already
+    /// completed (NO_CHILD / ALREADY_DEAD) is left alone — the
+    /// scan-completes-before-signal race.
+    func debugBeginScanInterruption() {
+        guard let (s, op) = pendingScan, scanIsRemote else {
+            log.write("scan-interrupt: no in-flight remote scan to interrupt"); return
+        }
+        let r = unison_bridge_signal_scan_transport()
+        guard r.outcome == UNISON_SIGNAL_SIGNALLED else {
+            log.write("scan-interrupt: signal outcome=\(r.outcome.rawValue) — not arming "
+                      + "(scan already ended or not a single tracked child)")
+            return
+        }
+        let b = ScanInterruptionHarness.Binding(
+            session: s, op: op, pid: r.pid,
+            startSec: r.start_sec, startUsec: r.start_usec, armedAt: AppDelegate.monoNow())
+        guard scanInterruptHarness.arm(b) == .armed else {
+            log.write("scan-interrupt: harness busy — refused"); return
+        }
+        log.write("scan-interrupt: armed \(s)/\(op) pid=\(r.pid); SIGKILL issued, awaiting terminal")
+        armScanInterruptDeadline(s, op)
+    }
+
+    private func armScanInterruptDeadline(_ s: SessionID, _ op: OperationID) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.scanInterruptHarness.deadlineElapsed() {
+                self.log.write("scan-interrupt: terminal deadline elapsed → quarantine")
+                self.enterScanInterruptQuarantine(s, op)
+            }
+        }
+        scanInterruptDeadlineWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + scanInterruptTerminalDeadline, execute: work)
+    }
+
+    private func cancelScanInterruptDeadline() {
+        scanInterruptDeadlineWork?.cancel()
+        scanInterruptDeadlineWork = nil
+    }
+
+    /// The matching worker terminal arrived. Clear the in-flight scan (disarms
+    /// the stall timer via `pendingScan.didSet`) and poll reap before any
+    /// close/drain.
+    private func onScanInterruptTerminal() {
+        let armedAt = scanInterruptHarness.armedBinding?.armedAt ?? AppDelegate.monoNow()
+        let latencyMs = Double(AppDelegate.monoNow() &- armedAt) / 1e6
+        log.write(String(format: "scan-interrupt: terminal in %.0f ms — polling reap", latencyMs))
+        pendingScan = nil       // scan is over; didSet disarms the stall timer
+        pollScanInterruptReap(startedAt: AppDelegate.monoNow())
+    }
+
+    /// Poll the reap classifier over a bounded grace period (§8) — never a
+    /// single immediate snapshot — then resolve.
+    private func pollScanInterruptReap(startedAt: UInt64) {
+        guard let b = scanInterruptHarness.armedBinding else { return }
+        let reap = unison_bridge_classify_reap(b.pid, b.startSec, b.startUsec)
+        let elapsed = Double(AppDelegate.monoNow() &- startedAt) / 1e9
+        if reap == UNISON_REAP_LIVE && elapsed < scanInterruptReapGrace {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.pollScanInterruptReap(startedAt: startedAt)
+            }
+            return
+        }
+        log.write("scan-interrupt: reap settled=\(reap.rawValue) after \(Int(elapsed * 1000)) ms")
+        switch scanInterruptHarness.resolveReap(reap) {
+        case .proceed:
+            guard let profile = lastAttemptedProfile else {
+                scanInterruptHarness.noteCleanupFailure(reason: "no profile to reopen")
+                enterScanInterruptQuarantine(b.session, b.op)
+                return
+            }
+            // Confirmed terminal + reap: drive the coordinator-gated
+            // close→reopen (fails the op quiescent, then requestOpen only after
+            // the close returns status 0 — never a drain before the terminal).
+            log.write("scan-interrupt: reap confirmed → close/drain + reopen '\(profile)'")
+            reopenCurrentProfileFresh(profile, failedReason: "scan interrupted (Phase 0 spike)")
+            scanInterruptHarness.noteReopenComplete()
+        case .quarantine:
+            enterScanInterruptQuarantine(b.session, b.op)
+        }
+    }
+
+    /// Deadline / ambiguous reap / cleanup failure: route to restart-required
+    /// with quiescence UNPROVEN. The coordinator refuses reopen in
+    /// `.restartRequired` and never presents the picker as if quiescent; the
+    /// SIGKILLed child stays a quarantined zombie owned by OCaml / process exit
+    /// (§6).
+    private func enterScanInterruptQuarantine(_ s: SessionID, _ op: OperationID) {
+        log.write("scan-interrupt: quarantine → restart-required for \(s)/\(op)")
+        pendingScan = nil
+        failCurrentOp(reason: "scan interruption could not be confirmed quiescent",
+                      engineIsQuiescent: false)
+    }
+}
+#endif
