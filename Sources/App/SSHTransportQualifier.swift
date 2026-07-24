@@ -73,6 +73,16 @@ enum SSHTransportQualifier {
     /// so this is potentially side-effecting; the deadline bounds it and a
     /// timeout is treated as unsupported. A custom `sshcmd` short-circuits to
     /// unsupported without running anything (we would not be driving /usr/bin/ssh).
+    ///
+    /// Wiring-PR obligations (this runner is NOT invoked in the Foundation PR):
+    ///  - This polls `isRunning` and reads stdout only after exit. `ssh -G`
+    ///    output is small (tens of lines, far under the ~64KB pipe buffer), so
+    ///    it cannot deadlock today — but if this is ever pointed at a command
+    ///    with large output, drain the pipe incrementally (readabilityHandler)
+    ///    rather than after `waitUntilExit`.
+    ///  - The poll loop busy-waits the calling thread; the Wiring PR MUST run
+    ///    `qualify` off the main thread (session-bound, cached), never on the
+    ///    main-actor open path.
     static func qualify(host: String, extraArgs: [String] = [],
                         customSshCmd: Bool, deadline: TimeInterval = 5) -> SSHTransportQualification {
         if customSshCmd { return .unsupported(reason: "custom sshcmd") }

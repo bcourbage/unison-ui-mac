@@ -432,7 +432,11 @@ final class EngineSessionCoordinator {
         case .interruptingScan(let s, _, _, _):
             // Generic leave / window dismissal during an in-flight interruption:
             // upgrade the destination (monotonic) so we never land in a
-            // windowless `.stopped`. Does not restart the teardown.
+            // windowless `.stopped`. Does not restart the teardown. We do NOT set
+            // `abandoned`: the teardown's terminal routing is driven by the
+            // destination, not the visibility flag, and the window is disposed by
+            // the eventual `.closeWindow` effect — so `abandoned` would have no
+            // consumer during interruption and is left untouched deliberately.
             return updateInterruptDestination(s, .returnToPicker)
         case .stopped(let s):
             // Quiescent stopped window: close it and idle (→ picker).
@@ -466,7 +470,29 @@ final class EngineSessionCoordinator {
     /// `.scanning(session, op)`. Emits disarm + aux-cancel + signal.
     func requestScanInterruption(_ session: SessionID, destination: Destination) -> [Effect] {
         guard case .scanning(session, let op) = phase else { return [] }
-        phase = .interruptingScan(session, op, .signalling(terminalObserved: false), destination)
+        // Condition 3: only a live REMOTE connection has a transport child to
+        // signal. A `.localOnly` (or `.disconnected`) scan has no child, so
+        // proceeding would drive `signal` → `NO_CHILD` → a spurious
+        // restart-required. The authority itself refuses (defence in depth with
+        // the Wiring layer's remote-ness gate); a local Stop uses the honest
+        // abandon/return-to-picker path instead. No-op here.
+        guard case .open = connection else { return [] }
+        // Blocker 1: a profile picked *during the scan* took `requestOpen`'s
+        // default branch and set `queued`. If left in that standalone slot it is
+        // stranded on stop-in-place (its waiting window never resolves) and can
+        // later detonate when an unrelated `finishToIdle` consumes it. Fold it
+        // into the interruption destination up front: a pending open outranks
+        // stop/picker (rank 2), so `openQueued` is the correct monotonic landing
+        // and `queued` is cleared. Nothing re-sets `queued` during interruption,
+        // so every downstream exit (routeInterruptDestination, the `.stopped`
+        // exits) is now provably queued-free.
+        var initial = destination
+        if let q = queued {
+            queued = nil
+            let folded = Destination.openQueued(q.id, profile: q.profile)
+            if folded.rank >= destination.rank { initial = folded }
+        }
+        phase = .interruptingScan(session, op, .signalling(terminalObserved: false), initial)
         return [.disarmScanStall(session, op),
                 .cancelSessionAuxWork(session),
                 .signalTransportChild(session, op)]
@@ -544,14 +570,38 @@ final class EngineSessionCoordinator {
         }
     }
 
-    /// A phase-and-stage-exact interruption deadline elapsed. Bound to the exact
-    /// `(session, op, stage)` so a stale timer from a prior cycle no-ops. Any
-    /// non-terminal interrupt stage exceeding its bound → restart-required.
+    /// A phase-and-stage interruption deadline elapsed. Bound to `(session, op,
+    /// stage)` so a stale timer from a prior cycle — or from a stage we have
+    /// already progressed past — no-ops. Any non-terminal interrupt stage
+    /// exceeding its bound → restart-required.
     func interruptDeadlineElapsed(_ session: SessionID, _ op: OperationID,
                                   _ stage: InterruptStage) -> [Effect] {
-        guard case .interruptingScan(session, op, let cur, _) = phase, cur == stage
+        guard case .interruptingScan(session, op, let cur, _) = phase,
+              Self.deadlineStageMatches(armed: stage, current: cur)
         else { return [] }
         return enterRestartRequired("scan interruption timed out")
+    }
+
+    /// Whether a deadline armed for `armed` still bounds the `current` stage.
+    ///
+    /// Blocker 2: `signalling` is matched as a CLASS — both `terminalObserved`
+    /// values are the same deadline. The driver arms ONE signalling deadline at
+    /// `.signalling(false)`; an early worker terminal flips the flag to
+    /// `.signalling(true)` *in place* (see `interruptTerminalObserved`), without
+    /// re-arming. If the flag value were matched exactly, that flip would strand
+    /// the pending timer as "stale" and — should the signal result then never
+    /// arrive (a driver/callback failure, exactly what the deadline exists to
+    /// bound) — the coordinator would hang in `.interruptingScan` forever,
+    /// violating the design's promise that every non-terminal stage is bounded.
+    /// All other stages carry stable payloads (identity / close op) and are
+    /// matched by exact value, so progressing OUT of `signalling` (to
+    /// `awaitingTerminal` etc.) correctly no-ops the old signalling timer.
+    private static func deadlineStageMatches(armed: InterruptStage,
+                                             current: InterruptStage) -> Bool {
+        switch (armed, current) {
+        case (.signalling, .signalling): return true
+        default:                         return armed == current
+        }
     }
 
     /// Route a status-0 interruption close to its destination.
@@ -564,7 +614,10 @@ final class EngineSessionCoordinator {
             phase = .stopped(session)
             return [.presentStopped(session)]
         case .returnToPicker:
-            let idleEffects = finishToIdle()   // queued is nil here → []
+            // `queued` is provably nil during interruption (folded into the
+            // destination at request time; never re-set thereafter), so
+            // `finishToIdle()` returns [] and cannot start a surprise open here.
+            let idleEffects = finishToIdle()
             return [.closeWindow(session), .showPicker] + idleEffects
         case .openQueued(let id, let profile):
             queued = (id, profile)

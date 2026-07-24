@@ -52,6 +52,69 @@ final class EngineScanInterruptionTests: XCTestCase {
         XCTAssertEqual(c.phase, .idle)
     }
 
+    // Condition 3: a `.localOnly` scan has no transport child; interruption must
+    // be refused at the authority (else `signal` → NO_CHILD → spurious restart).
+    func test_request_fromLocalScanning_isNoOp_staysScanning() {
+        let c = C()
+        var s: SID?, connectOp: OID?
+        for e in c.requestOpen(profile: "p") {
+            if case .beginConnect(let ss, let oo, _) = e { s = ss; connectOp = oo }
+        }
+        _ = c.connectFinished(s!, connectOp!, result: .local)   // → .scanning over .localOnly
+        let e = c.requestScanInterruption(s!, destination: .stopInPlace)
+        XCTAssertTrue(e.isEmpty, "local scan interruption must be a no-op")
+        guard case .scanning(s!, _) = c.phase else {
+            return XCTFail("must stay scanning, got \(c.phase)")
+        }
+    }
+
+    // MARK: - Blocker 1: a profile picked mid-scan folds into the destination
+
+    /// A `requestOpen` during `.scanning` sets `queued` (default branch). A
+    /// subsequent Stop must NOT strand it: a pending open outranks stopInPlace,
+    /// so the interruption destination becomes `openQueued`, never `.stopped`.
+    func test_request_foldsPreexistingQueued_overStopInPlace() {
+        let (c, s, op) = scanning()
+        var reqId: C.OpenRequestID?
+        for e in c.requestOpen(profile: "q") { if case .showWaiting(let id, "q") = e { reqId = id } }
+        XCTAssertNotNil(reqId, "mid-scan open should have queued a waiting request")
+        _ = c.requestScanInterruption(s, destination: .stopInPlace)
+        guard case .interruptingScan(s, op, .signalling(terminalObserved: false),
+                                     .openQueued(reqId!, let p)) = c.phase else {
+            return XCTFail("queued must fold into openQueued, got \(c.phase)")
+        }
+        XCTAssertEqual(p, "q")
+    }
+
+    /// A pending open also outranks returnToPicker.
+    func test_request_foldsPreexistingQueued_overReturnToPicker() {
+        let (c, s, _) = scanning()
+        var reqId: C.OpenRequestID?
+        for e in c.requestOpen(profile: "q") { if case .showWaiting(let id, _) = e { reqId = id } }
+        _ = c.requestScanInterruption(s, destination: .returnToPicker)
+        guard case .interruptingScan(_, _, _, .openQueued(reqId!, _)) = c.phase else {
+            return XCTFail("queued must outrank returnToPicker, got \(c.phase)")
+        }
+    }
+
+    /// End-to-end proof that the folded queued open cannot detonate later: with a
+    /// queued open the cycle routes to the fresh session, never to `.stopped`
+    /// (which is what would strand/detonate the pending open).
+    func test_foldedQueued_routesToFreshSession_notStopped() {
+        let (c, s, op) = scanning()
+        for e in c.requestOpen(profile: "q") { _ = e }
+        _ = c.requestScanInterruption(s, destination: .stopInPlace)
+        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+        _ = c.interruptReapClassified(s, op, .absent)
+        guard case .interruptingScan(_, _, .closing(let closeOp), .openQueued) = c.phase else {
+            return XCTFail("expected closing→openQueued, got \(c.phase)")
+        }
+        let e = c.closeCompleted(s, closeOp, status: 0)
+        XCTAssertTrue(has(e, .closeWindow(s)))
+        XCTAssertTrue(e.contains { if case .showSession(_, "q") = $0 { return true }; return false })
+        if case .stopped = c.phase { XCTFail("must not land in .stopped with a pending open") }
+    }
+
     // MARK: - Signal result table (conservative)
 
     func test_signalled_noTerminalYet_awaitsTerminal() {
@@ -165,6 +228,17 @@ final class EngineScanInterruptionTests: XCTestCase {
         if case .opening(newSession!, _) = c.phase {} else { XCTFail("expected opening, got \(c.phase)") }
     }
 
+    /// The driver executes effects in order, and the design mandates the
+    /// interrupted window is disposed BEFORE the queued session is shown.
+    func test_close_openQueued_closeWindowPrecedesShowSession() {
+        let (c, s, _, closeOp) = closing(.openQueued(C.OpenRequestID(raw: 77), profile: "q"))
+        let e = c.closeCompleted(s, closeOp, status: 0)
+        let closeIdx = e.firstIndex { if case .closeWindow = $0 { return true }; return false }
+        let showIdx = e.firstIndex { if case .showSession = $0 { return true }; return false }
+        XCTAssertNotNil(closeIdx); XCTAssertNotNil(showIdx)
+        XCTAssertLessThan(closeIdx!, showIdx!, "closeWindow must precede showSession")
+    }
+
     func test_close_nonZero_restartRequired() {
         let (c, s, _, closeOp) = closing(.stopInPlace)
         _ = c.closeCompleted(s, closeOp, status: 5)
@@ -260,6 +334,30 @@ final class EngineScanInterruptionTests: XCTestCase {
         _ = c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false))
         XCTAssertFalse(c.isRestartRequired)
         guard case .interruptingScan(_, _, .awaitingTerminal, _) = c.phase else { return XCTFail() }
+    }
+
+    /// Blocker 2: the signalling deadline is armed at `.signalling(false)`. An
+    /// early worker terminal flips the flag to `.signalling(true)` in place
+    /// (no re-arm). The still-pending deadline must STILL bound the stage — else
+    /// a never-arriving signal result would hang the cycle forever.
+    func test_deadline_signallingClass_firesAfterEarlyTerminalFlip() {
+        let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
+        _ = c.interruptTerminalObserved(s, op)                   // flag flips false→true
+        guard case .interruptingScan(_, _, .signalling(terminalObserved: true), _) = c.phase else {
+            return XCTFail("expected signalling(true) after early terminal, got \(c.phase)")
+        }
+        _ = c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false))  // armed value
+        XCTAssertTrue(c.isRestartRequired, "signalling deadline must still fire after the flag flip")
+    }
+
+    /// Once we progress OUT of signalling, the old signalling deadline no-ops
+    /// (the class match only covers signalling↔signalling, not signalling→later).
+    func test_deadline_signallingClass_doesNotFireOnceAwaitingReap() {
+        let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
+        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+        guard case .interruptingScan(_, _, .awaitingReap, _) = c.phase else { return XCTFail() }
+        _ = c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false))
+        XCTAssertFalse(c.isRestartRequired, "signalling deadline must not fire in awaitingReap")
     }
 
     // MARK: - Stale terminal after destination reached
