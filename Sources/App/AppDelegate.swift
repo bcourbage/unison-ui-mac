@@ -2627,6 +2627,17 @@ extension AppDelegate {
         // Consume the EXACT scan token with quiescence PROVEN (emits the close);
         // requestOpen queues behind it. Coordinator gates reopen on close 0.
         log.write("scan-interrupt: reap confirmed → operationFailed(quiescent) \(b.session)/\(b.op); reopen '\(profile)'")
+        // Close the interrupted session's window BEFORE the reopen so it isn't
+        // left orphaned behind the replacement window (matches
+        // reopenCurrentProfileFresh's teardown; the delegate is detached first
+        // so its onClose can't re-enter abandon and double-drive the
+        // coordinator).
+        if let w = windowBySession[b.session] {
+            w.window?.delegate = nil
+            w.close()
+            windowBySession[b.session] = nil
+            profileBySession[b.session] = nil
+        }
         pendingScan = nil       // token consumed; disarms the stall timer
         run(engine.operationFailed(b.session, b.op,
                                    reason: "scan interrupted (Phase 0 spike)",
