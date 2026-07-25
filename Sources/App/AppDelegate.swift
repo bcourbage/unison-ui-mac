@@ -274,6 +274,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             windowBySession[s]?.finalizeSyncUnavailable(reason: reason)
         case .restartRequired(let reason):
             driveRestartRequired(reason: reason)
+        // --- Phase 1a scan-interruption effects (issue #24) ---
+        // Foundation PR: the coordinator machinery + effects exist and are
+        // fully unit-tested, but nothing INVOKES the interruption events yet, so
+        // these effects are never emitted here. The Wiring PR replaces these
+        // no-ops with the real driver (signal the child, poll reap, present the
+        // stopped window, close the window, show the picker, cancel aux work,
+        // disarm the stall timer). Kept as explicit no-ops so the exhaustive
+        // switch compiles and behavior is unchanged in this PR.
+        case .signalTransportChild, .pollReap, .presentStopped, .closeWindow,
+             .showPicker, .cancelSessionAuxWork, .disarmScanStall:
+            log.write("scan-interrupt effect emitted with no wiring (Foundation PR): \(effect)")
         }
     }
 
