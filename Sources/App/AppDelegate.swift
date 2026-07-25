@@ -247,21 +247,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     // socket. A reconnect that beats that release hits "archives are locked".
     // Since the lock is our own orphan and WILL clear, a post-interruption
     // reconnect retries the (fresh) reconnect a bounded number of times before
-    // surfacing the honest error. The reconnect attempt is itself the only
-    // reliable, platform-agnostic "is the lock gone yet" signal.
-    /// True from the interruption's SIGKILL until the next scan completes
-    /// successfully — the window in which an "archives are locked" fatal is
-    /// treated as the transient, retryable case.
-    private var postInterruptReconnectActive = false
-    /// Remaining automatic retries for the post-interruption reconnect.
-    private var scanInterruptLockRetriesLeft = 0
+    // surfacing the honest error. The retry authority is an IDENTITY-BOUND lease
+    // (see ScanInterruptRetryLease) so a leaked/stale lease can never authorize
+    // a retry for a different profile/session/operation.
+    /// The active retry lease, bound to the current reconnect's
+    /// `(profile, session, scan op)`. nil = no retry authority.
+    private var scanInterruptRetryLease: ScanInterruptRetryLease?
+    /// Budget carried into the NEXT reconnect's lease (armed on the interrupt's
+    /// SIGKILL, and re-armed by each retry with the decremented count). Consumed
+    /// into a lease when that reconnect's scan op begins.
+    private var scanInterruptRetryBudget = 0
+    /// The deferred reopen work for a scheduled retry — cancelled on any clear
+    /// so a stale retry can never fire after teardown.
+    private var scanInterruptRetryWork: DispatchWorkItem?
     /// Max automatic reconnect retries on a transient post-interrupt lock.
     let scanInterruptLockMaxRetries = 4
     /// Delay before each reconnect retry (lets the orphan release the lock).
     var scanInterruptLockRetryDelay: TimeInterval = 1.5
     /// True during a lock-retry's brief window-less gap (closed → deferred
     /// reopen), so `applicationShouldTerminateAfterLastWindowClosed` doesn't quit
-    /// the app in that gap. Cleared once a window is shown again.
+    /// the app in that gap, and so a late/duplicate fatal in the gap is
+    /// suppressed rather than modal'd. Cleared once a window is shown again.
     private var scanInterruptRetryInFlight = false
 
     /// Reconcile window per live session (keyed by SessionID, stable across
@@ -566,7 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         windowBySession[s] = nil
         profileBySession[s] = nil
         if closeWindow { w.close() }
-        clearPostInterruptReconnectState()   // leaving cancels any pending lock-retry context
+        clearScanInterruptRetry()   // leaving cancels any pending lock-retry context
         run(engine.abandon(reason: reason))
         showProfilePicker(select: profile)
     }
@@ -608,6 +614,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     private func driveBeginScan(_ s: SessionID, _ op: OperationID) {
         pendingScan = (s, op)
+        // Bind the retry lease to THIS reconnect's exact (profile, session, op)
+        // when a retry budget is armed (from the interrupt's SIGKILL or a prior
+        // retry). Consumes the budget into the lease so authority is identity-
+        // scoped — a leaked lease can't authorize a different reconnect.
+        if scanInterruptRetryBudget > 0, let profile = lastAttemptedProfile {
+            scanInterruptRetryLease = ScanInterruptRetryLease(
+                profile: profile, session: s, op: op, retriesLeft: scanInterruptRetryBudget)
+            scanInterruptRetryBudget = 0
+        }
         // Show the scanning spinner for a rescan (the initial scan already
         // shows it via beginInitialScan). Idempotent — guarded on isScanning.
         if let w = windowBySession[s], !w.isScanning { w.beginRescan() }
@@ -757,6 +772,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // single source of truth (it refuses all new engine work); AppDelegate
         // keeps no parallel "restartRequired" boolean, and each window latches
         // its own display-gating flag in `showRestartRequired`.
+        // Any pending lock-retry is void once the engine demands a restart
+        // (covers a retry reopen whose close failed → restart-required).
+        clearScanInterruptRetry()
         log.write("engine restart required: \(reason)")
         for (_, w) in windowBySession { w.showRestartRequired(reason: reason) }
         if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason) }
@@ -910,15 +928,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// coordinator additionally gates the reopen on that close returning status
     /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
     /// to restart-required instead of reusing the runtime.
-    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String,
-                                           reopenAfter delay: TimeInterval = 0) {
+    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
         // Detach + close the stale window WITHOUT its onClose→abandon path;
-        // we drive the coordinator explicitly below. With `reopenAfter == 0` a
-        // replacement window opens synchronously in the same turn, so the app
-        // never sees a last-window-closed moment. When `reopenAfter > 0` (the
-        // scan-interrupt lock retry), the reopen is deferred — the caller sets
-        // the quit-suppression flag so the brief window-less gap can't trigger
-        // `applicationShouldTerminateAfterLastWindowClosed`.
+        // we drive the coordinator explicitly below (and a replacement window
+        // opens synchronously in the same turn, so the app never sees a
+        // last-window-closed moment).
         if let s = engine.currentSession, let w = windowBySession[s] {
             w.window?.delegate = nil
             w.close()
@@ -931,13 +945,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         } else {
             run(engine.abandon(reason: failedReason))
         }
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.run(self?.engine.requestOpen(profile: profile) ?? [])
-            }
-        } else {
-            run(engine.requestOpen(profile: profile))
-        }
+        run(engine.requestOpen(profile: profile))
     }
 
     // MARK: - Permanent bridge handlers (installed once at launch)
@@ -1053,7 +1061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self.disarmConnectWatchdog()
             // A scan completed cleanly → the post-interruption reconnect (if any)
             // succeeded; future locks are no longer the transient case.
-            self.clearPostInterruptReconnectState()
+            self.clearScanInterruptRetry()
             self.log.write("init2 complete — \(items.count) items \(s)/\(op)")
             self.runScanEffects(self.engine.scanCompleted(s, op), items: items)
             #if DEBUG
@@ -1672,6 +1680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// release-gate `make leaks` runs.
     func applicationWillTerminate(_ notification: Notification) {
         log.write("applicationWillTerminate — releasing bridge roots")
+        clearScanInterruptRetry()   // cancel any pending lock-retry work on shutdown
         // Cancel any in-flight version probe. cancel() fires the child's
         // SIGTERM SYNCHRONOUSLY (deterministic teardown, not a flag noticed on
         // a later poll tick), then wait a bounded interval for the probe body
@@ -2693,41 +2702,77 @@ extension AppDelegate {
             }
             // (2) A TRANSIENT "archives are locked" on a post-interruption
             // reconnect: the orphaned remote server hasn't released its lock yet.
-            // Ack (no modal) and retry the reconnect, bounded — the lock will
-            // clear. On exhaustion, fall through to the honest modal.
-            if self.postInterruptReconnectActive,
-               self.scanInterruptLockRetriesLeft > 0,
-               ScanInterruptPolicy.isArchiveLockFatal(msg) {
-                self.scanInterruptLockRetriesLeft -= 1
-                self.log.write("scan-interrupt: transient 'archives are locked' on reconnect — retry (\(self.scanInterruptLockRetriesLeft) left)")
+            // Identity-checked so a leaked/stale/wrong-profile/wrong-op fatal
+            // can't trigger a retry.
+            guard ScanInterruptPolicy.isArchiveLockFatal(msg) else { return false }
+            switch ScanInterruptRetryPolicy.decideLockFatal(
+                        lease: self.scanInterruptRetryLease,
+                        retryInFlight: self.scanInterruptRetryInFlight,
+                        profile: self.lastAttemptedProfile,
+                        session: self.pendingScan?.0, op: self.pendingScan?.1) {
+            case .retry(let next):
+                self.log.write("scan-interrupt: transient 'archives are locked' on reconnect \(next.session)/\(next.op) — retry (\(next.retriesLeft) left)")
                 unison_bridge_fatal_response(opaque)
+                self.scanInterruptRetryLease = nil          // consume (reject duplicates for this op)
+                self.scanInterruptRetryBudget = next.retriesLeft   // carried into the reopen's lease
                 self.scheduleScanInterruptLockRetry()
                 return true
+            case .suppress:
+                self.log.write("scan-interrupt: duplicate/late lock fatal during retry — suppressed")
+                unison_bridge_fatal_response(opaque)
+                return true
+            case .passThrough:
+                return false                                 // honest modal (unrelated lock / exhausted)
             }
-            return false
         }
     }
 
-    /// Retry a post-interruption reconnect that hit a transient lock: fail the
-    /// current op quiescently (consumes the pending slot, so a racing scan-failed
-    /// is dropped), then deferred-reopen the profile after a short settle. The
-    /// quit-suppression flag guards the window-less gap.
+    /// Retry a post-interruption reconnect that hit a transient lock. Fails the
+    /// current op quiescently + closes the window SYNCHRONOUSLY now — consuming
+    /// `pendingScan` so a racing scan-failed for the same op is dropped (no
+    /// double-drive) and the OCaml side is torn down cleanly — then DEFERS only
+    /// the reopen (retained + cancellable) so a teardown can cancel it. The
+    /// quit-suppression flag guards the brief window-less gap.
     private func scheduleScanInterruptLockRetry() {
         guard let profile = lastAttemptedProfile else {
-            postInterruptReconnectActive = false; return
+            clearScanInterruptRetry(); return
         }
         scanInterruptRetryInFlight = true
-        reopenCurrentProfileFresh(profile,
-                                  failedReason: "archives were locked after interruption (retrying)",
-                                  reopenAfter: scanInterruptLockRetryDelay)
+        // Synchronous fail + close (drops the racing scan-failed via pendingScan
+        // consumption). A close failure → closeCompleted(non-zero) →
+        // restart-required → clearScanInterruptRetry cancels the deferred reopen.
+        if let s = engine.currentSession, let w = windowBySession[s] {
+            w.window?.delegate = nil; w.close()
+            windowBySession[s] = nil; profileBySession[s] = nil
+        }
+        if let (s, op) = takeInFlightOp() {
+            run(engine.operationFailed(s, op,
+                reason: "archives were locked after interruption (retrying)",
+                engineIsQuiescent: true))
+        } else {
+            run(engine.abandon(reason: "archives were locked after interruption (retrying)"))
+        }
+        // Deferred reopen — retained so any clear() cancels it.
+        scanInterruptRetryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scanInterruptRetryWork = nil
+            self.run(self.engine.requestOpen(profile: profile))
+        }
+        scanInterruptRetryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + scanInterruptLockRetryDelay, execute: work)
     }
 
-    /// A scan completed successfully — the post-interruption reconnect is done,
-    /// so future locks are NOT the transient case anymore.
-    func clearPostInterruptReconnectState() {
-        postInterruptReconnectActive = false
-        scanInterruptLockRetriesLeft = 0
+    /// Clear ALL retry authority + cancel any pending retry work. Called on every
+    /// teardown/terminal path (return-to-picker, profile replacement,
+    /// restart-required, ordinary leave, scan success, shutdown) so a leaked
+    /// lease or a stale deferred reopen can never fire (round-4 stale-state fix).
+    func clearScanInterruptRetry() {
+        scanInterruptRetryLease = nil
+        scanInterruptRetryBudget = 0
         scanInterruptRetryInFlight = false
+        scanInterruptRetryWork?.cancel()
+        scanInterruptRetryWork = nil
     }
 
     /// Route the interrupted scan's own terminal (init2-complete / scan-failed /
@@ -2754,13 +2799,13 @@ extension AppDelegate {
         let raw = unison_bridge_signal_scan_transport()
         let result = EngineSessionCoordinator.SignalResult.from(raw)
         // The transport is (or was) killed → the remote server is orphaned and
-        // will release its lock asynchronously. Arm the post-interrupt reconnect
-        // lock-retry window so a reconnect that beats that release retries
-        // instead of surfacing "archives are locked".
+        // will release its lock asynchronously. Arm the retry BUDGET so the next
+        // reconnect's scan op binds a lease and a reconnect that beats the
+        // release retries instead of surfacing "archives are locked".
         switch result {
         case .signalled, .alreadyDeadWithIdentity:
-            postInterruptReconnectActive = true
-            scanInterruptLockRetriesLeft = scanInterruptLockMaxRetries
+            scanInterruptRetryBudget = scanInterruptLockMaxRetries
+            scanInterruptRetryLease = nil
         default:
             break
         }
@@ -2806,6 +2851,10 @@ extension AppDelegate {
     private func driveCloseInterruptWindow(_ s: SessionID) {
         abandonDiff(session: s)
         cancelScanInterruptQualification(s)   // cancels probe + clears cache
+        // returnToPicker / openQueued close: this ends the interrupted session,
+        // so its retry authority must NOT survive into the next selected profile
+        // (round-4 stale-state fix — this path previously left it dangling).
+        clearScanInterruptRetry()
         guard let w = windowBySession[s] else { return }
         w.window?.delegate = nil
         w.close()
