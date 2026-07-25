@@ -25,18 +25,36 @@ section at the bottom so this list stays scannable.
       `abortAllInFlight`, `connectGeneration`, `invalidateConnect` — no longer
       exist; that architecture was replaced by the coordinator.)
 
-      **The genuine open limitation.** None of Cancel / Stop / the detector
-      *unwinds the already-issued OCaml operation*. The in-flight
-      update-detection (`init2`) runs to completion in the background — for a
-      remote/ssh profile that means a lingering remote `unison` child and
-      wasted bandwidth until it finishes (or until quit+reopen). `connection_
-      cancel` is scoped to the credential-prompt phase, not an `init2` op
-      blocked on a round-trip on the serial `connectQueue`. And the scan is not
-      interruptible via the propagation `Abort` mechanism: `Abort.check`/
-      `checkAll` are consulted only in propagation (`copy.ml`/`files.ml`), never
-      in `update.ml`; setting the propagation abort flag *during a scan* trips
-      `update.ml:1027 Assertion failed`, so that flag must stay gated on
-      `isSyncing` (a scan must never flag abort).
+      **Delivered (PR #51, merged `de13fe1`; closed #24, superseded spike #47).**
+      For an `ssh -G`-qualified **direct single-child** transport, scan-phase
+      **Stop Scan** now genuinely interrupts in-process: it SIGKILLs the tracked
+      local transport child (verified-PID registry + reap classification), which
+      unwinds the blocked `init2` → coordinator-gated **stop-in-place** (Rescan
+      reuses the session). The affordance is phase-aware (`StopItemAppearance`):
+      a neutral **Return to Profiles** until the engine is transport-blocked
+      (`sawRemoteWait`), then it promotes to **Stop Scan**; a pre-SIGKILL
+      authorization checkpoint (`ScanInterruptPolicy.signalAuthorized`) re-checks
+      the boundary + the exact pending op before the kill. A bounded transient-
+      lock retry handles the orphaned-server reconnect race. Live-validated on a
+      six-case exact-Release matrix. The lingering remote `unison` child is now a
+      self-cleaning orphan (exits on EOF, ~82 s), not an unbounded leak.
+
+      **The residual open limitation (narrower now).** True in-process
+      cancellation is NOT yet available for (a) **non-qualified** transports
+      (ControlMaster / ProxyCommand / custom `sshcmd`) — these still fall back to
+      honest abandon → restart-required; or (b) a scan **CPU-bound in the local-
+      replica walk** — SIGKILLing the transport can't unwind a hashing loop that
+      isn't blocked on it, so Stop Scan is *gated off* during that phase (offered
+      only once transport-blocked) and a leave there winds down in the
+      background. `connection_cancel` remains scoped to the credential-prompt
+      phase, not an `init2` op blocked on a round-trip on the serial
+      `connectQueue`. Cancelling a CPU-bound local walk needs cooperative core
+      cancellation in the OCaml engine: the propagation `Abort` mechanism
+      (`Abort.check`/`checkAll`, `copy.ml`/`files.ml`) is never consulted in
+      `update.ml`, and setting that flag *during a scan* trips `update.ml:1027
+      Assertion failed`, so it must stay gated on `isSyncing`. That engine-level
+      cancellation — likely paired with the #41 liveness heartbeat for the
+      non-direct transports — is the remaining work.
 
       **Prerequisite already satisfied — build on it, do not re-derive.**
       Exception hardening (PR #11 bridge-safety): every Swift→OCaml callback
