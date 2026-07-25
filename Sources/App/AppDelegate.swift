@@ -2811,10 +2811,17 @@ extension AppDelegate {
     // MARK: effect executors
 
     private func driveSignalTransportChild(_ s: SessionID, _ op: OperationID) {
-        // Acceptance point 1 (second checkpoint): re-verify qualification before
-        // the SIGKILL. A stale/programmatic request must never bypass the guard.
-        guard scanInterruptSupported(s) else {
-            log.write("scan-interrupt: signal REFUSED — \(s) not qualified at signal time; conservative restart")
+        // Acceptance point 1 (second, authoritative checkpoint): re-verify the
+        // FULL interruptibility boundary immediately before the irreversible
+        // SIGKILL. Not just bare qualification — the transport-wait boundary
+        // (finding #3: a SIGKILL can't unwind a CPU-bound local walk in time) AND
+        // exact pending-op identity (a stale/superseded signal must not kill the
+        // current transport). Either failing → conservative restart, no SIGKILL.
+        let ready = scanInterruptReady(s)
+        let pendingMatches = pendingScan.map { $0 == (s, op) } ?? false
+        guard ScanInterruptPolicy.signalAuthorized(interruptReady: ready,
+                                                    pendingScanMatches: pendingMatches) else {
+            log.write("scan-interrupt: signal REFUSED — \(s)/\(op) ready=\(ready) pendingMatch=\(pendingMatches) at signal time; conservative restart (no SIGKILL)")
             run(engine.transportSignalCompleted(s, op, .unprovableIdentity))
             return
         }

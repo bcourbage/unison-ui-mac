@@ -22,6 +22,20 @@ enum ScanInterruptPolicy {
         qualified && sawRemoteWait
     }
 
+    /// Authorization for the IRREVERSIBLE transport SIGKILL at the signal driver
+    /// (acceptance point 1 — the second, authoritative checkpoint immediately
+    /// before the kill). The signal proceeds ONLY when the session is
+    /// interruptible in place RIGHT NOW (`interruptReady`: qualified AND
+    /// transport-blocked, finding #3) AND the signal targets the EXACT pending
+    /// scan op. A qualified-but-pre-remote-wait session (where the SIGKILL could
+    /// not unwind a CPU-bound local walk in time), or a stale / superseded /
+    /// wrong-op signal, is REFUSED here → conservative restart, never a SIGKILL.
+    /// Belt-and-suspenders behind the affordance/leave gates, but this is the
+    /// last line before the kill so it enforces the boundary itself.
+    static func signalAuthorized(interruptReady: Bool, pendingScanMatches: Bool) -> Bool {
+        interruptReady && pendingScanMatches
+    }
+
     /// The genuine "Stop Scan" affordance is active ONLY in the exact
     /// `.scanning` phase AND when the session's scan is interruptible in place
     /// (`qualified` here = `interruptReady`: transport qualified AND engine

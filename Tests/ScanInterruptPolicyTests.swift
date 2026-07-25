@@ -56,6 +56,27 @@ final class ScanInterruptPolicyTests: XCTestCase {
             .interruptReturnToPicker)
     }
 
+    func test_signalAuthorized_requiresInterruptReadyAndExactPendingOp() {
+        // The authoritative pre-SIGKILL checkpoint. Proceed only when
+        // interruptible-in-place AND the signal targets the exact pending op.
+        XCTAssertTrue(P.signalAuthorized(interruptReady: true, pendingScanMatches: true))
+        // Qualified but PRE-remote-wait (interruptReady == false, e.g. still in
+        // the CPU-bound local walk) → REFUSED at the signal layer, no SIGKILL.
+        XCTAssertFalse(P.signalAuthorized(interruptReady: false, pendingScanMatches: true))
+        // Wrong / superseded operation identity → REFUSED, no SIGKILL.
+        XCTAssertFalse(P.signalAuthorized(interruptReady: true, pendingScanMatches: false))
+        XCTAssertFalse(P.signalAuthorized(interruptReady: false, pendingScanMatches: false))
+    }
+
+    func test_signalAuthorized_composesInterruptReady_qualifiedPreRemoteWaitRefused() {
+        // End-to-end of the gate the driver feeds it: a qualified transport that
+        // has NOT reached remote-wait is refused even with the right pending op.
+        let readyPreWait = P.interruptReady(qualified: true, sawRemoteWait: false)
+        XCTAssertFalse(P.signalAuthorized(interruptReady: readyPreWait, pendingScanMatches: true))
+        let readyBlocked = P.interruptReady(qualified: true, sawRemoteWait: true)
+        XCTAssertTrue(P.signalAuthorized(interruptReady: readyBlocked, pendingScanMatches: true))
+    }
+
     // MARK: - Blocker 1: capability is bound to the exact .scanning phase
 
     func test_stopScanAvailable_onlyWhenScanningAndQualified() {
