@@ -24,6 +24,12 @@ enum StopItemAppearance: Equatable {
     case stopSync
     /// Connect/scan phase, nothing to abort: the item returns to the picker.
     case returnToProfiles
+    /// Scan phase over a QUALIFIED direct-ssh transport (Phase 1a, issue #24):
+    /// the item genuinely interrupts the running scan in-process (SIGKILL the
+    /// transport child → unwind → stop in place). Only offered when the
+    /// session's `ssh -G` qualification proved a direct single-child transport;
+    /// otherwise the honest `.returnToProfiles` is shown.
+    case stopScan
 
     /// Semantic tint, mapped to a concrete `NSColor` by the toolbar. Kept as a
     /// value (not `NSColor`) so this type stays AppKit-free and the tint is
@@ -38,6 +44,7 @@ enum StopItemAppearance: Equatable {
         switch self {
         case .stopSync:         return "Stop"
         case .returnToProfiles: return "Return to Profiles"
+        case .stopScan:         return "Stop Scan"
         }
     }
 
@@ -45,25 +52,31 @@ enum StopItemAppearance: Equatable {
         switch self {
         case .stopSync:         return "Cancel the running synchronization"
         case .returnToProfiles: return "Return to the profile list"
+        case .stopScan:         return "Interrupt the running scan and stop"
         }
     }
 
     /// SF Symbol for the item. The connect/scan affordance uses a neutral
     /// back-navigation glyph, NOT the red stop sign, because it does not
-    /// interrupt the scan — it returns to the picker.
+    /// interrupt the scan — it returns to the picker. `.stopScan` genuinely
+    /// interrupts, so it takes the stop glyph.
     var systemSymbol: String {
         switch self {
         case .stopSync:         return "stop.fill"
         case .returnToProfiles: return "chevron.backward"
+        case .stopScan:         return "stop.fill"
         }
     }
 
     /// Only a real sync-abort is destructive-tinted (red). Return-to-profiles
-    /// is ordinary navigation and takes the normal tint.
+    /// is ordinary navigation and takes the normal tint. A genuine scan
+    /// interruption stops in-flight engine work, so it is destructive-tinted
+    /// like a sync-abort.
     var tint: Tint {
         switch self {
         case .stopSync:         return .destructive
         case .returnToProfiles: return .normal
+        case .stopScan:         return .destructive
         }
     }
 
@@ -72,13 +85,19 @@ enum StopItemAppearance: Equatable {
         switch self {
         case .stopSync:         return "Aborting sync… in-progress transfers may finish before the abort takes effect"
         case .returnToProfiles: return "Returning to profiles…"
+        case .stopScan:         return "Stopping scan…"
         }
     }
 
     /// Decide from the controller's phase flags. Sync takes precedence: once a
     /// sync is running the item is a sync-abort even though `isScanning` may
-    /// still read true during the transition.
-    static func forPhase(isScanning: Bool, isSyncing: Bool) -> StopItemAppearance {
-        (isScanning && !isSyncing) ? .returnToProfiles : .stopSync
+    /// still read true during the transition. In the scan phase, the item
+    /// becomes a genuine `.stopScan` only when the session's transport qualified
+    /// for in-process interruption; otherwise it stays the honest
+    /// `.returnToProfiles`.
+    static func forPhase(isScanning: Bool, isSyncing: Bool,
+                         scanInterruptAvailable: Bool = false) -> StopItemAppearance {
+        guard isScanning && !isSyncing else { return .stopSync }
+        return scanInterruptAvailable ? .stopScan : .returnToProfiles
     }
 }
