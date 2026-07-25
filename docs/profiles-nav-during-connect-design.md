@@ -1,6 +1,6 @@
-# Design Proposal v2: Profiles / picker navigation during connect (issue #38)
+# Design Proposal v2.1: Profiles / picker navigation during connect (issue #38)
 
-Status: draft for review. 0.3.1 UX; **no vendored-blob change**. v2 corrects two incorrect assumptions in v1 (the leave path, and the root cause) per review.
+Status: **approved for engineering** (accuracy corrections applied). 0.3.1 UX; **no vendored-blob change**. v2 corrected two incorrect assumptions in v1 (the leave path, and the root cause); v2.1 corrects two accounting errors per the approval review: (1) the connect watchdog does **not** terminate/reap the transport — it routes to `.restartRequired` with the child still live; (2) true connect cancellation is **not** gated on #41.
 
 Related: #35 (fatal-ssh-as-prompt / `connection_cancel`, done), #51 (scan-interruption teardown, merged), #53 (true in-process interruption residual). Vocabulary: `docs/scan-interruption-design.md`.
 
@@ -8,7 +8,7 @@ Related: #35 (fatal-ssh-as-prompt / `connection_cancel`, done), #51 (scan-interr
 
 Make **navigation back to the profile picker reliably available during the connect phase (`.opening`)**, so a user can bail to the picker during a slow or stuck connect.
 
-This is **navigation, not guaranteed immediate connect interruption.** #38 does *not* promise to kill the in-flight connect at click time. It shows the picker immediately, marks the connect operation abandoned, and lets it wind down in the background (or reach the connect watchdog). True connect cancellation is a separate, larger product (§6, deferred to #53's orbit).
+This is **navigation, not guaranteed immediate connect interruption.** #38 does *not* promise to kill the in-flight connect at click time. It shows the picker immediately, marks the connect operation abandoned, and lets it reach either a natural terminal or — if it stalls — the connect watchdog (→ restart-required; the watchdog does not itself reap the transport). True connect cancellation is a separate, larger product (§6, deferred to #53).
 
 ## 2. Motivating scenario
 
@@ -49,10 +49,14 @@ v1 claimed a nav-during-`.opening` already flows through `connection_cancel` and
 
 `connection_cancel` is a **separate** path, `cancelPreconnection` ([AppDelegate.swift:1372](../Sources/App/AppDelegate.swift)), used today for credential-cancel / fatal recovery — it retains the op lease + re-arms the watchdog until `unison_bridge_connection_cancel()` returns, and only an *acknowledged* cancel declares quiescence (a cancel failure or watchdog timeout → restart-required). Critically it runs on the **serial `connectQueue`**, so it **cannot pre-empt a connect bridge call that is already blocking that queue** — it waits behind it. "Reuse `connection_cancel` to bail immediately" is therefore not demonstrated and is not part of #38.
 
-**#38 uses the existing abandoned-operation + queued-open authority, honestly:**
-- Clicking Profiles during `.opening` → `leaveSession` → picker shown immediately; the abandoned connect still owns the engine lease.
-- The abandoned connect **winds down in the background or reaches its connect watchdog** (~`connectStallTimeout`). For a firewall-hung connect that means it lingers (an idle ssh) until the watchdog terminates it. We do **not** claim an immediate reap.
-- If the user selects a **replacement profile**, it enters the coordinator's existing engine-idle **queued-open** path and starts only once the abandoned op genuinely terminates. So after bailing you're at the picker at once, but a replacement sync may wait for the old (possibly hung) connect to clear (up to the watchdog). That is the honest navigation-only tradeoff.
+**#38 uses the existing abandoned-operation + queued-open authority, honestly.** Clicking Profiles during `.opening` → `leaveSession` → picker shown immediately; the abandoned connect still owns the engine lease. It then reaches one of two **distinct** outcomes:
+
+- **Natural terminal.** The connect eventually finishes (success, failure, or `connection_end`). The coordinator accepts that **first valid terminal** and completes teardown — closing/reaping the transport if needed — and a queued replacement may then start. (A late `connection_end` success gets additional orphan close-and-drain handling.)
+- **Watchdog.** The connect stalls. `handleConnectTimeout` ([AppDelegate.swift:1824](../Sources/App/AppDelegate.swift)) fails the op with **UNCERTAIN** quiescence (`engineIsQuiescent: false`) → the coordinator enters **`.restartRequired`** and **clears the queued replacement**. It does **not** kill or reap the transport child, so a firewall-hung ssh **remains until the app quits** (the shutdown reaper terminates registered children). App restart is required.
+
+We do **not** claim an immediate reap on navigation, and **the watchdog does not terminate the connect** — it routes to restart-required with the transport still live.
+
+A **replacement profile** selected after bailing enters the coordinator's existing engine-idle **queued-open** path: it starts only if the abandoned op reaches a **natural** terminal (which releases the lease). A **watchdog** outcome does **not** start the replacement — it clears it and requires a restart. So the honest navigation-only tradeoff is: the picker returns immediately, a replacement sync starts only on natural termination, and a genuinely stuck (e.g. firewall-hung) connect ends in restart-required, not an in-app recovery.
 
 ## 6. Two products (resolve the contradiction)
 
@@ -61,7 +65,7 @@ v1 contradicted itself: "picker appears only after cancellation is acknowledged"
 The navigation-only model resolves it: **show the picker while the abandoned operation still owns the engine, and let a replacement selection enter the coordinator's existing waiting/queued-open path.** That is precisely what makes the queued-replacement-around-connect scenario GUI-reachable.
 
 - **(A) Navigation-only — recommended for #38.** Show the picker immediately; mark the old op abandoned; preserve its engine lease; queue any replacement until it terminates. Already supported by the coordinator; keeps #38 small.
-- **(B) True connect cancellation — deferred.** Hold presentation until cancellation/quiescence is proven. Needs a first-class cancellation design and a feasibility assessment of pre-empting a bridge call already occupying the serial worker. Substantially larger; belongs with #53, likely needing the #41 signal.
+- **(B) True connect cancellation — deferred.** Hold presentation until cancellation/quiescence is proven. Needs a first-class cancellation design and a feasibility assessment of pre-empting a bridge call already occupying the serial worker, reaping the transport, and proving engine quiescence. Substantially larger; defer to #53 or a dedicated connect-cancellation design. **#41 is not a prerequisite:** a liveness/responsiveness signal can *detect* a stuck connect but cannot pre-empt the serial bridge call, reap the transport, or prove quiescence. Revisit any relationship if/when #41 is redesigned.
 
 #38, titled "Profiles navigation during connect," is **(A)**.
 
@@ -77,10 +81,11 @@ The navigation-only model resolves it: **show the picker while the abandoned ope
 - **Pre-sheet navigation:** during `.opening`, before any sheet — **toolbar** Return-to-Profiles/Profiles enabled and returns to picker; **menu** `Show Profile Picker` enabled and returns to picker. (Invert the 12/12-disabled menu evidence; verify the toolbar independently.)
 - **Sheet modality:** with the credential sheet up, nav behaves as today; the sheet's **Cancel** still exits credential entry.
 - **Replacement queued behind the exact connect op:** after bailing, selecting another profile enters the queued-open path and starts only once the abandoned op terminates (bound to the exact `(session, op)`, not a blanket idle).
-- **Connect success/failure/watchdog races after abandonment:** the abandoned op's late terminal (success, failure, or watchdog) is consumed by the coordinator's phase-exact checks and does not resurrect UI or mis-release a replacement's lease.
+- **Natural terminal after abandonment:** the abandoned op's **first valid** terminal (connect success / failure / `connection_end`) is accepted by the coordinator's phase-exact checks and completes teardown (close/reap if needed); a queued replacement then starts. A late `connection_end` success gets orphan close-and-drain.
+- **First-valid-terminal vs later stale/duplicate (preserve this exact distinction):** the coordinator accepts the FIRST valid terminal for the abandoned op and uses it to finish teardown; LATER duplicate/stale terminals for the same op are dropped (token/phase mismatch) and never resurrect UI or mis-release a replacement's lease. Cover both deterministically.
+- **Watchdog / restart after abandonment:** a stalled abandoned connect → `handleConnectTimeout` → `.restartRequired`; the queued replacement is **cleared** and does **not** start; the transport child is **not** reaped (it remains until the quit-time shutdown reaper). Assert restart-required is surfaced.
 - **Stale callbacks:** a late connect/scan callback for the abandoned op is dropped (token/phase mismatch), never applied to the picker or a replacement.
 - **Double navigation / close:** a second Profiles/close for an already-torn-down session is a no-op (`windowBySession` guard).
-- **Eventual transport cleanup or restart-required:** confirm the abandoned connect terminates (watchdog → terminal) and its ssh child is eventually cleaned up; an unprovable-quiescence path routes to restart-required, not a silent leak.
 - **No sync-confirmation bypass:** navigation during `.syncing` remains blocked (the three-way sync-confirmation alert is not bypassable via this path).
 
 ## 9. Invariants
@@ -94,8 +99,8 @@ The navigation-only model resolves it: **show the picker while the abandoned ope
 
 - Which control actually reads disabled during `.opening` — menu only, toolbar only, or both? (Resolved by §4 instrumentation; determines the fix's size and shape.)
 - Is there container/group-level toolbar disabling during `.opening` that overrides per-item validation?
-- Acceptable replacement-latency: for a firewall-hung connect, a replacement waits up to the watchdog (~60s). Is that acceptable for 0.3.1, or does it argue for accelerating product (B)? (Recommend accept for 0.3.1; note as the motivation for (B)/#53.)
+- Replacement latency is bounded by the abandoned op's **natural** termination; a **watchdog** outcome does not start the replacement — it clears it and requires a restart. So a firewall-hung connect ends in restart-required, not an automatic replacement. Is requiring a restart for a genuinely stuck connect acceptable for 0.3.1, or does it argue for accelerating (B)? (Recommend accept for 0.3.1; it is the motivation for (B)/#53.)
 
 ## 11. Recommendation
 
-Ship **(A) navigation-only** in 0.3.1: instrument first (§4), fix the confirmed control(s), and lean on the existing abandon + queued-open authority — no blob, no new cancellation. State honestly that the abandoned connect winds down in the background or hits the watchdog, and that a replacement queues behind it. Defer **(B) true connect cancellation** to a first-class design alongside #53/#41. Do not expand #35 / PR #37 for this.
+Ship **(A) navigation-only** in 0.3.1: instrument first (§4), fix the confirmed control(s), and lean on the existing abandon + queued-open authority — no blob, no new cancellation. State honestly that the abandoned connect either reaches a natural terminal (releasing the lease, allowing a queued replacement) or stalls to the watchdog → restart-required (transport lingering until the shutdown reaper). Defer **(B) true connect cancellation** to a first-class design (with #53, or a dedicated connect-cancellation design) — do **not** prescribe #41 as a prerequisite. Do not expand #35 / PR #37 for this.
