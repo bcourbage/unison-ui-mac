@@ -22,6 +22,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// `CancelScanRequest`: that returns to the picker; this stops the scan in
     /// place, keeping the same profile window.
     typealias StopScanRequest = @MainActor () -> Void
+    /// Owner veto for a window-close (issue #24, Finding 1): returns true to
+    /// ALLOW the close, false to intercept it (the owner started a coordinator-
+    /// driven interruption and will close the window itself on quiescence).
+    typealias WindowShouldCloseRequest = @MainActor () -> Bool
+    /// The Profiles toolbar action, routed to the owner so a qualified scan
+    /// becomes a `.returnToPicker` interruption instead of a bare close.
+    typealias ProfilesRequest = @MainActor () -> Void
     /// Invoked when the user presses Go. The window never calls the sync
     /// bridge itself — it asks the engine coordinator (via AppDelegate) to
     /// authorize the sync. The coordinator answers with a `.beginSync`
@@ -85,6 +92,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onRescanRequested: RescanRequest
     private let onCancelScan: CancelScanRequest
     private let onStopScan: StopScanRequest
+    private let onWindowShouldClose: WindowShouldCloseRequest
+    private let onProfilesRequested: ProfilesRequest
 
     /// Whether this session's transport qualified for genuine in-process scan
     /// interruption (issue #24). Set asynchronously by the AppDelegate once the
@@ -215,6 +224,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onRescanRequested: @escaping RescanRequest,
          onCancelScan: @escaping CancelScanRequest,
          onStopScan: @escaping StopScanRequest = {},
+         onWindowShouldClose: @escaping WindowShouldCloseRequest = { true },
+         onProfilesRequested: @escaping ProfilesRequest = {},
          onSyncStart: @escaping SyncStartRequest,
          onSyncExit: @escaping SyncExitRequest,
          onEngineUncertain: @escaping EngineUncertainRequest,
@@ -228,6 +239,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onRescanRequested = onRescanRequested
         self.onCancelScan = onCancelScan
         self.onStopScan = onStopScan
+        self.onWindowShouldClose = onWindowShouldClose
+        self.onProfilesRequested = onProfilesRequested
         self.onSyncStart = onSyncStart
         self.onSyncExit = onSyncExit
         self.onEngineUncertain = onEngineUncertain
@@ -291,6 +304,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///     going but reclaim screen space.
     nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
         MainActor.assumeIsolated {
+            // Issue #24 (Finding 1): a qualified scan / in-flight interruption
+            // is intercepted by the owner, which starts a coordinator-driven
+            // `.returnToPicker` interruption and vetoes the close (the window is
+            // retained until the coordinator's `.closeWindow` effect fires on
+            // quiescence). false here → do not close.
+            if !onWindowShouldClose() { return false }
             guard isSyncing else { return true }
             let alert = NSAlert()
             alert.messageText = "Synchronization is still running"
@@ -595,9 +614,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         syncStall.start()   // arm the advisory no-progress detector for the transfer
     }
 
-    /// Toolbar "Profiles" action — return to the picker.
+    /// Toolbar "Profiles" action — return to the picker. Routed to the owner
+    /// (issue #24): a qualified scan becomes a `.returnToPicker` interruption
+    /// (window retained, coordinator closes it on quiescence); otherwise the
+    /// owner performs the immediate leave. NOT `performClose` — that would beep
+    /// on the interruption veto and double-consult `windowShouldClose`.
     func returnToPicker() {
-        window?.performClose(nil)
+        onProfilesRequested()
     }
 
     /// Toolbar Stop action — abort the running sync. Calls

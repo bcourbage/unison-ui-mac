@@ -103,4 +103,27 @@ final class ScanInterruptPolicyTests: XCTestCase {
     func test_leaveRouting_ready_leavesImmediately() {
         XCTAssertEqual(P.leaveRouting(phase: .ready(s), qualified: true), .leaveImmediately)
     }
+
+    // MARK: - Finding 1: windowShouldClose must VETO during interruption
+
+    func test_allowWindowClose_vetoedForQualifiedScanning() {
+        // The close is vetoed so the window + cached qualification are retained
+        // until the coordinator's .closeWindow fires (else the second signal-time
+        // qualification check would fail and the last-window-close could quit).
+        XCTAssertFalse(P.allowWindowClose(phase: .scanning(s, op), qualified: true))
+    }
+
+    func test_allowWindowClose_vetoedWhileInterrupting() {
+        let p: Phase = .interruptingScan(s, op, .signalling(terminalObserved: false), .stopInPlace)
+        XCTAssertFalse(P.allowWindowClose(phase: p, qualified: true))
+    }
+
+    func test_allowWindowClose_allowedForUnqualifiedScan() {
+        XCTAssertTrue(P.allowWindowClose(phase: .scanning(s, op), qualified: false))
+    }
+
+    func test_allowWindowClose_allowedInConnectAndReady() {
+        XCTAssertTrue(P.allowWindowClose(phase: .opening(s, op), qualified: true))
+        XCTAssertTrue(P.allowWindowClose(phase: .ready(s), qualified: true))
+    }
 }

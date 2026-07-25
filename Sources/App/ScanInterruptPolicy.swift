@@ -54,4 +54,14 @@ enum ScanInterruptPolicy {
         if case .interruptingScan = phase { return .abandonUpgrade }
         return .leaveImmediately
     }
+
+    /// `windowShouldClose` verdict (round 2 Finding 1): the actual window close
+    /// is ALLOWED only in the leave-immediately case; interrupt/abandon routings
+    /// VETO the close so the window (and its cached qualification) is retained
+    /// until the coordinator's later `.closeWindow` effect performs the real
+    /// close on quiescence. Returns true to allow the close.
+    static func allowWindowClose(phase: EngineSessionCoordinator.Phase,
+                                 qualified: Bool) -> Bool {
+        leaveRouting(phase: phase, qualified: qualified) == .leaveImmediately
+    }
 }
