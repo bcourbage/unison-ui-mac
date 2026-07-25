@@ -91,14 +91,64 @@ final class ScanInterruptQualificationTests: XCTestCase {
         XCTAssertFalse(custom)
     }
 
-    func test_firstSshRootWins_whenMultiple() {
+    // MARK: - Blocker 4: fail closed on ambiguity/uncertainty
+
+    func test_multipleSshRoots_isSkip_notFirstWins() {
+        // remote↔remote (or misconfigured) is an ambiguous transport — we must
+        // NOT pick the first and classify; fail closed.
         let prf = """
         root = ssh://first.example.com//a
         root = ssh://second.example.com//b
         """
-        guard case .qualify(let host, _, _) = Q.plan(profileText: prf) else {
+        guard case .skip(let reason) = Q.plan(profileText: prf) else {
+            return XCTFail("multiple ssh roots must skip")
+        }
+        XCTAssertTrue(reason.lowercased().contains("ambiguous"))
+    }
+
+    func test_includeDirective_isSkip() {
+        // An included profile may inject sshargs/sshcmd we can't resolve here.
+        let prf = """
+        include common
+        root = /d
+        root = ssh://demeter.local//data
+        """
+        guard case .skip = Q.plan(profileText: prf) else {
+            return XCTFail("include must fail closed")
+        }
+    }
+
+    func test_sourceDirective_isSkip() {
+        let prf = """
+        source /etc/unison/base.prf
+        root = /d
+        root = ssh://demeter.local//data
+        """
+        guard case .skip = Q.plan(profileText: prf) else {
+            return XCTFail("source must fail closed")
+        }
+    }
+
+    func test_port_isCarriedAsExplicitPortArg() {
+        // A dropped port would let a port-sensitive Match rule resolve to a
+        // different transport. It must be passed to `ssh -G` as `-p <port>`.
+        let prf = "root = /d\nroot = ssh://bruno@demeter.local:2222//data\n"
+        guard case .qualify(let host, let extraArgs, _) = Q.plan(profileText: prf) else {
             return XCTFail()
         }
-        XCTAssertEqual(host, "first.example.com")
+        XCTAssertEqual(host, "bruno@demeter.local")   // host arg carries no port
+        XCTAssertEqual(Array(extraArgs.prefix(2)), ["-p", "2222"])
+    }
+
+    func test_port_andSshArgs_bothPresent_portFirst() {
+        let prf = """
+        root = /d
+        root = ssh://demeter.local:2222//data
+        sshargs = -i /Users/b/.ssh/k
+        """
+        guard case .qualify(_, let extraArgs, _) = Q.plan(profileText: prf) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(extraArgs, ["-p", "2222", "-i", "/Users/b/.ssh/k"])
     }
 }

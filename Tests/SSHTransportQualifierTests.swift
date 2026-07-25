@@ -222,4 +222,23 @@ final class SSHTransportQualifierTests: XCTestCase {
         let r = Exec().run(cfg("/bin/sleep", ["30"]), deadline: 5, canceller: canceller)
         XCTAssertEqual(r, .cancelled)
     }
+
+    /// Lifecycle-owned (additional correction): a mid-flight cancel tears the
+    /// subprocess down and returns promptly — the qualification probe is
+    /// cancellable, not merely result-discarded.
+    func test_executor_midFlightCancel_tearsDownAndReturnsBounded() {
+        let canceller = VersionCheck.ProbeCanceller()
+        let done = expectation(description: "run returns")
+        var result: SSHConfigResult?
+        let start = Date()
+        DispatchQueue.global().async {
+            result = Exec().run(self.cfg("/bin/sleep", ["30"]), deadline: 30,
+                                canceller: canceller)
+            done.fulfill()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { canceller.cancel() }
+        wait(for: [done], timeout: 8)
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 6.0)
+    }
 }

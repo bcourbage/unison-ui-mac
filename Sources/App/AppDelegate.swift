@@ -222,6 +222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// uncertain / not-yet-resolved) keeps the honest Return-to-Profiles path.
     /// Cleared when the session ends.
     private var scanInterruptQualification: [SessionID: SSHTransportQualification] = [:]
+    /// The lifecycle-owned canceller for each session's in-flight `ssh -G`
+    /// qualification subprocess, so leave/replacement/shutdown can TEAR DOWN the
+    /// probe (SIGTERM→kill→reap), not merely discard its eventual result.
+    private var scanInterruptQualCanceller: [SessionID: VersionCheck.ProbeCanceller] = [:]
     /// The pending interruption stage-deadline work item (backstops a
     /// non-terminal interrupt stage). Re-synced on every coordinator effect via
     /// `syncScanInterruptDeadline()`; cancelled when the cycle leaves
@@ -262,6 +266,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // effect batch. No-op (and cancels any stale timer) when not
         // interrupting, so it is safe on the hot path.
         syncScanInterruptDeadline()
+        // Keep the Stop-Scan affordance bound to the EXACT `.scanning` phase
+        // (Blocker 1): it activates only for the scanning session whose
+        // transport qualified, and deactivates the instant we leave `.scanning`.
+        refreshScanInterruptAffordance()
         // The single funnel for EVERY coordinator mutation: `run(...)` wraps
         // all of them, and `runScanEffects` routes its remainder through here
         // too, so this notification fires on every engine-phase transition
@@ -439,14 +447,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         if diffRequestOwner == s { diffRequestOwner = nil }
     }
 
-    /// The user closed a live session's reconcile window (the ✕ button or
-    /// ⌘W). Route it through the one session-teardown helper.
+    /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
+    /// the Profiles toolbar item, which calls `window.performClose`).
+    ///
+    /// Blocker 2: when the scan is interruptible (qualified `.scanning`) or an
+    /// interruption is already in flight, presentation MUST wait for engine
+    /// quiescence — the coordinator owns the teardown (close → showPicker). We
+    /// therefore route through `requestScanInterruption(.returnToPicker)` /
+    /// `abandon()` and do NOT show the picker here. Only the non-interruptible
+    /// cases keep the pre-existing immediate leave-to-picker (honest fallback).
     private func handleWindowClosed(session s: SessionID, profile: String) {
-        // The window is already mid-close (this fires from windowWillClose),
-        // so don't re-close it — just detach + abandon + show the picker. The
-        // version probe is cancelled inside leaveSession (the common path), so
-        // BOTH this and the programmatic Stop-during-scan path tear it down.
-        leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
+        switch ScanInterruptPolicy.leaveRouting(phase: engine.phase,
+                                                qualified: scanInterruptSupported(s)) {
+        case .interruptReturnToPicker:
+            // Qualified scan: start a returnToPicker interruption. The window is
+            // already closing (performClose), so forget it; the coordinator's
+            // closeWindow no-ops and showPicker fires on quiescence.
+            log.write("window closed during qualified scan \(s) → returnToPicker interruption")
+            forgetClosingWindow(s)
+            run(engine.requestScanInterruption(s, destination: .returnToPicker))
+        case .abandonUpgrade:
+            // Already interrupting: abandon upgrades the destination (monotonic)
+            // to returnToPicker. NO early picker — coordinator presents when
+            // quiescent.
+            log.write("window closed during interruption \(s) → upgrade destination to returnToPicker")
+            forgetClosingWindow(s)
+            run(engine.abandon(reason: "window closed during interruption"))
+        case .leaveImmediately:
+            // Not interruptible: the pre-existing honest teardown → picker.
+            leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
+        }
+    }
+
+    /// Detach + forget a window that is ALREADY closing (via `performClose`),
+    /// without abandoning or showing the picker — used when the coordinator will
+    /// own the subsequent teardown/presentation (Blocker 2). The pending scan op
+    /// stays intact so its terminal still routes into the interruption.
+    private func forgetClosingWindow(_ s: SessionID) {
+        cancelScanInterruptQualification(s)
+        abandonDiff(session: s)
+        if versionProbeSession == s {
+            activeVersionProbe?.cancel(); activeVersionProbe = nil; versionProbeSession = nil
+        }
+        windowBySession[s]?.window?.delegate = nil
+        windowBySession[s] = nil
+        profileBySession[s] = nil
+        scanInterruptQualification[s] = nil
     }
 
     /// Single, idempotent session→picker teardown, shared by the user closing
@@ -479,6 +525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // If this session owns an outstanding diff, drain it so its late result
         // is discarded and can never be accepted as a replacement session's.
         abandonDiff(session: s)
+        cancelScanInterruptQualification(s)
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
@@ -1585,6 +1632,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             activeVersionProbe = nil
             versionProbeSession = nil
         }
+        // Scan interruption (issue #24): tear down any in-flight `ssh -G`
+        // qualification subprocesses too (lifecycle-owned). cancel() SIGTERMs the
+        // child synchronously; we don't block on their reap (advisory probes).
+        for (_, canceller) in scanInterruptQualCanceller { canceller.cancel() }
+        scanInterruptQualCanceller.removeAll()
         unison_bridge_shutdown()
     }
 
@@ -2478,18 +2530,24 @@ extension AppDelegate {
             scanInterruptQualification[s] = .unsupported(reason: reason)
             log.write("scan-interrupt: '\(profile)' not an interruption candidate (\(reason))")
         case .qualify(let host, let extraArgs, let customSshCmd):
+            // Lifecycle-owned: retain a canceller so leave/replacement/shutdown
+            // can tear the `ssh -G` subprocess down, not just discard its result.
+            let canceller = VersionCheck.ProbeCanceller()
+            scanInterruptQualCanceller[s] = canceller
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let verdict = SSHTransportQualifier.qualify(
-                    host: host, extraArgs: extraArgs, customSshCmd: customSshCmd)
+                    host: host, extraArgs: extraArgs, customSshCmd: customSshCmd,
+                    canceller: canceller)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     // Session-bound: drop if the session is gone/replaced.
                     guard self.windowBySession[s] != nil else { return }
+                    self.scanInterruptQualCanceller[s] = nil
                     self.scanInterruptQualification[s] = verdict
                     self.log.write("scan-interrupt: qualification \(s) = \(verdict)")
-                    if verdict == .supportedDirect {
-                        self.windowBySession[s]?.setScanInterruptAvailable(true)
-                    }
+                    // Phase-bound: enable Stop Scan only if we are (still) in the
+                    // exact `.scanning` phase for this session.
+                    self.refreshScanInterruptAffordance()
                 }
             }
         }
@@ -2497,6 +2555,29 @@ extension AppDelegate {
 
     private func scanInterruptSupported(_ s: SessionID) -> Bool {
         scanInterruptQualification[s] == .supportedDirect
+    }
+
+    /// Cancel + forget a session's in-flight qualification probe (leave /
+    /// replacement / shutdown).
+    private func cancelScanInterruptQualification(_ s: SessionID) {
+        scanInterruptQualCanceller[s]?.cancel()
+        scanInterruptQualCanceller[s] = nil
+    }
+
+    /// Bind the Stop-Scan affordance to the EXACT `.scanning` phase of the
+    /// qualified session (Blocker 1): active for that one window, inactive for
+    /// every other window and every non-`.scanning` phase. Idempotent — the
+    /// controller's setter no-ops when unchanged.
+    private func refreshScanInterruptAffordance() {
+        var activeSession: SessionID?
+        if case .scanning(let s, _) = engine.phase,
+           ScanInterruptPolicy.stopScanAvailable(phase: engine.phase,
+                                                  qualified: scanInterruptSupported(s)) {
+            activeSession = s
+        }
+        for (sid, w) in windowBySession {
+            w.setScanInterruptAvailable(sid == activeSession)
+        }
     }
 
     // MARK: trigger (Stop-Scan action)
@@ -2573,10 +2654,12 @@ extension AppDelegate {
         let reap = EngineSessionCoordinator.ReapState.from(
             unison_bridge_classify_reap(id.pid, id.startSec, id.startUsec))
         let elapsed = Double(AppDelegate.monoNow() &- started) / 1e9
-        // A freshly-SIGKILLed child is briefly LIVE before the kernel reaps it
-        // to a zombie/absent — poll over the bounded grace rather than trusting
-        // one snapshot.
-        if reap == .live && elapsed < scanInterruptReapGrace {
+        // A freshly-SIGKILLed child passes LIVE → ZOMBIE → ABSENT as the kernel
+        // reaps it. LIVE/ZOMBIE/UNKNOWN are all inconclusive and must be polled
+        // until the grace expires (Blocker 3); only ABSENT/REUSED resolve
+        // immediately. See ScanInterruptPolicy.reapShouldKeepPolling.
+        if ScanInterruptPolicy.reapShouldKeepPolling(reap, elapsed: elapsed,
+                                                     grace: scanInterruptReapGrace) {
             let work = DispatchWorkItem { [weak self] in
                 self?.pollScanInterruptReapStep(s, op, id, started: started)
             }
@@ -2594,6 +2677,7 @@ extension AppDelegate {
     /// onClose can't re-enter abandon.
     private func driveCloseInterruptWindow(_ s: SessionID) {
         abandonDiff(session: s)
+        cancelScanInterruptQualification(s)
         guard let w = windowBySession[s] else { return }
         w.window?.delegate = nil
         w.close()
