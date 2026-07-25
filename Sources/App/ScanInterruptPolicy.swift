@@ -6,12 +6,31 @@ import Foundation
 /// transitions; these only shape how the driver drives it.
 enum ScanInterruptPolicy {
 
+    /// Whether a qualified session's scan can actually be interrupted IN PLACE
+    /// right now (live-matrix finding #3). SIGKILLing the transport only unwinds
+    /// the engine PROMPTLY when it is BLOCKED ON THE TRANSPORT; while it is
+    /// CPU-bound in the local-replica walk (hashing a large tree) it does not
+    /// notice the dead socket, so the interrupt reap deadline elapses →
+    /// restart-required. The engine signals transport-blocked by emitting
+    /// "Waiting for changes from server" (`ScanStallPolicy.marksRemoteWait`),
+    /// latched into `sawRemoteWait`. Before that marker a qualified session must
+    /// present the neutral, honest Return-to-Profiles (which abandons and winds
+    /// down in the background) rather than the in-place Stop Scan / interruption
+    /// teardown. The `qualified:` inputs below are therefore fed this predicate,
+    /// NOT bare transport qualification.
+    static func interruptReady(qualified: Bool, sawRemoteWait: Bool) -> Bool {
+        qualified && sawRemoteWait
+    }
+
     /// The genuine "Stop Scan" affordance is active ONLY in the exact
-    /// `.scanning` phase AND when the session's transport qualified. It must be
-    /// inactive during `.opening` (connect — qualification can resolve while
-    /// still connecting), `.interruptingScan`, `.stopped`, `.ready`, etc., so a
-    /// click can never set "Stopping scan…" while `requestScanInterruption`
-    /// would reject the request (Blocker 1).
+    /// `.scanning` phase AND when the session's scan is interruptible in place
+    /// (`qualified` here = `interruptReady`: transport qualified AND engine
+    /// transport-blocked, finding #3). It must be inactive during `.opening`
+    /// (connect — qualification can resolve while still connecting), the
+    /// pre-remote-wait local walk, `.interruptingScan`, `.stopped`, `.ready`,
+    /// etc., so a click can never set "Stopping scan…" while
+    /// `requestScanInterruption` would reject it or the reap would time out
+    /// (Blocker 1 + finding #3).
     static func stopScanAvailable(phase: EngineSessionCoordinator.Phase,
                                   qualified: Bool) -> Bool {
         if case .scanning = phase { return qualified }
@@ -48,6 +67,11 @@ enum ScanInterruptPolicy {
         case leaveImmediately
     }
 
+    /// `qualified` here = `interruptReady` (transport qualified AND engine
+    /// transport-blocked, finding #3): a qualified scan still in its CPU-bound
+    /// local walk routes `.leaveImmediately` (honest background wind-down),
+    /// exactly like an unqualified scan, because the SIGKILL interruption would
+    /// otherwise time out its reap.
     static func leaveRouting(phase: EngineSessionCoordinator.Phase,
                              qualified: Bool) -> LeaveRouting {
         if case .scanning = phase, qualified { return .interruptReturnToPicker }

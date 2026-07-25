@@ -500,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Closed` quitting mid-teardown. Returns true → allow the normal close.
     private func windowShouldCloseSession(_ s: SessionID) -> Bool {
         switch ScanInterruptPolicy.leaveRouting(phase: engine.phase,
-                                                qualified: scanInterruptSupported(s)) {
+                                                qualified: scanInterruptReady(s)) {
         case .interruptReturnToPicker:
             log.write("windowShouldClose during qualified scan \(s) → returnToPicker interruption (veto close)")
             run(engine.requestScanInterruption(s, destination: .returnToPicker))
@@ -521,7 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// cannot bypass the three-way sync-confirmation alert.
     private func profilesRequested(_ s: SessionID) -> Bool {
         switch ScanInterruptPolicy.leaveRouting(phase: engine.phase,
-                                                qualified: scanInterruptSupported(s)) {
+                                                qualified: scanInterruptReady(s)) {
         case .interruptReturnToPicker:
             log.write("Profiles during qualified scan \(s) → returnToPicker interruption")
             run(engine.requestScanInterruption(s, destination: .returnToPicker))
@@ -969,7 +969,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // replica walk completes and it begins waiting on the remote
                 // round-trip. Latch it so a later stall is treated as a genuine
                 // remote wedge; before it, a stall is a local/TCC pause.
-                if ScanStallPolicy.marksRemoteWait(msg) { self.scanSawRemoteWait = true }
+                if ScanStallPolicy.marksRemoteWait(msg), !self.scanSawRemoteWait {
+                    // Finding #3: the engine is now transport-blocked, so a
+                    // qualified scan becomes genuinely interruptible in place.
+                    // Promote the toolbar to Stop Scan (this status callback is
+                    // not a coordinator mutation, so the run() funnel's refresh
+                    // does not fire here).
+                    self.scanSawRemoteWait = true
+                    self.refreshScanInterruptAffordance()
+                }
                 self.noteScanProgress()   // issue #24: scan status resets the scan stall timer (no-op outside .scanning)
                 if let s = self.engine.currentSession, self.engine.isVisible(s) {
                     self.windowBySession[s]?.updateScanStatus(msg)
@@ -2643,6 +2651,20 @@ extension AppDelegate {
         scanInterruptQualCache.supported(session: s)
     }
 
+    /// The session's scan can be interrupted IN PLACE right now (finding #3):
+    /// transport qualified AND the engine is transport-blocked (past the
+    /// "Waiting for changes from server" marker, `scanSawRemoteWait`). Before
+    /// the marker the engine is CPU-bound in the local-replica walk, where a
+    /// SIGKILL can't unwind it in time and the reap times out → restart-required
+    /// — so a pre-remote-wait qualified session must present the neutral, honest
+    /// Return-to-Profiles and route leaves through the background wind-down, not
+    /// the interruption. Gates BOTH the Stop-Scan affordance and the
+    /// leave/close interruption routing.
+    private func scanInterruptReady(_ s: SessionID) -> Bool {
+        ScanInterruptPolicy.interruptReady(qualified: scanInterruptSupported(s),
+                                           sawRemoteWait: scanSawRemoteWait)
+    }
+
     /// Cancel a session's CURRENT qualification probe and clear its cached
     /// verdict (leave / replacement / close). The probe stays in the live set
     /// until its subprocess completes, so shutdown can still wait for its reap.
@@ -2659,7 +2681,7 @@ extension AppDelegate {
         var activeSession: SessionID?
         if case .scanning(let s, _) = engine.phase,
            ScanInterruptPolicy.stopScanAvailable(phase: engine.phase,
-                                                  qualified: scanInterruptSupported(s)) {
+                                                  qualified: scanInterruptReady(s)) {
             activeSession = s
         }
         for (sid, w) in windowBySession {
@@ -2674,8 +2696,8 @@ extension AppDelegate {
     /// to the honest Return-to-Profiles. Stop = stop-in-place (stay in the same
     /// profile window; Rescan reuses it).
     private func requestStopScan(session s: SessionID) {
-        guard scanInterruptSupported(s) else {
-            log.write("scan-interrupt: Stop Scan on unqualified \(s) — honest return-to-profiles")
+        guard scanInterruptReady(s) else {
+            log.write("scan-interrupt: Stop Scan on non-interruptible \(s) (unqualified or pre-remote-wait) — honest return-to-profiles")
             if let profile = profileBySession[s] {
                 leaveSession(s, profile: profile, closeWindow: true,
                              reason: "Stop (scan not interruptible)")

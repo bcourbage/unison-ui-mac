@@ -17,6 +17,45 @@ final class ScanInterruptPolicyTests: XCTestCase {
     private let op = OID(raw: 2)
     private let idA = Ident(pid: 100, startSec: 5, startUsec: 6)
 
+    // MARK: - Finding #3: interruptReady gates on transport-blocked (remote-wait)
+
+    func test_interruptReady_requiresBothQualifiedAndRemoteWait() {
+        XCTAssertTrue(P.interruptReady(qualified: true, sawRemoteWait: true))
+        // Qualified but still in the CPU-bound local walk → NOT interruptible in
+        // place (SIGKILL would time out the reap → restart-required).
+        XCTAssertFalse(P.interruptReady(qualified: true, sawRemoteWait: false))
+        // Past remote-wait but not a qualified transport → still not interruptible.
+        XCTAssertFalse(P.interruptReady(qualified: false, sawRemoteWait: true))
+        XCTAssertFalse(P.interruptReady(qualified: false, sawRemoteWait: false))
+    }
+
+    func test_stopScanAvailable_isGatedByInterruptReady_notBareQualification() {
+        // The driver feeds `interruptReady` as `qualified:`. A qualified scan
+        // pre-remote-wait therefore does NOT expose Stop Scan…
+        XCTAssertFalse(P.stopScanAvailable(
+            phase: .scanning(s, op),
+            qualified: P.interruptReady(qualified: true, sawRemoteWait: false)))
+        // …and only exposes it once the engine is transport-blocked.
+        XCTAssertTrue(P.stopScanAvailable(
+            phase: .scanning(s, op),
+            qualified: P.interruptReady(qualified: true, sawRemoteWait: true)))
+    }
+
+    func test_leaveRouting_qualifiedButPreRemoteWait_leavesImmediately() {
+        // A qualified scan still in the local walk routes the honest background
+        // wind-down (leaveImmediately), NOT the SIGKILL interruption that would
+        // time out its reap (finding #3).
+        XCTAssertEqual(
+            P.leaveRouting(phase: .scanning(s, op),
+                           qualified: P.interruptReady(qualified: true, sawRemoteWait: false)),
+            .leaveImmediately)
+        // Once transport-blocked, Profiles/close routes the interruption.
+        XCTAssertEqual(
+            P.leaveRouting(phase: .scanning(s, op),
+                           qualified: P.interruptReady(qualified: true, sawRemoteWait: true)),
+            .interruptReturnToPicker)
+    }
+
     // MARK: - Blocker 1: capability is bound to the exact .scanning phase
 
     func test_stopScanAvailable_onlyWhenScanningAndQualified() {
