@@ -25,36 +25,18 @@ section at the bottom so this list stays scannable.
       `abortAllInFlight`, `connectGeneration`, `invalidateConnect` — no longer
       exist; that architecture was replaced by the coordinator.)
 
-      **Delivered (PR #51, merged `de13fe1`; closed #24, superseded spike #47).**
-      For an `ssh -G`-qualified **direct single-child** transport, scan-phase
-      **Stop Scan** now genuinely interrupts in-process: it SIGKILLs the tracked
-      local transport child (verified-PID registry + reap classification), which
-      unwinds the blocked `init2` → coordinator-gated **stop-in-place** (Rescan
-      reuses the session). The affordance is phase-aware (`StopItemAppearance`):
-      a neutral **Return to Profiles** until the engine is transport-blocked
-      (`sawRemoteWait`), then it promotes to **Stop Scan**; a pre-SIGKILL
-      authorization checkpoint (`ScanInterruptPolicy.signalAuthorized`) re-checks
-      the boundary + the exact pending op before the kill. A bounded transient-
-      lock retry handles the orphaned-server reconnect race. Live-validated on a
-      six-case exact-Release matrix. The lingering remote `unison` child is now a
-      self-cleaning orphan (exits on EOF, ~82 s), not an unbounded leak.
-
-      **The residual open limitation (narrower now).** True in-process
-      cancellation is NOT yet available for (a) **non-qualified** transports
-      (ControlMaster / ProxyCommand / custom `sshcmd`) — these still fall back to
-      honest abandon → restart-required; or (b) a scan **CPU-bound in the local-
-      replica walk** — SIGKILLing the transport can't unwind a hashing loop that
-      isn't blocked on it, so Stop Scan is *gated off* during that phase (offered
-      only once transport-blocked) and a leave there winds down in the
-      background. `connection_cancel` remains scoped to the credential-prompt
-      phase, not an `init2` op blocked on a round-trip on the serial
-      `connectQueue`. Cancelling a CPU-bound local walk needs cooperative core
-      cancellation in the OCaml engine: the propagation `Abort` mechanism
-      (`Abort.check`/`checkAll`, `copy.ml`/`files.ml`) is never consulted in
-      `update.ml`, and setting that flag *during a scan* trips `update.ml:1027
-      Assertion failed`, so it must stay gated on `isSyncing`. That engine-level
-      cancellation — likely paired with the #41 liveness heartbeat for the
-      non-direct transports — is the remaining work.
+      **The open limitation.** True in-process cancellation is not available for
+      (a) **non-qualified** transports (ControlMaster / ProxyCommand / custom
+      `sshcmd`) or (b) a scan **CPU-bound in the local-replica walk** — SIGKILLing
+      the transport can't unwind a hashing loop that isn't blocked on it. In both
+      cases the in-flight `init2` isn't unwound; the leave falls back to abandon →
+      restart-required, leaving a remote `unison` child to wind down on its own.
+      `connection_cancel` is scoped to the credential-prompt phase, not an
+      `init2` op blocked on a round-trip on the serial `connectQueue`; and the
+      propagation `Abort` mechanism (`Abort.check`/`checkAll`, `copy.ml`/
+      `files.ml`) is never consulted in `update.ml` — setting that flag *during a
+      scan* trips `update.ml:1027 Assertion failed`, so it stays gated on
+      `isSyncing`.
 
       **Prerequisite already satisfied — build on it, do not re-derive.**
       Exception hardening (PR #11 bridge-safety): every Swift→OCaml callback
@@ -63,19 +45,11 @@ section at the bottom so this list stays scannable.
       callback → `operationFailed(engineIsQuiescent:false)`); state publication
       is transactional. A scan-phase raise is therefore *safe to trigger* now.
 
-      **Remaining work / architectural options.** The scan-phase Stop
-      **honesty** relabel is **DONE (PR #51)**: `StopItemAppearance` now shows a
-      neutral "Return to Profiles" during connect/local-walk and a red "Stop
-      Scan" only once the scan is genuinely interruptible (transport-blocked),
-      with matching summaries — no more "Cancelling…" a sync that isn't running.
-      The escape hatch is kept (Stop is never greyed out; the affordance just
-      tells the truth). Genuine engine-level interruption is **DONE for the
-      qualified direct-ssh case** (transport-child SIGKILL → `init2` unwind →
-      stop-in-place). The remaining architectural work is interruption for the
-      **non-direct** transports and the **CPU-bound local walk** — the only fully
-      general fix is engine-level interruptibility (cooperative `Abort` in
+      **Remaining work / architectural options.** The only fully general fix is
+      engine-level cooperative interruptibility (an `Abort` path consulted in
       `update.ml`, past the `update.ml:1027` assertion trap) or process
-      isolation, likely paired with the #41 liveness heartbeat.
+      isolation — likely paired with the #41 liveness heartbeat for the
+      non-direct transports.
 
       **Auth-failure interactive path:** confirmed live (TC11b) — a wrong
       password stays in the bounded credential-prompt flow (re-presents) and a
