@@ -1649,15 +1649,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         // Scan interruption (issue #24, round 3 correction 2): tear down EVERY
         // live `ssh -G` qualification subprocess — including cancelled/superseded
-        // ones still finishing their teardown — AND prove the reap. Fire every
-        // SIGTERM first (synchronous), then wait bounded on each probe's `done`
-        // (signalled after qualify's SIGKILL+reap returns) so we don't exit while
-        // a child is still being torn down — same discipline as the version
-        // probe above.
+        // ones still finishing their teardown. Fire every SIGTERM first
+        // (synchronous), then do a BOUNDED reap wait on each probe's `done`
+        // (signalled after qualify's SIGKILL+reap returns) so we don't normally
+        // exit while a child is still being torn down — same discipline as the
+        // version probe above. This is a best-effort bounded wait, NOT a proof:
+        // if the deadline expires we log and proceed rather than hang the quit.
         let probes = scanInterruptProbes.allLive
         for probe in probes { probe.canceller.cancel() }
         let reapDeadline = DispatchTime.now() + (VersionCheck.terminateGrace * 2) + 0.5
-        for probe in probes { _ = probe.done.wait(timeout: reapDeadline) }
+        for probe in probes {
+            if probe.done.wait(timeout: reapDeadline) == .timedOut {
+                log.write("scan-interrupt: qualification probe reap wait timed out at shutdown — proceeding")
+            }
+        }
         unison_bridge_shutdown()
     }
 
