@@ -63,17 +63,19 @@ section at the bottom so this list stays scannable.
       callback → `operationFailed(engineIsQuiescent:false)`); state publication
       is transactional. A scan-phase raise is therefore *safe to trigger* now.
 
-      **Remaining work / architectural options.** The only honest way to truly
-      stop an in-flight scan is to tear down the bridge connection / kill the
-      remote child mid-`init2` — i.e. engine-level interruptibility or process
-      isolation. Paired with that, fix the scan-phase Stop **honesty**: during a
-      scan the affordance still reads "Stop" / "Cancel the running
-      synchronization" and the summary says "Cancelling…", but no sync is
-      running and the scan isn't actually aborted (only the UI is abandoned) —
-      relabel to e.g. "Cancel" / "Stop connecting and return to profiles" with a
-      "Returning to profiles…" summary. **Keep the escape hatch** — do not grey
-      Stop out; it lets the user bail out of a slow/wedged connect/scan
-      immediately instead of waiting for the detector.
+      **Remaining work / architectural options.** The scan-phase Stop
+      **honesty** relabel is **DONE (PR #51)**: `StopItemAppearance` now shows a
+      neutral "Return to Profiles" during connect/local-walk and a red "Stop
+      Scan" only once the scan is genuinely interruptible (transport-blocked),
+      with matching summaries — no more "Cancelling…" a sync that isn't running.
+      The escape hatch is kept (Stop is never greyed out; the affordance just
+      tells the truth). Genuine engine-level interruption is **DONE for the
+      qualified direct-ssh case** (transport-child SIGKILL → `init2` unwind →
+      stop-in-place). The remaining architectural work is interruption for the
+      **non-direct** transports and the **CPU-bound local walk** — the only fully
+      general fix is engine-level interruptibility (cooperative `Abort` in
+      `update.ml`, past the `update.ml:1027` assertion trap) or process
+      isolation, likely paired with the #41 liveness heartbeat.
 
       **Auth-failure interactive path:** confirmed live (TC11b) — a wrong
       password stays in the bounded credential-prompt flow (re-presents) and a
