@@ -373,4 +373,94 @@ final class EngineScanInterruptionTests: XCTestCase {
         _ = c.closeCompleted(s, closeOp, status: 0)
         return (c, s, op)
     }
+
+    // MARK: - §12 race matrix (deterministic proof layer)
+
+    /// Scan completes just before the interruption request: the request from
+    /// `.ready` is a clean no-op (never enters `.interruptingScan`).
+    func test_scanCompletesJustBeforeRequest_interruptionIsNoOp() {
+        let (c, s, op) = scanning()
+        _ = c.scanCompleted(s, op)                       // → .ready(s)
+        guard case .ready(s) = c.phase else { return XCTFail("precondition .ready") }
+        let e = c.requestScanInterruption(s, destination: .stopInPlace)
+        XCTAssertTrue(e.isEmpty, "interruption after scan completion must be a no-op")
+        guard case .ready(s) = c.phase else { return XCTFail("must stay ready, got \(c.phase)") }
+    }
+
+    /// A second interruption request (double Stop) is a no-op — the first cycle
+    /// owns the op and is left untouched.
+    func test_doubleInterruptionRequest_secondIsNoOp() {
+        let (c, s, op) = scanning()
+        XCTAssertFalse(c.requestScanInterruption(s, destination: .stopInPlace).isEmpty)
+        let e2 = c.requestScanInterruption(s, destination: .stopInPlace)
+        XCTAssertTrue(e2.isEmpty, "second interruption request must be a no-op")
+        guard case .interruptingScan(s, op, .signalling(terminalObserved: false), .stopInPlace) = c.phase
+        else { return XCTFail("cycle must be unaffected, got \(c.phase)") }
+    }
+
+    /// The 120s scan-stall detector races through despite disarm and delivers
+    /// the exact scan op's failure while interruption owns it. Exactly-one-
+    /// terminal-authority (§13): the coordinator ignores it — no restart, cycle
+    /// intact.
+    func test_concurrentStallDuringInterruption_isNoOp() {
+        let (c, s, op) = scanning()
+        _ = c.requestScanInterruption(s, destination: .stopInPlace)
+        let e = c.operationFailed(s, op, reason: "scan stalled", engineIsQuiescent: false)
+        XCTAssertTrue(e.isEmpty, "a stall terminal must not touch an interruption in flight")
+        XCTAssertFalse(c.isRestartRequired)
+        guard case .interruptingScan(s, op, .signalling(terminalObserved: false), .stopInPlace) = c.phase
+        else { return XCTFail("interruption cycle must be intact, got \(c.phase)") }
+    }
+
+    /// Every interruption event referencing the (now-consumed) interrupted op is
+    /// inert once the cycle has reached a terminal destination — proven for ALL
+    /// THREE destinations, not only `.stopped`.
+    private func assertStaleInterruptEventsInert(_ c: C, _ s: SID, _ op: OID,
+                                                 file: StaticString = #filePath, line: UInt = #line) {
+        let before = c.phase
+        XCTAssertTrue(c.interruptTerminalObserved(s, op).isEmpty, file: file, line: line)
+        XCTAssertTrue(c.transportSignalCompleted(s, op, .signalled(idA)).isEmpty, file: file, line: line)
+        XCTAssertTrue(c.interruptReapClassified(s, op, .absent).isEmpty, file: file, line: line)
+        XCTAssertTrue(c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false)).isEmpty,
+                      file: file, line: line)
+        XCTAssertTrue(c.interruptDeadlineElapsed(s, op, .awaitingReap(idA)).isEmpty, file: file, line: line)
+        XCTAssertEqual(c.phase, before, "stale interruption events must not change phase",
+                       file: file, line: line)
+        XCTAssertFalse(c.isRestartRequired, "stale interruption events must not restart",
+                       file: file, line: line)
+    }
+
+    func test_staleInterruptEvents_afterStopInPlace_areInert() {
+        let (c, s, op) = closingClosed(.stopInPlace)         // → .stopped(s)
+        guard case .stopped = c.phase else { return XCTFail() }
+        assertStaleInterruptEventsInert(c, s, op)
+    }
+
+    func test_staleInterruptEvents_afterReturnToPicker_areInert() {
+        let (c, s, op, closeOp) = closing(.returnToPicker)
+        _ = c.closeCompleted(s, closeOp, status: 0)          // → .idle
+        XCTAssertEqual(c.phase, .idle)
+        assertStaleInterruptEventsInert(c, s, op)
+    }
+
+    func test_staleInterruptEvents_afterOpenQueued_areInert() {
+        let (c, s, op, closeOp) = closing(.openQueued(C.OpenRequestID(raw: 77), profile: "q"))
+        _ = c.closeCompleted(s, closeOp, status: 0)          // → .opening(newSession)
+        guard case .opening = c.phase else { return XCTFail("expected opening, got \(c.phase)") }
+        // Old (s, op) are the interrupted identifiers — every stale interrupt
+        // event referencing them must be inert against the fresh session.
+        assertStaleInterruptEventsInert(c, s, op)
+    }
+
+    /// A stale cancellation of the queued open arriving AFTER teardown already
+    /// consumed it must not disturb the fresh session.
+    func test_staleCancelQueuedOpen_afterOpenQueuedTeardown_isNoOp() {
+        let reqId = C.OpenRequestID(raw: 77)
+        let (c, s, _, closeOp) = closing(.openQueued(reqId, profile: "q"))
+        _ = c.closeCompleted(s, closeOp, status: 0)          // → .opening(newSession)
+        let before = c.phase
+        let e = c.cancelQueuedOpen(reqId)                    // stale: already consumed
+        XCTAssertTrue(e.isEmpty)
+        XCTAssertEqual(c.phase, before, "stale cancel must not touch the fresh session")
+    }
 }
