@@ -174,10 +174,16 @@ struct SubprocessSSHConfigExecutor: SSHConfigExecutor {
             }
             if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
                 canceller.clearTeardown()
-                // `ssh -G` output is small (tens of lines, far under the pipe
-                // buffer), so reading after exit cannot deadlock. stderr is
-                // drained and discarded so a chatty child can't wedge on a full
-                // stderr buffer.
+                // We only reach here AFTER the child exited, so both pipes can
+                // be drained without deadlock. Note: reading post-exit does NOT
+                // prevent a pre-exit pipe stall — a child that fills stdout or
+                // stderr before exiting would block on write. What safely bounds
+                // that case is the deadline (a stalled child never signals
+                // `exited`, so we time out and tear it down → unsupported).
+                // `ssh -G` output is tiny (tens of lines, far under the pipe
+                // buffer) so a pre-exit stall is not a real risk; concurrent
+                // draining would be optional hardening, not required for this
+                // fail-closed use. stderr is drained and discarded here.
                 let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
                 _ = try? errPipe.fileHandleForReading.readToEnd()
                 closePipes()
