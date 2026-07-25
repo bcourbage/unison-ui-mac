@@ -1,70 +1,101 @@
-# Design Proposal: Profiles / picker navigation during connect (issue #38)
+# Design Proposal v2: Profiles / picker navigation during connect (issue #38)
 
-Status: draft for review. 0.3.1 UX; no vendored-blob change expected.
+Status: draft for review. 0.3.1 UX; **no vendored-blob change**. v2 corrects two incorrect assumptions in v1 (the leave path, and the root cause) per review.
 
-Related: #35 (fatal-ssh-as-prompt, done), #51 (scan-interruption teardown machinery, merged). See `docs/scan-interruption-design.md` for the coordinator/teardown vocabulary.
+Related: #35 (fatal-ssh-as-prompt / `connection_cancel`, done), #51 (scan-interruption teardown, merged), #53 (true in-process interruption residual). Vocabulary: `docs/scan-interruption-design.md`.
 
-## 1. Purpose
+## 1. Purpose and scope (corrected)
 
-Make **Action ▸ Show Profile Picker** (and the toolbar "Return to Profiles") reliably available throughout the connect phase (`.opening`), so a user can bail to the picker during a slow or interactive connect — matching the app's stated intent that navigation is always available except during `.syncing`. Keep the expected sheet-modality behavior while a credential sheet is actually up.
+Make **navigation back to the profile picker reliably available during the connect phase (`.opening`)**, so a user can bail to the picker during a slow or stuck connect.
 
-## 2. Baseline / evidence
+This is **navigation, not guaranteed immediate connect interruption.** #38 does *not* promise to kill the in-flight connect at click time. It shows the picker immediately, marks the connect operation abandoned, and lets it wind down in the background (or reach the connect watchdog). True connect cancellation is a separate, larger product (§6, deferred to #53's orbit).
 
-- Reproducible: `Action ▸ Show Profile Picker` read `enabled=false` in **12/12 samples across 2 runs** during `.opening`, **before any credential sheet appeared** (`sheet=no` throughout). Observed on Debug at `main`-derived `a1f9762`, profile `Sync-LiveTest-VM-Pw`. The whole toolbar row shows greyed during "Opening…".
-- It is *also* inert once the credential sheet is up — that part is expected sheet modality and is **not** the bug.
+## 2. Motivating scenario
 
-## 3. Root cause: a validation/responder-timing artifact, not a gate
+A **firewall that silently drops SYNs** (no RST) is the sharp case: ssh hangs — TCP retransmits with no peer response — so `.opening` persists for a long time (until ssh's own timeout or the app's connect watchdog). Also: wrong-profile-double-clicked, a remote that's currently down, VPN not up. In all of these the window sits on "Opening…" and the user wants to get back to the picker to do something else, not stare at a spinner or quit the app.
 
-Every explicit enablement site already says navigation is always available except `.syncing`:
+## 3. What is displayed during `.opening`
 
-- `ReconcileActionGate` (`.profiles`, `.quit`): "Navigation is always available — never blocked."
-- `ReconcileWindowController.canPerformToolbarAction` → `profilesIdentifier`: `return true`.
-- `ReconcileWindowController.validateMenuItem` → `showProfilePickerMenuAction`: `true` unless `.syncing`.
-- `AppDelegate.validateMenuItem`: does not gate it.
+The session window ("Unison — <profile>") shows an **indeterminate animated progress bar**, the status **"Opening <profile>…"**, an empty results table, and a toolbar. For password auth, a credential sheet slides over once ssh asks. The toolbar's intent (`canPerformToolbarAction`, `ReconcileWindowController`) is: **Stop** and **Return to Profiles** enabled during connect, Quit enabled, Go/Diff/Rescan/direction disabled. Whether those intended-enabled controls are *actually* enabled during `.opening` is exactly what #38 is about (§4).
 
-So nothing *intends* it disabled during `.opening`. The likely cause is that during `.opening` the reconcile window's **responder / first-responder wiring** (or menu/toolbar validation timing) does not yet route `showProfilePickerMenuAction:` to an enabled responder — a validation target that isn't established yet, not an explicit gate. The fix is therefore about **when the reconcile window becomes the validation target during connect**, not about the enablement predicates (which are already correct).
+## 4. Root cause: UNCONFIRMED — pending instrumentation (corrected)
 
-## 4. The teardown concern (why "just enable it" is a scope trap)
+v1 asserted a responder-chain / first-responder-timing cause. That is **not supported** and is withdrawn. The toolbar path does **not** depend on the reconcile controller becoming first responder:
 
-Enabling the control is necessary but not sufficient: navigating away during `.opening` must **reap the in-flight connect cleanly**, or it reintroduces the lingering-child problem (#53). The good news is the reaping path already exists:
+- The toolbar item's target is the permanent `ReconcileToolbarDelegate`, which implements `validateToolbarItem` ([ReconcileToolbar.swift:369](../Sources/App/ReconcileToolbar.swift)); `NSToolbarItem.autovalidates` defaults true.
+- Validation runs on every phase transition via `validateVisibleItems()`, and delegates to the controller's `canPerformToolbarAction` ([ReconcileWindowController.swift:1862](../Sources/App/ReconcileWindowController.swift)), which returns `true` for `profilesIdentifier`.
+- The reconcile window is made key before `beginInitialScan`.
 
-- The connect phase leaves through `leaveSession` → `engine.abandon()`; for `.opening` the coordinator's `leaveRouting` returns `.leaveImmediately` (it is not `.scanning`), i.e. the honest immediate leave — **not** the #51 SIGKILL-interruption path.
-- The half-open preconnection is torn down via `connection_cancel` (the #35 `failConnectFatal` machinery reaps the tracked ssh child; child-exit is proven via `unison_bridge_transport_child_terminated()` / sysctl `SZOMB`), and presentation waits for the cancel to be **acknowledged** (engine quiescent) before returning to the picker; a cancel that can't prove quiescence routes to `.restartRequired`.
+The **menu** path is different routing: a responder-chain selector (`showProfilePickerMenuAction`) validated by `validateMenuItem`. The recorded #38 evidence measured the **menu** item (`enabled=false`, 12/12 during `.opening`, pre-sheet). The toolbar "whole row greyed" observation was eyeballed and may reflect the (correctly) disabled Go/Diff/Rescan, not Profiles/Stop.
 
-So the safe fix routes a nav-during-`.opening` through the **existing connect-cancel reap + quiescence gate**, reusing #35's teardown — no new interruption mechanism, no blob change.
+**So the menu and toolbar can fail independently, and a single "make the controller first responder earlier" change may fix neither or only one.** The design therefore *requires a short diagnostic pass first*, recording:
 
-## 5. Proposed approach
+- toolbar item target and `autovalidates`;
+- whether `validateToolbarItem` is called during `.opening`, the value it returns, and the resulting `isEnabled`;
+- menu item target resolution and whether `validateMenuItem` is called during `.opening`;
+- key/main-window state during `.opening`;
+- any toolbar-group/container-level disabling.
 
-1. **Establish the validation target during `.opening`.** Ensure the reconcile window is the first responder / validation target as soon as it appears (during "Opening…"), so `validateMenuItem` / `canPerformToolbarAction` — which already return enabled — are actually consulted. Concretely: audit when the reconcile window is made key/main and when its responder chain is wired relative to the `.opening` transition; wire it at window creation, not at first render/scan.
-2. **Route the leave through the existing connect-cancel reap.** `showProfilePicker` / Return-to-Profiles during `.opening` → `leaveSession` → `.leaveImmediately` → `connection_cancel` reap → present picker only on acknowledged quiescence (else `.restartRequired`). No new code path; confirm the abandon-during-`.opening` reaping is exercised.
-3. **Preserve sheet modality.** While a credential sheet is actually up, keep today's behavior (the sheet owns input; its **Cancel** is the in-sheet exit). The change targets only the **pre-sheet** `.opening` window.
+The fix follows the instrumentation, is scoped to whichever control(s) actually read disabled, and is validated on **menu and toolbar separately** (§7).
 
-## 6. Alternatives considered
+## 5. The teardown model (corrected)
 
-- **(A) Explicit always-enabled routing** — force-enable the item during `.opening` by overriding validation. Rejected as papering over the responder-timing root cause; risks enabling it in a state where the action isn't wired.
-- **(B) Fix the validation target timing (recommended).** Addresses the actual cause; the enablement predicates are already correct, so once the window is the validation target the control lights up on its own.
+v1 claimed a nav-during-`.opening` already flows through `connection_cancel` and waits for acknowledged quiescence. **It does not.** The current leave path, `leaveSession` ([AppDelegate.swift:552](../Sources/App/AppDelegate.swift)):
 
-## 7. Test matrix
+1. detaches the window delegate and drops the session/profile mapping,
+2. calls `engine.abandon(reason:)`,
+3. shows the picker **immediately**,
+4. deliberately does **not** clear the pending connect/scan identity — the in-flight op keeps its engine lease and releases it only via its real terminal callback (guarded by the coordinator's phase-exact checks).
 
-- **Enablement:** `Show Profile Picker` reads `enabled=true` throughout `.opening`, pre-sheet, across repeated samples (invert the 12/12-disabled evidence).
-- **Clean teardown:** trigger Show Profile Picker mid-`.opening` (slow VM peer) → returns to picker; the tracked ssh child is reaped (no orphan); no `.restartRequired` on the happy path; a non-quiescent cancel routes to `.restartRequired` (not a silent leak).
-- **Sheet modality preserved:** with the credential sheet up, the item behaves as today; the sheet's **Cancel** still exits credential entry.
-- **Enables #35 GUI repro:** a replacement profile can now be requested while connecting, making the queued-replacement-around-connect-fatal path (#35) GUI-reproducible.
-- **No `.syncing` regression:** navigation remains blocked during `.syncing` (unchanged).
+`connection_cancel` is a **separate** path, `cancelPreconnection` ([AppDelegate.swift:1372](../Sources/App/AppDelegate.swift)), used today for credential-cancel / fatal recovery — it retains the op lease + re-arms the watchdog until `unison_bridge_connection_cancel()` returns, and only an *acknowledged* cancel declares quiescence (a cancel failure or watchdog timeout → restart-required). Critically it runs on the **serial `connectQueue`**, so it **cannot pre-empt a connect bridge call that is already blocking that queue** — it waits behind it. "Reuse `connection_cancel` to bail immediately" is therefore not demonstrated and is not part of #38.
 
-## 8. Invariants
+**#38 uses the existing abandoned-operation + queued-open authority, honestly:**
+- Clicking Profiles during `.opening` → `leaveSession` → picker shown immediately; the abandoned connect still owns the engine lease.
+- The abandoned connect **winds down in the background or reaches its connect watchdog** (~`connectStallTimeout`). For a firewall-hung connect that means it lingers (an idle ssh) until the watchdog terminates it. We do **not** claim an immediate reap.
+- If the user selects a **replacement profile**, it enters the coordinator's existing engine-idle **queued-open** path and starts only once the abandoned op genuinely terminates. So after bailing you're at the picker at once, but a replacement sync may wait for the old (possibly hung) connect to clear (up to the watchdog). That is the honest navigation-only tradeoff.
 
-- Navigation is available in every phase **except** `.syncing`, now including `.opening` pre-sheet.
-- A leave never leaks the connect child: it goes through `connection_cancel` reap + the quiescence gate (`.restartRequired` on unprovable quiescence).
-- No vendored-blob change; no new interruption mechanism (this is connect-phase abandon, not scan interruption).
-- Credential-sheet modality unchanged.
+## 6. Two products (resolve the contradiction)
 
-## 9. Open questions
+v1 contradicted itself: "picker appears only after cancellation is acknowledged" **and** "this makes the queued-replacement-around-fatal path GUI-reachable" cannot both hold — if presentation waits for quiescence, the user cannot queue a replacement during the connect.
 
-- Is the responder/validation target established at window creation or only at first reconcile render? (Determines the one-line-vs-small-refactor size of step 1 — confirm in `ReconcileWindowController`'s window setup.)
-- Does the toolbar item need the same responder fix as the menu item, or does it validate through a different path (`canPerformToolbarAction`)? Verify both light up.
-- Should the greyed *whole-row* toolbar appearance during "Opening…" be revisited, or only the Profiles/picker control? Scope to the picker control; leave sync-relevant controls (Go/Diff) disabled during connect.
+The navigation-only model resolves it: **show the picker while the abandoned operation still owns the engine, and let a replacement selection enter the coordinator's existing waiting/queued-open path.** That is precisely what makes the queued-replacement-around-connect scenario GUI-reachable.
 
-## 10. Recommendation
+- **(A) Navigation-only — recommended for #38.** Show the picker immediately; mark the old op abandoned; preserve its engine lease; queue any replacement until it terminates. Already supported by the coordinator; keeps #38 small.
+- **(B) True connect cancellation — deferred.** Hold presentation until cancellation/quiescence is proven. Needs a first-class cancellation design and a feasibility assessment of pre-empting a bridge call already occupying the serial worker. Substantially larger; belongs with #53, likely needing the #41 signal.
 
-Ship in 0.3.1 as a scoped UX fix: **(B)** fix the validation-target timing so the already-correct enablement predicates take effect during `.opening`, and route the leave through the existing #35 connect-cancel reap + quiescence gate. No blob change, no new mechanism. Do not expand #35 / PR #37 for this; it is a separate, small responder-timing fix plus a teardown-path confirmation.
+#38, titled "Profiles navigation during connect," is **(A)**.
+
+## 7. Proposed approach
+
+1. **Diagnose** (§4) — instrument toolbar vs menu validation during `.opening`; identify which control(s) actually read disabled and why.
+2. **Fix the confirmed cause**, scoped to the actual defect (toolbar-validation return, menu responder/validation, or a container-disable) — not a speculative first-responder change.
+3. **Rely on existing authority** — `leaveSession`'s abandon + immediate picker + the coordinator's queued-open path. No new teardown, no `connection_cancel` in the nav path, **no blob change**.
+4. **Preserve sheet modality** — while a credential sheet is up, keep today's behavior; the sheet's **Cancel** is the in-sheet exit. #38 targets the pre-sheet `.opening` window.
+
+## 8. Test matrix (menu and toolbar tested separately)
+
+- **Pre-sheet navigation:** during `.opening`, before any sheet — **toolbar** Return-to-Profiles/Profiles enabled and returns to picker; **menu** `Show Profile Picker` enabled and returns to picker. (Invert the 12/12-disabled menu evidence; verify the toolbar independently.)
+- **Sheet modality:** with the credential sheet up, nav behaves as today; the sheet's **Cancel** still exits credential entry.
+- **Replacement queued behind the exact connect op:** after bailing, selecting another profile enters the queued-open path and starts only once the abandoned op terminates (bound to the exact `(session, op)`, not a blanket idle).
+- **Connect success/failure/watchdog races after abandonment:** the abandoned op's late terminal (success, failure, or watchdog) is consumed by the coordinator's phase-exact checks and does not resurrect UI or mis-release a replacement's lease.
+- **Stale callbacks:** a late connect/scan callback for the abandoned op is dropped (token/phase mismatch), never applied to the picker or a replacement.
+- **Double navigation / close:** a second Profiles/close for an already-torn-down session is a no-op (`windowBySession` guard).
+- **Eventual transport cleanup or restart-required:** confirm the abandoned connect terminates (watchdog → terminal) and its ssh child is eventually cleaned up; an unprovable-quiescence path routes to restart-required, not a silent leak.
+- **No sync-confirmation bypass:** navigation during `.syncing` remains blocked (the three-way sync-confirmation alert is not bypassable via this path).
+
+## 9. Invariants
+
+- Navigation is available in every phase **except** `.syncing`, now genuinely including `.opening` pre-sheet.
+- The nav path does **not** call `connection_cancel` and makes **no** claim of immediate reap; the abandoned op winds down in the background or via the watchdog.
+- A replacement open is gated on the exact abandoned op's termination (existing queued-open authority), never started into a still-live engine.
+- Credential-sheet modality unchanged. No vendored-blob change. No new cancellation mechanism.
+
+## 10. Open questions
+
+- Which control actually reads disabled during `.opening` — menu only, toolbar only, or both? (Resolved by §4 instrumentation; determines the fix's size and shape.)
+- Is there container/group-level toolbar disabling during `.opening` that overrides per-item validation?
+- Acceptable replacement-latency: for a firewall-hung connect, a replacement waits up to the watchdog (~60s). Is that acceptable for 0.3.1, or does it argue for accelerating product (B)? (Recommend accept for 0.3.1; note as the motivation for (B)/#53.)
+
+## 11. Recommendation
+
+Ship **(A) navigation-only** in 0.3.1: instrument first (§4), fix the confirmed control(s), and lean on the existing abandon + queued-open authority — no blob, no new cancellation. State honestly that the abandoned connect winds down in the background or hits the watchdog, and that a replacement queues behind it. Defer **(B) true connect cancellation** to a first-class design alongside #53/#41. Do not expand #35 / PR #37 for this.
