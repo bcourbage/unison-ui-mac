@@ -213,6 +213,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// ignore-complete handler.
     private var pendingIgnore: SessionID?
 
+    // MARK: - Scan interruption (issue #24, Phase 1a Wiring)
+
+    /// Per-session `ssh -G` transport qualification verdict, computed once off
+    /// the main thread at session open (remote profiles only) and cached here.
+    /// `.supportedDirect` is the ONLY value that authorizes offering Stop Scan
+    /// and issuing the SIGKILL; anything else (multiplexed / proxied / custom /
+    /// uncertain / not-yet-resolved) keeps the honest Return-to-Profiles path.
+    /// Cleared when the session ends.
+    private var scanInterruptQualification: [SessionID: SSHTransportQualification] = [:]
+    /// The pending interruption stage-deadline work item (backstops a
+    /// non-terminal interrupt stage). Re-synced on every coordinator effect via
+    /// `syncScanInterruptDeadline()`; cancelled when the cycle leaves
+    /// `.interruptingScan`.
+    private var scanInterruptDeadlineWork: DispatchWorkItem?
+    /// The interrupt stage the current deadline was armed for, so a re-sync only
+    /// re-arms when the stage actually changed (signalling is treated as one
+    /// class, matching the coordinator's deadline semantics).
+    private var scanInterruptArmedStageKey: String?
+    /// The reap-poll work item, cancelled if the cycle is torn down early.
+    private var scanInterruptReapWork: DispatchWorkItem?
+    /// Backstop bound for any single non-terminal interrupt stage.
+    var scanInterruptStageDeadline: TimeInterval = 10
+    /// Bounded grace over which reap classification is polled before resolving.
+    var scanInterruptReapGrace: TimeInterval = 2
+
     /// Reconcile window per live session (keyed by SessionID, stable across
     /// connect→scan→ready→sync→rescan). Plus the single queued "waiting"
     /// window, promoted to `windowBySession` when its open starts.
@@ -232,6 +257,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// closeConnection; a successful close before the queued session start).
     private func run(_ effects: [EngineSessionCoordinator.Effect]) {
         for effect in effects { execute(effect) }
+        // Scan interruption (issue #24): keep the stage backstop-deadline in
+        // step with the coordinator's current interrupt stage after every
+        // effect batch. No-op (and cancels any stale timer) when not
+        // interrupting, so it is safe on the hot path.
+        syncScanInterruptDeadline()
         // The single funnel for EVERY coordinator mutation: `run(...)` wraps
         // all of them, and `runScanEffects` routes its remainder through here
         // too, so this notification fires on every engine-phase transition
@@ -274,17 +304,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             windowBySession[s]?.finalizeSyncUnavailable(reason: reason)
         case .restartRequired(let reason):
             driveRestartRequired(reason: reason)
-        // --- Phase 1a scan-interruption effects (issue #24) ---
-        // Foundation PR: the coordinator machinery + effects exist and are
-        // fully unit-tested, but nothing INVOKES the interruption events yet, so
-        // these effects are never emitted here. The Wiring PR replaces these
-        // no-ops with the real driver (signal the child, poll reap, present the
-        // stopped window, close the window, show the picker, cancel aux work,
-        // disarm the stall timer). Kept as explicit no-ops so the exhaustive
-        // switch compiles and behavior is unchanged in this PR.
-        case .signalTransportChild, .pollReap, .presentStopped, .closeWindow,
-             .showPicker, .cancelSessionAuxWork, .disarmScanStall:
-            log.write("scan-interrupt effect emitted with no wiring (Foundation PR): \(effect)")
+        // --- Phase 1a scan-interruption effects (issue #24, Wiring PR) ---
+        case .signalTransportChild(let s, let op):
+            driveSignalTransportChild(s, op)
+        case .pollReap(let s, let op, let identity):
+            drivePollReap(s, op, identity)
+        case .presentStopped(let s):
+            windowBySession[s]?.presentScanStopped()
+        case .closeWindow(let s):
+            driveCloseInterruptWindow(s)
+        case .showPicker:
+            showProfilePicker(select: lastAttemptedProfile)
+        case .cancelSessionAuxWork(let s):
+            driveCancelSessionAuxWork(s)
+        case .disarmScanStall:
+            // The coordinator now owns this op's terminal decision (exactly one
+            // authority). Disarm the stall timer; the scan token stays in
+            // `pendingScan` so the terminal handlers can still route it.
+            scanStall.disarm()
         }
     }
 
@@ -318,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         profileWindowController?.close()
 
         runVersionCheckIfNeeded(profile: profile, session: s)
+        beginScanInterruptQualification(session: s, profile: profile)
     }
 
     private func makeReconcileWindow(session s: SessionID, profile: String,
@@ -345,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self?.leaveSession(s, profile: profile, closeWindow: true,
                                    reason: "Stop during connect/scan")
             },
+            onStopScan: { [weak self] in self?.requestStopScan(session: s) },
             onSyncStart: { [weak self] in
                 guard let self else { return }
                 // Defensive: never authorize a sync while THIS session's Ignore
@@ -443,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
+        scanInterruptQualification[s] = nil
         if closeWindow { w.close() }
         run(engine.abandon(reason: reason))
         showProfilePicker(select: profile)
@@ -904,6 +944,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     RowCompletionRouter.routeScan(pendingScan: self.pendingScan) else {
                 self.log.write("dropping init2 completion — no pending scan"); return
             }
+            // Scan interruption (issue #24): if this session/op is being
+            // interrupted, this init2-complete is the interrupted scan's own
+            // terminal (it unwound after the SIGKILL). Route it to the
+            // coordinator's interruption path and SUPPRESS the normal results
+            // presentation. A replacement/unrelated scan returns false and
+            // presents normally.
+            if self.scanInterruptObserveTerminal(s, op) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             self.log.write("init2 complete — \(items.count) items \(s)/\(op)")
@@ -941,6 +988,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             guard let (s, op) = self.pendingScan else {
                 self.log.write("dropping scan-failed — no pending scan"); return
             }
+            // Scan interruption (issue #24): a matching scan-failed during an
+            // interruption is the interrupted scan's terminal (it failed out
+            // after the SIGKILL). Route to the coordinator's interruption path
+            // and suppress the normal restart-required routing.
+            if self.scanInterruptObserveTerminal(s, op) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             self.log.write("scan failed (state emission) \(s)/\(op) — restart required")
@@ -1029,6 +1081,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self.rescanIgnoringArchives(profile: profile,
                                         failedReason: "retrying with ignorearchives")
         }
+
+        // Scan interruption (issue #24): the production fatal interceptor. A
+        // transport-EOF fatal that arrives while the coordinator is interrupting
+        // the in-flight scan is that scan's expected terminal, not a user error.
+        installScanInterruptFatalInterceptor()
     }
 
     /// SSH credential prompt loop for connect op `(s, op)`. On "no more
@@ -1664,6 +1721,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// publishing stale results.
     private func handleScanStall(_ s: SessionID, _ op: OperationID) {
         guard pendingScan.map({ $0 == (s, op) }) ?? false else { return }
+        // Scan interruption (issue #24): exactly one terminal authority per op.
+        // If the coordinator is already interrupting THIS op, it owns the
+        // terminal decision — the stall timer must defer (the coordinator's
+        // operationFailed is a no-op during `.interruptingScan` anyway, but
+        // deferring keeps the authority explicit and avoids a spurious log).
+        if case .interruptingScan(s, op, _, _) = engine.phase {
+            log.write("scan watchdog: \(s)/\(op) deferring — coordinator owns the interruption")
+            return
+        }
         switch ScanStallPolicy.actionOnStall(sawRemoteWait: scanSawRemoteWait) {
         case .restartRequired:
             // Reliable evidence the op is waiting on remote transport (the
@@ -2382,5 +2448,203 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             .credits: credits,
             .applicationName: appName,
         ])
+    }
+}
+
+
+// MARK: - Phase 1a scan-interruption driver (issue #24, Wiring PR)
+//
+// Production driver connecting the AppDelegate to the coordinator's first-class
+// `.interruptingScan`/`.stopped` authority (merged Foundation PR). The
+// coordinator sequences signal → terminal → reap → close → destination; this
+// driver only (a) qualifies the transport per session, (b) triggers the
+// interruption on the Stop-Scan action, (c) executes the interruption effects
+// (SIGKILL, reap poll, window/picker/aux teardown), (d) routes the interrupted
+// scan's terminal back in, and (e) backstops each non-terminal stage with a
+// deadline. All lifecycle decisions stay in the coordinator.
+extension AppDelegate {
+
+    private static func monoNow() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    // MARK: qualification (per session, off-main, cached)
+
+    /// Kick off the session-bound `ssh -G` transport qualification. Runs off the
+    /// main thread (the probe blocks up to its deadline) and caches the verdict;
+    /// on `.supportedDirect` it enables the window's Stop-Scan affordance. A
+    /// non-ssh (local/socket) profile is cached unsupported without probing.
+    private func beginScanInterruptQualification(session s: SessionID, profile: String) {
+        switch ScanInterruptQualification.plan(profile: profile, unisonDirectory: unisonDirectory) {
+        case .skip(let reason):
+            scanInterruptQualification[s] = .unsupported(reason: reason)
+            log.write("scan-interrupt: '\(profile)' not an interruption candidate (\(reason))")
+        case .qualify(let host, let extraArgs, let customSshCmd):
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let verdict = SSHTransportQualifier.qualify(
+                    host: host, extraArgs: extraArgs, customSshCmd: customSshCmd)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    // Session-bound: drop if the session is gone/replaced.
+                    guard self.windowBySession[s] != nil else { return }
+                    self.scanInterruptQualification[s] = verdict
+                    self.log.write("scan-interrupt: qualification \(s) = \(verdict)")
+                    if verdict == .supportedDirect {
+                        self.windowBySession[s]?.setScanInterruptAvailable(true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func scanInterruptSupported(_ s: SessionID) -> Bool {
+        scanInterruptQualification[s] == .supportedDirect
+    }
+
+    // MARK: trigger (Stop-Scan action)
+
+    /// Stop-Scan pressed during the scan phase. Acceptance point 1 (first
+    /// checkpoint): only a qualified session may interrupt; otherwise fall back
+    /// to the honest Return-to-Profiles. Stop = stop-in-place (stay in the same
+    /// profile window; Rescan reuses it).
+    private func requestStopScan(session s: SessionID) {
+        guard scanInterruptSupported(s) else {
+            log.write("scan-interrupt: Stop Scan on unqualified \(s) — honest return-to-profiles")
+            if let profile = profileBySession[s] {
+                leaveSession(s, profile: profile, closeWindow: true,
+                             reason: "Stop (scan not interruptible)")
+            }
+            return
+        }
+        log.write("scan-interrupt: Stop Scan \(s) → requestScanInterruption(.stopInPlace)")
+        run(engine.requestScanInterruption(s, destination: .stopInPlace))
+    }
+
+    // MARK: fatal interception (transport-EOF terminal during interruption)
+
+    func installScanInterruptFatalInterceptor() {
+        UnisonBridge.fatalInterceptor = { [weak self] _, opaque in
+            guard let self else { return false }
+            guard let (s, op) = self.pendingScan,
+                  case .interruptingScan(s, op, _, _) = self.engine.phase else { return false }
+            self.log.write("scan-interrupt: intercepted transport fatal for \(s)/\(op)")
+            unison_bridge_fatal_response(opaque)
+            _ = self.scanInterruptObserveTerminal(s, op)
+            return true
+        }
+    }
+
+    /// Route the interrupted scan's own terminal (init2-complete / scan-failed /
+    /// transport fatal) into the coordinator. Returns true iff the coordinator
+    /// is interrupting THIS op (so the caller suppresses normal presentation).
+    private func scanInterruptObserveTerminal(_ s: SessionID, _ op: OperationID) -> Bool {
+        guard case .interruptingScan(s, op, _, _) = engine.phase else { return false }
+        log.write("scan-interrupt: interrupted scan terminal observed \(s)/\(op)")
+        pendingScan = nil            // scan op is terminal (didSet disarms stall)
+        run(engine.interruptTerminalObserved(s, op))
+        return true
+    }
+
+    // MARK: effect executors
+
+    private func driveSignalTransportChild(_ s: SessionID, _ op: OperationID) {
+        // Acceptance point 1 (second checkpoint): re-verify qualification before
+        // the SIGKILL. A stale/programmatic request must never bypass the guard.
+        guard scanInterruptSupported(s) else {
+            log.write("scan-interrupt: signal REFUSED — \(s) not qualified at signal time; conservative restart")
+            run(engine.transportSignalCompleted(s, op, .unprovableIdentity))
+            return
+        }
+        let raw = unison_bridge_signal_scan_transport()
+        let result = EngineSessionCoordinator.SignalResult.from(raw)
+        log.write("scan-interrupt: signal outcome=\(raw.outcome.rawValue) identityValid=\(raw.identity_valid) → \(result)")
+        run(engine.transportSignalCompleted(s, op, result))
+    }
+
+    private func drivePollReap(_ s: SessionID, _ op: OperationID,
+                       _ id: EngineSessionCoordinator.TransportIdentity) {
+        scanInterruptReapWork?.cancel(); scanInterruptReapWork = nil
+        pollScanInterruptReapStep(s, op, id, started: AppDelegate.monoNow())
+    }
+
+    private func pollScanInterruptReapStep(_ s: SessionID, _ op: OperationID,
+                                           _ id: EngineSessionCoordinator.TransportIdentity,
+                                           started: UInt64) {
+        // Only meaningful while still awaiting reap for this exact op.
+        guard case .interruptingScan(s, op, .awaitingReap, _) = engine.phase else { return }
+        let reap = EngineSessionCoordinator.ReapState.from(
+            unison_bridge_classify_reap(id.pid, id.startSec, id.startUsec))
+        let elapsed = Double(AppDelegate.monoNow() &- started) / 1e9
+        // A freshly-SIGKILLed child is briefly LIVE before the kernel reaps it
+        // to a zombie/absent — poll over the bounded grace rather than trusting
+        // one snapshot.
+        if reap == .live && elapsed < scanInterruptReapGrace {
+            let work = DispatchWorkItem { [weak self] in
+                self?.pollScanInterruptReapStep(s, op, id, started: started)
+            }
+            scanInterruptReapWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+            return
+        }
+        scanInterruptReapWork = nil
+        log.write("scan-interrupt: reap=\(reap) after \(Int(elapsed * 1000))ms")
+        run(engine.interruptReapClassified(s, op, reap))
+    }
+
+    /// Dispose the interrupted session's window before a new session/picker is
+    /// shown (prevents the orphan-window leak). Delegate detached first so its
+    /// onClose can't re-enter abandon.
+    private func driveCloseInterruptWindow(_ s: SessionID) {
+        abandonDiff(session: s)
+        guard let w = windowBySession[s] else { return }
+        w.window?.delegate = nil
+        w.close()
+        windowBySession[s] = nil
+        profileBySession[s] = nil
+        scanInterruptQualification[s] = nil
+    }
+
+    private func driveCancelSessionAuxWork(_ s: SessionID) {
+        if versionProbeSession == s {
+            activeVersionProbe?.cancel()
+            activeVersionProbe = nil
+            versionProbeSession = nil
+        }
+    }
+
+    // MARK: stage deadline (backstops any non-terminal interrupt stage)
+
+    private func scanInterruptStageKey(_ stage: EngineSessionCoordinator.InterruptStage) -> String {
+        switch stage {
+        case .signalling:               return "signalling"   // class-matched (both flag values)
+        case .awaitingTerminal(let id): return "awaitingTerminal:\(id.pid).\(id.startSec).\(id.startUsec)"
+        case .awaitingReap(let id):     return "awaitingReap:\(id.pid).\(id.startSec).\(id.startUsec)"
+        case .closing(let op):          return "closing:\(op)"
+        }
+    }
+
+    /// Keep the stage-deadline aligned with the coordinator's current interrupt
+    /// stage. Re-arms only when the stage class changes (so an early-terminal
+    /// flag flip within `signalling` does not reset the clock, matching the
+    /// coordinator's class-matched deadline). Cancels when not interrupting.
+    func syncScanInterruptDeadline() {
+        guard case .interruptingScan(let s, let op, let stage, _) = engine.phase else {
+            cancelScanInterruptDeadline(); return
+        }
+        let key = scanInterruptStageKey(stage)
+        if scanInterruptArmedStageKey == key { return }
+        scanInterruptDeadlineWork?.cancel()
+        scanInterruptArmedStageKey = key
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.log.write("scan-interrupt: stage '\(key)' deadline elapsed → coordinator restart")
+            self.run(self.engine.interruptDeadlineElapsed(s, op, stage))
+        }
+        scanInterruptDeadlineWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + scanInterruptStageDeadline, execute: work)
+    }
+
+    private func cancelScanInterruptDeadline() {
+        scanInterruptDeadlineWork?.cancel(); scanInterruptDeadlineWork = nil
+        scanInterruptArmedStageKey = nil
+        scanInterruptReapWork?.cancel(); scanInterruptReapWork = nil
     }
 }

@@ -81,6 +81,18 @@ enum UnisonBridge {
     /// the existing dismiss / delete-orphans-and-retry paths are untouched.
     nonisolated(unsafe) static var fatalRetryIgnoreArchivesHandler: (() -> Void)?
 
+    /// Scan-interruption hook (issue #24, Wiring PR). Consulted on the main
+    /// queue at the TOP of the fatal trampoline, BEFORE any modal is built. A
+    /// SIGKILL of the transport child during a wedged `init2` surfaces as a
+    /// `Util.Fatal` (transport EOF) — during an in-flight scan interruption that
+    /// fatal is the EXPECTED terminal, not a user-facing error. If the
+    /// interceptor returns true it has fully handled the fatal (acknowledged the
+    /// worker via `unison_bridge_fatal_response` and routed the terminal into
+    /// the coordinator), so the trampoline suppresses the modal and returns.
+    /// Returns false → the normal modal path runs unchanged. Always compiled
+    /// (production), unlike the Phase 0 spike's Debug-only variant.
+    nonisolated(unsafe) static var fatalInterceptor: ((_ msg: String, _ opaque: UnsafeMutableRawPointer) -> Bool)?
+
     /// Override hook for tests / autotest. When set, the fatal trampoline
     /// consults this for the path to the local Unison directory used by
     /// `ArchiveRecovery`. Production code reads it from
@@ -348,6 +360,14 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
     let recovery = ArchiveRecovery.parse(message: text, unisonDirectory: unisonDir)
 
     DispatchQueue.main.async {
+        // Scan-interruption interception (issue #24): during an in-flight
+        // in-process interruption, a transport-EOF fatal is the expected
+        // terminal. If the interceptor claims it, it has acknowledged the worker
+        // and routed the terminal into the coordinator — suppress the modal.
+        if let opaquePtr = UnsafeMutableRawPointer(bitPattern: opaqueBits),
+           UnisonBridge.fatalInterceptor?(text, opaquePtr) == true {
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Unison error"
