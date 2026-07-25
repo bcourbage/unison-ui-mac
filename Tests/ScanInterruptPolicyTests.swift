@@ -153,4 +153,25 @@ final class ScanInterruptPolicyTests: XCTestCase {
     func test_profilesWhenUnqualifiedScan_notHandled() {
         XCTAssertFalse(P.profilesHandledByInterruption(phase: .scanning(s, op), qualified: false))
     }
+
+    // MARK: - Live-matrix finding: transient "archives are locked" recognition
+
+    func test_isArchiveLockFatal_recognizesUnisonLockMessage() {
+        let msg = """
+        Warning: the archives are locked.
+        If no other instance of unison is running, the locks should be removed.
+        The file /Users/x/Library/Application Support/Unison/lk98490 on host Demeter should be deleted
+        """
+        XCTAssertTrue(P.isArchiveLockFatal(msg))
+    }
+
+    func test_isArchiveLockFatal_caseInsensitive() {
+        XCTAssertTrue(P.isArchiveLockFatal("The Archives Are Locked."))
+    }
+
+    func test_isArchiveLockFatal_ignoresUnrelatedFatals() {
+        XCTAssertFalse(P.isArchiveLockFatal("Lost connection with the server"))
+        XCTAssertFalse(P.isArchiveLockFatal("archive files are missing on one replica"))
+        XCTAssertFalse(P.isArchiveLockFatal(""))
+    }
 }

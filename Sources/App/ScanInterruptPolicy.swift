@@ -75,4 +75,19 @@ enum ScanInterruptPolicy {
                                               qualified: Bool) -> Bool {
         leaveRouting(phase: phase, qualified: qualified) != .leaveImmediately
     }
+
+    /// Recognize Unison's "archives are locked" fatal (live-matrix finding). A
+    /// Stop Scan SIGKILLs the transport, orphaning the remote `unison -server`
+    /// which then releases its (empty, owner-less) lock file only when it
+    /// finally notices the dropped socket — asynchronously, and per upstream
+    /// "not reliably run in all cases." A reconnect that beats that release hits
+    /// this fatal. It is TRANSIENT for a post-interruption reconnect (the lock is
+    /// our own orphan and will clear), so the driver retries the reconnect a
+    /// bounded number of times rather than surfacing a restart. Platform-
+    /// agnostic: the reconnect attempt itself is the only reliable "is the lock
+    /// gone yet" signal.
+    static func isArchiveLockFatal(_ message: String) -> Bool {
+        let m = message.lowercased()
+        return m.contains("archives are locked") || m.contains("locks should be removed")
+    }
 }

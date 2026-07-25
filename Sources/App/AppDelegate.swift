@@ -241,6 +241,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Bounded grace over which reap classification is polled before resolving.
     var scanInterruptReapGrace: TimeInterval = 2
 
+    // Post-interruption reconnect lock-retry (live-matrix finding). A Stop Scan
+    // SIGKILLs the transport, orphaning the remote `unison -server` which
+    // releases its archive lock only when it asynchronously notices the dropped
+    // socket. A reconnect that beats that release hits "archives are locked".
+    // Since the lock is our own orphan and WILL clear, a post-interruption
+    // reconnect retries the (fresh) reconnect a bounded number of times before
+    // surfacing the honest error. The reconnect attempt is itself the only
+    // reliable, platform-agnostic "is the lock gone yet" signal.
+    /// True from the interruption's SIGKILL until the next scan completes
+    /// successfully — the window in which an "archives are locked" fatal is
+    /// treated as the transient, retryable case.
+    private var postInterruptReconnectActive = false
+    /// Remaining automatic retries for the post-interruption reconnect.
+    private var scanInterruptLockRetriesLeft = 0
+    /// Max automatic reconnect retries on a transient post-interrupt lock.
+    let scanInterruptLockMaxRetries = 4
+    /// Delay before each reconnect retry (lets the orphan release the lock).
+    var scanInterruptLockRetryDelay: TimeInterval = 1.5
+    /// True during a lock-retry's brief window-less gap (closed → deferred
+    /// reopen), so `applicationShouldTerminateAfterLastWindowClosed` doesn't quit
+    /// the app in that gap. Cleared once a window is shown again.
+    private var scanInterruptRetryInFlight = false
+
     /// Reconcile window per live session (keyed by SessionID, stable across
     /// connect→scan→ready→sync→rescan). Plus the single queued "waiting"
     /// window, promoted to `windowBySession` when its open starts.
@@ -339,6 +362,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// and kick off the SSH version probe.
     private func driveShowSession(_ s: SessionID, profile: String) {
         lastAttemptedProfile = profile
+        // A window is (re)appearing → any lock-retry window-less gap is over.
+        scanInterruptRetryInFlight = false
         profileBySession[s] = profile
 
         // A queued "waiting" window (if any) must NOT be promoted into the live
@@ -541,6 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         windowBySession[s] = nil
         profileBySession[s] = nil
         if closeWindow { w.close() }
+        clearPostInterruptReconnectState()   // leaving cancels any pending lock-retry context
         run(engine.abandon(reason: reason))
         showProfilePicker(select: profile)
     }
@@ -884,11 +910,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// coordinator additionally gates the reopen on that close returning status
     /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
     /// to restart-required instead of reusing the runtime.
-    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
+    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String,
+                                           reopenAfter delay: TimeInterval = 0) {
         // Detach + close the stale window WITHOUT its onClose→abandon path;
-        // we drive the coordinator explicitly below (and a replacement window
-        // opens synchronously in the same turn, so the app never sees a
-        // last-window-closed moment).
+        // we drive the coordinator explicitly below. With `reopenAfter == 0` a
+        // replacement window opens synchronously in the same turn, so the app
+        // never sees a last-window-closed moment. When `reopenAfter > 0` (the
+        // scan-interrupt lock retry), the reopen is deferred — the caller sets
+        // the quit-suppression flag so the brief window-less gap can't trigger
+        // `applicationShouldTerminateAfterLastWindowClosed`.
         if let s = engine.currentSession, let w = windowBySession[s] {
             w.window?.delegate = nil
             w.close()
@@ -901,7 +931,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         } else {
             run(engine.abandon(reason: failedReason))
         }
-        run(engine.requestOpen(profile: profile))
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.run(self?.engine.requestOpen(profile: profile) ?? [])
+            }
+        } else {
+            run(engine.requestOpen(profile: profile))
+        }
     }
 
     // MARK: - Permanent bridge handlers (installed once at launch)
@@ -1015,6 +1051,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             if self.scanInterruptObserveTerminal(s, op) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
+            // A scan completed cleanly → the post-interruption reconnect (if any)
+            // succeeded; future locks are no longer the transient case.
+            self.clearPostInterruptReconnectState()
             self.log.write("init2 complete — \(items.count) items \(s)/\(op)")
             self.runScanEffects(self.engine.scanCompleted(s, op), items: items)
             #if DEBUG
@@ -1667,7 +1706,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // Don't quit during a scan-interrupt lock-retry's brief window-less gap
+        // (the window is deferred-reopening).
+        !scanInterruptRetryInFlight
     }
 
     // MARK: - Window management
@@ -2639,15 +2680,54 @@ extension AppDelegate {
     // MARK: fatal interception (transport-EOF terminal during interruption)
 
     func installScanInterruptFatalInterceptor() {
-        UnisonBridge.fatalInterceptor = { [weak self] _, opaque in
+        UnisonBridge.fatalInterceptor = { [weak self] msg, opaque in
             guard let self else { return false }
-            guard let (s, op) = self.pendingScan,
-                  case .interruptingScan(s, op, _, _) = self.engine.phase else { return false }
-            self.log.write("scan-interrupt: intercepted transport fatal for \(s)/\(op)")
-            unison_bridge_fatal_response(opaque)
-            _ = self.scanInterruptObserveTerminal(s, op)
-            return true
+            // (1) The interrupted scan's own transport-EOF terminal, during the
+            // interruption teardown itself.
+            if let (s, op) = self.pendingScan,
+               case .interruptingScan(s, op, _, _) = self.engine.phase {
+                self.log.write("scan-interrupt: intercepted transport fatal for \(s)/\(op)")
+                unison_bridge_fatal_response(opaque)
+                _ = self.scanInterruptObserveTerminal(s, op)
+                return true
+            }
+            // (2) A TRANSIENT "archives are locked" on a post-interruption
+            // reconnect: the orphaned remote server hasn't released its lock yet.
+            // Ack (no modal) and retry the reconnect, bounded — the lock will
+            // clear. On exhaustion, fall through to the honest modal.
+            if self.postInterruptReconnectActive,
+               self.scanInterruptLockRetriesLeft > 0,
+               ScanInterruptPolicy.isArchiveLockFatal(msg) {
+                self.scanInterruptLockRetriesLeft -= 1
+                self.log.write("scan-interrupt: transient 'archives are locked' on reconnect — retry (\(self.scanInterruptLockRetriesLeft) left)")
+                unison_bridge_fatal_response(opaque)
+                self.scheduleScanInterruptLockRetry()
+                return true
+            }
+            return false
         }
+    }
+
+    /// Retry a post-interruption reconnect that hit a transient lock: fail the
+    /// current op quiescently (consumes the pending slot, so a racing scan-failed
+    /// is dropped), then deferred-reopen the profile after a short settle. The
+    /// quit-suppression flag guards the window-less gap.
+    private func scheduleScanInterruptLockRetry() {
+        guard let profile = lastAttemptedProfile else {
+            postInterruptReconnectActive = false; return
+        }
+        scanInterruptRetryInFlight = true
+        reopenCurrentProfileFresh(profile,
+                                  failedReason: "archives were locked after interruption (retrying)",
+                                  reopenAfter: scanInterruptLockRetryDelay)
+    }
+
+    /// A scan completed successfully — the post-interruption reconnect is done,
+    /// so future locks are NOT the transient case anymore.
+    func clearPostInterruptReconnectState() {
+        postInterruptReconnectActive = false
+        scanInterruptLockRetriesLeft = 0
+        scanInterruptRetryInFlight = false
     }
 
     /// Route the interrupted scan's own terminal (init2-complete / scan-failed /
@@ -2673,6 +2753,17 @@ extension AppDelegate {
         }
         let raw = unison_bridge_signal_scan_transport()
         let result = EngineSessionCoordinator.SignalResult.from(raw)
+        // The transport is (or was) killed → the remote server is orphaned and
+        // will release its lock asynchronously. Arm the post-interrupt reconnect
+        // lock-retry window so a reconnect that beats that release retries
+        // instead of surfacing "archives are locked".
+        switch result {
+        case .signalled, .alreadyDeadWithIdentity:
+            postInterruptReconnectActive = true
+            scanInterruptLockRetriesLeft = scanInterruptLockMaxRetries
+        default:
+            break
+        }
         log.write("scan-interrupt: signal outcome=\(raw.outcome.rawValue) identityValid=\(raw.identity_valid) → \(result)")
         run(engine.transportSignalCompleted(s, op, result))
     }
