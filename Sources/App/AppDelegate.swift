@@ -220,21 +220,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// never outlives the connection that produced it. `.supportedDirect` is the
     /// ONLY value that authorizes offering Stop Scan and issuing the SIGKILL.
     private var scanInterruptQualCache = ScanInterruptQualCache()
-    /// The lifecycle-owned, generation-tagged probe for each session's in-flight
-    /// `ssh -G` qualification, so leave/replacement/shutdown can TEAR DOWN the
-    /// subprocess (SIGTERM→kill→reap) and shutdown can WAIT for its reap.
-    private final class ScanInterruptQualProbe: @unchecked Sendable {
-        // @unchecked Sendable: every stored member is an immutable `let` and is
-        // itself thread-safe (the canceller is lock-guarded, the semaphore is
-        // Sendable) — safe to hand to the qualification worker.
-        let generation: UInt64
-        let canceller = VersionCheck.ProbeCanceller()
-        /// Signalled by the worker once `qualify` (including any teardown/reap)
-        /// has returned — shutdown blocks on this so the child is proven reaped.
-        let done = DispatchSemaphore(value: 0)
-        init(_ generation: UInt64) { self.generation = generation }
-    }
-    private var scanInterruptQualProbe: [SessionID: ScanInterruptQualProbe] = [:]
+    /// Lifecycle-owned, generation-tagged `ssh -G` qualification probes. The
+    /// registry separates "current probe by session" from "all live probes" so
+    /// a cancelled/superseded probe stays tracked until its subprocess actually
+    /// completes — shutdown cancels + waits for the FULL live set (round 3).
+    private let scanInterruptProbes = ScanInterruptProbeRegistry()
     /// The pending interruption stage-deadline work item (backstops a
     /// non-terminal interrupt stage). Re-synced on every coordinator effect via
     /// `syncScanInterruptDeadline()`; cancelled when the cycle leaves
@@ -404,7 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             },
             onStopScan: { [weak self] in self?.requestStopScan(session: s) },
             onWindowShouldClose: { [weak self] in self?.windowShouldCloseSession(s) ?? true },
-            onProfilesRequested: { [weak self] in self?.profilesRequested(s, profile: profile) },
+            onProfilesRequested: { [weak self] in self?.profilesRequested(s) ?? false },
             onSyncStart: { [weak self] in
                 guard let self else { return }
                 // Defensive: never authorize a sync while THIS session's Ignore
@@ -493,19 +483,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
-    /// The Profiles toolbar item for a session. Same routing as
-    /// `windowShouldCloseSession`, but the non-interruptible case actively
-    /// leaves (the button is an explicit "go back to the picker").
-    private func profilesRequested(_ s: SessionID, profile: String) {
+    /// The Profiles toolbar item for a session (round 3 correction 1). Returns
+    /// true iff HANDLED here (an interruption was started/upgraded). When it
+    /// returns false, the controller falls back to `window.performClose`, which
+    /// goes through `windowShouldClose` — so Profiles during a running SYNC
+    /// cannot bypass the three-way sync-confirmation alert.
+    private func profilesRequested(_ s: SessionID) -> Bool {
         switch ScanInterruptPolicy.leaveRouting(phase: engine.phase,
                                                 qualified: scanInterruptSupported(s)) {
         case .interruptReturnToPicker:
             log.write("Profiles during qualified scan \(s) → returnToPicker interruption")
             run(engine.requestScanInterruption(s, destination: .returnToPicker))
+            return true
         case .abandonUpgrade:
             run(engine.abandon(reason: "Profiles during interruption"))
+            return true
         case .leaveImmediately:
-            leaveSession(s, profile: profile, closeWindow: true, reason: "Profiles")
+            // Not interruptible → let the controller performClose, which routes
+            // through windowShouldClose (sync confirmation / normal close →
+            // windowWillClose → handleWindowClosed → leaveSession).
+            return false
         }
     }
 
@@ -1650,17 +1647,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             activeVersionProbe = nil
             versionProbeSession = nil
         }
-        // Scan interruption (issue #24, round 2 Finding 4): tear down any
-        // in-flight `ssh -G` qualification subprocesses AND prove the reap. Fire
-        // every SIGTERM first (synchronous), then wait bounded on each probe's
-        // `done` (signalled after qualify's SIGKILL+reap returns) so we don't
-        // exit while a child is still being torn down — same discipline as the
-        // version probe above.
-        let probes = Array(scanInterruptQualProbe.values)
+        // Scan interruption (issue #24, round 3 correction 2): tear down EVERY
+        // live `ssh -G` qualification subprocess — including cancelled/superseded
+        // ones still finishing their teardown — AND prove the reap. Fire every
+        // SIGTERM first (synchronous), then wait bounded on each probe's `done`
+        // (signalled after qualify's SIGKILL+reap returns) so we don't exit while
+        // a child is still being torn down — same discipline as the version
+        // probe above.
+        let probes = scanInterruptProbes.allLive
         for probe in probes { probe.canceller.cancel() }
         let reapDeadline = DispatchTime.now() + (VersionCheck.terminateGrace * 2) + 0.5
         for probe in probes { _ = probe.done.wait(timeout: reapDeadline) }
-        scanInterruptQualProbe.removeAll()
         unison_bridge_shutdown()
     }
 
@@ -2550,20 +2547,21 @@ extension AppDelegate {
     /// non-ssh (local/socket) profile is cached unsupported without probing.
     private func beginScanInterruptQualification(session s: SessionID, profile: String,
                                                  generation: UInt64) {
-        // Supersede any prior probe for this session and open the new generation
-        // (invalidates the cached verdict until the fresh probe resolves).
-        scanInterruptQualProbe[s]?.canceller.cancel()
-        scanInterruptQualProbe[s] = nil
+        // Open the new connection generation (invalidates the cached verdict
+        // until the fresh probe resolves). A new candidate probe supersedes the
+        // prior one via the registry (which cancels it but keeps it live until
+        // its teardown completes).
         scanInterruptQualCache.beginGeneration(session: s, generation: generation)
         refreshScanInterruptAffordance()   // drop Stop Scan while requalifying
         switch ScanInterruptQualification.plan(profile: profile, unisonDirectory: unisonDirectory) {
         case .skip(let reason):
+            scanInterruptProbes.cancelCurrent(session: s)   // supersede any prior probe (stays live)
             scanInterruptQualCache.apply(session: s, generation: generation,
                                          .unsupported(reason: reason))
             log.write("scan-interrupt: '\(profile)' not an interruption candidate (\(reason))")
         case .qualify(let host, let extraArgs):
-            let probe = ScanInterruptQualProbe(generation)
-            scanInterruptQualProbe[s] = probe
+            let probe = ScanInterruptQualProbe(session: s, generation: generation)
+            scanInterruptProbes.register(probe)   // supersedes+cancels prior current; adds to live
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 defer { probe.done.signal() }   // fires AFTER any teardown/reap
                 let verdict = SSHTransportQualifier.qualify(
@@ -2571,10 +2569,10 @@ extension AppDelegate {
                     canceller: probe.canceller)
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if self.scanInterruptQualProbe[s] === probe { self.scanInterruptQualProbe[s] = nil }
+                    self.scanInterruptProbes.complete(probe)   // drop from live; clear current iff still ===
                     guard self.windowBySession[s] != nil else { return }
                     // Apply ONLY if this is still the current generation; a
-                    // superseded probe is dropped (Finding 3).
+                    // superseded/stale probe is dropped (Finding 3).
                     if self.scanInterruptQualCache.apply(session: s, generation: generation, verdict) {
                         self.log.write("scan-interrupt: qualification \(s) gen=\(generation) = \(verdict)")
                         self.refreshScanInterruptAffordance()
@@ -2590,11 +2588,11 @@ extension AppDelegate {
         scanInterruptQualCache.supported(session: s)
     }
 
-    /// Cancel a session's in-flight qualification probe and clear its cached
-    /// verdict (leave / replacement / close).
+    /// Cancel a session's CURRENT qualification probe and clear its cached
+    /// verdict (leave / replacement / close). The probe stays in the live set
+    /// until its subprocess completes, so shutdown can still wait for its reap.
     private func cancelScanInterruptQualification(_ s: SessionID) {
-        scanInterruptQualProbe[s]?.canceller.cancel()
-        scanInterruptQualProbe[s] = nil
+        scanInterruptProbes.cancelCurrent(session: s)
         scanInterruptQualCache.clear(session: s)
     }
 

@@ -27,8 +27,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// driven interruption and will close the window itself on quiescence).
     typealias WindowShouldCloseRequest = @MainActor () -> Bool
     /// The Profiles toolbar action, routed to the owner so a qualified scan
-    /// becomes a `.returnToPicker` interruption instead of a bare close.
-    typealias ProfilesRequest = @MainActor () -> Void
+    /// becomes a `.returnToPicker` interruption instead of a bare close. Returns
+    /// true if the owner HANDLED it (interruption started); false → the
+    /// controller falls back to `performClose` so a running sync still gets its
+    /// three-way confirmation via `windowShouldClose`.
+    typealias ProfilesRequest = @MainActor () -> Bool
     /// Invoked when the user presses Go. The window never calls the sync
     /// bridge itself — it asks the engine coordinator (via AppDelegate) to
     /// authorize the sync. The coordinator answers with a `.beginSync`
@@ -225,7 +228,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onCancelScan: @escaping CancelScanRequest,
          onStopScan: @escaping StopScanRequest = {},
          onWindowShouldClose: @escaping WindowShouldCloseRequest = { true },
-         onProfilesRequested: @escaping ProfilesRequest = {},
+         onProfilesRequested: @escaping ProfilesRequest = { false },
          onSyncStart: @escaping SyncStartRequest,
          onSyncExit: @escaping SyncExitRequest,
          onEngineUncertain: @escaping EngineUncertainRequest,
@@ -615,12 +618,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     /// Toolbar "Profiles" action — return to the picker. Routed to the owner
-    /// (issue #24): a qualified scan becomes a `.returnToPicker` interruption
-    /// (window retained, coordinator closes it on quiescence); otherwise the
-    /// owner performs the immediate leave. NOT `performClose` — that would beep
-    /// on the interruption veto and double-consult `windowShouldClose`.
+    /// (issue #24): a qualified scan / in-flight interruption is HANDLED as a
+    /// `.returnToPicker` interruption (window retained, coordinator closes it on
+    /// quiescence). Otherwise the owner did NOT handle it, so we fall back to
+    /// `performClose(nil)`, which routes through `windowShouldClose` — this is
+    /// what preserves the three-way confirmation when a sync is running (round 3
+    /// correction 1).
     func returnToPicker() {
-        onProfilesRequested()
+        if !onProfilesRequested() {
+            window?.performClose(nil)
+        }
     }
 
     /// Toolbar Stop action — abort the running sync. Calls

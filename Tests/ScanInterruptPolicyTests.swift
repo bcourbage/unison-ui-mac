@@ -126,4 +126,31 @@ final class ScanInterruptPolicyTests: XCTestCase {
         XCTAssertTrue(P.allowWindowClose(phase: .opening(s, op), qualified: true))
         XCTAssertTrue(P.allowWindowClose(phase: .ready(s), qualified: true))
     }
+
+    // MARK: - Round 3 correction 1: Profiles during sync cannot bypass confirmation
+
+    func test_profilesDuringSync_notHandled_soFallsBackToPerformClose() {
+        // During a running sync, Profiles must NOT be handled by the interruption
+        // path — so returnToPicker() falls back to performClose(), which routes
+        // through windowShouldClose and cannot bypass the three-way sync
+        // confirmation.
+        XCTAssertFalse(P.profilesHandledByInterruption(phase: .syncing(s, op), qualified: true))
+    }
+
+    func test_leaveRouting_syncing_leavesImmediately() {
+        XCTAssertEqual(P.leaveRouting(phase: .syncing(s, op), qualified: true), .leaveImmediately)
+    }
+
+    func test_profilesDuringQualifiedScan_isHandledByInterruption() {
+        XCTAssertTrue(P.profilesHandledByInterruption(phase: .scanning(s, op), qualified: true))
+    }
+
+    func test_profilesDuringInterruption_isHandled() {
+        let p: Phase = .interruptingScan(s, op, .signalling(terminalObserved: false), .stopInPlace)
+        XCTAssertTrue(P.profilesHandledByInterruption(phase: p, qualified: true))
+    }
+
+    func test_profilesWhenUnqualifiedScan_notHandled() {
+        XCTAssertFalse(P.profilesHandledByInterruption(phase: .scanning(s, op), qualified: false))
+    }
 }

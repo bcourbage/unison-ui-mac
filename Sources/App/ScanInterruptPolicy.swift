@@ -64,4 +64,15 @@ enum ScanInterruptPolicy {
                                  qualified: Bool) -> Bool {
         leaveRouting(phase: phase, qualified: qualified) == .leaveImmediately
     }
+
+    /// Whether the Profiles action is HANDLED by the interruption path (round 3
+    /// correction 1). True → the driver started/upgraded a `.returnToPicker`
+    /// interruption, so the controller must NOT also `performClose`. False → not
+    /// handled, so `returnToPicker` falls back to `window.performClose`, which
+    /// routes through `windowShouldClose` and therefore CANNOT bypass the
+    /// three-way sync-confirmation alert during a running sync.
+    static func profilesHandledByInterruption(phase: EngineSessionCoordinator.Phase,
+                                              qualified: Bool) -> Bool {
+        leaveRouting(phase: phase, qualified: qualified) != .leaveImmediately
+    }
 }
