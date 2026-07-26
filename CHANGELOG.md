@@ -9,6 +9,32 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.4.0] — 2026-07-26
+
+Adds user-initiated scan interruption and a connect-time navigation fix on top of
+0.3.0. (Build 16.) Existing profiles and settings continue to work without
+migration.
+
+### Added
+- **Stop Scan.** An in-progress scan can now be interrupted from the Action menu /
+  toolbar, returning to the profile list, for a **qualified direct-SSH** connection
+  once it has reached the "waiting for changes from server" point. The interruption
+  is coordinator-gated: it tears down the exact tracked SSH transport child, waits
+  for the engine to reach a quiescent state, and only then returns — so a subsequent
+  open reuses a clean engine. (#24)
+
+### Fixed
+- **Profile navigation stays available while connecting.** "Show Profile Picker" and
+  returning to Profiles are no longer intermittently disabled during the `.opening`
+  (connect) phase; the command is owned by a stable target and validated through one
+  routing decision, closing a first-menu-open greying race. (#38)
+
+### Known limitations (tracked, not regressions)
+- Stop Scan covers **qualified direct SSH after the remote-wait point** only. Non-direct
+  transports (ControlMaster / ProxyCommand / ProxyJump / custom `sshcmd`) and a
+  CPU-bound local walk are not interruptible in place; recovery there remains the
+  conservative no-progress timeout and quit-and-reopen. (Tracked in #53.)
+
 ## [0.3.0] — 2026-07-22
 
 A large reliability, data-integrity, and correctness release rolling up the
