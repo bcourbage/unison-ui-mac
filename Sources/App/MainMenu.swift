@@ -16,7 +16,11 @@ import AppKit
 @MainActor
 enum MainMenu {
 
-    static func build() -> NSMenu {
+    /// `pickerTarget` is the explicit, stable target for the Action ▸ Show
+    /// Profile Picker command (issue #38) — normally the `AppDelegate`. Passing
+    /// an explicit target detaches that app-global navigation command from
+    /// transient responder-chain resolution.
+    static func build(pickerTarget: AnyObject? = nil) -> NSMenu {
         // Prefer CFBundleDisplayName / CFBundleName so the user-visible
         // app name (e.g. "Unison-UI-Mac") is what appears in the App
         // menu's "About / Hide / Quit" items and the Help menu —
@@ -38,7 +42,7 @@ enum MainMenu {
         let main = NSMenu()
         main.addItem(makeAppMenu(appName: appName))
         main.addItem(makeEditMenu())
-        main.addItem(makeActionMenu())
+        main.addItem(makeActionMenu(pickerTarget: pickerTarget))
         main.addItem(makeWindowMenu())
         main.addItem(makeHelpMenu(appName: appName))
         return main
@@ -189,7 +193,7 @@ enum MainMenu {
     /// for the per-row half. Every item targets nil — the responder
     /// chain delivers them to `ReconcileWindowController` when the
     /// reconcile window is key.
-    private static func makeActionMenu() -> NSMenuItem {
+    private static func makeActionMenu(pickerTarget: AnyObject? = nil) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Action")
 
@@ -231,11 +235,19 @@ enum MainMenu {
         // with the just-run profile pre-selected). ⌘⇧P parallels the
         // ⌘⇧E shortcut for "Profile Editor" — both are profile-
         // navigation primary actions with a Shift+letter mnemonic.
+        // Issue #38: app-global navigation command with an EXPLICIT AppDelegate
+        // target + action (`AppDelegate.showProfilePickerAppAction:`), so its
+        // enablement/dispatch never depends on the transient reconcile-window
+        // responder chain (which intermittently greyed this item at first
+        // menu-open during `.opening`). AppDelegate validates it via
+        // `ShowProfilePickerMenuPolicy` and routes to the current session's
+        // `returnToPicker()` — the same navigation-only path as the toolbar.
         let pickerItem = NSMenuItem(
             title: "Show Profile Picker",
-            action: Selector(("showProfilePickerMenuAction:")),
+            action: Selector(("showProfilePickerAppAction:")),
             keyEquivalent: "p")
         pickerItem.keyEquivalentModifierMask = [.command, .shift]
+        pickerItem.target = pickerTarget
         menu.addItem(pickerItem)
 
         menu.addItem(.separator())

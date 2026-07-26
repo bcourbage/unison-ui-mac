@@ -867,6 +867,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         engine.currentSession.flatMap { windowBySession[$0] }
     }
 
+    /// Action ▸ Show Profile Picker (issue #38). App-global navigation command
+    /// with an explicit AppDelegate target. Routes to the CURRENT reconcile
+    /// session's `returnToPicker()` — `currentReconcileWindow` is derived from
+    /// `engine.currentSession`, so it can only ever target the current session —
+    /// which continues through the existing navigation-only `leaveSession` path
+    /// (no `connection_cancel`, SIGKILL, or new coordinator state). Same
+    /// behavior as the toolbar Profiles control. A nil `currentReconcileWindow`
+    /// (already at the picker) is a no-op, and `validateMenuItem` greys the item
+    /// in that case anyway.
+    @objc func showProfilePickerAppAction(_ sender: Any?) {
+        currentReconcileWindow?.returnToPicker()
+    }
+
     /// Take (and clear) the single in-flight op's token, so a terminal
     /// failure can be reported to the coordinator with the exact
     /// `(SessionID, OperationID)` it was started with. At most one of
@@ -2032,6 +2045,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     // validation path, which left "Rescan Ignoring Archives…" enabled
     // (and a no-op) from the Profile Picker.
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showProfilePickerAppAction(_:)) {
+            // Issue #38: validated here (not on the transient reconcile
+            // controller) against authoritative state, so it can't be greyed by
+            // a first-menu-open responder-chain race.
+            return ShowProfilePickerMenuPolicy.enabled(
+                hasReconcileSession: currentReconcileWindow != nil,
+                phase: engine.phase)
+        }
         if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
             // Only meaningful with a reconcile window open on the live session.
             return currentReconcileWindow != nil && lastAttemptedProfile != nil
