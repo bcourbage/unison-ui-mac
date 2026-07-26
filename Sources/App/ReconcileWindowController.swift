@@ -1735,8 +1735,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         // Action ▸ Show Profile Picker is NOT validated here anymore (issue #38):
         // it is an app-global navigation command owned by AppDelegate with an
-        // explicit target + `ShowProfilePickerMenuPolicy`, so a single authority
-        // decides it and a first-menu-open responder-chain race can't grey it.
+        // explicit target + the shared `ShowProfilePickerMenuPolicy` routing
+        // decision, so a single authority decides it and an intermittent
+        // responder-chain/validation failure can't grey it.
         return true
     }
 

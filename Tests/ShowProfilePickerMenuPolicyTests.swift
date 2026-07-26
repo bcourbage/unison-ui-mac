@@ -1,50 +1,82 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// Issue #38: the Action ▸ Show Profile Picker command is validated by
-/// `AppDelegate` (explicit target) via this pure policy, so a first-menu-open
-/// responder-chain race can never grey it. Authoritative rule: navigation is
-/// available whenever a reconcile session exists and the coordinator is not
-/// `.syncing`; with no reconcile session (already at the picker) it is disabled.
+/// Issue #38: Action ▸ Show Profile Picker is owned by `AppDelegate` (explicit
+/// target) and validated + dispatched via this single routing decision, so an
+/// intermittent responder-chain/validation failure can't grey it. Enabled iff
+/// the route is not `.unavailable`.
 final class ShowProfilePickerMenuPolicyTests: XCTestCase {
 
     private typealias P = ShowProfilePickerMenuPolicy
+    private typealias Target = ShowProfilePickerMenuTarget
     private typealias Phase = EngineSessionCoordinator.Phase
     private let s = EngineSessionCoordinator.SessionID(raw: 1)
     private let op = EngineSessionCoordinator.OperationID(raw: 2)
 
-    // Enabled during the connect phase — the exact case #38 is about.
-    func test_enabled_duringOpening() {
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .opening(s, op)))
+    // MARK: current reconcile session
+
+    func test_currentSession_opening_routesToCurrentSession() {
+        XCTAssertEqual(P.route(hasCurrentSession: true, phase: .opening(s, op),
+                               hasWaitingWindow: false), .currentSession)
     }
 
-    // Disabled during a running sync — the menu shortcut must not bypass the
-    // window's three-way sync-confirmation prompt.
-    func test_disabled_duringSyncing() {
-        XCTAssertFalse(P.enabled(hasReconcileSession: true, phase: .syncing(s, op)))
+    func test_currentSession_syncing_unavailable() {
+        // Disabled during a running sync — must not bypass the window's
+        // three-way sync-confirmation prompt.
+        XCTAssertEqual(P.route(hasCurrentSession: true, phase: .syncing(s, op),
+                               hasWaitingWindow: false), .unavailable)
     }
 
-    // Disabled with no reconcile session (already at the picker), regardless of
-    // phase — there is nothing to navigate.
-    func test_disabled_noReconcileSession() {
-        XCTAssertFalse(P.enabled(hasReconcileSession: false, phase: .opening(s, op)))
-        XCTAssertFalse(P.enabled(hasReconcileSession: false, phase: .idle))
-        XCTAssertFalse(P.enabled(hasReconcileSession: false, phase: .ready(s)))
+    func test_currentSession_otherPermittedPhases_routesToCurrentSession() {
+        for phase: Phase in [.scanning(s, op), .ready(s), .stopped(s),
+                             .restartRequired("x")] {
+            XCTAssertEqual(P.route(hasCurrentSession: true, phase: phase,
+                                   hasWaitingWindow: false), .currentSession)
+        }
     }
 
-    // Enabled in the other permitted phases (navigation always available except
-    // during a running sync).
-    func test_enabled_otherPermittedPhases() {
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .scanning(s, op)))
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .ready(s)))
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .stopped(s)))
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .restartRequired("x")))
+    // MARK: picker-only
+
+    func test_noSessionNoWaiting_unavailable() {
+        XCTAssertEqual(P.route(hasCurrentSession: false, phase: .idle,
+                               hasWaitingWindow: false), .unavailable)
+        XCTAssertEqual(P.route(hasCurrentSession: false, phase: .opening(s, op),
+                               hasWaitingWindow: false), .unavailable)
     }
 
-    // The gate is (session AND not-syncing): a session that is syncing is the
-    // only session-present case that disables it.
-    func test_syncingIsTheOnlySessionPresentDisable() {
-        XCTAssertFalse(P.enabled(hasReconcileSession: true, phase: .syncing(s, op)))
-        XCTAssertTrue(P.enabled(hasReconcileSession: true, phase: .opening(s, op)))
+    // MARK: waiting window (queued replacement)
+
+    func test_waitingWindow_routesToWaitingRequest() {
+        // A waiting window is navigable back to the picker (cancels its queued
+        // request) even with no current session.
+        XCTAssertEqual(P.route(hasCurrentSession: false, phase: .idle,
+                               hasWaitingWindow: true), .waitingRequest)
+    }
+
+    func test_waitingWindow_enabledEvenIfAbandonedOpSyncing() {
+        // The abandoned engine op may be `.syncing`, but that op is not this
+        // queued request — so the waiting window stays navigable.
+        XCTAssertEqual(P.route(hasCurrentSession: false, phase: .syncing(s, op),
+                               hasWaitingWindow: true), .waitingRequest)
+    }
+
+    func test_waitingWindow_takesPrecedenceOverCurrentSession() {
+        XCTAssertEqual(P.route(hasCurrentSession: true, phase: .syncing(s, op),
+                               hasWaitingWindow: true), .waitingRequest)
+        XCTAssertEqual(P.route(hasCurrentSession: true, phase: .opening(s, op),
+                               hasWaitingWindow: true), .waitingRequest)
+    }
+
+    // MARK: enablement (route != .unavailable)
+
+    func test_enablement() {
+        XCTAssertNotEqual(P.route(hasCurrentSession: true, phase: .opening(s, op),
+                                  hasWaitingWindow: false), .unavailable)  // enabled
+        XCTAssertNotEqual(P.route(hasCurrentSession: false, phase: .idle,
+                                  hasWaitingWindow: true), .unavailable)   // enabled
+        XCTAssertEqual(P.route(hasCurrentSession: true, phase: .syncing(s, op),
+                               hasWaitingWindow: false), .unavailable)     // disabled
+        XCTAssertEqual(P.route(hasCurrentSession: false, phase: .ready(s),
+                               hasWaitingWindow: false), .unavailable)     // disabled
     }
 }

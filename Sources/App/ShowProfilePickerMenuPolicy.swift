@@ -1,23 +1,40 @@
 import Foundation
 
-/// Enablement policy for the **Action ▸ Show Profile Picker** menu command
-/// (issue #38). This command is an app-global navigation action; it is owned by
-/// `AppDelegate` with an EXPLICIT target so its validation never depends on
-/// transient responder-chain resolution (the intermittent first-menu-open race
-/// that greyed the whole Action menu during `.opening`). Pure so the rule is
-/// unit-testable without an AppKit/menu harness.
+/// Routing decision for the **Action ▸ Show Profile Picker** menu command
+/// (issue #38). This command is app-global navigation owned by `AppDelegate`
+/// with an EXPLICIT target, so its validation/dispatch no longer depends on
+/// transient responder-chain resolution — an intermittent responder-chain /
+/// menu-validation failure that occasionally greyed the item at first menu-open
+/// during `.opening`, eliminated by the explicit target.
 ///
-/// Authoritative inputs: whether a reconcile session currently exists (the
-/// command navigates that session back to the picker) and the coordinator's
-/// phase. Navigation is available in every phase EXCEPT `.syncing` — closing
-/// mid-sync must go through the window's three-way sync-confirmation prompt, so
-/// the menu shortcut is greyed to avoid bypassing it. With no reconcile session
-/// (already at the picker) there is nothing to navigate, so it is disabled.
+/// A SINGLE decision drives both `validateMenuItem` (enabled iff not
+/// `.unavailable`) and the action (which re-evaluates it at its own boundary so
+/// menu validation is not the only authority). Three navigable states:
+///
+/// - `.currentSession` — a live reconcile session exists and the coordinator is
+///   not `.syncing` (closing mid-sync must go through the window's three-way
+///   sync-confirmation prompt, so the menu shortcut is disabled then).
+/// - `.waitingRequest` — a queued-open **waiting window** exists (a replacement
+///   the user queued behind an abandoned operation). Navigating cancels that
+///   exact queued request. Enabled even if the ABANDONED engine op is syncing —
+///   it is the old op that may be syncing, not this waiting request. Takes
+///   precedence: a waiting window is the front, actionable target.
+/// - `.unavailable` — picker-only / nothing to navigate.
+enum ShowProfilePickerMenuTarget: Equatable {
+    case currentSession
+    case waitingRequest
+    case unavailable
+}
+
 enum ShowProfilePickerMenuPolicy {
-    static func enabled(hasReconcileSession: Bool,
-                        phase: EngineSessionCoordinator.Phase) -> Bool {
-        guard hasReconcileSession else { return false }
-        if case .syncing = phase { return false }
-        return true
+    static func route(hasCurrentSession: Bool,
+                      phase: EngineSessionCoordinator.Phase,
+                      hasWaitingWindow: Bool) -> ShowProfilePickerMenuTarget {
+        if hasWaitingWindow { return .waitingRequest }
+        if hasCurrentSession {
+            if case .syncing = phase { return .unavailable }
+            return .currentSession
+        }
+        return .unavailable
     }
 }

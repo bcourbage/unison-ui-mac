@@ -868,16 +868,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     /// Action ▸ Show Profile Picker (issue #38). App-global navigation command
-    /// with an explicit AppDelegate target. Routes to the CURRENT reconcile
-    /// session's `returnToPicker()` — `currentReconcileWindow` is derived from
-    /// `engine.currentSession`, so it can only ever target the current session —
-    /// which continues through the existing navigation-only `leaveSession` path
-    /// (no `connection_cancel`, SIGKILL, or new coordinator state). Same
-    /// behavior as the toolbar Profiles control. A nil `currentReconcileWindow`
-    /// (already at the picker) is a no-op, and `validateMenuItem` greys the item
-    /// in that case anyway.
+    /// with an explicit AppDelegate target, so it doesn't depend on transient
+    /// responder-chain resolution. Re-evaluates the SAME routing decision as
+    /// `validateMenuItem` at its own boundary (so validation isn't the only
+    /// authority) and dispatches accordingly:
+    ///  - `.currentSession` → the current reconcile session's `returnToPicker()`
+    ///    (`currentReconcileWindow` is `engine.currentSession`-derived, so this
+    ///    can only target the current session);
+    ///  - `.waitingRequest` → the waiting window's `returnToPicker()`, whose
+    ///    existing close closure cancels the EXACT queued `OpenRequestID` (its
+    ///    `w.id == id` guard also stops a stale action from cancelling a newer
+    ///    request);
+    ///  - `.unavailable` → no-op.
+    /// All navigation continues through the existing navigation-only
+    /// `leaveSession` / `cancelQueuedOpen` paths — no `connection_cancel`,
+    /// SIGKILL, or new coordinator state. Same behavior as the toolbar Profiles
+    /// control.
     @objc func showProfilePickerAppAction(_ sender: Any?) {
-        currentReconcileWindow?.returnToPicker()
+        switch showProfilePickerMenuTarget() {
+        case .currentSession: currentReconcileWindow?.returnToPicker()
+        case .waitingRequest: waitingWindow?.controller.returnToPicker()
+        case .unavailable:    break
+        }
+    }
+
+    /// The single routing decision for Show Profile Picker (issue #38), shared
+    /// by `validateMenuItem` and the action.
+    private func showProfilePickerMenuTarget() -> ShowProfilePickerMenuTarget {
+        ShowProfilePickerMenuPolicy.route(
+            hasCurrentSession: currentReconcileWindow != nil,
+            phase: engine.phase,
+            hasWaitingWindow: waitingWindow != nil)
     }
 
     /// Take (and clear) the single in-flight op's token, so a terminal
@@ -2046,12 +2067,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     // (and a no-op) from the Profile Picker.
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(showProfilePickerAppAction(_:)) {
-            // Issue #38: validated here (not on the transient reconcile
-            // controller) against authoritative state, so it can't be greyed by
-            // a first-menu-open responder-chain race.
-            return ShowProfilePickerMenuPolicy.enabled(
-                hasReconcileSession: currentReconcileWindow != nil,
-                phase: engine.phase)
+            // Issue #38: validated here (explicit AppDelegate target, not the
+            // transient reconcile controller) via the shared routing decision,
+            // so an intermittent first-menu-open responder-chain/validation
+            // failure can't grey it. Enabled for a current session (not
+            // `.syncing`) OR a queued-open waiting window.
+            return showProfilePickerMenuTarget() != .unavailable
         }
         if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
             // Only meaningful with a reconcile window open on the live session.
