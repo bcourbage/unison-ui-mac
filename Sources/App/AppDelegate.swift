@@ -867,6 +867,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         engine.currentSession.flatMap { windowBySession[$0] }
     }
 
+    /// The reconcile window that Show Profile Picker navigates (issue #38): the
+    /// engine-current session's window in normal phases, OR — in
+    /// `.restartRequired`, where `engine.currentSession` is nil but
+    /// `driveRestartRequired` keeps the reconcile window visible in
+    /// `windowBySession` — that retained window. `.restartRequired` and `.idle`
+    /// are the only phases with a nil `currentSession`, and `.idle` has no
+    /// window, so this is the precise gap the plain `currentReconcileWindow`
+    /// missed. This is the exact controller both validation and the action use.
+    private var navigableReconcileWindow: ReconcileWindowController? {
+        if let w = currentReconcileWindow { return w }
+        if case .restartRequired = engine.phase {
+            return windowBySession.values.first { $0.window?.isVisible ?? false }
+                ?? windowBySession.values.first
+        }
+        return nil
+    }
+
+    /// Action ▸ Show Profile Picker (issue #38). App-global navigation command
+    /// with an explicit AppDelegate target, so it doesn't depend on transient
+    /// responder-chain resolution. Re-evaluates the SAME routing decision as
+    /// `validateMenuItem` at its own boundary (so validation isn't the only
+    /// authority) and dispatches to the EXACT controller selected:
+    ///  - `.reconcileWindow` → `navigableReconcileWindow.returnToPicker()` (the
+    ///    engine-current session's window, or the retained restart-required
+    ///    window);
+    ///  - `.waitingRequest` → the waiting window's `returnToPicker()`, whose
+    ///    existing close closure cancels the EXACT queued `OpenRequestID` (its
+    ///    `w.id == id` guard also stops a stale action from cancelling a newer
+    ///    request);
+    ///  - `.unavailable` → no-op.
+    /// All navigation continues through the existing navigation-only
+    /// `leaveSession` / `cancelQueuedOpen` paths — no `connection_cancel`,
+    /// SIGKILL, or new coordinator state. Same behavior as the toolbar Profiles
+    /// control.
+    @objc func showProfilePickerAppAction(_ sender: Any?) {
+        switch showProfilePickerMenuTarget() {
+        case .reconcileWindow: navigableReconcileWindow?.returnToPicker()
+        case .waitingRequest:  waitingWindow?.controller.returnToPicker()
+        case .unavailable:     break
+        }
+    }
+
+    /// The single routing decision for Show Profile Picker (issue #38), shared
+    /// by `validateMenuItem` and the action.
+    private func showProfilePickerMenuTarget() -> ShowProfilePickerMenuTarget {
+        ShowProfilePickerMenuPolicy.route(
+            hasNavigableReconcileWindow: navigableReconcileWindow != nil,
+            phase: engine.phase,
+            hasWaitingWindow: waitingWindow != nil)
+    }
+
     /// Take (and clear) the single in-flight op's token, so a terminal
     /// failure can be reported to the coordinator with the exact
     /// `(SessionID, OperationID)` it was started with. At most one of
@@ -2032,6 +2083,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     // validation path, which left "Rescan Ignoring Archives…" enabled
     // (and a no-op) from the Profile Picker.
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showProfilePickerAppAction(_:)) {
+            // Issue #38: validated here (explicit AppDelegate target, not the
+            // transient reconcile controller) via the shared routing decision,
+            // so an intermittent first-menu-open responder-chain/validation
+            // failure can't grey it. Enabled for a current session (not
+            // `.syncing`) OR a queued-open waiting window.
+            return showProfilePickerMenuTarget() != .unavailable
+        }
         if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
             // Only meaningful with a reconcile window open on the live session.
             return currentReconcileWindow != nil && lastAttemptedProfile != nil
