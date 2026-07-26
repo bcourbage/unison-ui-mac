@@ -1733,27 +1733,23 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // during an Ignore publication gap (same gate the method enforces).
             return actionGate.allows(.rescan)
         }
-        if menuItem.action == #selector(showProfilePickerMenuAction(_:)) {
-            // Allowed in any phase except .syncing — closing the
-            // window mid-sync goes through the existing
-            // windowShouldClose three-way prompt (Keep Syncing /
-            // Abort & Close / Close-let-it-run); we don't want the
-            // menu shortcut to bypass that, so just grey it out and
-            // let the user use Stop or the close button instead.
-            if case .syncing = phase { return false }
-            return true
-        }
+        // Action ▸ Show Profile Picker is NOT validated here anymore (issue #38):
+        // it is an app-global navigation command owned by AppDelegate with an
+        // explicit target + the shared `ShowProfilePickerMenuPolicy` routing
+        // decision, so a single authority decides it and an intermittent
+        // responder-chain/validation failure can't grey it.
         return true
     }
 
-    // MARK: - Workflow menu dispatch (Go / Stop / Rescan / Show Profile Picker)
+    // MARK: - Workflow menu dispatch (Go / Stop / Rescan)
     //
     // These are the responder-chain targets for the Action menu's
     // top-of-menu workflow items. They forward to the existing
     // toolbar-action methods so the menu and toolbar paths share
     // behavior. The toolbar items (in ReconcileToolbarDelegate) call
-    // the same `startSync` / `cancelSync` / `rescan` /
-    // `returnToPicker` methods directly.
+    // the same `startSync` / `cancelSync` / `rescan` methods directly.
+    // (Show Profile Picker is app-global navigation, owned by AppDelegate
+    // with an explicit target — see `showProfilePickerAppAction` / issue #38.)
 
     @objc func goMenuAction(_ sender: Any?) {
         startSync()
@@ -1767,9 +1763,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         rescan()
     }
 
-    @objc func showProfilePickerMenuAction(_ sender: Any?) {
-        returnToPicker()
-    }
 
     // MARK: - Selection helpers
 

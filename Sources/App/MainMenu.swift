@@ -16,7 +16,13 @@ import AppKit
 @MainActor
 enum MainMenu {
 
-    static func build() -> NSMenu {
+    /// `pickerTarget` is the explicit, stable target for the Action ▸ Show
+    /// Profile Picker command (issue #38) — the `AppDelegate`. Required (not
+    /// optional): the explicit target IS the fix, and the controller-owned
+    /// selector has been removed, so omitting it would break the command rather
+    /// than silently fall back. Passing an explicit target detaches that
+    /// app-global navigation command from transient responder-chain resolution.
+    static func build(pickerTarget: AnyObject) -> NSMenu {
         // Prefer CFBundleDisplayName / CFBundleName so the user-visible
         // app name (e.g. "Unison-UI-Mac") is what appears in the App
         // menu's "About / Hide / Quit" items and the Help menu —
@@ -38,7 +44,7 @@ enum MainMenu {
         let main = NSMenu()
         main.addItem(makeAppMenu(appName: appName))
         main.addItem(makeEditMenu())
-        main.addItem(makeActionMenu())
+        main.addItem(makeActionMenu(pickerTarget: pickerTarget))
         main.addItem(makeWindowMenu())
         main.addItem(makeHelpMenu(appName: appName))
         return main
@@ -186,10 +192,11 @@ enum MainMenu {
     /// Action menu: workflow controls (Go/Stop/Rescan) on top, then
     /// per-row reconcile operations (direction overrides, diff,
     /// selection helpers). Matches the legacy uimac app's structure
-    /// for the per-row half. Every item targets nil — the responder
+    /// for the per-row half. Most items target nil — the responder
     /// chain delivers them to `ReconcileWindowController` when the
-    /// reconcile window is key.
-    private static func makeActionMenu() -> NSMenuItem {
+    /// reconcile window is key. The exception is Show Profile Picker,
+    /// which has an explicit `pickerTarget` (the AppDelegate) — issue #38.
+    private static func makeActionMenu(pickerTarget: AnyObject) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Action")
 
@@ -231,11 +238,21 @@ enum MainMenu {
         // with the just-run profile pre-selected). ⌘⇧P parallels the
         // ⌘⇧E shortcut for "Profile Editor" — both are profile-
         // navigation primary actions with a Shift+letter mnemonic.
+        // Issue #38: app-global navigation command with an EXPLICIT AppDelegate
+        // target + compile-time selector, so its enablement/dispatch does not
+        // depend on the transient reconcile-window responder chain (an
+        // intermittent responder-chain/validation failure that occasionally
+        // greyed this item at first menu-open during `.opening`). AppDelegate
+        // validates it via the shared `ShowProfilePickerMenuPolicy` routing
+        // decision and navigates the current session or the queued-open waiting
+        // window back to the picker — the same navigation-only paths as the
+        // toolbar.
         let pickerItem = NSMenuItem(
             title: "Show Profile Picker",
-            action: Selector(("showProfilePickerMenuAction:")),
+            action: #selector(AppDelegate.showProfilePickerAppAction(_:)),
             keyEquivalent: "p")
         pickerItem.keyEquivalentModifierMask = [.command, .shift]
+        pickerItem.target = pickerTarget
         menu.addItem(pickerItem)
 
         menu.addItem(.separator())
