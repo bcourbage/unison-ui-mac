@@ -5,57 +5,37 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **True in-process interruption of a wedged / in-flight engine scan
-      (issue #24 follow-up; also makes scan-phase Stop a real cancel)** —
-      *(This is the single consolidated follow-up; it supersedes the former
-      separate "Make scan-phase Stop a true cancel" item.)*
+- [ ] **True in-process scan interruption — residual: non-direct transports &
+      CPU-bound local walk** — issue #24 follow-up. The qualified direct-SSH case
+      is **done (PR #51)**; the residual is tracked in **#53**.
 
-      **What already works.** The init2/scan stall detector (`ScanStallTimer`,
-      PR #25, merged) bounds a post-authentication remote transport wedge →
-      restart-required (120 s, reset on scan-status, operation-bound, retained
-      across UI abandonment) — the *automatic* recovery. Two user-facing escape
-      hatches also work: while the modal credential sheet is up, its **Cancel**
-      is an in-app exit from credential entry (the sheet disables the toolbar
-      only while showing; Cancel is not blocked); and in the no-sheet
-      connect/scan phase, **Stop** performs visible-session abandonment —
-      `onCancelScan` → `leaveSession` → `engine.abandon()` (coordinator) → back
-      to the picker. The coordinator's engine-idle gate makes a replacement
-      profile open **wait for quiescence**, so a quick Stop-then-reopen does
-      NOT leave two scans racing. (The old epoch/bookkeeping mechanisms —
-      `abortAllInFlight`, `connectGeneration`, `invalidateConnect` — no longer
-      exist; that architecture was replaced by the coordinator.)
+      **Qualified direct-SSH: DONE (PR #51).** For an `ssh -G`-qualified **direct
+      single-child** transport, scan-phase **Stop Scan** now genuinely interrupts
+      in-process once the engine is transport-blocked (past the "Waiting for
+      changes from server" remote-wait marker): it SIGKILLs the tracked transport
+      child → `init2` unwinds → coordinator-gated **stop-in-place** (Rescan
+      reuses the session), with a phase-aware affordance ("Return to Profiles"
+      until transport-blocked, then red "Stop Scan") and a pre-SIGKILL
+      authorization checkpoint. The automatic `ScanStallTimer` (120 s, PR #25)
+      still bounds any wedge to restart-required, and the credential-sheet
+      **Cancel** + toolbar navigation remain the connect-phase escape hatches
+      (the coordinator's engine-idle gate makes a replacement open wait for
+      quiescence, so a quick leave-then-reopen doesn't race two scans).
 
-      **The genuine open limitation.** None of Cancel / Stop / the detector
-      *unwinds the already-issued OCaml operation*. The in-flight
-      update-detection (`init2`) runs to completion in the background — for a
-      remote/ssh profile that means a lingering remote `unison` child and
-      wasted bandwidth until it finishes (or until quit+reopen). `connection_
-      cancel` is scoped to the credential-prompt phase, not an `init2` op
-      blocked on a round-trip on the serial `connectQueue`. And the scan is not
-      interruptible via the propagation `Abort` mechanism: `Abort.check`/
-      `checkAll` are consulted only in propagation (`copy.ml`/`files.ml`), never
-      in `update.ml`; setting the propagation abort flag *during a scan* trips
-      `update.ml:1027 Assertion failed`, so that flag must stay gated on
-      `isSyncing` (a scan must never flag abort).
-
-      **Prerequisite already satisfied — build on it, do not re-derive.**
-      Exception hardening (PR #11 bridge-safety): every Swift→OCaml callback
-      goes through the `caml_callback*_exn` wrappers; `init2` has terminal
-      failure routing (dispatch status + a token-bound async scan-failed
-      callback → `operationFailed(engineIsQuiescent:false)`); state publication
-      is transactional. A scan-phase raise is therefore *safe to trigger* now.
-
-      **Remaining work / architectural options.** The only honest way to truly
-      stop an in-flight scan is to tear down the bridge connection / kill the
-      remote child mid-`init2` — i.e. engine-level interruptibility or process
-      isolation. Paired with that, fix the scan-phase Stop **honesty**: during a
-      scan the affordance still reads "Stop" / "Cancel the running
-      synchronization" and the summary says "Cancelling…", but no sync is
-      running and the scan isn't actually aborted (only the UI is abandoned) —
-      relabel to e.g. "Cancel" / "Stop connecting and return to profiles" with a
-      "Returning to profiles…" summary. **Keep the escape hatch** — do not grey
-      Stop out; it lets the user bail out of a slow/wedged connect/scan
-      immediately instead of waiting for the detector.
+      **Residual (tracked in #53).** True in-process cancellation is NOT yet
+      available for (a) **non-qualified** transports (ControlMaster / ProxyCommand
+      / custom `sshcmd`) or (b) a scan **CPU-bound in the local-replica walk** —
+      SIGKILLing the transport can't unwind a hashing loop that isn't blocked on
+      it. Both fall back to honest abandon → restart-required, leaving a remote
+      `unison` child to wind down on its own. `connection_cancel` is scoped to
+      the credential-prompt phase, not an `init2` op on the serial `connectQueue`;
+      and the propagation `Abort` mechanism (`Abort.check`/`checkAll`,
+      `copy.ml`/`files.ml`) is never consulted in `update.ml` — setting that flag
+      *during a scan* trips `update.ml:1027 Assertion failed`, so it stays gated
+      on `isSyncing`. The general fix — engine-level cooperative interruptibility
+      or process isolation — is #53's separate architecture (a #41 liveness
+      signal can help *detect* a dead non-direct transport but cannot itself
+      interrupt the bridge, reap it, or prove quiescence).
 
       **Auth-failure interactive path:** confirmed live (TC11b) — a wrong
       password stays in the bounded credential-prompt flow (re-presents) and a
