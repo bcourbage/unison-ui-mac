@@ -17,11 +17,13 @@ migration.
 
 ### Added
 - **Stop Scan.** An in-progress scan can now be interrupted from the Action menu /
-  toolbar, returning to the profile list, for a **qualified direct-SSH** connection
-  once it has reached the "waiting for changes from server" point. The interruption
-  is coordinator-gated: it tears down the exact tracked SSH transport child, waits
-  for the engine to reach a quiescent state, and only then returns — so a subsequent
-  open reuses a clean engine. (#24)
+  toolbar once it has reached the "waiting for changes from server" point, for a
+  **qualified direct-SSH** connection. The interruption is coordinator-gated: it tears
+  down the exact tracked SSH transport child and waits for the engine to reach a
+  quiescent state. The reconciliation window then stays open in a **"Scan stopped"**
+  state, and **Rescan** reuses that same clean session (stop-in-place). "Return to
+  Profiles" is the separate fallback shown before the remote-wait point and for
+  transports that cannot be stopped in place. (#24)
 
 ### Fixed
 - **Profile navigation stays available while connecting.** "Show Profile Picker" and
@@ -30,10 +32,12 @@ migration.
   routing decision, closing a first-menu-open greying race. (#38)
 
 ### Known limitations (tracked, not regressions)
-- Stop Scan covers **qualified direct SSH after the remote-wait point** only. Non-direct
-  transports (ControlMaster / ProxyCommand / ProxyJump / custom `sshcmd`) and a
-  CPU-bound local walk are not interruptible in place; recovery there remains the
-  conservative no-progress timeout and quit-and-reopen. (Tracked in #53.)
+- Stop-in-place applies to **qualified direct SSH after the remote-wait point** only.
+  Non-direct transports (ControlMaster / ProxyCommand / ProxyJump / custom `sshcmd`)
+  use "Return to Profiles" rather than stop-in-place. A **CPU-bound local walk is not
+  covered by the 120 s remote-stall timer**; you can Return to Profiles while it winds
+  down in the background, and a genuinely wedged engine may still require quitting.
+  (Tracked in #53.)
 
 ## [0.3.0] — 2026-07-22
 
