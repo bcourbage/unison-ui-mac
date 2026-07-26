@@ -11,29 +11,33 @@ import Foundation
 /// `.unavailable`) and the action (which re-evaluates it at its own boundary so
 /// menu validation is not the only authority). Three navigable states:
 ///
-/// - `.currentSession` — a live reconcile session exists and the coordinator is
-///   not `.syncing` (closing mid-sync must go through the window's three-way
-///   sync-confirmation prompt, so the menu shortcut is disabled then).
+/// - `.reconcileWindow` — a **navigable reconcile window** exists and the
+///   coordinator is not `.syncing`. That window is the engine-current session's
+///   window in normal phases, OR — in `.restartRequired`, where
+///   `engine.currentSession` is nil but `driveRestartRequired` keeps the
+///   reconcile window visible — the retained window. (Closing mid-sync must go
+///   through the window's three-way sync-confirmation prompt, so the shortcut is
+///   disabled during `.syncing`.)
 /// - `.waitingRequest` — a queued-open **waiting window** exists (a replacement
 ///   the user queued behind an abandoned operation). Navigating cancels that
 ///   exact queued request. Enabled even if the ABANDONED engine op is syncing —
-///   it is the old op that may be syncing, not this waiting request. Takes
+///   it is the old op that may be syncing, not this waiting request. Highest
 ///   precedence: a waiting window is the front, actionable target.
 /// - `.unavailable` — picker-only / nothing to navigate.
 enum ShowProfilePickerMenuTarget: Equatable {
-    case currentSession
+    case reconcileWindow
     case waitingRequest
     case unavailable
 }
 
 enum ShowProfilePickerMenuPolicy {
-    static func route(hasCurrentSession: Bool,
+    static func route(hasNavigableReconcileWindow: Bool,
                       phase: EngineSessionCoordinator.Phase,
                       hasWaitingWindow: Bool) -> ShowProfilePickerMenuTarget {
         if hasWaitingWindow { return .waitingRequest }
-        if hasCurrentSession {
+        if hasNavigableReconcileWindow {
             if case .syncing = phase { return .unavailable }
-            return .currentSession
+            return .reconcileWindow
         }
         return .unavailable
     }
