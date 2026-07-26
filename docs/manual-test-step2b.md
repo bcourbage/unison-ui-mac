@@ -230,88 +230,23 @@ A transport that wedges mid-*sync* (connection died) can't be unblocked in-proce
 
 ### TC11 — Post-authentication transport wedge during scan (issue #24)
 
-A remote connection whose transport dies or freezes **after authentication**
-must not leave the app hung with no recovery. The wedge lands in **`init2`**
-(the scan / update-detection phase): `connection_end` does not do a blocking
-server round-trip (it returns `status 0` regardless of server state), so the
-first round-trip that can hang is the scan. The connect watchdog is disarmed by
-then, so the scan needs its own bound — which is what the issue-24 detector adds.
-
-> **Terminology correction (2026-07-20).** An earlier draft of TC11 called the
-> unattended public-key case a "wedge" and described a deterministic
-> `BatchMode` auth failure. That was wrong. Re-examination showed: a
-> public-key profile that can't authenticate surfaces a **credential sheet**
-> (`connection_prompt` returns a prompt); the app then correctly **waits for
-> input** — the toolbar is disabled because a **modal sheet** is open (its
-> **Cancel** button is still an in-app exit), and the connect watchdog is
-> disarmed so it can't time out the user's typing. That is a legitimate
-> credential-sheet wait, **not** a wedge. The confirmed defect is the
-> **no-sheet, post-credential-submission** hang, which occurs in `init2` on a
-> dead/wedged transport.
-
-> **Proxy caveat.** TC11a below freezes a healthy server mid-scan to produce a
-> *controlled proxy* for a post-auth transport wedge. It reliably reproduces
-> the **init2 no-progress** condition and exercises the detector, but it is
-> **not proof of identical root cause** with the original field incident (an
-> inconsistently reproduced, misconfigured-auth report). Treat TC11a as
-> "the detector correctly bounds a post-auth init2 stall", not as "the original
-> incident is reproduced".
-
-**TC11a — deterministic post-auth init2 wedge (controlled proxy).** Because the
-auth-failure path parks at a credential sheet, the reliable *unattended* proxy
-for a post-auth wedge is a **key profile** (authenticates via key, no prompt)
-whose transport freezes mid-scan:
+**TC11a — key profile, transport frozen mid-scan:**
 
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. On the remote, freeze the server mid-scan: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
-3. **Expect (UI):** within the scan-stall bound (**120 s** in production; the
-   detector resets on every scan-status message, so a healthy scan is never
-   killed) the window shows *"Couldn't reach the remote (no scan progress for
-   N seconds)… quit Unison and reopen"* and the app enters **restart-required**.
-4. **Expect:** **no credential sheet**; because no modal sheet is up, the
-   toolbar `Stop` is enabled during the wedge.
-5. **`Stop` semantics (important):** clicking `Stop` performs **visible-session
-   abandonment** — it returns you to the picker. It does **not** unwind the
-   in-flight `init2` operation (the wedged round-trip on the serial queue is not
-   interruptible in-process). The scan-stall detector is deliberately
-   **retained** across this abandonment, so it still fires for the abandoned op
-   and drives it to **restart-required**. `Stop` is therefore *not* an engine
-   terminal action; the detector is what terminates the operation.
-6. **Recovery:** Quit (clean) + reopen connects fresh and scans; on the remote,
-   `kill -CONT` / `kill -9` the frozen server afterward.
-7. **Same-process-after-Stop:** if you hit `Stop` (→ picker) and immediately open
-   another profile, it shows "Waiting for the previous operation to finish…"
-   and then, when the retained detector fires, transitions to restart-required —
-   because the abandoned op's detector is retained (abandonment is not
-   idleness), a replacement profile is carried to restart-required rather than
-   stranded waiting forever.
+3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**.
+4. **Expect:** no credential sheet; the toolbar **Stop** is enabled during the wedge.
+5. Click **Stop**: it returns to the picker; the scan-stall detector still fires for the abandoned op and drives it to **restart-required**.
+6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
+7. After **Stop** (→ picker), immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
 
-**TC11b — interactive auth failure (live).** A real password profile with a
-wrong/failing password. Enter the wrong password.
-1. **Record which happens:** the credential sheet is re-presented, an
-   auth-failure error is surfaced, or the connect proceeds into scan. Any of the
-   first two is a legitimate credential wait/error, **not** a wedge.
-2. **Confirm** `Cancel` on the sheet returns cleanly to the picker.
-3. If a run somehow gets *past* auth and then wedges in the scan, the init2
-   scan-stall detector bounds it exactly as TC11a. **Identify which phase TC11b
-   occupies** and confirm it has a bounded terminal path. Never conflate a modal
-   credential wait with a transport wedge.
+**TC11b — interactive auth failure (live):** a real password profile with a wrong/failing password.
 
-**PASS =** a post-auth transport wedge reaches restart-required within the scan
-timeout (never an indefinite "Opening…"/"Looking for changes…"); in the
-no-sheet wedge `Stop` returns to the picker (visible-session abandonment) while
-the retained detector carries the op to restart-required; a waiting replacement
-profile is carried to restart-required rather than stranded; and quit+reopen
-recovers cleanly. A credential-sheet wait is expected behavior, not a failure.
+1. Enter the wrong password. Record which happens: the credential sheet is re-presented, an auth-failure error is surfaced, or the connect proceeds into scan.
+2. Confirm **Cancel** on the sheet returns cleanly to the picker.
+3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11a.
 
-> **Fix (issue #24, PR #25 — merged to `main`).** A Swift-only,
-> operation-bound init2/scan stall detector (`ScanStallTimer`): armed for remote
-> scans via `pendingScan.didSet`, reset on scan-status delivery, and on expiry it
-> fails the exact scan op with quiescence UNPROVEN → coordinator restart-required.
-> Bound to the retained `pendingScan` op token, so it survives UI abandonment.
-> No C/OCaml/blob change. True in-process interruption of an already-wedged op
-> is a separate follow-up (`connection_cancel` cannot interrupt a wedged op on
-> the serial queue).
+**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); in the no-sheet wedge **Stop** returns to the picker while the retained detector carries the op to restart-required; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly. A credential-sheet wait is expected, not a failure.
 
 ---
 
