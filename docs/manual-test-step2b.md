@@ -230,23 +230,31 @@ A transport that wedges mid-*sync* (connection died) can't be unblocked in-proce
 
 ### TC11 — Post-authentication transport wedge during scan (issue #24)
 
-**TC11a — key profile, transport frozen mid-scan:**
+Uses a **key** profile (authenticates with no prompt) whose transport freezes mid-scan.
+
+**Setup — make the scan last long enough to freeze it mid-way.** A fast scan finishes before you can run the freeze command. Extend it by forcing content hashing: set `fastcheck = false` in the profile (and/or `touch` the synced files so contents are rehashed), or point the profile at a large enough replica. Confirm the reconcile window sits in "Looking for changes" / "Waiting for changes from server" while you run step 2.
 
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
-2. On the remote, freeze the server mid-scan: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
-3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**.
-4. **Expect:** no credential sheet; the toolbar **Stop** is enabled during the wedge.
-5. Click **Stop**: it returns to the picker; the scan-stall detector still fires for the abandoned op and drives it to **restart-required**.
+2. While the scan is running, freeze the server on the remote: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
+3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**. No credential sheet.
+4. During the frozen scan the toolbar action reflects the phase: **"Return to Profiles"** (neutral, back glyph) when the scan is not interruptible in place, or **"Stop Scan"** (red) when it is (a qualified direct-SSH scan past the remote-wait point).
+5. Click that action:
+   - **Return to Profiles** → returns to the picker; the scan winds down in the background; the retained scan-stall detector still drives the abandoned op to **restart-required**.
+   - **Stop Scan** → interrupts in place (kills the transport child); the reconcile window shows **"Scan stopped"** and **Rescan** reuses the clean session.
 6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
-7. After **Stop** (→ picker), immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
+7. After returning to the picker via **Return to Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
 
-**TC11b — interactive auth failure (live):** a real password profile with a wrong/failing password.
+**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Return to Profiles** returns to the picker while the retained detector carries the op to restart-required (or **Stop Scan** stops in place to "Scan stopped" with Rescan reuse); a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
-1. Enter the wrong password. Record which happens: the credential sheet is re-presented, an auth-failure error is surfaced, or the connect proceeds into scan.
+### TC12 — Interactive auth failure (live)
+
+A real password profile with a wrong/failing password.
+
+1. Enter the **wrong** password. **Expect:** the credential sheet is re-presented **once**, carrying the "Permission denied, please try again." message, and entering the correct password authenticates on that single entry (issue #63).
 2. Confirm **Cancel** on the sheet returns cleanly to the picker.
-3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11a.
+3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11.
 
-**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); in the no-sheet wedge **Stop** returns to the picker while the retained detector carries the op to restart-required; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly. A credential-sheet wait is expected, not a failure.
+**PASS =** a wrong password re-prompts exactly once (no phantom extra prompt), the correct password then authenticates, **Cancel** returns cleanly to the picker, and any post-auth scan wedge reaches restart-required. A credential-sheet wait is expected, not a failure.
 
 ---
 
@@ -286,8 +294,8 @@ A transport that wedges mid-*sync* (connection died) can't be unblocked in-proce
 | TC9a | gate: pick during background sync | | |
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
-| TC11a | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
-| TC11b | interactive auth: retry recovery + cancel | PASS | live (Release, user typed passwords directly → .241 VM). **Two separate runs.** **(a) Retry-recovery run:** wrong password #1 → credential sheet re-presented; wrong password #2 → credential sheet re-presented; correct password #3 → **authentication succeeded and the scan completed normally**. Repeated wrong credentials stayed within the bounded credential-prompt flow, and a subsequent correct credential transitioned into and completed scanning. No prompt storm, no wedge, no process leak. (An apparent ssh "storm" seen while diagnosing was a **measurement artifact** — a `pgrep` pattern matching the harness's own commands; resolving each pid showed a single, stable ssh connection.) **(b) Cancellation run (separate):** at the credential sheet, clicking **Cancel** returned cleanly to the Profiles picker and the ssh child was reaped (no `unison -server` child, no ssh to .241 left). |
+| TC11 | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
+| TC12 | interactive auth: retry recovery + cancel | PASS | live (Release, user typed passwords directly → .241 VM). **Two separate runs.** **(a) Retry-recovery run:** wrong password #1 → credential sheet re-presented; wrong password #2 → credential sheet re-presented; correct password #3 → **authentication succeeded and the scan completed normally**. Repeated wrong credentials stayed within the bounded credential-prompt flow, and a subsequent correct credential transitioned into and completed scanning. No prompt storm, no wedge, no process leak. (An apparent ssh "storm" seen while diagnosing was a **measurement artifact** — a `pgrep` pattern matching the harness's own commands; resolving each pid showed a single, stable ssh connection.) **(b) Cancellation run (separate):** at the credential sheet, clicking **Cancel** returned cleanly to the Profiles picker and the ssh child was reaped (no `unison -server` child, no ssh to .241 left). |
 
 ---
 
@@ -312,7 +320,7 @@ conflate them:
 - **Live — unattended (hands-on, recorded this pass, Release build):**
   TC1/TC7/TC8 regression; TC2 non-interactive close+silent-reopen (child reaped
   on sync-end, Rescan reconnects with no sheet, reused across rescans); TC10
-  stall hint; TC11a frozen-remote proxy at the production **120 s** bound (scan
+  stall hint; TC11 frozen-remote proxy at the production **120 s** bound (scan
   detector arms, restart-required at the bound, clean targeted quit, app-owned
   child reaped, fresh reopen succeeds); healthy-scan control (max inter-status
   silence observed ≈1 s against the 120 s bound → no false fire). Caveat: the
@@ -321,7 +329,7 @@ conflate them:
 - **Live — interactive (user typed the password directly; never captured,
   logged, or stored; Release build, → .241 VM):** TC3 (connection held through
   sync completion), TC4 (same-session Rescan reuses it, no re-prompt), TC5
-  (leaving closes and reaps it), TC11b in **two separate runs** — (a)
+  (leaving closes and reaps it), TC12 in **two separate runs** — (a)
   retry-recovery: two wrong passwords each re-present the sheet, a third correct
   password authenticates and the scan completes normally (bounded credential
   flow; no storm/wedge/leak); (b) cancellation: Cancel at the sheet returns
