@@ -50,12 +50,77 @@ final class ConnectPromptClassifierTests: XCTestCase {
     /// The legitimate wrong-password re-prompt path (TODO/TC11b) must survive:
     /// "please try again" is not fatal, and the "password:" tail keeps it a
     /// credential request.
-    func test_permissionDeniedRetry_staysCredential_notFatal() {
+    func test_permissionDeniedRetry_combinedWithPrompt_staysCredential() {
+        // The denial and the re-prompt arrived in ONE chunk: show it as one
+        // credential prompt (the user answers once). Contrast with the standalone
+        // case below (issue #63).
         XCTAssertEqual(
             ConnectPromptClassifier.classify(
                 prompt: "Permission denied, please try again.\r\nPassword:",
                 transportTerminated: false),
             .credential)
+    }
+
+    // MARK: issue #63 — standalone retry notice folds into the next prompt
+
+    func test_permissionDeniedRetry_standalone_isRetryNotice() {
+        // No password prompt in this chunk: not a sheet to answer, a notice to
+        // fold into the next (real) prompt.
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Permission denied, please try again.",
+                transportTerminated: false),
+            .retryNotice("Permission denied, please try again."))
+    }
+
+    func test_retryNotice_trimsSurroundingWhitespace() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "\r\nPermission denied, please try again.\r\n",
+                transportTerminated: false),
+            .retryNotice("Permission denied, please try again."))
+    }
+
+    func test_retryNotice_whenTerminated_isFatal_not_retry() {
+        // Terminal evidence still wins: a retry line after the child is gone is
+        // post-mortem output, not a live retry.
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Permission denied, please try again.", transportTerminated: true),
+            .fatal(reason: "Permission denied, please try again."))
+    }
+
+    /// The notice is matched by EQUALITY, not by "please try again" substring, so
+    /// unrelated keyboard-interactive/MFA text that happens to say "please try
+    /// again" is NOT treated as the retry notice. Treating it as `.retryNotice`
+    /// would make the driver read again without replying while ssh is waiting for
+    /// the verification code, hanging the connect until the watchdog fires.
+    func test_mfaPleaseTryAgainStandalone_isCredential_notRetryNotice() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Verification failed. Please try again.",
+                transportTerminated: false),
+            .credential)
+    }
+
+    /// A combined MFA failure + re-prompt chunk is likewise a normal credential
+    /// prompt, never the retry notice.
+    func test_mfaFailureCombinedWithCodePrompt_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Verification failed. Please try again.\r\nVerification code:",
+                transportTerminated: false),
+            .credential)
+    }
+
+    /// The canonical notice with a trailing password prompt in the same chunk is
+    /// still a coalesced credential prompt (equality fails), not the notice.
+    func test_permissionDeniedRetry_withTrailingPrompt_notRetryNotice() {
+        guard case .credential = ConnectPromptClassifier.classify(
+            prompt: "Permission denied, please try again.\r\nbcourbage@host's password:",
+            transportTerminated: false) else {
+            return XCTFail("expected .credential for a combined notice+prompt chunk")
+        }
     }
 
     // MARK: host-key question
