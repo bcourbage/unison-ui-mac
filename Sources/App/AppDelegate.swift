@@ -284,11 +284,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// ground truth for `connectFinished`'s interactive flag.
     private var sheetShownThisConnect = false
 
-    /// Issue #63: ssh's standalone retry notice ("Permission denied, please try
-    /// again.") pending fold-in to the NEXT credential prompt's message, so the
-    /// user answers a re-prompt only once. Cleared when that prompt is shown and
-    /// reset at each connect start.
-    private var pendingRetryNotice: String?
+    /// Issue #63: folds ssh's standalone retry notice ("Permission denied,
+    /// please try again.") into the NEXT credential prompt's message, so the
+    /// user answers a re-prompt only once. Bound to the connect's (s, op); reset
+    /// at each connect start.
+    private var retryNotice = RetryNoticeCoalescer()
 
     /// Run coordinator effects in the order returned (order matters:
     /// showSession before beginConnect; presentSyncResults before
@@ -586,7 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String) {
         pendingConnect = (s, op)
         sheetShownThisConnect = false
-        pendingRetryNotice = nil
+        retryNotice.reset()
         // Connection-bound scan-interrupt qualification (Finding 3): a fresh
         // probe per connect, tagged with this connect op as the generation, so a
         // reconnect (Rescan from `.stopped`) requalifies and a stale result can
@@ -1376,7 +1376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     // line, or exits (→ .fatal on the next read via the terminated
                     // child). Do not disarm the watchdog / mark a sheet shown yet.
                     self.log.write("connect \(s)/\(op): ssh retry notice — folding into next prompt")
-                    self.pendingRetryNotice = notice
+                    self.retryNotice.hold(notice, for: s, op)
                     self.drivePromptLoop(s, op)
                     return
                 case .credential, .hostKeyQuestion:
@@ -1384,15 +1384,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
-                // Issue #63: show any pending retry notice as the message ON this
+                // Issue #63: fold any held retry notice into the message ON this
                 // (real) prompt, so the user sees the denial and answers once.
-                let sheetPrompt: String
-                if let notice = self.pendingRetryNotice, !notice.isEmpty {
-                    sheetPrompt = notice + "\n" + prompt
-                    self.pendingRetryNotice = nil
-                } else {
-                    sheetPrompt = prompt
-                }
+                let sheetPrompt = self.retryNotice.fold(into: prompt, for: s, op)
                 self.log.write("connection prompt: \(sheetPrompt)")
                 let sheet = PasswordSheet(prompt: sheetPrompt) { [weak self] response in
                     guard let self else { return }

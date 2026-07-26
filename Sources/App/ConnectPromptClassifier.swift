@@ -30,8 +30,11 @@ import Foundation
 ///      host-key question is safe to present as a prompt.
 ///
 /// Deliberately NOT fatal here: "Permission denied, please try again." — that
-/// precedes a genuine re-prompt. True auth exhaustion makes ssh EXIT, which
-/// rule 1 catches via the terminated child; we never guess it from the string.
+/// precedes a genuine re-prompt (rule 2b folds it into the next prompt). We
+/// never infer auth exhaustion from the string: when ssh actually gives up it
+/// EXITS, and that surfaces either as rule 1 (the tracked child has terminated
+/// by the next read) or, if the child hasn't been reaped yet, through the
+/// existing connection-end failure handling — not as another prompt to answer.
 /// The former overly broad "connection to " marker was removed precisely
 /// because it matched benign keyboard-interactive text like "Approve this
 /// connection to …".
@@ -64,15 +67,15 @@ enum ConnectPromptClassifier {
             return .fatal(reason: trimmed)
         }
 
-        // 2b. ssh's retryable failure notice precedes a genuine re-prompt. The
-        //     GUI prompt reader (`Terminal.termInput`) does a single read per
-        //     prompt with no settle/accumulation, so this line arrives as its own
-        //     chunk, separate from the following "password:" prompt — presenting
-        //     it as its own sheet makes the user answer a phantom prompt (#63).
-        //     Fold it into the next real prompt instead. Only when it stands
-        //     ALONE: a chunk that ALSO carries the password/passphrase prompt is a
-        //     normal (coalesced) credential prompt. Auth exhaustion makes ssh
-        //     exit and is caught by rule 1.
+        // 2b. ssh's password retry notice precedes a genuine re-prompt. The GUI
+        //     prompt reader (`Terminal.termInput`) does a single read per prompt
+        //     with no settle/accumulation, so this line arrives as its own chunk,
+        //     separate from the following "password:" prompt — presenting it as
+        //     its own sheet makes the user answer a phantom prompt (#63). Fold it
+        //     into the next real prompt instead. Matched by EQUALITY, so only the
+        //     bare notice qualifies: a chunk that ALSO carries the
+        //     password/passphrase prompt stays a normal (coalesced) credential
+        //     prompt, and unrelated "please try again" wording is left alone.
         if isRetryNotice(lower) {
             return .retryNotice(trimmed)
         }
@@ -86,13 +89,20 @@ enum ConnectPromptClassifier {
         return .credential
     }
 
-    /// ssh's retryable failure notice standing alone (no password/passphrase
-    /// prompt in the same chunk). Matched precisely on ssh's "please try again"
-    /// wording so a genuine combined "Permission denied, please try again.\n…
-    /// password:" chunk is left as a normal credential prompt.
+    /// ssh's exact standalone password retry notice. Matched by EQUALITY (after
+    /// the caller's whitespace trim + lowercasing), not a substring, on purpose:
+    ///   - A combined "Permission denied, please try again.\r\nPassword:" chunk
+    ///     is NOT equal, so it stays a normal (coalesced) credential prompt.
+    ///   - Other "please try again" wording — notably keyboard-interactive/MFA
+    ///     text like "Verification failed. Please try again." followed by
+    ///     "Verification code:" — is NOT equal, so it is never mistaken for this
+    ///     notice and read-without-replying (which would hang ssh waiting for the
+    ///     code until the connect watchdog fires).
+    /// This is the literal string OpenSSH prints between password attempts.
+    private static let retryNotice = "permission denied, please try again."
+
     private static func isRetryNotice(_ lower: String) -> Bool {
-        guard lower.contains("please try again") else { return false }
-        return !lower.contains("password") && !lower.contains("passphrase")
+        return lower == retryNotice
     }
 
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
