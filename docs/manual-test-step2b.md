@@ -1,10 +1,10 @@
 # Manual test plan — connection lifecycle (issue #6 steps 1–3; issue #24)
 
-Covers the behaviors the headless autotest harness can't drive. Some cases now
-have recorded evidence (see **Evidence provenance** at the bottom, which
-separates *live*, *automated*, and *pending* results); the interactive cases
-still need a hands-on pass with a human entering the SSH password. Nothing here
-gates a merge on its own — treat it as the live-validation record.
+Covers the behaviors the headless autotest harness can't drive. Some cases have
+recorded evidence (see **Evidence provenance** at the bottom, which tags each
+result *automated*, *live*, or *not yet run*). Interactive cases require a
+hands-on pass with a human entering the SSH password. Treat this as the
+live-validation record; nothing here gates a merge on its own.
 
 Estimated time for a full hands-on pass: ~20–30 min.
 
@@ -206,7 +206,7 @@ This is the step-3 behavior. Two sub-cases.
 
 **TC9b — pick while a scan is running:**
 1. Open a profile whose scan takes a few seconds (large tree).
-2. While it's still scanning, click **Stop** (or close the window) to return to the picker.
+2. While it's still scanning, click **Return to Profiles** (or close the window) to return to the picker.
 3. Immediately pick another profile.
 4. **Expect:** same as above — the new open waits for the abandoned scan to finish, then starts. No crash, no double-drive.
 
@@ -267,10 +267,13 @@ A real password profile with a wrong/failing password.
   hint (TC10, 45 s) and the scan-phase detector (TC11, 120 s) both detect it and
   point the user to quit + reopen, which is clean now. SSH keepalive prevention
   is deferred.
-- **`Stop` / sheet `Cancel` do not unwind a wedged engine op.** Both are
-  in-app UI exits (abandonment / cancelling credential entry); neither
-  interrupts an operation already blocked on a serial-queue round-trip. True
-  in-place cancellation is the tracked follow-up.
+- **In-app exits do not unwind a genuinely wedged op.** For a live scan on a
+  qualified direct-SSH transport, **Stop Scan** interrupts in place (0.4.0). But
+  once an op is blocked on a dead round-trip, no UI control can unwind it
+  in-process — **Return to Profiles**, sheet **Cancel**, and **Stop** are all
+  in-app exits (abandonment / cancelling credential entry), and recovery is
+  quit + reopen. In-place cancellation for the other transports is a tracked
+  follow-up.
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
   later reopen re-prompts. Keychain/ControlMaster caching is a separate
   future item.
@@ -294,55 +297,29 @@ A real password profile with a wrong/failing password.
 | TC9a | gate: pick during background sync | | |
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
-| TC11 | post-auth init2 wedge (frozen-remote proxy) | PASS (with fix) | detector arms + fires → restart-required; `Stop` = visible-session abandonment (returns to picker, does NOT unwind init2), retained detector drives restart-required; same-process-after-Stop carries replacement to restart-required; clean targeted quit; app-owned child reaped; fresh reopen succeeds. Controlled proxy, not proof of identical root cause with the original incident. (See Evidence provenance for whether the Release/120 s live confirmation is recorded.) |
-| TC12 | interactive auth: retry recovery + cancel | PASS | live (Release, user typed passwords directly → .241 VM). **Two separate runs.** **(a) Retry-recovery run:** wrong password #1 → credential sheet re-presented; wrong password #2 → credential sheet re-presented; correct password #3 → **authentication succeeded and the scan completed normally**. Repeated wrong credentials stayed within the bounded credential-prompt flow, and a subsequent correct credential transitioned into and completed scanning. No prompt storm, no wedge, no process leak. (An apparent ssh "storm" seen while diagnosing was a **measurement artifact** — a `pgrep` pattern matching the harness's own commands; resolving each pid showed a single, stable ssh connection.) **(b) Cancellation run (separate):** at the credential sheet, clicking **Cancel** returned cleanly to the Profiles picker and the ssh child was reaped (no `unison -server` child, no ssh to .241 left). |
+| TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
+| TC12 | interactive auth failure + cancel | PASS aside from #63 | live (Release, user typed passwords → .241 VM). Retry-recovery run: a wrong password re-presents the sheet and a subsequent correct password authenticates and the scan completes — no wedge, no process leak. Cancellation run: **Cancel** at the sheet returns cleanly to the picker and reaps the ssh child. Known symptom: on a wrong password the sheet currently appears one extra time before accepting the correct password (issue #63, fix in progress). |
 
 ---
 
 ## Evidence provenance
 
-Every result is tagged with exactly one of three evidence classes — do not
-conflate them:
+Results above come from three evidence classes:
 
-1. **Live-tested** — exercised by hand against a real app build and a real
-   remote (the "Live — unattended" and "Live — interactive" bullets below).
-2. **Deterministic automated** — covered by an XCTest that runs in CI (the
-   "Automated" bullet below).
-3. **Code-inspection-only** — verified by reading the code, with no dedicated
-   live run and no dedicated automated test (the "Code-inspection-only" bullet
-   below).
+- **Automated (XCTest, runs in CI):** the coordinator state machine and
+  `ScanStallTimer` behaviors — arm/reset/disarm, operation-bound firing,
+  restart-required transition, late-completion suppression, retention across
+  abandonment, and the healthy-scan control — all against an injected fake
+  scheduler (no real timeouts).
+- **Live — unattended (Release build, this pass):** TC1/TC7/TC8 regression;
+  TC2 non-interactive close + silent reopen; TC10 sync-stall hint; TC11
+  frozen-remote wedge at the production 120 s bound (detector fires →
+  restart-required, clean quit, child reaped, fresh reopen). The healthy-scan
+  control was a fast scan with a wide margin; a genuinely ~120 s-silent healthy
+  scan was not constructed.
+- **Live — interactive (Release build, → .241 VM; password typed by hand, never
+  captured or stored):** TC3, TC4, TC5, and TC12 (retry-recovery and
+  cancellation runs).
 
-- **Automated (deterministic unit/integration tests, run in CI):** the
-  coordinator state machine and `ScanStallTimer` behaviors — arm/reset/disarm,
-  operation-bound firing, restart-required transition, late-completion
-  suppression, retention across abandonment, healthy-scan control. These use an
-  injected fake scheduler (no real timeouts) and run on every build.
-- **Live — unattended (hands-on, recorded this pass, Release build):**
-  TC1/TC7/TC8 regression; TC2 non-interactive close+silent-reopen (child reaped
-  on sync-end, Rescan reconnects with no sheet, reused across rescans); TC10
-  stall hint; TC11 frozen-remote proxy at the production **120 s** bound (scan
-  detector arms, restart-required at the bound, clean targeted quit, app-owned
-  child reaped, fresh reopen succeeds); healthy-scan control (max inter-status
-  silence observed ≈1 s against the 120 s bound → no false fire). Caveat: the
-  healthy control was a fast scan with a large margin; a genuinely ~120 s-silent
-  healthy scan was not constructed.
-- **Live — interactive (user typed the password directly; never captured,
-  logged, or stored; Release build, → .241 VM):** TC3 (connection held through
-  sync completion), TC4 (same-session Rescan reuses it, no re-prompt), TC5
-  (leaving closes and reaps it), TC12 in **two separate runs** — (a)
-  retry-recovery: two wrong passwords each re-present the sheet, a third correct
-  password authenticates and the scan completes normally (bounded credential
-  flow; no storm/wedge/leak); (b) cancellation: Cancel at the sheet returns
-  cleanly to the picker and reaps the ssh child.
-- **Code-inspection-only (no live run, no dedicated automated test):** within
-  this validation matrix the TC-series is entirely live and/or automated, so
-  nothing here is code-inspection-only. The one code-inspection-only item in the
-  broader engineering audit is the vendored-engine **build provenance** (audit
-  L3): `make vendor-blob` provenance is manual/documentary (verified by reading
-  `Makefile` + `vendor/README.md`), not enforced by a clean-worktree build or a
-  machine-generated manifest, and is explicitly deferred. Finding-level evidence
-  classes (which of #1–#13, L1–L3 are automated-tested vs live vs
-  code-inspection-only) are enumerated in the separate re-audit disposition
-  artifact, not in this file.
-- **Pending:** none of the TC-series remain. (TC6a/b/c and TC9a/b are older
-  step-2/step-3 cases outside the issue #24 scope and were not re-run this pass.)
+Not yet re-run this pass: TC6a/b/c and TC9a/b (older step-2/step-3 cases outside
+the issue #24 scope).
