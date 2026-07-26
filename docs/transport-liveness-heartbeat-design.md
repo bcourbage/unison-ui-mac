@@ -1,85 +1,251 @@
-# Design Proposal: Transport-liveness heartbeat (issue #41)
+# Feasibility spike: transport-liveness heartbeat (issue #41)
 
-Status: draft for review. Post-0.3.x; requires a vendored-blob / `patches/` change and the full vendor-bump checklist.
+Status: **feasibility report, for review.** Supersedes the earlier "authoritative
+heartbeat" design in this file. No blob rebuild, no `patches/` change, no
+production behavior change was made for this spike. The verdict below narrows
+#41's scope substantially and decouples it from #53.
 
-Related: #33 (scan-stall status-string proxy, merged), #34 (sync-stall advisory, merged), #53 (in-process interruption residual for non-direct transports), #24 (closed). See also `docs/scan-interruption-design.md`.
+Related: #33 (scan-stall status proxy, merged), #34 (sync-stall advisory,
+merged), #53 (in-process interruption residual for non-direct transports), #55
+(ssh keepalive), #24 (closed). See also `docs/scan-interruption-design.md`.
 
-## 1. Purpose
+---
 
-Give the app an **authoritative** signal of remote-transport liveness, so "is the peer alive?" is answered by evidence from the RPC transport rather than by proxies inferred without it. This lets the two existing stall detectors escalate from *advisory / marker-coupled* to *confident*, and is a prerequisite for interrupting non-direct transports (#53).
+## 0. Summary of the correction
 
-## 2. Baseline: what ships today
+The original proposal claimed an **inbound-RPC-activity signal is an authoritative
+liveness heartbeat** that would (a) make #34 fatal-actionable, (b) harden #33, and
+(c) unlock interruption of non-direct transports (#53). The spike shows the core
+premise is false:
 
-Two detectors both **infer** liveness from blob-free signals:
+> Inbound RPC silence does **not** mean the peer is dead, and inbound RPC activity
+> does **not** prove it is healthy. A healthy remote doing CPU-bound work emits
+> **exactly the same wire signature as a frozen peer** (no application frames,
+> socket open), because Unison's RPC transport runs on a single global cooperative
+> Lwt scheduler and its request handlers, by design, never yield mid-computation.
 
-- **Scan-stall (#33/#24, `ScanStallTimer`).** Fatal → `.restartRequired` after 120 s of no scan-status **once** the engine emitted `"Waiting for changes from server"` (`ScanStallPolicy.marksRemoteWait` latches `sawRemoteWait`). Before that marker a stall is `keepWaiting` (a local/TCC pause, not a remote wedge).
-- **Sync-stall (#34).** Downgraded to a **non-fatal advisory** notice, because callback silence during propagation ≠ death (sparse-callback / throttled / callback-less sub-phases all look identical to a wedge).
+Consequences:
 
-Both are safe but limited: #33 is coupled to a status **string** (silent loss on a vendor bump would drop the #24 escalation — guarded only by the vendor-bump checklist + a pre-release attended frozen-server test), and #34 cannot be made actionable without false positives.
+- An inbound-activity "heartbeat" cannot distinguish **busy-healthy** from **frozen**.
+  Arming any *fatal* escalation on its staleness would false-positive on the exact
+  case #33/#34 were deliberately kept conservative to protect (a slow-but-alive
+  remote walk / throttled transfer).
+- A genuine **active ping** does not rescue this: a CPU-bound `unison -server`
+  cannot service or answer an out-of-band request until it returns to the receive
+  loop, so the ping is stuck behind the very work whose liveness it was meant to
+  probe.
+- #41 therefore **does not unlock #53.** A liveness signal, even a real one, can at
+  most *detect* trouble. It cannot interrupt the bridge, reap a non-direct
+  transport, or prove quiescence. Those remain #53's separate architecture.
+- The one failure class a transport signal *can* detect reliably is a **dead
+  socket** (dead host / dead network / dead ssh process). That is precisely
+  ssh keepalive's job (#55), and keepalive is the safer mechanism because the OS /
+  sshd answer its probes independently of the application, so it does not
+  false-positive on a busy peer. But keepalive equally **cannot** see a frozen
+  `unison -server` behind a live socket.
 
-## 3. The gap
+Net: the "authoritative heartbeat" is not feasible as conceived. What remains is a
+clean, smaller decomposition (Section 5).
 
-Neither signal is liveness:
-- "No scan-status for 120 s" conflates a dead peer with a healthy-but-slow remote walk (see `scan-interruption-design.md` §3 and the #51 live matrix: a healthy 1M-file remote-wait can sit silent for tens of seconds).
-- "No progress callback" during propagation conflates a dead transfer with a large-file / throttled transfer.
+---
 
-The missing primitive is a **transport-level "still receiving from the peer" tick** that is independent of application-layer progress.
+## 1. What was tested
 
-## 4. Proposal
+Two independent lines of evidence: the RPC transport source, and direct
+observation of the five scenarios the review named.
 
-Add a small **engine → bridge heartbeat**: the OCaml RPC transport records last-inbound-activity and surfaces it to Swift through a registered callback.
+### 1a. Source study (pinned upstream 2.54.0 `src/remote.ml`)
 
-Two candidate shapes (pick during the spike, §7):
+The vendored engine is a compiled blob; `remote.ml` is fetched + patched at build
+time (`patches/0003…`, `0004…`). The upstream source at the pinned tag establishes:
 
-- **(H1) Last-activity timestamp (pull).** The transport stamps a monotonic "last byte received from peer" on every inbound RPC frame. A new bridge accessor `unison_bridge_transport_last_rx_age()` returns the age. Swift's timers compare age to a threshold. *Pro:* no new callback cadence, cheapest patch. *Con:* pull cadence still lives in Swift.
-- **(H2) Liveness tick (push).** The transport fires a registered callback (`installTransportLivenessHandler`) on each inbound frame (coalesced to ≤1/s). Swift resets a liveness deadline on each tick. *Pro:* symmetric with the existing status/progress handlers; naturally coalesced. *Con:* one more always-live callback on the hot path.
+1. **The RPC is strictly serial request/response** over one connection. Each
+   request carries a message id; a single `receivers` map matches a reply to its
+   id. There is **no pipelining and no concurrent second request** in flight.
+2. **A single receiver loop** (`receive conn`) reads and dispatches every inbound
+   frame, bound together with Lwt's `>>=`. It is cooperative, not preemptive.
+3. The only out-of-band frame is a **write-permission token** (message id 0) used
+   for flow control. There is **no ping / keepalive / heartbeat message type** and
+   no side channel that could carry one.
+4. **Decisive:** request handlers are documented to run to completion without
+   yielding. The transport's own comment:
 
-Both are strictly **inbound** (bytes *from* the peer). Outbound activity (us sending) is not liveness — a wedged peer still accepts our writes into the socket buffer.
+   > "Threads behave in a very controlled way: they only perform possibly blocking
+   > I/Os through the remote module, and never call `Lwt_unix.yield`."
 
-## 5. Where it lives (OCaml side)
+   So while the server computes a reply (update detection, a CPU-bound walk), the
+   Lwt scheduler is **not** running the receiver loop. The socket is not read. Any
+   inbound frame, including a hypothetical ping, waits until the handler returns.
+5. `emittedBytes` / `receivedBytes` are updated per I/O syscall, so byte-level
+   activity *is* observable — but per (4) that activity is absent precisely when
+   the peer is busy, which is the ambiguous case.
 
-The RPC receive path in `remote.ml` is the single choke point where inbound frames are decoded (the same layer whose `at_conn_close` / `lostConnection` handling the lock-release analysis in `scan-interruption-design.md` already touches). The patch stamps/ticks there, behind the existing `patches/` (uimacbridge / remote) mechanism, so it is:
-- **transport-generic** — covers both `init2` scan and propagation, direct and non-direct transports (it observes the socket, not the ssh process topology);
-- **phase-agnostic** — one signal the Swift detectors consume in whichever phase they are armed.
+### 1b. Scenario observations
 
-Swift consumes it in `AppDelegate` alongside `noteScanProgress()` / `noteConnectProgress()`; the existing `ScanStallTimer` / sync-stall timer keep their arming/gating and simply gain a second, authoritative reset source.
+| Scenario | App-layer inbound frames | Socket state | ssh keepalive verdict | Distinguishable from frozen? |
+|---|---|---|---|---|
+| **Healthy remote CPU work** (large `init2` walk) | **none** for tens of seconds (observed: ~63 s of static "Waiting for changes from server" on the 1M-file dataset) | open, ESTABLISHED | alive (kernel/sshd answer) | **No** |
+| **Throttled transfer** | sparse, irregular | open | alive | Only by *threshold guessing*; sparse-healthy ≈ dying |
+| **Frozen `unison -server`** (SIGSTOP past remote-wait) | **none** | open (local ssh child stays alive — confirmed in the #51 matrix, e.g. child PID persisted through the SIGSTOP) | **alive** — keepalive survived 20 s with a 6 s threshold while the remote app was SIGSTOP'd (measured this spike) | — |
+| **Dead host / network** (blackhole `192.0.2.1`) | none (never establishes, or EOF mid-stream) | connect hangs / RST / silent drop | **fails** within `ServerAliveInterval × CountMax` → this is keepalive's true positive | Yes, but this is the *dead-socket* class, not the frozen-app class |
+| **ControlMaster** | as per underlying phase | master persists as its own process | probes the master socket; a frozen `unison -server` channel behind a live master is still invisible | No (same blind spot) |
 
-## 6. What it unlocks
+The measured keepalive result is the linchpin for the #55 comparison:
 
-- **#33 → robust.** Arm the fatal remote-stall on *heartbeat age*, not the status string. Removes the marker-drift coupling; the string becomes a supplement, not the trigger.
-- **#34 → actionable.** A propagation stall with a stale heartbeat is a *confident* wedge → can become fatal/restart-required without false-positiving on callback-sparse transfers. (Keep a generous threshold; §9.)
-- **#53 → feasible for non-direct transports.** Interrupting a ControlMaster/ProxyCommand/custom-`sshcmd` transport can't rely on the single-tracked-child SIGKILL (#51's mechanism). A liveness signal lets the app *know* the transport is dead and route a confident teardown/restart there too.
+```
+ssh -o ServerAliveInterval=3 -o ServerAliveCountMax=2   # ~6 s liveness threshold
+  → remote app SIGSTOP'd at t+2s
+  → ssh session still alive at t+20s   (exit 0)
+```
 
-## 7. Spike before commit
+ssh keepalive is answered by the remote **sshd / OS**, not by the frozen
+`unison -server` behind it. So keepalive **cannot** detect a frozen application; it
+detects a dead *socket*. This is a feature (no false positives on a busy peer), but
+it means keepalive and the proposed app-heartbeat cover *disjoint* failure classes,
+and **neither** covers the frozen-server case that motivated the scan-interruption
+work.
 
-Timeboxed Phase-0-style spike (Debug-only), mirroring the scan-interruption approach:
-1. Instrument the actual inbound cadence on the retained datasets (large-sync + many-small-file) to pick the threshold: categorize sparse-healthy vs throttled vs callback-less sub-phase vs real inactivity (this is the "#34 silent interval" instrumentation already noted on #41).
-2. Prototype H1 and H2 behind `#if UNISON_DEBUG_HOOKS`; confirm both reset correctly on a healthy long remote-wait (no false fatal at 120 s+) and go stale within threshold on a frozen server.
-3. Decide H1 vs H2 on cost/observability.
+---
 
-## 8. Test matrix
+## 2. Why "inbound activity = liveness" is unsound
 
-- **True positive:** frozen `Unison -server` past remote-wait → heartbeat stale within threshold → fatal fires (matches #51 case #5, but on the heartbeat rather than the 120 s status-silence proxy).
-- **No false positive:** healthy scan/transfer that legitimately exceeds the threshold-window (large local walk with status; large remote walk; throttled transfer) → heartbeat keeps ticking → no fatal (matches #51 case #6, extended to the >120 s remote-wait that today's proxy can't distinguish).
-- **Non-direct transport:** ControlMaster profile, frozen peer → stale heartbeat → confident restart (today: no signal).
-- **Vendor-bump resilience:** the trigger no longer depends on the status string; a marker rename degrades gracefully to the string-supplement path, not a silent loss.
-- Deterministic unit tests for the pure threshold/decision (as with `ScanStallPolicy`).
+The original §8 claimed the no-false-positive case would hold because "a healthy
+scan/transfer keeps the heartbeat ticking." Section 1 refutes exactly this: a
+healthy remote CPU walk produces **no** inbound frames, so an inbound-activity
+heartbeat goes stale on a healthy peer. The signal's stale state is
+**one-to-many** ambiguous:
 
-## 9. Risks / invariants
+```
+heartbeat stale  ⇒  { busy-healthy remote walk,  throttled transfer,
+                      frozen unison-server,       dead socket }
+```
 
-- **Threshold conservatism.** Set the liveness threshold well above the worst observed healthy silent interval (from §7 instrumentation) plus margin. False fatals on healthy-but-slow links are the cardinal risk; prefer a late-but-correct fatal.
-- **Inbound-only.** Never treat outbound activity as liveness.
-- **Coalesce (H2).** Cap tick rate so the hot path isn't flooded.
-- **Blob discipline.** New patch + blob rebuild + full re-validation + vendor `README` provenance update (per the vendor-bump checklist). The heartbeat must be inert/absent when the callback isn't registered (older call sites keep compiling).
-- **No behavior change without the signal.** If the heartbeat is unavailable (e.g., a build without the patch), the detectors fall back to today's proxies unchanged.
+Only the last element is a genuine fault requiring the connection object, and only
+the last is *also* detectable more cheaply and more safely by keepalive. The three
+non-fatal members are indistinguishable from the fatal one at the application byte
+layer. Escalating on staleness would convert today's conservative, correct
+behavior into a false-positive generator on slow-but-alive links.
 
-## 10. Open questions
+## 3. Why an active ping does not fix it
 
-- H1 (pull) vs H2 (push) — decide from the spike.
-- Does `remote.ml` already expose a natural inbound-frame hook, or does the patch need a new interception point? (Confirm against the pinned commit.)
-- Should the threshold be adaptive (scale with observed round-trip variance) or a fixed conservative constant? Start fixed.
-- Interaction with keepalive (#55): ssh `ServerAliveInterval` detects a *dead socket*; the heartbeat detects a *silent-but-open* transport. Complementary; the spike should note whether keepalive's socket close already surfaces as an inbound EOF the heartbeat would catch.
+Moving from passive observation to an active probe fails on the same architecture.
+An out-of-band ping would have to be (a) *sent* — but the client's own write side is
+governed by the same single scheduler and the write-permission token, and (b)
+*answered by the server* — but a CPU-bound server is not in the receive loop to see
+it (Section 1a, point 4). The ping is enqueued behind the in-flight handler and is
+answered only when the server was going to become responsive anyway. It adds cost
+and a callback on the hot path while proving nothing the timeout did not already
+tell us. (An engine fork that inserted real `Lwt_unix.yield` points into update
+detection could change this, but that is a substantial upstream-scale change to the
+scheduler contract, well beyond #41's "small heartbeat patch," and is not proposed.)
 
-## 11. Recommendation
+## 4. #33 / #34 must not go fatal on stale ordinary traffic
 
-Sequence #41 as the 0.4.0 flagship **paired with the next blob bump** (amortize the vendor-bump cost). Spike H1/H2 + threshold first (§7); ship the heartbeat; then, in order of value, (a) upgrade #33 to trigger on it, (b) make #34 actionable, (c) extend interruption to non-direct transports (#53). Do **not** ship any escalation on the heartbeat until the no-false-positive matrix (§8) passes on the retained datasets.
+Directly per the review: the detectors must **not** be made fatal on the basis of
+stale inbound activity. Section 2 is the reason: staleness cannot be attributed to
+death without also catching busy-healthy and throttled peers. The current posture
+is correct and should stand:
+
+- **#33** stays a **conservative no-progress timeout** (120 s after `sawRemoteWait`)
+  → `.restartRequired`. It is a *bounded-patience* policy, not a liveness claim, and
+  is honest about that. The status-string coupling remains guarded by the vendor-bump
+  checklist + the pre-release attended frozen-server test. This spike does not tighten
+  it; nothing found here can.
+- **#34** stays a **non-fatal advisory.** There is no signal that makes a
+  propagation stall confidently fatal without false-positiving on throttled /
+  callback-sparse transfers.
+
+## 5. What is actually feasible (revised scope)
+
+Decompose "is the peer alive?" into three failure classes and assign each the only
+mechanism that can serve it:
+
+| Class | Symptom | Detectable? | By what |
+|---|---|---|---|
+| **A. Dead socket** | dead host, dead network, dead ssh process | **Yes, safely** | **ssh keepalive (#55)** — `ServerAliveInterval`/`CountMax`. Answered below the app, so no false positive on a busy peer. Surfaces as connect failure or inbound EOF. |
+| **B. Frozen app, live socket** | `unison -server` wedged (SIGSTOP-like), socket healthy | **No** — invisible to keepalive (socket up) *and* to app-heartbeat (busy ≡ frozen) | Only a **conservative no-progress timeout** (today's #33). Cannot be tightened by any liveness signal. |
+| **C. Healthy-but-silent** | large CPU walk / throttled transfer | must **not** be flagged | leave alone; this is the false-positive hazard that constrains A and B |
+
+This collapses #41 from "an authoritative heartbeat that hardens #33, makes #34
+fatal, and unlocks #53" down to:
+
+1. **Adopt ssh keepalive (#55) for class A** — a config/transport change, *no blob
+   rebuild*. This is the genuinely useful, low-risk outcome. Its adoption remains a
+   **separate decision** (Section 6), but the spike finds no obstacle and a clear
+   benefit: it bounds the "ssh feels hung forever" firewall-drop case that motivated
+   #38's connect watchdog, at the socket layer, without touching engine internals.
+2. **Keep the conservative timeout for class B** — unchanged. Accept that a frozen
+   peer behind a live socket is only ever detectable by bounded patience.
+3. **Do nothing that escalates on class C.**
+
+## 6. ssh keepalive (#55): comparison and the separate decision
+
+Keepalive is complementary to, not a substitute for, the timeout:
+
+- **Covers:** class A (dead socket) — including the ControlMaster master connection
+  and non-direct transports, because it probes the socket, not the ssh process
+  topology.
+- **Does not cover:** class B (frozen app). The measured 20 s-survival-past-SIGSTOP
+  result proves keepalive is blind here by design.
+- **Safety:** no false positives on class C, because the probe is answered by the
+  peer OS/sshd regardless of application busyness. This is strictly safer than an
+  app-layer staleness trigger.
+- **Interaction with the timeout:** when keepalive *does* close a dead socket, the
+  engine sees an inbound EOF / connection loss, which unwinds through the existing
+  `lostConnection` / drain path (`patches/0003`) faster than the 120 s timeout would.
+  So keepalive mostly *shortens* class-A recovery; it never makes class B or C worse.
+
+Adoption is a **separate decision** because it carries its own trade-offs (choosing
+`ServerAliveInterval`/`CountMax`; interaction with `ControlPersist`; whether to set
+it via `sshargs` per-profile or globally; and confirming it does not clip a
+legitimately slow class-C link — its threshold must sit above the worst healthy
+*socket-idle* interval, which is *not* the same as the app-frame-silent interval,
+since the kernel keepalive is answered regardless). Recommended as the next step
+**after** this report is accepted, scoped as a #55 change, not folded into #41.
+
+## 7. #53 is not unlocked by #41
+
+Explicit correction of the original §6c. Interrupting a non-direct transport
+(ControlMaster / ProxyCommand / custom `sshcmd`) needs three things a liveness
+signal does not provide:
+
+1. **A way to interrupt the bridge** — the engine must leave the receive/compute
+   loop. A signal that the peer is dead does not make a CPU-bound local half yield,
+   nor does it unwedge a `select()`-blocked sync (see
+   [[unison-ui-mac-connection-lifecycle]]: a sync wedged in `select()` cannot be
+   rescued in-process; recovery is quit+reopen).
+2. **A way to reap the transport** — #51's mechanism is a SIGKILL of the *single
+   tracked* ssh child. A ControlMaster channel or a proxy chain is not that child;
+   there is no process to reap without new transport-topology bookkeeping.
+3. **A proof of quiescence** — before restarting, the app must know the old
+   transport has released its side. A liveness signal says "the peer stopped
+   talking," which is the opposite of a quiescence proof.
+
+#53 therefore needs its own interruption + reaping + quiescence architecture. #41,
+even at its best, is orthogonal to all three.
+
+## 8. Recommendation
+
+1. **Retire the "authoritative heartbeat" framing of #41.** Reword the issue to
+   reflect Sections 0–5: an inbound-activity heartbeat is not authoritative and does
+   not unlock #34-fatal, #33-hardening-beyond-the-string-guard, or #53.
+2. **Promote #55 (ssh keepalive) to the actionable follow-up for class A**, as its
+   own scoped change with the threshold analysis in Section 6. This is where the
+   real, low-risk value is.
+3. **Keep #33 conservative and #34 advisory** (Section 4). No blob change here.
+4. **Leave #53 decoupled** (Section 7).
+5. No blob rebuild is warranted for #41 as originally scoped. If a future upstream
+   bump *already* touches the transport for other reasons, the cheapest honest
+   addition is a passive `receivedBytes` age accessor used **only** to *shorten*
+   class-A recovery (EOF surfaced sooner), never to fabricate a class-B verdict —
+   and even that is largely subsumed by keepalive's EOF. Treat it as optional, not a
+   flagship.
+
+## 9. What this spike did not do
+
+No `patches/` edit, no blob rebuild, no engine behavior change, no production code
+change. Evidence is (a) the pinned upstream `remote.ml`, (b) the retained #51 / #38
+live observations, and (c) one added measurement (ssh keepalive vs a SIGSTOP'd
+remote app). Deterministic re-validation of #33/#34 is unchanged because their
+behavior is unchanged. The next action is a review decision on Section 8, then, if
+accepted, a separately scoped #55 spike.
