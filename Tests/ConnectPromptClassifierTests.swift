@@ -50,12 +50,44 @@ final class ConnectPromptClassifierTests: XCTestCase {
     /// The legitimate wrong-password re-prompt path (TODO/TC11b) must survive:
     /// "please try again" is not fatal, and the "password:" tail keeps it a
     /// credential request.
-    func test_permissionDeniedRetry_staysCredential_notFatal() {
+    func test_permissionDeniedRetry_combinedWithPrompt_staysCredential() {
+        // The denial and the re-prompt arrived in ONE chunk: show it as one
+        // credential prompt (the user answers once). Contrast with the standalone
+        // case below (issue #63).
         XCTAssertEqual(
             ConnectPromptClassifier.classify(
                 prompt: "Permission denied, please try again.\r\nPassword:",
                 transportTerminated: false),
             .credential)
+    }
+
+    // MARK: issue #63 — standalone retry notice folds into the next prompt
+
+    func test_permissionDeniedRetry_standalone_isRetryNotice() {
+        // No password prompt in this chunk: not a sheet to answer, a notice to
+        // fold into the next (real) prompt.
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Permission denied, please try again.",
+                transportTerminated: false),
+            .retryNotice("Permission denied, please try again."))
+    }
+
+    func test_retryNotice_trimsSurroundingWhitespace() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "\r\nPermission denied, please try again.\r\n",
+                transportTerminated: false),
+            .retryNotice("Permission denied, please try again."))
+    }
+
+    func test_retryNotice_whenTerminated_isFatal_not_retry() {
+        // Terminal evidence still wins: a retry line after the child is gone is
+        // post-mortem output, not a live retry.
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Permission denied, please try again.", transportTerminated: true),
+            .fatal(reason: "Permission denied, please try again."))
     }
 
     // MARK: host-key question

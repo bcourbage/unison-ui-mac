@@ -284,6 +284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// ground truth for `connectFinished`'s interactive flag.
     private var sheetShownThisConnect = false
 
+    /// Issue #63: ssh's standalone retry notice ("Permission denied, please try
+    /// again.") pending fold-in to the NEXT credential prompt's message, so the
+    /// user answers a re-prompt only once. Cleared when that prompt is shown and
+    /// reset at each connect start.
+    private var pendingRetryNotice: String?
+
     /// Run coordinator effects in the order returned (order matters:
     /// showSession before beginConnect; presentSyncResults before
     /// closeConnection; a successful close before the queued session start).
@@ -580,6 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String) {
         pendingConnect = (s, op)
         sheetShownThisConnect = false
+        pendingRetryNotice = nil
         // Connection-bound scan-interrupt qualification (Finding 3): a fresh
         // probe per connect, tagged with this connect op as the generation, so a
         // reconnect (Rescan from `.stopped`) requalifies and a stale result can
@@ -1353,17 +1360,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // error dialog (no connection was established, so the engine is
                 // quiescent once the cancel is acknowledged).
                 let transportGone = unison_bridge_transport_child_terminated() != 0
-                if case .fatal(let reason) = ConnectPromptClassifier.classify(
+                switch ConnectPromptClassifier.classify(
                     prompt: prompt, transportTerminated: transportGone) {
+                case .fatal(let reason):
                     self.log.write("connect \(s)/\(op): fatal ssh output surfaced as a prompt "
                         + "(transportGone=\(transportGone)) — not re-prompting; teardown → picker")
                     self.failConnectFatal(s, op, message: reason)
                     return
+                case .retryNotice(let notice):
+                    // Issue #63: ssh's standalone retry notice is NOT a prompt to
+                    // answer — folding it into the next real prompt and reading the
+                    // next prompt WITHOUT replying (a reply here would send the
+                    // password before ssh is at the password read, which is the
+                    // spurious-extra-prompt bug). ssh re-prompts right after this
+                    // line, or exits (→ .fatal on the next read via the terminated
+                    // child). Do not disarm the watchdog / mark a sheet shown yet.
+                    self.log.write("connect \(s)/\(op): ssh retry notice — folding into next prompt")
+                    self.pendingRetryNotice = notice
+                    self.drivePromptLoop(s, op)
+                    return
+                case .credential, .hostKeyQuestion:
+                    break
                 }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
-                self.log.write("connection prompt: \(prompt)")
-                let sheet = PasswordSheet(prompt: prompt) { [weak self] response in
+                // Issue #63: show any pending retry notice as the message ON this
+                // (real) prompt, so the user sees the denial and answers once.
+                let sheetPrompt: String
+                if let notice = self.pendingRetryNotice, !notice.isEmpty {
+                    sheetPrompt = notice + "\n" + prompt
+                    self.pendingRetryNotice = nil
+                } else {
+                    sheetPrompt = prompt
+                }
+                self.log.write("connection prompt: \(sheetPrompt)")
+                let sheet = PasswordSheet(prompt: sheetPrompt) { [weak self] response in
                     guard let self else { return }
                     guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
                     self.pendingPasswordSheet = nil

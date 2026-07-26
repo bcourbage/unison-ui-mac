@@ -40,6 +40,12 @@ enum ConnectPromptClassifier {
     enum Verdict: Equatable {
         case credential
         case hostKeyQuestion
+        /// ssh's retryable failure line (e.g. "Permission denied, please try
+        /// again.") standing alone, WITHOUT the re-prompt in the same read. It is
+        /// not itself a credential request; the driver must fold it into the
+        /// message of the next (genuine) prompt instead of presenting its own
+        /// sheet (issue #63).
+        case retryNotice(String)
         case fatal(reason: String)
     }
 
@@ -58,6 +64,19 @@ enum ConnectPromptClassifier {
             return .fatal(reason: trimmed)
         }
 
+        // 2b. ssh's retryable failure notice precedes a genuine re-prompt. The
+        //     GUI prompt reader (`Terminal.termInput`) does a single read per
+        //     prompt with no settle/accumulation, so this line arrives as its own
+        //     chunk, separate from the following "password:" prompt — presenting
+        //     it as its own sheet makes the user answer a phantom prompt (#63).
+        //     Fold it into the next real prompt instead. Only when it stands
+        //     ALONE: a chunk that ALSO carries the password/passphrase prompt is a
+        //     normal (coalesced) credential prompt. Auth exhaustion makes ssh
+        //     exit and is caught by rule 1.
+        if isRetryNotice(lower) {
+            return .retryNotice(trimmed)
+        }
+
         // 3. Host-key yes/no question (matches PasswordSheet's own heuristic).
         if isHostKeyQuestion(lower) {
             return .hostKeyQuestion
@@ -65,6 +84,15 @@ enum ConnectPromptClassifier {
 
         // 4. Default: present verbatim as a credential prompt.
         return .credential
+    }
+
+    /// ssh's retryable failure notice standing alone (no password/passphrase
+    /// prompt in the same chunk). Matched precisely on ssh's "please try again"
+    /// wording so a genuine combined "Permission denied, please try again.\n…
+    /// password:" chunk is left as a normal credential prompt.
+    private static func isRetryNotice(_ lower: String) -> Bool {
+        guard lower.contains("please try again") else { return false }
+        return !lower.contains("password") && !lower.contains("passphrase")
     }
 
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
