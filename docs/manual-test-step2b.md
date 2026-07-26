@@ -250,7 +250,7 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 A real password profile with a wrong/failing password.
 
-1. Enter the **wrong** password. **Expect:** the credential sheet is re-presented **once**, carrying the "Permission denied, please try again." message, and entering the correct password authenticates on that single entry (issue #63).
+1. Enter the **wrong** password. **Expect:** the credential sheet is re-presented **once**, carrying the "Permission denied, please try again." message, and entering the correct password authenticates on that single entry (issue #63, fixed).
 2. Confirm **Cancel** on the sheet returns cleanly to the picker.
 3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11.
 
@@ -298,7 +298,7 @@ A real password profile with a wrong/failing password.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
-| TC12 | interactive auth failure + cancel | PASS aside from #63 | live (Release, user typed passwords → .241 VM). Retry-recovery run: a wrong password re-presents the sheet and a subsequent correct password authenticates and the scan completes — no wedge, no process leak. Cancellation run: **Cancel** at the sheet returns cleanly to the picker and reaps the ssh child. Known symptom: on a wrong password the sheet currently appears one extra time before accepting the correct password (issue #63, fix in progress). |
+| TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
 
 ---
 
