@@ -60,8 +60,12 @@ targets:
       # the bundled dark `.icns` below. Compiled to Assets.car; selected via
       # CFBundleIconName.
       - path: Resources/Assets.xcassets
-      # Dark app icon, applied to the Dock + standard About panel at runtime on
-      # macOS 26+ in dark mode (both surfaces derive from applicationIconImage).
+      # Light + dark app icons applied to the Dock and the standard About panel
+      # at runtime (see AppDelegate). The light one is set explicitly (not via a
+      # nil reset) so a stale LaunchServices icon cache can't resurface an old
+      # icon; the dark one is used on macOS 26+ in dark mode.
+      - path: Resources/Unison-light.icns
+        buildPhase: resources
       - path: Resources/Unison-dark.icns
         buildPhase: resources
       # The rendered Unison reference manual. Lives in vendor/ rather
