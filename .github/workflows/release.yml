@@ -93,7 +93,12 @@ jobs:
           test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install xcodegen
-        run: brew install xcodegen
+        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, untrusted
+        # under Homebrew's tap-trust gate; untap it first to silence the
+        # per-call warning (|| true — never fail the release on its absence).
+        run: |
+          brew untap aws/tap || true
+          brew install xcodegen
 
       - name: Verify the tag matches MARKETING_VERSION
         # Guards against tagging without bumping project.yml (or vice
@@ -159,7 +164,7 @@ jobs:
       # for inspection, touch no Release.
       - name: Upload artifact (dry run)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.pkg.outputs.zip }}
           path: ${{ steps.pkg.outputs.zip }}

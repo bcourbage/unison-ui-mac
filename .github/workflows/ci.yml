@@ -82,7 +82,15 @@ jobs:
         # `unison-ui-mac.xcodeproj` directory IS tracked, but Makefile
         # regenerates it on every build — easier to just install the
         # tool than fight Make.
-        run: brew install xcodegen
+        #
+        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
+        # untrusted under Homebrew's tap-trust gate and prints an "ignoring …
+        # tap trust is required" warning on every brew call. We don't use it;
+        # untap it first to keep the logs clean (|| true so a future image that
+        # drops the tap doesn't fail the step).
+        run: |
+          brew untap aws/tap || true
+          brew install xcodegen
 
       - name: Check signing resolver matrix
         # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
@@ -110,7 +118,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: xcresult-bundle
           path: .build/derived/Logs/Test/*.xcresult
