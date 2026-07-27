@@ -57,10 +57,13 @@ async; this covers the synchronous dispatch" (`UnisonBridgeC.c:1684`).
 `abandon()` detaches only the UI. For a remote profile the in-flight update
 detection therefore keeps running in the background: a lingering remote
 `unison` child and wasted bandwidth until it finishes on its own or the app
-quits. The scan is not interruptible via the propagation `Abort` mechanism
-(`Abort.check`/`checkAll` are consulted only in `copy.ml`/`files.ml`, never in
-`update.ml`; setting the abort flag during a scan trips `update.ml:1027
-Assertion failed`, so it is correctly gated on `isSyncing`).
+quits. The scan is not interruptible via the propagation `Abort` mechanism:
+`Abort.check`/`checkAll` are consulted only in `copy.ml`/`files.ml`, never in
+`update.ml`, so `Abort.all()` cannot cancel update detection — it stays gated on
+`isSyncing`. (An earlier draft claimed setting the flag during a scan trips
+`update.ml:1027 Assertion failed`. That line is `assert (!locked = false)` inside
+`lockArchives` and is unrelated to `Abort`; the causal claim was never
+established and is withdrawn.)
 
 ## 4. Upstream CLI evidence (softened per B1)
 

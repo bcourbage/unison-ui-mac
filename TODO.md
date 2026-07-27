@@ -5,57 +5,23 @@ section at the bottom so this list stays scannable.
 
 ## To Do
 
-- [ ] **True in-process scan interruption — residual: non-direct transports &
-      CPU-bound local walk** — issue #24 follow-up. The qualified direct-SSH case
-      is **done (PR #51)**; the residual is tracked in **#53**.
-
-      **Qualified direct-SSH: DONE (PR #51).** For an `ssh -G`-qualified **direct
-      single-child** transport, scan-phase **Stop Scan** now genuinely interrupts
-      in-process once the engine is transport-blocked (past the "Waiting for
-      changes from server" remote-wait marker): it SIGKILLs the tracked transport
-      child → `init2` unwinds → coordinator-gated **stop-in-place** (Rescan
-      reuses the session), with a phase-aware affordance ("Return to Profiles"
-      until transport-blocked, then red "Stop Scan") and a pre-SIGKILL
-      authorization checkpoint. The automatic `ScanStallTimer` (120 s, PR #25)
-      still bounds any wedge to restart-required, and the credential-sheet
-      **Cancel** + toolbar navigation remain the connect-phase escape hatches
-      (the coordinator's engine-idle gate makes a replacement open wait for
-      quiescence, so a quick leave-then-reopen doesn't race two scans).
-
-      **Residual (tracked in #53).** True in-process cancellation is NOT yet
-      available for (a) **non-qualified** transports (ControlMaster / ProxyCommand
-      / custom `sshcmd`) or (b) a scan **CPU-bound in the local-replica walk** —
-      SIGKILLing the transport can't unwind a hashing loop that isn't blocked on
-      it. Both fall back to honest abandon → restart-required, leaving a remote
-      `unison` child to wind down on its own. `connection_cancel` is scoped to
-      the credential-prompt phase, not an `init2` op on the serial `connectQueue`;
-      and the propagation `Abort` mechanism (`Abort.check`/`checkAll`,
-      `copy.ml`/`files.ml`) is never consulted in `update.ml` — setting that flag
-      *during a scan* trips `update.ml:1027 Assertion failed`, so it stays gated
-      on `isSyncing`. The general fix — engine-level cooperative interruptibility
-      or process isolation — is #53's separate architecture (a #41 liveness
-      signal can help *detect* a dead non-direct transport but cannot itself
-      interrupt the bridge, reap it, or prove quiescence).
-
-      **Auth-failure interactive path:** confirmed live (TC11b) — a wrong
-      password stays in the bounded credential-prompt flow (re-presents) and a
-      subsequent correct password authenticates and completes the scan normally;
-      no post-submit wedge. No further action unless that regresses.
-
-      **Fatal-ssh-as-prompt (issue #35) — DONE.** A fatal transport error
-      (login-grace timeout → broken pipe / connection closed) that the engine
-      surfaces through the credential-prompt channel is no longer re-presented as
-      a password sheet: `ConnectPromptClassifier` classifies it — authoritative
-      terminal evidence is `unison_bridge_transport_child_terminated()` (the
-      tracked ssh child gone/zombie, via sysctl `SZOMB`, not kill(pid,0)), with a
-      conservative fatal-string list only as a supplement — and `failConnectFatal`
-      tears the half-open preconnection down (`connection_cancel` reaps the
-      child) and, only once the cancel is ACKNOWLEDGED (engine quiescent),
-      returns to the picker with a modal OK dialog. A cancel that can't prove
-      quiescence still routes to restart-required. Known residual: the string
-      supplement is heuristic (backstopped by the child-exit signal); a fatal
-      occurring after a connection is partly established is handled by the
-      cancel-status gate (non-zero → restart-required), not assumed quiescent.
+- [ ] **Scan interruption — residual (post-release umbrella, tracked in #53).**
+      Two independent, fail-closed tracks remain after the qualified direct-SSH
+      Stop Scan shipped (PR #51):
+      - **Track A — CPU-bound local-replica walk:** a scan hashing locally is not
+        blocked on the transport, so no transport kill unwinds it. Needs
+        scan-specific cooperative cancellation (safe points in `update.ml` +
+        exception-safe unwinding) or per-session process isolation — must **not**
+        reuse the propagation-global `Abort` flag (`Abort` is consulted by
+        propagation, never by `update.ml`).
+      - **Track B — non-direct transports** (ControlMaster / ProxyCommand /
+        custom `sshcmd`): a transport-ownership problem (killing a shared
+        ControlMaster or a proxy with descendant processes is unsafe), stays
+        fail-closed until proven.
+      Both fall back safely today (Return to Profiles → abandon while the
+      coordinator retains engine ownership; the 120 s watchdog bounds a wedged op
+      to restart-required). No dependency on #41 (closed infeasible) or #55 (no
+      implementation). Analysis in #53 and `docs/scan-interruption-design.md`.
 
 - [ ] **AppKit view-controller test coverage** — pure-logic modules
       are 84–100% covered (`ReconcileTree`, `ArchiveHash`,
