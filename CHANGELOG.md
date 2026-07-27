@@ -9,6 +9,21 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.4.1] — 2026-07-26
+
+A patch release fixing an interactive-authentication prompt annoyance on top of
+0.4.0. (Build 17.) Existing profiles and settings continue to work without
+migration.
+
+### Fixed
+- **Interactive SSH auth no longer shows a spurious extra password prompt.** On a
+  password (interactive) profile, a wrong password made ssh's standalone
+  "Permission denied, please try again." line surface as its own password sheet, so
+  the correct password had to be entered twice. The app now recognizes that
+  standalone notice and folds it into the message of the next real prompt: a wrong
+  password re-prompts exactly once, and the correct password authenticates on that
+  single entry. App-side only; no change to the vendored engine. (#63)
+
 ## [0.4.0] — 2026-07-26
 
 Adds user-initiated scan interruption and a connect-time navigation fix on top of
@@ -653,7 +668,9 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.2.2...v0.3.0
 [0.1.3]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.1.1...v0.1.2
