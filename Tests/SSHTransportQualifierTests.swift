@@ -238,7 +238,23 @@ final class SSHTransportQualifierTests: XCTestCase {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { canceller.cancel() }
         wait(for: [done], timeout: 8)
-        XCTAssertEqual(result, .cancelled)
+        // The contract is "a mid-flight cancel tears the child down PROMPTLY",
+        // asserted by the bounded elapsed time below. HOW the executor labels that
+        // teardown is a benign race that previously flaked CI: it may win with
+        // `.cancelled`, or it may first observe the exit of the child it just
+        // SIGTERM'd and report `.exited(status: 15)` (15 == SIGTERM). A `sleep 30`
+        // cannot exit on its own inside this 0.2 s window, so an `.exited` here is
+        // necessarily the killed child — not a real completion — and both outcomes
+        // prove the same thing: the probe is cancellable, not leaked. Accept either.
+        switch result {
+        case .cancelled:
+            break
+        case .exited(let status, _) where status == SIGTERM || status == SIGKILL:
+            break
+        default:
+            XCTFail("mid-flight cancel should tear the child down "
+                + "(.cancelled or a SIGTERM/SIGKILL exit); got \(String(describing: result))")
+        }
         XCTAssertLessThan(Date().timeIntervalSince(start), 6.0)
     }
 }
