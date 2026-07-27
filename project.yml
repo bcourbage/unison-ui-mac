@@ -52,7 +52,18 @@ targets:
         excludes:
           - "**/*.profraw"
       - path: Sources/Bridge
-      - path: Resources/AppIcon.icns
+      # App icon asset catalog (LIGHT). The static bundle icon (Finder, Dock
+      # baseline, and every macOS < 26). macOS `.appiconset` cannot carry a dark
+      # appearance variant (actool rejects it — that needs an Icon Composer
+      # `.icon`), so the dark variant is applied at runtime on macOS 26+ via
+      # `applicationIconImage` (see AppDelegate.installAppearanceAwareIcon), using
+      # the bundled dark `.icns` below. Compiled to Assets.car; selected via
+      # CFBundleIconName.
+      - path: Resources/Assets.xcassets
+      # Dark app icon, applied to the Dock + standard About panel at runtime on
+      # macOS 26+ in dark mode (both surfaces derive from applicationIconImage).
+      - path: Resources/Unison-dark.icns
+        buildPhase: resources
       # The rendered Unison reference manual. Lives in vendor/ rather
       # than Resources/ because it's a generated artifact (hevea →
       # `make vendor-manual`) versioned alongside the OCaml blob. Xcode
@@ -82,7 +93,11 @@ targets:
         # MARKETING_VERSION / CURRENT_PROJECT_VERSION declared in `settings.base`.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CFBundleIconFile: AppIcon
+        # Icon comes from the AppIcon set in Assets.xcassets (compiled to
+        # Assets.car). CFBundleIconName is the asset-catalog key; it supersedes
+        # the old flat CFBundleIconFile/.icns and is what enables the light/dark
+        # appearance variants on macOS 26+.
+        CFBundleIconName: AppIcon
         CFBundleName: Unison-UI-Mac
         CFBundleDisplayName: Unison-UI-Mac
         # Shows in Finder's Get Info → "More info...". Short form by
@@ -97,6 +112,8 @@ targets:
         PRODUCT_NAME: unison-ui-mac
         PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-mac
         INFOPLIST_FILE: Resources/Info.plist
+        # actool needs to know which asset-catalog set is the app icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/UnisonBridgeC.h
         HEADER_SEARCH_PATHS:
           - $(OCAMLLIBDIR)

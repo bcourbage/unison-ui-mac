@@ -1651,6 +1651,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
         logEnvSnapshot()
 
+        // Appearance-aware app icon (macOS 26+): mirror the system light/dark
+        // appearance onto the Dock icon and the standard About panel (both read
+        // NSApp.applicationIconImage). No-op on macOS < 26 (stays light) and
+        // under XCTest (don't touch the test host's Dock icon).
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            installAppearanceAwareIcon()
+        }
+
         // Ask for notification permission up front (only if the cue is
         // enabled, which it is by default) so the first sync-complete
         // banner can display. No-op when already determined. Install the
@@ -2632,6 +2640,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         ---
         <sub>If the app crashed, it offers to attach the crash report the next time you open it. Logs (only if asked): <code>log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --info --debug --last 30m</code></sub>
         """
+    }
+
+    // MARK: - Appearance-aware app icon (macOS 26+)
+    //
+    // A macOS `.appiconset` cannot carry a dark appearance variant (actool
+    // rejects it; the native path is an Icon Composer `.icon`). The bundle icon
+    // is the LIGHT art. On macOS 26+ we mirror the effective appearance onto the
+    // Dock and the standard About panel — both derive from
+    // `NSApp.applicationIconImage` — by swapping in the bundled dark `.icns` in
+    // dark mode and restoring the bundle icon (nil) in light mode. On macOS < 26
+    // this is never installed, so those systems stay light-only.
+
+    private var appearanceIconObservation: NSKeyValueObservation?
+
+    private lazy var darkAppIcon: NSImage? = {
+        Bundle.main.url(forResource: "Unison-dark", withExtension: "icns")
+            .flatMap { NSImage(contentsOf: $0) }
+    }()
+
+    private func installAppearanceAwareIcon() {
+        guard #available(macOS 26, *) else { return }   // < 26: light only
+        guard darkAppIcon != nil else {
+            log.write("appearance icon: dark .icns not found in bundle — staying light")
+            return
+        }
+        applyAppearanceIcon()
+        // Re-apply whenever the effective appearance flips (system Appearance
+        // change, or an app-level override).
+        appearanceIconObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.applyAppearanceIcon() }
+        }
+    }
+
+    /// Sets the Dock/About icon to match the current appearance. Uses only
+    /// long-available APIs; the macOS-26 gate lives in `installAppearanceAwareIcon`.
+    private func applyAppearanceIcon() {
+        let isDark = NSApp.effectiveAppearance
+            .bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        // Dark → the dark icon; light → nil restores the (light) bundle icon.
+        NSApp.applicationIconImage = isDark ? darkAppIcon : nil
     }
 
     @objc func showAboutPanel(_ sender: Any?) {
