@@ -67,6 +67,13 @@ jobs:
         with:
           ref: ${{ steps.ver.outputs.tag }}
 
+      - name: Untap aws/tap (runner-image noise)
+        # The macOS runner pre-taps `aws/tap`, untrusted under Homebrew's
+        # tap-trust gate; it warns on every brew call, including setup-ocaml's
+        # below. Untap first so all later brew steps are quiet. `|| true`: a
+        # future image without the tap must not fail the release.
+        run: brew untap aws/tap || true
+
       - name: Show toolchain versions
         run: |
           sw_vers
@@ -93,12 +100,8 @@ jobs:
           test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install xcodegen
-        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, untrusted
-        # under Homebrew's tap-trust gate; untap it first to silence the
-        # per-call warning (|| true — never fail the release on its absence).
-        run: |
-          brew untap aws/tap || true
-          brew install xcodegen
+        # (aws/tap is untapped in an earlier step so this brew call is quiet.)
+        run: brew install xcodegen
 
       - name: Verify the tag matches MARKETING_VERSION
         # Guards against tagging without bumping project.yml (or vice

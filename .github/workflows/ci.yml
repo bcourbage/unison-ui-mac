@@ -49,6 +49,14 @@ jobs:
         uses: actions/checkout@v5
         # No submodules / LFS — the vendored blob lives in the tree.
 
+      - name: Untap aws/tap (runner-image noise)
+        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
+        # untrusted under Homebrew's tap-trust gate and warns on EVERY brew
+        # call — including the ones setup-ocaml makes below. Untap it first so
+        # every later brew step is quiet. `|| true`: a future image that drops
+        # the tap must not fail the job.
+        run: brew untap aws/tap || true
+
       - name: Show toolchain versions
         # Useful for debugging CI-vs-local discrepancies in failure
         # reports. Cheap; runs in <1 s.
@@ -81,16 +89,9 @@ jobs:
         # xcodegen regenerates the .xcodeproj from project.yml. The
         # `unison-ui-mac.xcodeproj` directory IS tracked, but Makefile
         # regenerates it on every build — easier to just install the
-        # tool than fight Make.
-        #
-        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
-        # untrusted under Homebrew's tap-trust gate and prints an "ignoring …
-        # tap trust is required" warning on every brew call. We don't use it;
-        # untap it first to keep the logs clean (|| true so a future image that
-        # drops the tap doesn't fail the step).
-        run: |
-          brew untap aws/tap || true
-          brew install xcodegen
+        # tool than fight Make. (aws/tap is untapped in an earlier step so
+        # this brew call is quiet.)
+        run: brew install xcodegen
 
       - name: Check signing resolver matrix
         # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
