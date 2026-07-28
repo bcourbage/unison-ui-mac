@@ -23,7 +23,7 @@ final class ReconcileTreeTests: XCTestCase {
         let node = tree.root.children[0]
         XCTAssertEqual(node.name, "README.md")
         XCTAssertEqual(node.row, 0)
-        XCTAssertTrue(node.isLeaf)
+        XCTAssertTrue(node.isTerminalLeaf)
         XCTAssertEqual(node.fullPath, "README.md")
     }
 
@@ -32,22 +32,22 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.root.children.count, 1)
         let documents = tree.root.children[0]
         XCTAssertEqual(documents.name, "Documents")
-        XCTAssertFalse(documents.isLeaf)
+        XCTAssertFalse(documents.isTerminalLeaf)
         XCTAssertNil(documents.row)
 
         let photos = documents.children[0]
         XCTAssertEqual(photos.name, "Photos")
-        XCTAssertFalse(photos.isLeaf)
+        XCTAssertFalse(photos.isTerminalLeaf)
 
         let year = photos.children[0]
         XCTAssertEqual(year.name, "2024")
-        XCTAssertFalse(year.isLeaf)
+        XCTAssertFalse(year.isTerminalLeaf)
 
         let leaf = year.children[0]
         XCTAssertEqual(leaf.name, "img.jpg")
         XCTAssertEqual(leaf.row, 0)
         XCTAssertEqual(leaf.fullPath, "Documents/Photos/2024/img.jpg")
-        XCTAssertTrue(leaf.isLeaf)
+        XCTAssertTrue(leaf.isTerminalLeaf)
         // Parent pointers
         XCTAssertTrue(leaf.parent === year)
         XCTAssertTrue(year.parent === photos)
@@ -101,14 +101,14 @@ final class ReconcileTreeTests: XCTestCase {
         let names = tree.allNodes.map(\.name)
         // Folders + leaves; folders come before their leaves in tree order.
         XCTAssertEqual(Set(names), ["a", "x", "y", "b", "z"])
-        XCTAssertEqual(tree.allNodes.filter(\.isLeaf).count, 3)
+        XCTAssertEqual(tree.allNodes.filter(\.isTerminalLeaf).count, 3)
     }
 
     // MARK: - pathFromRoot
 
     func test_pathFromRoot_forLeaf_returnsStoredFullPath() {
         let tree = ReconcileTree(items: [item("Documents/Photos/img.jpg")])
-        let leaf = tree.allNodes.first(where: { $0.isLeaf })!
+        let leaf = tree.allNodes.first(where: { $0.isTerminalLeaf })!
         XCTAssertEqual(leaf.pathFromRoot, "Documents/Photos/img.jpg")
     }
 
@@ -295,7 +295,7 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.root.children.count, 3,
                        "flat: every leaf is a direct child of root")
         for child in tree.root.children {
-            XCTAssertTrue(child.isLeaf,
+            XCTAssertTrue(child.isTerminalLeaf,
                           "flat: no intermediate folder nodes")
         }
         // Names are the full paths, in original order.
@@ -320,12 +320,12 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.root.children.count, 1)
         let docs = tree.root.children[0]
         XCTAssertEqual(docs.name, "Documents")
-        XCTAssertFalse(docs.isLeaf)
+        XCTAssertFalse(docs.isTerminalLeaf)
         let photos = docs.children[0]
         XCTAssertEqual(photos.name, "Photos")
-        XCTAssertFalse(photos.isLeaf)
+        XCTAssertFalse(photos.isTerminalLeaf)
         XCTAssertEqual(photos.children[0].name, "img.jpg")
-        XCTAssertTrue(photos.children[0].isLeaf)
+        XCTAssertTrue(photos.children[0].isTerminalLeaf)
     }
 
     func test_nestedCollapsed_singleChildChainBecomesOneNode() {
@@ -339,7 +339,7 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.root.children.count, 1)
         let node = tree.root.children[0]
         XCTAssertEqual(node.name, "a/b/c/d/file.txt")
-        XCTAssertTrue(node.isLeaf, "leaf at the end of the collapsed chain")
+        XCTAssertTrue(node.isTerminalLeaf, "leaf at the end of the collapsed chain")
         XCTAssertEqual(node.fullPath, "a/b/c/d/file.txt",
                        "fullPath preserved through collapse")
     }
@@ -359,7 +359,7 @@ final class ReconcileTreeTests: XCTestCase {
         XCTAssertEqual(tree.root.children.count, 1)
         let collapsed = tree.root.children[0]
         XCTAssertEqual(collapsed.name, "top/a/b")
-        XCTAssertFalse(collapsed.isLeaf,
+        XCTAssertFalse(collapsed.isTerminalLeaf,
                        "folder with multiple leaf children stays a folder")
         XCTAssertEqual(collapsed.children.count, 2)
         XCTAssertEqual(collapsed.children.map { $0.name },
@@ -426,7 +426,7 @@ final class ReconcileTreeTests: XCTestCase {
         // Expect every folder node: a, a/b, c, c/d → 4 folders.
         // (Leaves are excluded; only folders are returned.)
         XCTAssertEqual(nodes.count, 4)
-        XCTAssertTrue(nodes.allSatisfy { !$0.isLeaf })
+        XCTAssertTrue(nodes.allSatisfy { !$0.isTerminalLeaf })
     }
 
     func test_expandPolicy_smart_expandsOnlyConflictBranches() {
@@ -627,5 +627,205 @@ final class ReconcileTreeTests: XCTestCase {
         let tree = ReconcileTree(items: items, layout: .nestedFull)
         let folder = tree.root.children.first { $0.name == "d" }!
         XCTAssertEqual(folder.progressFraction(items: items)!, 0.5, accuracy: 0.0001)
+    }
+
+    // MARK: - aggregateSizeBytes (folder size = sum of changed leaves, 0.4.2)
+
+    func test_aggregateSize_folderSumsItsLeaves() {
+        let items = [sized("d/a", size: 300, progress: "", bytes: 0),
+                     sized("d/b", size: 700, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 1000)
+    }
+
+    func test_aggregateSize_recursesThroughNestedFolders() {
+        let items = [sized("d/x/a", size: 100, progress: "", bytes: 0),
+                     sized("d/x/b", size: 250, progress: "", bytes: 0),
+                     sized("d/c", size: 50, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let x = d.children.first { $0.name == "x" }!
+        XCTAssertEqual(x.aggregateSizeBytes(items: items), 350)   // just d/x
+        XCTAssertEqual(d.aggregateSizeBytes(items: items), 400)   // d/x + d/c
+    }
+
+    func test_aggregateSize_leafReturnsOwnSize() {
+        let items = [sized("d/a", size: 512, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let leaf = tree.root.children.first!.children.first!
+        XCTAssertTrue(leaf.isTerminalLeaf)
+        XCTAssertEqual(leaf.aggregateSizeBytes(items: items), 512)
+    }
+
+    func test_aggregateSize_zeroWhenAllLeavesZeroSize() {
+        // e.g. a folder of pure deletions / prop-only changes → blank in the UI.
+        let items = [sized("d/a", size: 0, progress: "", bytes: 0),
+                     sized("d/b", size: 0, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 0)
+    }
+
+    func test_aggregateSize_ignoresNegativeSizes() {
+        let items = [sized("d/a", size: -5, progress: "", bytes: 0),
+                     sized("d/b", size: 200, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 200)
+    }
+
+    // MARK: - directory reconcile row + changed descendants (Finding #3)
+
+    private func dir(_ path: String, direction: String = "---->") -> StateItem {
+        StateItem(path: path, left: "", right: "", direction: direction,
+                  sizeBytes: 0, fileType: "DIR", progress: "",
+                  bytesTransferred: 0, changedFromDefault: false)
+    }
+
+    private func dirRowItems(dirFirst: Bool) -> [StateItem] {
+        dirFirst
+            ? [dir("d"), sized("d/a", size: 100, progress: "", bytes: 0)]
+            : [sized("d/a", size: 100, progress: "", bytes: 0), dir("d")]
+    }
+
+    /// (1)+(3) `d` + `d/a` in BOTH input orders: `d` carries its own row, is an
+    /// expandable container, is addressable via the row index, and the child
+    /// stays visible under it.
+    func test_dirRow_bothOrders_hybridContainerAndAddressable() {
+        for dirFirst in [true, false] {
+            let items = dirRowItems(dirFirst: dirFirst)
+            let dirRow = dirFirst ? 0 : 1, childRow = dirFirst ? 1 : 0
+            let tree = ReconcileTree(items: items, layout: .nestedFull)
+            let d = tree.root.children.first { $0.name == "d" }!
+            XCTAssertTrue(d.hasReconcileRow, "d carries its own row (dirFirst=\(dirFirst))")
+            XCTAssertEqual(d.row, dirRow)
+            XCTAssertTrue(d.isContainer, "d is expandable")
+            XCTAssertFalse(d.isTerminalLeaf)
+            XCTAssertEqual(d.children.map(\.name), ["a"], "child stays visible")
+            XCTAssertEqual(d.children[0].row, childRow)
+            // Addressable: the row index maps the directory row AND the child row.
+            let index = ReconcileWindowController.buildRowIndex(tree.allNodes)
+            XCTAssertTrue(index[dirRow] === d, "directory row → the hybrid node")
+            XCTAssertTrue(index[childRow] === d.children[0])
+            XCTAssertEqual(d.aggTotalSize, 100)   // aggregate includes the child
+        }
+    }
+
+    /// (2) The hybrid case behaves under full, collapsed, and flat layouts.
+    func test_dirRow_underAllLayouts() {
+        for layout in ReconcileTree.LayoutMode.allCases {
+            let items = [dir("d"), sized("d/a", size: 40, progress: "", bytes: 0)]
+            let tree = ReconcileTree(items: items, layout: layout)
+            switch layout {
+            case .flat:
+                // Flat: every item is a top-level row, no nesting.
+                XCTAssertEqual(Set(tree.root.children.map(\.name)), ["d", "d/a"])
+                XCTAssertTrue(tree.root.children.allSatisfy { $0.hasReconcileRow && $0.isTerminalLeaf })
+            case .nestedFull, .nestedCollapsed:
+                let d = tree.root.children.first { $0.name == "d" }!
+                XCTAssertEqual(d.name, "d", "not collapsed into d/a in \(layout)")
+                XCTAssertTrue(d.hasReconcileRow)
+                XCTAssertTrue(d.isContainer)
+                XCTAssertEqual(d.children.map(\.name), ["a"])
+                XCTAssertEqual(d.aggTotalSize, 40)
+            }
+        }
+    }
+
+    /// (4) A directory row with a single child must NOT be collapsed away —
+    /// collapsing would discard the directory's own row.
+    func test_dirRowWithSingleChild_notCollapsed() {
+        let items = [dir("d"), sized("d/a", size: 10, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedCollapsed)
+        let d = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(d.name, "d")           // not merged into "d/a"
+        XCTAssertEqual(d.row, 0)
+        XCTAssertEqual(d.children.map(\.name), ["a"])
+    }
+
+    /// (5) Selecting a hybrid directory enumerates its own row + descendants,
+    /// each exactly once — even when the directory AND a child are both selected.
+    func test_selectionEnumeration_dirRowAndDescendantsExactlyOnce() {
+        let items = [dir("d"),                                      // 0
+                     sized("d/a", size: 1, progress: "", bytes: 0),   // 1
+                     sized("d/b", size: 1, progress: "", bytes: 0)]   // 2
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let a = d.children.first { $0.name == "a" }!
+        XCTAssertEqual(ReconcileTree.rows(inSelection: [d]).sorted(), [0, 1, 2],
+                       "selecting the directory targets its own row + descendants")
+        let both = ReconcileTree.rows(inSelection: [d, a])
+        XCTAssertEqual(both.sorted(), [0, 1, 2])
+        XCTAssertEqual(both.count, 3, "no duplicates when node + descendant both selected")
+    }
+
+    // MARK: - aggregate cache correctness (Finding #2)
+
+    func test_cache_matchesPureAfterBuild() {
+        let items = [sized("d/a", size: 300, progress: "50%", bytes: 150),
+                     sized("d/b", size: 700, progress: "done", bytes: 700),
+                     sized("d/x/c", size: 200, progress: "start", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        for node in tree.allNodes where node.isContainer {
+            XCTAssertEqual(node.aggTotalSize, node.aggregateSizeBytes(items: items),
+                           "size cache diverged at \(node.name)")
+            XCTAssertEqual(node.cachedProgressFraction(), node.progressFraction(items: items),
+                           "progress cache diverged at \(node.name)")
+        }
+    }
+
+    /// (6) The incremental delta path (what reloadRow does) matches a from-scratch
+    /// recompute across repeated, increasing, DECREASING, terminal, FAILED, and
+    /// zero-size updates. Includes a hybrid directory row (size 0).
+    func test_cache_incrementalDeltaMatchesPure_allUpdateKinds() {
+        var items = [sized("d/a", size: 400, progress: "", bytes: 0),  // row 0
+                     sized("d/b", size: 600, progress: "", bytes: 0),  // row 1
+                     dir("d")]                                         // row 2 (hybrid dir, size 0)
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let index = ReconcileWindowController.buildRowIndex(tree.allNodes)
+
+        func tick(_ row: Int, _ progress: String, _ bytes: Int64) {
+            let old = items[row]
+            let new = old.with(progress: progress, bytesTransferred: bytes)
+            items[row] = new
+            let a = ReconcileTree.contribution(of: old)
+            let b = ReconcileTree.contribution(of: new)
+            index[row]!.applyProgressDelta(doneSize: b.doneSize - a.doneSize,
+                                           terminal: b.terminal - a.terminal,
+                                           started: b.started - a.started)
+            XCTAssertEqual(d.cachedProgressFraction() ?? -1,
+                           d.progressFraction(items: items) ?? -1, accuracy: 1e-9,
+                           "cache != pure after tick row \(row) '\(progress)'")
+        }
+        tick(0, "start", 0)          // started, no bytes
+        tick(0, "60%", 240)          // increasing
+        tick(0, "30%", 120)          // DECREASING (defensive)
+        tick(1, "50%", 300)
+        tick(1, "FAILED: nope", 0)   // terminal via failure
+        tick(2, "done", 0)           // zero-size (dir) terminal
+        tick(0, "done", 400)         // terminal
+        XCTAssertEqual(d.aggTotalSize, 1000, "size cache static across ticks")
+    }
+
+    /// (7) The render path reads cached values without re-traversing the subtree
+    /// or the items: after construction, a from-scratch recompute on a MUTATED
+    /// items array differs, but the cached readers (which take no items and touch
+    /// no children) return the original build-time values.
+    func test_cache_renderReadsDoNotTraverse() {
+        let items = [sized("d/a", size: 200, progress: "50%", bytes: 100),
+                     sized("d/b", size: 800, progress: "done", bytes: 800)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let cachedSize = d.aggTotalSize
+        let cachedFrac = d.cachedProgressFraction()
+        // A different items array: a re-traversing reader would reflect it.
+        let mutated = items.map { $0.with(progress: "0%", bytesTransferred: 0) }
+        XCTAssertNotEqual(d.progressFraction(items: mutated), cachedFrac,
+                          "sanity: the from-scratch walk DOES change with new items")
+        XCTAssertEqual(d.cachedProgressFraction(), cachedFrac,
+                       "cached read ignored the mutated items → no subtree traversal")
+        XCTAssertEqual(d.aggTotalSize, cachedSize)
     }
 }

@@ -1,12 +1,17 @@
 import Foundation
 
-/// A node in the reconcile-tree. Two kinds:
-///   - **Leaf**: maps to a single `StateItem` (a file or symlink in the
-///     reconcile result). `row` is the index into the controller's `items`
-///     array; `fullPath` is the original Unison path.
-///   - **Folder**: an intermediate path component. `row` is nil. Children
-///     are the contents (other folders or leaves). The synthetic root
-///     itself is a folder with no name.
+/// A node in the reconcile-tree. Two traits combine freely (see the accessors
+/// below): a node MAY carry its own reconcile row (`row != nil`,
+/// `hasReconcileRow`) and/or have children (`isContainer`).
+///   - **Terminal leaf**: a row, no children — a file/symlink reconcile item.
+///     `row` indexes the controller's `items`; `fullPath` is the Unison path.
+///   - **Grouping folder**: no row, has children — an intermediate path
+///     component. The synthetic root is a nameless grouping folder.
+///   - **Hybrid directory**: BOTH a row AND children — a directory that is
+///     itself a reconcile item (e.g. a dir-property change) *and* has changed
+///     descendants. It renders as an expandable folder while still carrying its
+///     own row. So `row != nil` does NOT imply "leaf", and a folder does NOT
+///     always have `row == nil`.
 ///
 /// Equality is reference identity. The outline view holds nodes as `Any`
 /// items and compares them with `===`; the tree is rebuilt on each
@@ -19,10 +24,30 @@ final class ReconcileNode {
     /// (`a/b/c` instead of three separate folder rows). No other code
     /// path writes `name` after construction.
     var name: String
-    let row: Int?
-    let fullPath: String?
+    /// The reconcile-result index this node carries, or nil for a pure grouping
+    /// folder. A node can have BOTH a `row` and `children`: a directory that is
+    /// itself one reconcile item (e.g. a dir-property change) *and* has changed
+    /// descendants. Settable during tree build (`ReconcileTree.insert` may set
+    /// the row on a folder node whose children were inserted first).
+    fileprivate(set) var row: Int?
+    fileprivate(set) var fullPath: String?
     fileprivate(set) var children: [ReconcileNode] = []
     weak var parent: ReconcileNode?
+
+    // MARK: aggregate caches (0.4.2). Static ones (`aggTotalSize`,
+    // `aggLeafCount`) are computed once by `ReconcileTree.computeAggregates`
+    // after the tree is built and never change (a row's `sizeBytes` is fixed at
+    // scan time). Dynamic ones advance incrementally as transfer progress
+    // arrives (`ReconcileWindowController.reloadRow` walks the ancestor chain
+    // applying per-row deltas), so folder cells render O(1) instead of
+    // re-walking their subtree on every progress repaint.
+    /// Σ `sizeBytes` (>0) over this node's own row and every descendant row.
+    fileprivate(set) var aggTotalSize: Int64 = 0
+    /// Number of rows in this subtree (own row + descendants).
+    fileprivate(set) var aggLeafCount: Int = 0
+    fileprivate(set) var aggDoneSize: Double = 0
+    fileprivate(set) var aggTerminalCount: Int = 0
+    fileprivate(set) var aggStartedCount: Int = 0
 
     init(name: String, row: Int? = nil, fullPath: String? = nil) {
         self.name = name
@@ -30,7 +55,18 @@ final class ReconcileNode {
         self.fullPath = fullPath
     }
 
-    var isLeaf: Bool { row != nil }
+    // A node has three orthogonal traits — a directory that is itself a
+    // reconcile item AND has changed descendants is a *hybrid* that is both a
+    // container and carries a row. Name the concepts explicitly rather than
+    // overloading "leaf":
+    /// Carries its own reconcile-result row (a file, or a directory that is
+    /// itself a reconcile item).
+    var hasReconcileRow: Bool { row != nil }
+    /// Has children → expandable in the outline (folder icon, disclosure
+    /// triangle). True for a hybrid directory even though it also has a row.
+    var isContainer: Bool { !children.isEmpty }
+    /// Renders as a single non-expandable line (no children).
+    var isTerminalLeaf: Bool { children.isEmpty }
 
     /// Reconstruct the full path of this node. Leaves return the stored
     /// `fullPath` set at construction time (the original Unison path).
@@ -120,14 +156,15 @@ extension ReconcileNode {
         var overrides: [RowOverride?] = []
         var leafCount = 0
 
+        // Count this node's OWN row (a directory that is itself a reconcile
+        // item) and ALWAYS recurse into children — a node may carry both.
         func walk(_ node: ReconcileNode) {
             if let row = node.row, row < items.count {
                 directions.insert(items[row].direction)
                 overrides.append(rowOverrides[row])
                 leafCount += 1
-            } else {
-                for c in node.children { walk(c) }
             }
+            for c in node.children { walk(c) }
         }
         walk(self)
 
@@ -164,56 +201,79 @@ extension ReconcileNode {
         return .mixed
     }
 
-    /// Aggregate transfer progress over every leaf in this subtree, as a
-    /// fraction 0…1, for drawing a bar on a *collapsed* folder during sync.
-    /// Returns nil when the subtree has no leaves or nothing has started
-    /// yet (idle → blank cell, same as a leaf).
-    ///
-    /// Byte-weighted when the subtree has known sizes (Σ size > 0), so a
-    /// big file dominates a small one — matching the global bar's feel.
-    /// Falls back to terminal-count / total when every leaf is zero-size
-    /// (e.g. a folder of pure deletions or prop-only changes), so those
-    /// folders still advance. "Terminal" means a `done` or `FAILED` row: a
-    /// failure counts as processed, otherwise a folder containing one could
-    /// never reach 100%.
-    func progressFraction(items: [StateItem]) -> Double? {
-        func isTerminal(_ p: String) -> Bool {
-            let t = p.trimmingCharacters(in: .whitespaces)
-            return t.caseInsensitiveCompare("done") == .orderedSame
-                || t.uppercased().contains("FAIL")
-        }
-
-        var totalSize: Int64 = 0
-        var doneSize = 0.0
-        var leafCount = 0
-        var terminalCount = 0
-        var anyStarted = false
-
+    /// Sum of `sizeBytes` (>0) over this node's own row and every descendant row
+    /// — a folder's aggregate size (total of the *changed* items shown beneath
+    /// it, plus its own if it is a directory reconcile item). O(subtree).
+    /// The runtime path uses the cached `aggTotalSize`; this pure walk is the
+    /// spec the cache is tested against (0.4.2).
+    func aggregateSizeBytes(items: [StateItem]) -> Int64 {
+        var total: Int64 = 0
         func walk(_ node: ReconcileNode) {
-            if let row = node.row {
-                guard row < items.count else { return }
-                let it = items[row]
-                leafCount += 1
-                let terminal = isTerminal(it.progress)
-                if terminal { terminalCount += 1 }
-                if !it.progress.trimmingCharacters(in: .whitespaces).isEmpty {
-                    anyStarted = true
-                }
-                if it.sizeBytes > 0 {
-                    totalSize += it.sizeBytes
-                    doneSize += terminal
-                        ? Double(it.sizeBytes)
-                        : Double(min(max(0, it.bytesTransferred), it.sizeBytes))
-                }
-            } else {
-                for c in node.children { walk(c) }
+            if let row = node.row, row < items.count {
+                total += ReconcileTree.contribution(of: items[row]).totalSize
             }
+            for c in node.children { walk(c) }
         }
         walk(self)
+        return total
+    }
 
-        guard leafCount > 0, anyStarted else { return nil }
-        if totalSize > 0 { return max(0, min(1, doneSize / Double(totalSize))) }
-        return Double(terminalCount) / Double(leafCount)
+    /// Aggregate transfer progress over this node's own row + every descendant,
+    /// as a fraction 0…1, for a folder's bar during sync. nil when the subtree
+    /// has no rows or nothing has started yet. Byte-weighted when Σ size > 0;
+    /// falls back to terminal-count / row-count for all-zero-size subtrees. The
+    /// runtime path uses the cached `cachedProgressFraction()`; this pure walk is
+    /// the spec the cache is tested against.
+    func progressFraction(items: [StateItem]) -> Double? {
+        var totalSize: Int64 = 0, doneSize = 0.0
+        var leafCount = 0, terminalCount = 0, startedCount = 0
+        func walk(_ node: ReconcileNode) {
+            if let row = node.row, row < items.count {
+                let c = ReconcileTree.contribution(of: items[row])
+                totalSize += c.totalSize; doneSize += c.doneSize
+                leafCount += c.leafCount; terminalCount += c.terminal
+                startedCount += c.started
+            }
+            for c in node.children { walk(c) }
+        }
+        walk(self)
+        return ReconcileTree.fraction(totalSize: totalSize, doneSize: doneSize,
+                                      leafCount: leafCount, terminalCount: terminalCount,
+                                      startedCount: startedCount)
+    }
+
+    /// O(1) folder progress from the cached accumulators (kept current
+    /// incrementally). Equivalent to `progressFraction(items:)`.
+    func cachedProgressFraction() -> Double? {
+        ReconcileTree.fraction(totalSize: aggTotalSize, doneSize: aggDoneSize,
+                               leafCount: aggLeafCount, terminalCount: aggTerminalCount,
+                               startedCount: aggStartedCount)
+    }
+
+    /// Every reconcile row in this subtree — the node's OWN row (if any) plus
+    /// every descendant row, each once (a path is unique in the tree). For a
+    /// hybrid directory this yields its own directory row *and* its descendants.
+    func subtreeRows() -> [Int] {
+        var out: [Int] = []
+        func walk(_ n: ReconcileNode) {
+            if let row = n.row { out.append(row) }
+            for c in n.children { walk(c) }
+        }
+        walk(self)
+        return out
+    }
+
+    /// Apply a per-row progress delta to this node and every ancestor (walk to
+    /// root), keeping the cached accumulators current in O(depth). Called by
+    /// `ReconcileWindowController.reloadRow` after a leaf's progress changes.
+    func applyProgressDelta(doneSize: Double, terminal: Int, started: Int) {
+        var cursor: ReconcileNode? = self
+        while let n = cursor {
+            n.aggDoneSize += doneSize
+            n.aggTerminalCount += terminal
+            n.aggStartedCount += started
+            cursor = n.parent
+        }
     }
 }
 
@@ -313,6 +373,7 @@ struct ReconcileTree {
                 ReconcileTree.collapseSingleChildChains(in: root)
             }
         }
+        ReconcileTree.computeAggregates(root, items: items)
         self.root = root
         self.leafCount = items.count
     }
@@ -323,25 +384,103 @@ struct ReconcileTree {
         var cursor = root
         for (i, part) in parts.enumerated() {
             let isLast = (i == parts.count - 1)
+            // Descend into (or create) the node for this segment.
             if let existing = cursor.children.first(where: { $0.name == part }) {
-                // An intermediate node already exists at this path. If the
-                // current insertion is for a leaf at exactly this segment,
-                // treat it as a sibling rather than collapsing — that case
-                // only arises with duplicate paths, which Unison shouldn't
-                // produce, but defend anyway.
                 cursor = existing
-                continue
-            }
-            let node: ReconcileNode
-            if isLast {
-                node = ReconcileNode(name: part, row: row, fullPath: path)
             } else {
-                node = ReconcileNode(name: part)
+                let node = ReconcileNode(name: part)
+                node.parent = cursor
+                cursor.children.append(node)
+                cursor = node
             }
-            node.parent = cursor
-            cursor.children.append(node)
-            cursor = node
+            // The last segment is where this reconcile row lives. The node may
+            // already exist as a grouping folder (its children were inserted
+            // first) — a directory that is itself a reconcile item AND has
+            // changed descendants. Attach the row here; a node can hold both a
+            // row and children. Keep the first row on an exact-duplicate path
+            // (Unison shouldn't emit duplicates).
+            if isLast, cursor.row == nil {
+                cursor.row = row
+                cursor.fullPath = path
+            }
         }
+    }
+
+    /// One row's contribution to a folder aggregate — the single source of truth
+    /// for the from-scratch `ReconcileNode` walks AND the incremental cache
+    /// (`computeAggregates` / `ReconcileWindowController.reloadRow`). `totalSize`
+    /// is static (fixed at scan); the rest advance as transfer progress arrives.
+    struct RowContribution {
+        var totalSize: Int64   // sizeBytes if > 0, else 0
+        var leafCount: Int     // always 1 (one row)
+        var doneSize: Double   // size-weighted bytes considered transferred
+        var terminal: Int      // 1 when done / FAILED
+        var started: Int       // 1 when progress is non-empty
+    }
+
+    /// The reconcile rows targeted by a selection of nodes: each selected
+    /// subtree's rows (own + descendants), deduplicated so a row is returned
+    /// exactly once even when a node and one of its descendants are both
+    /// selected. Preserves first-seen order. Pure — testable independently of
+    /// the outline view.
+    static func rows(inSelection nodes: [ReconcileNode]) -> [Int] {
+        var seen = Set<Int>()
+        var out: [Int] = []
+        for node in nodes {
+            for row in node.subtreeRows() where seen.insert(row).inserted {
+                out.append(row)
+            }
+        }
+        return out
+    }
+
+    static func contribution(of it: StateItem) -> RowContribution {
+        let p = it.progress.trimmingCharacters(in: .whitespaces)
+        let isTerminal = p.caseInsensitiveCompare("done") == .orderedSame
+            || p.uppercased().contains("FAIL")
+        let size = it.sizeBytes > 0 ? it.sizeBytes : 0
+        let done = size > 0
+            ? (isTerminal ? Double(size) : Double(min(max(0, it.bytesTransferred), size)))
+            : 0
+        return RowContribution(totalSize: size, leafCount: 1, doneSize: done,
+                               terminal: isTerminal ? 1 : 0, started: p.isEmpty ? 0 : 1)
+    }
+
+    /// Byte-weighted progress fraction (0…1) from accumulated sums; nil when the
+    /// subtree has no rows or nothing has started. Shared by the pure walk and
+    /// the cached reader so both agree.
+    fileprivate static func fraction(totalSize: Int64, doneSize: Double, leafCount: Int,
+                                     terminalCount: Int, startedCount: Int) -> Double? {
+        guard leafCount > 0, startedCount > 0 else { return nil }
+        if totalSize > 0 { return max(0, min(1, doneSize / Double(totalSize))) }
+        return Double(terminalCount) / Double(leafCount)
+    }
+
+    /// Bottom-up pass filling every node's aggregate caches: static
+    /// `aggTotalSize` / `aggLeafCount` (fixed at scan time) and the initial
+    /// dynamic accumulators from each row's current progress (idle right after a
+    /// scan). `ReconcileWindowController.reloadRow` then advances the dynamic
+    /// ones incrementally. A node's aggregate is its OWN row plus its children's.
+    static func computeAggregates(_ root: ReconcileNode, items: [StateItem]) {
+        func walk(_ node: ReconcileNode) {
+            var total: Int64 = 0, leaves = 0
+            var done = 0.0, terminal = 0, started = 0
+            if let row = node.row, row < items.count {
+                let c = contribution(of: items[row])
+                total += c.totalSize; leaves += c.leafCount
+                done += c.doneSize; terminal += c.terminal; started += c.started
+            }
+            for child in node.children {
+                walk(child)
+                total += child.aggTotalSize; leaves += child.aggLeafCount
+                done += child.aggDoneSize; terminal += child.aggTerminalCount
+                started += child.aggStartedCount
+            }
+            node.aggTotalSize = total; node.aggLeafCount = leaves
+            node.aggDoneSize = done; node.aggTerminalCount = terminal
+            node.aggStartedCount = started
+        }
+        walk(root)
     }
 
     /// Compute which folder nodes should be expanded on first
@@ -377,7 +516,7 @@ struct ReconcileTree {
             // Every folder (non-leaf), excluding the synthetic root
             // itself (the outline view's caller will handle showing
             // top-level items unconditionally).
-            return allNodes.filter { !$0.isLeaf }
+            return allNodes.filter { $0.isContainer }
         case .smart:
             return smartNodesToExpand(items: items, rowOverrides: rowOverrides)
         }
@@ -404,23 +543,23 @@ struct ReconcileTree {
     /// for two callers — extract if a third predicate arrives.
     func nodesToRevealFailedRows(_ failedRows: Set<Int>) -> [ReconcileNode] {
         var result: [ReconcileNode] = []
+        // Returns whether this node's OWN row or any descendant is a failure.
+        // A hybrid directory node evaluates its own row AND recurses.
         @discardableResult
         func walk(_ node: ReconcileNode) -> Bool {
-            if let row = node.row {
-                return failedRows.contains(row)
-            }
-            var subtreeHasFailure = false
+            let ownFailed = node.row.map { failedRows.contains($0) } ?? false
+            var childFailed = false
             for child in node.children {
-                if walk(child) { subtreeHasFailure = true }
+                if walk(child) { childFailed = true }
             }
-            // Skip the synthetic root for the same reason
-            // smartNodesToExpand does — outline view always shows
-            // top-level items, the synthetic root is never an
-            // outline node.
-            if subtreeHasFailure, !node.name.isEmpty {
+            // Expand a container when a DESCENDANT failed, to reveal it. A node
+            // whose own row failed doesn't need expanding (it's a visible line);
+            // its ancestors expand via the propagated return. Skip the synthetic
+            // root (never an outline item).
+            if childFailed, !node.name.isEmpty {
                 result.append(node)
             }
-            return subtreeHasFailure
+            return ownFailed || childFailed
         }
         walk(root)
         return result
@@ -435,28 +574,28 @@ struct ReconcileTree {
         rowOverrides: [Int: RowOverride]
     ) -> [ReconcileNode] {
         var result: [ReconcileNode] = []
-        // Returns true if THIS subtree contains an unresolved conflict.
+        // Returns whether this node's OWN row or any descendant is an unresolved
+        // conflict. A hybrid directory node evaluates its own row AND recurses.
+        func needsAttention(_ row: Int) -> Bool {
+            guard row < items.count else { return false }
+            return items[row].direction == ReconcileSummary.directionConflict
+                && rowOverrides[row] == nil
+        }
         @discardableResult
         func walk(_ node: ReconcileNode) -> Bool {
-            if let row = node.row {
-                // Leaf — does this row need attention? Conflict
-                // direction AND no user override.
-                guard row < items.count else { return false }
-                let isConflict = items[row].direction
-                    == ReconcileSummary.directionConflict
-                let hasOverride = rowOverrides[row] != nil
-                return isConflict && !hasOverride
-            }
-            var subtreeHasConflict = false
+            let ownConflict = node.row.map(needsAttention) ?? false
+            var childConflict = false
             for child in node.children {
-                if walk(child) { subtreeHasConflict = true }
+                if walk(child) { childConflict = true }
             }
-            // Don't add the synthetic root to the expand list — the
-            // outline view always shows top-level items.
-            if subtreeHasConflict, !node.name.isEmpty {
+            // Expand a container when a DESCENDANT needs attention, to reveal it.
+            // A node whose own row conflicts doesn't need expanding (it's a
+            // visible line); ancestors expand via the propagated return. Skip
+            // the synthetic root.
+            if childConflict, !node.name.isEmpty {
                 result.append(node)
             }
-            return subtreeHasConflict
+            return ownConflict || childConflict
         }
         walk(root)
         return result
@@ -490,8 +629,10 @@ struct ReconcileTree {
             // Root is never collapsed (would lose the synthetic anchor).
             // A node with multiple children stays put. A leaf has no
             // children to absorb into; the `children.count == 1` gate
-            // already excludes it.
-            if !isRoot, node.children.count == 1 {
+            // already excludes it. A node that carries its OWN row (a
+            // directory reconcile item) must NOT collapse into its child —
+            // that would discard the directory's own row.
+            if !isRoot, node.children.count == 1, node.row == nil {
                 let child = node.children[0]
                 child.name = "\(node.name)/\(child.name)"
                 // child.parent will be re-pointed to node.parent by the
