@@ -628,4 +628,50 @@ final class ReconcileTreeTests: XCTestCase {
         let folder = tree.root.children.first { $0.name == "d" }!
         XCTAssertEqual(folder.progressFraction(items: items)!, 0.5, accuracy: 0.0001)
     }
+
+    // MARK: - aggregateSizeBytes (folder size = sum of changed leaves, 0.4.2)
+
+    func test_aggregateSize_folderSumsItsLeaves() {
+        let items = [sized("d/a", size: 300, progress: "", bytes: 0),
+                     sized("d/b", size: 700, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 1000)
+    }
+
+    func test_aggregateSize_recursesThroughNestedFolders() {
+        let items = [sized("d/x/a", size: 100, progress: "", bytes: 0),
+                     sized("d/x/b", size: 250, progress: "", bytes: 0),
+                     sized("d/c", size: 50, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let x = d.children.first { $0.name == "x" }!
+        XCTAssertEqual(x.aggregateSizeBytes(items: items), 350)   // just d/x
+        XCTAssertEqual(d.aggregateSizeBytes(items: items), 400)   // d/x + d/c
+    }
+
+    func test_aggregateSize_leafReturnsOwnSize() {
+        let items = [sized("d/a", size: 512, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let leaf = tree.root.children.first!.children.first!
+        XCTAssertTrue(leaf.isLeaf)
+        XCTAssertEqual(leaf.aggregateSizeBytes(items: items), 512)
+    }
+
+    func test_aggregateSize_zeroWhenAllLeavesZeroSize() {
+        // e.g. a folder of pure deletions / prop-only changes → blank in the UI.
+        let items = [sized("d/a", size: 0, progress: "", bytes: 0),
+                     sized("d/b", size: 0, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 0)
+    }
+
+    func test_aggregateSize_ignoresNegativeSizes() {
+        let items = [sized("d/a", size: -5, progress: "", bytes: 0),
+                     sized("d/b", size: 200, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let folder = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(folder.aggregateSizeBytes(items: items), 200)
+    }
 }

@@ -164,8 +164,28 @@ extension ReconcileNode {
         return .mixed
     }
 
+    /// Sum of `sizeBytes` over every leaf reachable from this node — a folder's
+    /// aggregate size (the total of the *changed* items shown beneath it), or a
+    /// leaf's own size. Negative/zero leaf sizes don't contribute. O(leaves).
+    /// Drives the Size column for folder and directory rows (0.4.2); mirrors the
+    /// subtree walk `progressFraction` already does.
+    func aggregateSizeBytes(items: [StateItem]) -> Int64 {
+        var total: Int64 = 0
+        func walk(_ node: ReconcileNode) {
+            if let row = node.row {
+                guard row < items.count else { return }
+                let s = items[row].sizeBytes
+                if s > 0 { total += s }
+            } else {
+                for c in node.children { walk(c) }
+            }
+        }
+        walk(self)
+        return total
+    }
+
     /// Aggregate transfer progress over every leaf in this subtree, as a
-    /// fraction 0…1, for drawing a bar on a *collapsed* folder during sync.
+    /// fraction 0…1, for drawing a bar on a folder during sync.
     /// Returns nil when the subtree has no leaves or nothing has started
     /// yet (idle → blank cell, same as a leaf).
     ///

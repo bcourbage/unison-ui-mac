@@ -973,30 +973,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         guard row >= 0, row < items.count else { return }
         let path = items[row].path
         items[row] = items[row].with(progress: progress, bytesTransferred: bytesTransferred)
-        if let node = leafNode(forRow: row) {
-            // If the leaf is hidden inside a collapsed folder, redraw that
-            // folder so its aggregate bar advances; otherwise redraw the
-            // leaf itself.
-            outlineView.reloadItem(collapsedAncestor(of: node) ?? node,
-                                   reloadChildren: false)
-        }
+        // Redraw the leaf AND every ancestor folder so their aggregate bars
+        // advance — whether an ancestor is collapsed (standing in for the hidden
+        // leaf) or expanded (showing overall progress alongside its children).
+        // Ancestors are O(depth); reloadItem on a hidden node is a harmless no-op.
+        redrawRowsAndAncestors([row])
         TraceLog.shared.write("reloadRow[\(row)] \(path): progress='\(progress)' bytes=\(bytesTransferred)")
         noteSyncProgress()
-    }
-
-    /// The outermost collapsed ancestor of a node — i.e. the visible row
-    /// that stands in for this (hidden) leaf. nil when every ancestor is
-    /// expanded, meaning the leaf itself is visible. Walks child→root and
-    /// keeps the highest collapsed folder found; everything above it must
-    /// be expanded (else that would be the outermost), so it is on screen.
-    private func collapsedAncestor(of node: ReconcileNode) -> ReconcileNode? {
-        var result: ReconcileNode?
-        var cursor = node.parent
-        while let n = cursor, !n.name.isEmpty {   // stop before the synthetic root
-            if !outlineView.isItemExpanded(n) { result = n }
-            cursor = n.parent
-        }
-        return result
     }
 
     /// O(1) lookup of the leaf for a row via the `rowToNode` index, which is
@@ -2206,20 +2189,37 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             return makePathCell(in: outlineView, node: node)
         }
         // Progress column: custom-drawn bar + percent text via
-        // ProgressCellView. Collapsed folders show an aggregate bar over
-        // their subtree while syncing (see makeProgressCell).
+        // ProgressCellView. Folders show an aggregate bar over their subtree
+        // while syncing, collapsed or expanded (see makeProgressCell).
         if col == .progress {
             return makeProgressCell(in: outlineView, node: node)
         }
 
-        // Remaining text-only columns: Size, Type. Folders leave them
-        // blank — folder aggregate stats are out of scope for v1.
+        // Size column (0.4.2): a file leaf shows its own size; a folder — an
+        // intermediate grouping node OR a directory that is itself one reconcile
+        // item — shows the aggregate size of the changed items beneath it (sum of
+        // descendant leaf sizes), blank when that sum is zero (e.g. pure
+        // deletions / prop-only changes).
+        if col == .size {
+            let text: String
+            if let row = node.row, row < items.count,
+               items[row].fileType.uppercased() != "DIR" {
+                text = formatSize(items[row].sizeBytes)          // file leaf
+            } else {
+                let total = node.aggregateSizeBytes(items: items) // folder or dir leaf
+                text = total > 0 ? formatSize(total) : ""
+            }
+            return makeCell(in: outlineView, identifier: column.identifier,
+                            text: text, column: col, isFolder: !node.isLeaf)
+        }
+
+        // Remaining text-only column: Type. Folders leave it blank.
         let value: String
         if let row = node.row, row < items.count {
             let stateItem = items[row]
             switch col {
-            case .size:      value = formatSize(stateItem.sizeBytes, type: stateItem.fileType)
             case .type:      value = stateItem.fileType
+            case .size:      value = ""  // handled above
             case .progress:  value = ""  // handled above
             case .path, .left, .right, .direction: value = ""  // handled above
             }
@@ -2230,10 +2230,10 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
     }
 
     /// Builds (or recycles) the Progress-column cell. Leaf rows get a
-    /// ProgressCellView reflecting that file's transfer. A *collapsed*
-    /// folder, while syncing, shows an aggregate bar over its hidden
-    /// subtree (see `ReconcileNode.progressFraction`); an expanded folder
-    /// stays blank because its children render their own bars.
+    /// ProgressCellView reflecting that file's transfer. A folder, while
+    /// syncing, shows an aggregate bar over its subtree (see
+    /// `ReconcileNode.progressFraction`) whether collapsed or expanded (0.4.2) —
+    /// so a parent always reflects its descendants' overall progress.
     private func makeProgressCell(in outlineView: NSOutlineView,
                                    node: ReconcileNode) -> NSView {
         let id = NSUserInterfaceItemIdentifier("ProgressCell")
@@ -2244,11 +2244,12 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         }()
         if let row = node.row, row < items.count {
             cell.configure(progress: items[row].progress)
-        } else if isSyncing, !outlineView.isItemExpanded(node),
-                  let fraction = node.progressFraction(items: items) {
-            // Collapsed folder during sync: summarize its hidden subtree
-            // with an aggregate bar. Expanded folders stay blank — their
-            // children show individual bars.
+        } else if isSyncing, let fraction = node.progressFraction(items: items) {
+            // Folder during sync: summarize its subtree with an aggregate bar,
+            // whether collapsed or expanded (0.4.2). A collapsed folder is the
+            // only visible sign of its hidden children's progress; an expanded
+            // folder shows the parent's overall progress alongside each child's
+            // own bar.
             cell.configure(fraction: fraction)
         } else {
             cell.configure(progress: "")
@@ -2362,8 +2363,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         return view
     }
 
-    private func formatSize(_ bytes: Int64, type: String) -> String {
-        if bytes == 0 && type.uppercased() == "DIR" { return "" }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    private func formatSize(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
