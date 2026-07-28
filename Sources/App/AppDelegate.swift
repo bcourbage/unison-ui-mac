@@ -2664,6 +2664,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let appName = (info?["CFBundleDisplayName"] as? String)
             ?? (info?["CFBundleName"] as? String)
             ?? "Unison-UI-Mac"
+        // The standard About panel picks up the app's native icon (Unison.icon)
+        // automatically, including the correct light/dark variant on macOS 26+.
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
             .credits: credits,
             .applicationName: appName,

@@ -52,7 +52,14 @@ targets:
         excludes:
           - "**/*.profraw"
       - path: Sources/Bridge
-      - path: Resources/AppIcon.icns
+      # Native Icon Composer app icon (macOS 26 Liquid Glass). Carries the light
+      # gradient plus dark/tinted appearance variants natively, so the OS renders
+      # the right variant on EVERY surface — Finder, Dock, About — on macOS 26+,
+      # and falls back to the light rendering on macOS < 26. actool compiles it
+      # (a standalone `.icon` package, sibling to any catalog) into Assets.car +
+      # an .icns fallback; selected via ASSETCATALOG_COMPILER_APPICON_NAME /
+      # CFBundleIconName below. No runtime icon-swapping is needed.
+      - path: Resources/Unison.icon
       # The rendered Unison reference manual. Lives in vendor/ rather
       # than Resources/ because it's a generated artifact (hevea →
       # `make vendor-manual`) versioned alongside the OCaml blob. Xcode
@@ -82,7 +89,10 @@ targets:
         # MARKETING_VERSION / CURRENT_PROJECT_VERSION declared in `settings.base`.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CFBundleIconFile: AppIcon
+        # Icon comes from the native Icon Composer Unison.icon (compiled by
+        # actool). CFBundleIconName selects it; the OS renders light/dark/tinted
+        # variants natively on macOS 26+, with a light fallback on <26.
+        CFBundleIconName: Unison
         CFBundleName: Unison-UI-Mac
         CFBundleDisplayName: Unison-UI-Mac
         # Shows in Finder's Get Info → "More info...". Short form by
@@ -97,6 +107,8 @@ targets:
         PRODUCT_NAME: unison-ui-mac
         PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-mac
         INFOPLIST_FILE: Resources/Info.plist
+        # actool needs to know which asset-catalog set is the app icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Unison
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/UnisonBridgeC.h
         HEADER_SEARCH_PATHS:
           - $(OCAMLLIBDIR)
