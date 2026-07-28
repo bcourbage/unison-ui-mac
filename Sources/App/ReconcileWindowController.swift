@@ -971,15 +971,47 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// session. Non-private: the window no longer installs its own handler.
     func reloadRow(_ row: Int, progress: String, bytesTransferred: Int64) {
         guard row >= 0, row < items.count else { return }
-        let path = items[row].path
-        items[row] = items[row].with(progress: progress, bytesTransferred: bytesTransferred)
-        // Redraw the leaf AND every ancestor folder so their aggregate bars
-        // advance — whether an ancestor is collapsed (standing in for the hidden
-        // leaf) or expanded (showing overall progress alongside its children).
-        // Ancestors are O(depth); reloadItem on a hidden node is a harmless no-op.
-        redrawRowsAndAncestors([row])
-        TraceLog.shared.write("reloadRow[\(row)] \(path): progress='\(progress)' bytes=\(bytesTransferred)")
+        let old = items[row]
+        let new = old.with(progress: progress, bytesTransferred: bytesTransferred)
+        items[row] = new
+        // Advance the folder aggregate caches incrementally: apply just this
+        // row's delta up its ancestor chain (O(depth)) instead of re-walking
+        // every ancestor's subtree on every progress tick (which was O(N²) for a
+        // folder of N transferring files). Only the dynamic parts change — a
+        // row's size is fixed, so `aggTotalSize` (the Size column) is untouched.
+        if let node = leafNode(forRow: row) {
+            let a = ReconcileTree.contribution(of: old)
+            let b = ReconcileTree.contribution(of: new)
+            node.applyProgressDelta(doneSize: b.doneSize - a.doneSize,
+                                    terminal: b.terminal - a.terminal,
+                                    started: b.started - a.started)
+            // Reload ONLY the Progress column for the leaf + every ancestor —
+            // the only thing that changed. This avoids re-rendering their
+            // (unchanged, O(subtree)) direction/size cells on every progress
+            // tick, and with the O(1) cached fraction keeps a tick O(depth).
+            var chain: [ReconcileNode] = [node]
+            var ancestor = node.parent
+            while let n = ancestor, !n.name.isEmpty { chain.append(n); ancestor = n.parent }
+            reloadProgressColumn(for: chain)
+        }
+        TraceLog.shared.write("reloadRow[\(row)] \(new.path): progress='\(progress)' bytes=\(bytesTransferred)")
         noteSyncProgress()
+    }
+
+    /// Reload only the Progress column for the given nodes' currently-visible
+    /// rows. Used during sync so a folder's aggregate bar advances without
+    /// re-rendering its unchanged (and O(subtree)) direction/size cells.
+    private func reloadProgressColumn(for nodes: [ReconcileNode]) {
+        let progressCol = outlineView.column(withIdentifier: Col.progress.identifier)
+        guard progressCol >= 0 else { return }
+        var rows = IndexSet()
+        for n in nodes {
+            let r = outlineView.row(forItem: n)   // -1 when hidden (collapsed)
+            if r >= 0 { rows.insert(r) }
+        }
+        guard !rows.isEmpty else { return }
+        outlineView.reloadData(forRowIndexes: rows,
+                               columnIndexes: IndexSet(integer: progressCol))
     }
 
     /// O(1) lookup of the leaf for a row via the `rowToNode` index, which is
@@ -1536,7 +1568,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // Easier than going through the tree: we already have the rows
         // and the outline view lets us select by item.
         var outlineRowsToSelect = IndexSet()
-        for node in tree.allNodes where node.isLeaf {
+        for node in tree.allNodes where node.row != nil {
             guard let row = node.row, conflictRows.contains(row) else { continue }
             let outlineRow = outlineView.row(forItem: node)
             if outlineRow >= 0 { outlineRowsToSelect.insert(outlineRow) }
@@ -2206,7 +2238,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
                items[row].fileType.uppercased() != "DIR" {
                 text = formatSize(items[row].sizeBytes)          // file leaf
             } else {
-                let total = node.aggregateSizeBytes(items: items) // folder or dir leaf
+                let total = node.aggTotalSize   // folder / dir row: cached, O(1)
                 text = total > 0 ? formatSize(total) : ""
             }
             return makeCell(in: outlineView, identifier: column.identifier,
@@ -2242,14 +2274,16 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             v.identifier = id
             return v
         }()
-        if let row = node.row, row < items.count {
+        if node.isLeaf, let row = node.row, row < items.count {
+            // A pure leaf (no children) shows its own file's transfer.
             cell.configure(progress: items[row].progress)
-        } else if isSyncing, let fraction = node.progressFraction(items: items) {
-            // Folder during sync: summarize its subtree with an aggregate bar,
-            // whether collapsed or expanded (0.4.2). A collapsed folder is the
-            // only visible sign of its hidden children's progress; an expanded
-            // folder shows the parent's overall progress alongside each child's
-            // own bar.
+        } else if isSyncing, let fraction = node.cachedProgressFraction() {
+            // A folder — including a directory that is itself a reconcile item —
+            // shows an aggregate bar over its subtree while syncing, collapsed or
+            // expanded (0.4.2). Read from the incrementally-maintained cache
+            // (O(1)); a collapsed folder is the only visible sign of its hidden
+            // children's progress, and an expanded folder shows overall progress
+            // alongside each child's own bar.
             cell.configure(fraction: fraction)
         } else {
             cell.configure(progress: "")

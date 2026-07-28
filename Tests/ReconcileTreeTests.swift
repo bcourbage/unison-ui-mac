@@ -674,4 +674,94 @@ final class ReconcileTreeTests: XCTestCase {
         let folder = tree.root.children.first { $0.name == "d" }!
         XCTAssertEqual(folder.aggregateSizeBytes(items: items), 200)
     }
+
+    // MARK: - directory reconcile row + changed descendants (Finding #3)
+
+    private func dir(_ path: String, direction: String = "---->") -> StateItem {
+        StateItem(path: path, left: "", right: "", direction: direction,
+                  sizeBytes: 0, fileType: "DIR", progress: "",
+                  bytesTransferred: 0, changedFromDefault: false)
+    }
+
+    /// A directory that is itself a reconcile item, emitted BEFORE its changed
+    /// child. The node must carry both its own row and the child.
+    func test_dirRowPlusChild_dirFirst() {
+        let items = [dir("d"),                                   // row 0
+                     sized("d/a", size: 100, progress: "", bytes: 0)]  // row 1
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(d.row, 0, "d keeps its own reconcile row")
+        XCTAssertFalse(d.isLeaf, "d has a child → renders as a folder (expandable)")
+        XCTAssertEqual(d.children.map(\.name), ["a"])
+        XCTAssertEqual(d.children[0].row, 1)
+        XCTAssertEqual(d.aggregateSizeBytes(items: items), 100)   // includes the child
+        XCTAssertEqual(d.aggTotalSize, 100)                        // cache == pure
+    }
+
+    /// Same, reversed order: the child is emitted BEFORE the directory row.
+    func test_dirRowPlusChild_childFirst() {
+        let items = [sized("d/a", size: 100, progress: "", bytes: 0), // row 0
+                     dir("d")]                                         // row 1
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(d.row, 1, "d's own row is set even though its child arrived first")
+        XCTAssertFalse(d.isLeaf)
+        XCTAssertEqual(d.children.map(\.name), ["a"])
+        XCTAssertEqual(d.children[0].row, 0)
+        XCTAssertEqual(d.aggTotalSize, 100)
+    }
+
+    /// A directory row with a single child must NOT be collapsed away in the
+    /// nested-collapsed layout — collapsing would discard the directory's row.
+    func test_dirRowWithSingleChild_notCollapsed() {
+        let items = [dir("d"), sized("d/a", size: 10, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedCollapsed)
+        let d = tree.root.children.first { $0.name == "d" }!
+        XCTAssertEqual(d.name, "d")           // not merged into "d/a"
+        XCTAssertEqual(d.row, 0)
+        XCTAssertEqual(d.children.map(\.name), ["a"])
+    }
+
+    // MARK: - aggregate cache correctness (Finding #2)
+
+    func test_cache_matchesPureAfterBuild() {
+        let items = [sized("d/a", size: 300, progress: "50%", bytes: 150),
+                     sized("d/b", size: 700, progress: "done", bytes: 700),
+                     sized("d/x/c", size: 200, progress: "start", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        for node in tree.allNodes where !node.isLeaf {
+            XCTAssertEqual(node.aggTotalSize, node.aggregateSizeBytes(items: items),
+                           "size cache diverged at \(node.name)")
+            XCTAssertEqual(node.cachedProgressFraction(), node.progressFraction(items: items),
+                           "progress cache diverged at \(node.name)")
+        }
+    }
+
+    /// The incremental delta path (what reloadRow does) must keep the cache equal
+    /// to a from-scratch recompute after each progress tick.
+    func test_cache_incrementalDeltaMatchesPure() {
+        var items = [sized("d/a", size: 400, progress: "", bytes: 0),
+                     sized("d/b", size: 600, progress: "", bytes: 0)]
+        let tree = ReconcileTree(items: items, layout: .nestedFull)
+        let d = tree.root.children.first { $0.name == "d" }!
+        let leafA = d.children.first { $0.name == "a" }!
+
+        func tick(row: Int, node: ReconcileNode, progress: String, bytes: Int64) {
+            let old = items[row]
+            let new = old.with(progress: progress, bytesTransferred: bytes)
+            items[row] = new
+            let a = ReconcileTree.contribution(of: old)
+            let b = ReconcileTree.contribution(of: new)
+            node.applyProgressDelta(doneSize: b.doneSize - a.doneSize,
+                                    terminal: b.terminal - a.terminal,
+                                    started: b.started - a.started)
+            XCTAssertEqual(d.cachedProgressFraction() ?? -1,
+                           d.progressFraction(items: items) ?? -1, accuracy: 1e-9)
+        }
+        tick(row: 0, node: leafA, progress: "start", bytes: 0)   // started, 0 bytes
+        tick(row: 0, node: leafA, progress: "50%", bytes: 200)    // mid
+        tick(row: 0, node: leafA, progress: "done", bytes: 400)   // terminal
+        // Size cache is static — untouched by progress ticks.
+        XCTAssertEqual(d.aggTotalSize, 1000)
+    }
 }
