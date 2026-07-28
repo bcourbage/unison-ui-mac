@@ -1931,28 +1931,19 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// folder contributes every leaf underneath it; a selected leaf
     /// contributes itself; duplicates (folder + descendant both selected)
     /// are de-duplicated.
+    /// Rows targeted by the current selection: each selected node's own row +
+    /// descendants, deduplicated so a hybrid directory selected alongside one of
+    /// its children still yields each row exactly once. Pure logic in
+    /// `ReconcileTree.rows(inSelection:)` (tested).
     private func leafRowsInSelection() -> [Int] {
-        var seen = Set<Int>()
-        var result: [Int] = []
-        for node in selectedNodes() {
-            for row in leafRows(under: node) where !seen.contains(row) {
-                seen.insert(row)
-                result.append(row)
-            }
-        }
-        return result
+        ReconcileTree.rows(inSelection: selectedNodes())
     }
 
-    /// All leaf rows in the subtree rooted at `node` (inclusive when node
-    /// is itself a leaf).
+    /// Every reconcile row in the subtree rooted at `node`: the node's own row
+    /// (a file, or a directory that is itself a reconcile item) AND every
+    /// descendant row. Used for the details footer's item count.
     private func leafRows(under node: ReconcileNode) -> [Int] {
-        var out: [Int] = []
-        func walk(_ n: ReconcileNode) {
-            if let row = n.row { out.append(row); return }
-            for c in n.children { walk(c) }
-        }
-        walk(node)
-        return out
+        node.subtreeRows()
     }
 
     private func summaryText() -> String {
@@ -2155,7 +2146,7 @@ extension ReconcileWindowController: NSOutlineViewDataSource {
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         guard let node = item as? ReconcileNode else { return false }
-        return !node.isLeaf
+        return node.isContainer
     }
 }
 
@@ -2242,7 +2233,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
                 text = total > 0 ? formatSize(total) : ""
             }
             return makeCell(in: outlineView, identifier: column.identifier,
-                            text: text, column: col, isFolder: !node.isLeaf)
+                            text: text, column: col, isFolder: node.isContainer)
         }
 
         // Remaining text-only column: Type. Folders leave it blank.
@@ -2258,7 +2249,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
         } else {
             value = ""
         }
-        return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: !node.isLeaf)
+        return makeCell(in: outlineView, identifier: column.identifier, text: value, column: col, isFolder: node.isContainer)
     }
 
     /// Builds (or recycles) the Progress-column cell. Leaf rows get a
@@ -2274,7 +2265,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             v.identifier = id
             return v
         }()
-        if node.isLeaf, let row = node.row, row < items.count {
+        if node.isTerminalLeaf, let row = node.row, row < items.count {
             // A pure leaf (no children) shows its own file's transfer.
             cell.configure(progress: items[row].progress)
         } else if isSyncing, let fraction = node.cachedProgressFraction() {
@@ -2305,7 +2296,7 @@ extension ReconcileWindowController: NSOutlineViewDelegate {
             return v
         }()
         let fullPath = node.pathFromRoot
-        if node.isLeaf {
+        if node.isTerminalLeaf {
             cell.configureAsFile(name: node.name, fullPath: fullPath)
         } else {
             cell.configureAsFolder(name: node.name, fullPath: fullPath)

@@ -50,11 +50,18 @@ final class ReconcileNode {
         self.fullPath = fullPath
     }
 
-    /// Renders as a leaf line (no disclosure triangle). A node is a *folder*
-    /// (expandable) exactly when it has children — INCLUDING a directory that
-    /// also carries its own `row`. Use `row != nil` to ask "has a reconcile
-    /// item"; use `isLeaf` to ask "renders as a single line".
-    var isLeaf: Bool { children.isEmpty }
+    // A node has three orthogonal traits — a directory that is itself a
+    // reconcile item AND has changed descendants is a *hybrid* that is both a
+    // container and carries a row. Name the concepts explicitly rather than
+    // overloading "leaf":
+    /// Carries its own reconcile-result row (a file, or a directory that is
+    /// itself a reconcile item).
+    var hasReconcileRow: Bool { row != nil }
+    /// Has children → expandable in the outline (folder icon, disclosure
+    /// triangle). True for a hybrid directory even though it also has a row.
+    var isContainer: Bool { !children.isEmpty }
+    /// Renders as a single non-expandable line (no children).
+    var isTerminalLeaf: Bool { children.isEmpty }
 
     /// Reconstruct the full path of this node. Leaves return the stored
     /// `fullPath` set at construction time (the original Unison path).
@@ -238,6 +245,19 @@ extension ReconcileNode {
                                startedCount: aggStartedCount)
     }
 
+    /// Every reconcile row in this subtree — the node's OWN row (if any) plus
+    /// every descendant row, each once (a path is unique in the tree). For a
+    /// hybrid directory this yields its own directory row *and* its descendants.
+    func subtreeRows() -> [Int] {
+        var out: [Int] = []
+        func walk(_ n: ReconcileNode) {
+            if let row = n.row { out.append(row) }
+            for c in n.children { walk(c) }
+        }
+        walk(self)
+        return out
+    }
+
     /// Apply a per-row progress delta to this node and every ancestor (walk to
     /// root), keeping the cached accumulators current in O(depth). Called by
     /// `ReconcileWindowController.reloadRow` after a leaf's progress changes.
@@ -393,6 +413,22 @@ struct ReconcileTree {
         var started: Int       // 1 when progress is non-empty
     }
 
+    /// The reconcile rows targeted by a selection of nodes: each selected
+    /// subtree's rows (own + descendants), deduplicated so a row is returned
+    /// exactly once even when a node and one of its descendants are both
+    /// selected. Preserves first-seen order. Pure — testable independently of
+    /// the outline view.
+    static func rows(inSelection nodes: [ReconcileNode]) -> [Int] {
+        var seen = Set<Int>()
+        var out: [Int] = []
+        for node in nodes {
+            for row in node.subtreeRows() where seen.insert(row).inserted {
+                out.append(row)
+            }
+        }
+        return out
+    }
+
     static func contribution(of it: StateItem) -> RowContribution {
         let p = it.progress.trimmingCharacters(in: .whitespaces)
         let isTerminal = p.caseInsensitiveCompare("done") == .orderedSame
@@ -475,7 +511,7 @@ struct ReconcileTree {
             // Every folder (non-leaf), excluding the synthetic root
             // itself (the outline view's caller will handle showing
             // top-level items unconditionally).
-            return allNodes.filter { !$0.isLeaf }
+            return allNodes.filter { $0.isContainer }
         case .smart:
             return smartNodesToExpand(items: items, rowOverrides: rowOverrides)
         }
@@ -502,23 +538,23 @@ struct ReconcileTree {
     /// for two callers — extract if a third predicate arrives.
     func nodesToRevealFailedRows(_ failedRows: Set<Int>) -> [ReconcileNode] {
         var result: [ReconcileNode] = []
+        // Returns whether this node's OWN row or any descendant is a failure.
+        // A hybrid directory node evaluates its own row AND recurses.
         @discardableResult
         func walk(_ node: ReconcileNode) -> Bool {
-            if let row = node.row {
-                return failedRows.contains(row)
-            }
-            var subtreeHasFailure = false
+            let ownFailed = node.row.map { failedRows.contains($0) } ?? false
+            var childFailed = false
             for child in node.children {
-                if walk(child) { subtreeHasFailure = true }
+                if walk(child) { childFailed = true }
             }
-            // Skip the synthetic root for the same reason
-            // smartNodesToExpand does — outline view always shows
-            // top-level items, the synthetic root is never an
-            // outline node.
-            if subtreeHasFailure, !node.name.isEmpty {
+            // Expand a container when a DESCENDANT failed, to reveal it. A node
+            // whose own row failed doesn't need expanding (it's a visible line);
+            // its ancestors expand via the propagated return. Skip the synthetic
+            // root (never an outline item).
+            if childFailed, !node.name.isEmpty {
                 result.append(node)
             }
-            return subtreeHasFailure
+            return ownFailed || childFailed
         }
         walk(root)
         return result
@@ -533,28 +569,28 @@ struct ReconcileTree {
         rowOverrides: [Int: RowOverride]
     ) -> [ReconcileNode] {
         var result: [ReconcileNode] = []
-        // Returns true if THIS subtree contains an unresolved conflict.
+        // Returns whether this node's OWN row or any descendant is an unresolved
+        // conflict. A hybrid directory node evaluates its own row AND recurses.
+        func needsAttention(_ row: Int) -> Bool {
+            guard row < items.count else { return false }
+            return items[row].direction == ReconcileSummary.directionConflict
+                && rowOverrides[row] == nil
+        }
         @discardableResult
         func walk(_ node: ReconcileNode) -> Bool {
-            if let row = node.row {
-                // Leaf — does this row need attention? Conflict
-                // direction AND no user override.
-                guard row < items.count else { return false }
-                let isConflict = items[row].direction
-                    == ReconcileSummary.directionConflict
-                let hasOverride = rowOverrides[row] != nil
-                return isConflict && !hasOverride
-            }
-            var subtreeHasConflict = false
+            let ownConflict = node.row.map(needsAttention) ?? false
+            var childConflict = false
             for child in node.children {
-                if walk(child) { subtreeHasConflict = true }
+                if walk(child) { childConflict = true }
             }
-            // Don't add the synthetic root to the expand list — the
-            // outline view always shows top-level items.
-            if subtreeHasConflict, !node.name.isEmpty {
+            // Expand a container when a DESCENDANT needs attention, to reveal it.
+            // A node whose own row conflicts doesn't need expanding (it's a
+            // visible line); ancestors expand via the propagated return. Skip
+            // the synthetic root.
+            if childConflict, !node.name.isEmpty {
                 result.append(node)
             }
-            return subtreeHasConflict
+            return ownConflict || childConflict
         }
         walk(root)
         return result
