@@ -9,6 +9,29 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.4.2] — 2026-07-27
+
+A feature release adding a native, appearance-aware app icon and clearer folder
+size and sync-progress display, on top of 0.4.1. (Build 18.) Existing profiles
+and settings continue to work without migration.
+
+### Added
+- **Native app icon with light, dark, and tinted variants.** The app now ships an
+  Icon Composer icon that the system renders per appearance on macOS 26 and later
+  (light, dark, or tinted to match the desktop), across Finder, the Dock, and the
+  About panel. On macOS 15 and earlier the icon falls back to the light rendering.
+- **Folder rows show the total size of their changes.** Each folder in the
+  reconciliation list reports the combined size of the changed items beneath it,
+  so the weight of a pending sync is visible without expanding every folder. A
+  folder whose only changes are deletions or property updates stays blank.
+
+### Changed
+- **Folders show sync progress, including when expanded.** During a sync, a
+  folder's progress bar advances with the aggregate progress of its contents.
+  Expanded folders now show this bar alongside each child's own progress, not only
+  collapsed ones. A directory that is itself a changed item and also contains
+  changed items appears as an expandable folder whose own row stays selectable.
+
 ## [0.4.1] — 2026-07-26
 
 A patch release fixing an interactive-authentication prompt annoyance on top of
