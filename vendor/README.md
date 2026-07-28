@@ -4,11 +4,11 @@ This directory holds two prebuilt artifacts from the upstream Unison
 project, both committed so that everyday `make build` (and end-user
 `make install`) skip slow / TeX-dependent generation steps:
 
-1. **`unison-blob-<version>-<arch>.o`** — the compiled OCaml core the
+1. **`unison-blob-<version>-<arch>.o`**: the compiled OCaml core the
    Swift app links against. Building from source takes 5–10 minutes
    and requires a sibling checkout of `bcpierce00/unison` plus a pinned
    OCaml 5.5.0 toolchain (see Toolchain row below). Regenerated via `make vendor-blob`.
-2. **`unison-manual-<version>.html`** — the Unison reference manual
+2. **`unison-manual-<version>.html`**: the Unison reference manual
    rendered to HTML, shipped inside the `.app` bundle as
    Help → "Unison File Synchronizer Manual". Generated from
    upstream's `doc/unison-manual.tex` via hevea (the same TeX→HTML
@@ -25,11 +25,11 @@ vendor/unison-manual-2.54.0.html
 If the file for your architecture isn't here, you have two options:
 
 1. Build it yourself with `make vendor-blob` (requires an upstream
-   clone — see below). The resulting file appears here ready to commit.
+   clone (see below). The resulting file appears here ready to commit.
 2. Override the blob path at build time:
    `make build BLOB=/path/to/your/unison-blob.o`
 
-## Provenance — what the current vendored blob is
+## Provenance: what the current vendored blob is
 
 | Field | Value |
 | --- | --- |
@@ -38,24 +38,24 @@ If the file for your architecture isn't here, you have two options:
 | Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` (`v2.54.0-19-g91421d0`, on `origin/master`) |
 | Architecture | `arm64` (Apple Silicon) |
 | Toolchain | **OCaml 5.5.0** (pinned; enforced by `make check-ocaml-version`). CI/release link against the same 5.5.0 via `ocaml/setup-ocaml`. |
-| Built by | `make vendor-blob` → `make apply-patches` then `make -f Makefile.OCaml unison-blob.o` (the OCaml core object only; upstream's own `Unison.app` is not linked — patch 0004 references app-side C symbols it can't resolve). |
-| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8); `patches/0004-remote-transport-child-reaper.patch` (adds overridable `Remote.register/retireTransportChild` hooks: the macOS bridge tracks the exact ssh child PID at spawn and, at teardown, SIGKILLs+removes it under a mutex before reaping, backing a pure-C shutdown reaper — see `docs/ssh-reaper-design.md`; CLI/GTK builds keep the default no-ops). `patches/0005-uimacbridge-sync-completion-snapshot.patch` (changes `external syncComplete` to carry the final post-sync `stateItem array` so the macOS bridge marshals ONE bulk per-row completion snapshot — final progress + details — in a single call, eliminating the O(n) per-row `unisonRiToDetails` bridge round-trips the UI previously made at sync completion, see Finding #10; reuses the already-registered accessors, no new OCaml allocation). The former `0001-uimacbridge-register-abortAll.patch` was **retired**: mid-sync abort was merged upstream (PR #1198, commit `2429c6c`) and is present at the base commit above. |
-| SHA-256 | `2f345306314305d8e921fea587d913b628b86872553bc3776047ef58fe1dfc89` (was `a57f5c4ec18d96277ac2cde58a7d8f703b012daffdefa42877638671eb062b03` before patch 0005) |
+| Built by | `make vendor-blob` → `make apply-patches` then `make -f Makefile.OCaml unison-blob.o` (the OCaml core object only; upstream's own `Unison.app` is not linked; patch 0004 references app-side C symbols it can't resolve). |
+| Patches applied | `patches/0002-uimacbridge-register-closeConnection.patch` (adds `Callback.register "closeConnection"` for connection teardown on leave, see issue #6); `patches/0003-remote-close-and-drain.patch` (adds `Remote.drainDroppedConnectionThreads` and drives it from close paths so a closed connection's dormant Lwt receiver thread cannot resume inside the *next* connection's `Lwt_unix.run`, see issue #8); `patches/0004-remote-transport-child-reaper.patch` (adds overridable `Remote.register/retireTransportChild` hooks: the macOS bridge tracks the exact ssh child PID at spawn and, at teardown, SIGKILLs+removes it under a mutex before reaping, backing a pure-C shutdown reaper (see `docs/ssh-reaper-design.md`); CLI/GTK builds keep the default no-ops). `patches/0005-uimacbridge-sync-completion-snapshot.patch` (changes `external syncComplete` to carry the final post-sync `stateItem array` so the macOS bridge marshals ONE bulk per-row completion snapshot (final progress + details) in a single call, eliminating the O(n) per-row `unisonRiToDetails` bridge round-trips at sync completion, see Finding #10; reuses the already-registered accessors, no new OCaml allocation). |
+| SHA-256 | `2f345306314305d8e921fea587d913b628b86872553bc3776047ef58fe1dfc89` |
 | Mach-O kind | `Mach-O 64-bit object arm64` |
 | Size | 5.5 MB (5462568 bytes) |
-| Reproducibility | Source, patch set (0002+0003+0004+0005), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain — observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
+| Reproducibility | Source, patch set (0002+0003+0004+0005), toolchain (OCaml 5.5.0), and build command above are all pinned. The resulting `.o` is **not byte-identical** across clean rebuilds on this toolchain: observed differing SHA-256 between two same-source builds (OCaml/`ld -r` output is not deterministic here). We therefore do NOT claim a bit-reproducible blob; we pin every input and record the exact checksum of the committed artifact. |
 
-## Provenance — what the current vendored manual is
+## Provenance: what the current vendored manual is
 
 | Field | Value |
 | --- | --- |
 | Upstream source | [`doc/unison-manual.tex`](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex) |
-| Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631` — the **same** commit as the vendored blob. (Regenerated from `745dccd` to match the blob; the obsolete `mergebatch` preference that upstream removed in `b088176` is now absent from the rendered HTML.) |
-| Renderer | hevea 2.38 (`brew install hevea`) — upstream's own TeX→HTML tool, see their `doc/Makefile` |
+| Upstream commit | `91421d0617b0fb543c0eee51bcb4d4791d8b0631`, the **same** commit as the vendored blob. The obsolete `mergebatch` preference that upstream removed in `b088176` is absent from the rendered HTML. |
+| Renderer | hevea 2.38 (`brew install hevea`), upstream's own TeX→HTML tool, see their `doc/Makefile` |
 | Command | `hevea -fix unison-manual.tex` (run from upstream's `doc/`), i.e. `make vendor-manual` |
 | Output | self-contained single-file HTML, UTF-8, inlined CSS, no companion assets |
 | SHA-256 | `f18ca92da3a53a6623f2100f1c31c4e0c7bd649fcff1840fffbe707798ed2879` |
-| Size | 133402 bytes (~130 KB; smaller than the prior `745dccd` render — a hevea-output difference, content is complete: all preference/section entries present, `mergebatch` removed) |
+| Size | 133402 bytes (~130 KB). Content is complete: all preference/section entries present, `mergebatch` absent. |
 | Copyright | "Copyright 1998-2023, Benjamin C. Pierce" (preserved inline as required by GPLv3 §4) |
 
 ## License
@@ -143,14 +143,14 @@ this README is just as precise and less mechanical baggage.
 
 Apple Silicon is the only target, so we ship arm64-only. The
 Makefile's `ARCH := $(shell uname -m)` pattern leaves the door open
-by selecting the right arch-specific vendored blob — drop an
+by selecting the right arch-specific vendored blob: drop an
 `unison-blob-<version>-x86_64.o` next to the arm64 one (built by
 running `make vendor-blob` on an Intel host or under Rosetta) and
 Intel users would build out of the box.
 
 ## Why not a binary distribution channel?
 
-`unison-blob.o` is a build artifact, not a runtime artifact —
+`unison-blob.o` is a build artifact, not a runtime artifact:
 end users never see it because it's linked into `unison-ui-mac.app`
 at build time. The full `.app` is the right thing to distribute via
 GitHub Releases (and is the planned path; see TODO.md). The vendored

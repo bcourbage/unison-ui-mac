@@ -1,4 +1,4 @@
-# NOTICE — Attribution and Licensing
+# NOTICE: Attribution and Licensing
 
 ## Derivation
 
@@ -9,8 +9,9 @@ This project, **unison-ui-mac**, is a native macOS user interface for the
 - Upstream documentation: <https://github.com/bcpierce00/unison/wiki>
 - License: GNU General Public License version 3 (or later)
 
-The application embeds Unison's compiled OCaml code (`src/unison-blob.o`,
-produced by the upstream Unison build) and calls into it through the
+The application embeds Unison's compiled OCaml code
+(`vendor/unison-blob-<version>-<arch>.o`, produced by the upstream Unison
+build) and calls into it through the
 callback bridge declared in [src/uimacbridge.ml](https://github.com/bcpierce00/unison/blob/master/src/uimacbridge.ml).
 As such, **this project is a "modified version" of Unison for GPLv3
 purposes** and is distributed under the same license. See [LICENSE](LICENSE).
@@ -18,18 +19,18 @@ purposes** and is distributed under the same license. See [LICENSE](LICENSE).
 ## What is original to this project
 
 - The Swift application code under `Sources/App/`
-- The C bridge (`Sources/Bridge/UnisonBridgeC.{c,h}`) — newly written;
+- The C bridge (`Sources/Bridge/UnisonBridgeC.{c,h}`), newly written;
   inspired by the layout of the original Objective-C bridge at
   [src/uimac/Bridge.m](https://github.com/bcpierce00/unison/blob/master/src/uimac/Bridge.m)
   but rewritten from scratch using OCaml 5's `caml_acquire_runtime_system` /
   `caml_release_runtime_system` API and generational global roots.
 - The XcodeGen project definition (`project.yml`), the Makefile build
   orchestration, and the application Info.plist.
+- The application icon (`Resources/Unison.icon`), a native Icon Composer
+  icon authored for this project.
 
 ## What is taken or derived from the upstream Unison project
 
-- The application icon (`Resources/AppIcon.icns`) is copied verbatim from
-  [src/uimac/Unison.icns](https://github.com/bcpierce00/unison/blob/master/src/uimac/Unison.icns).
 - The bundled reference manual (`vendor/unison-manual-<version>.html`,
   shipped inside the `.app` as Help → "Unison File Synchronizer Manual")
   is the hevea-rendered output of upstream's
@@ -65,8 +66,8 @@ If you redistribute this software (modified or unmodified):
 Unison's own [CONTRIBUTING document](https://github.com/bcpierce00/unison/blob/master/CONTRIBUTING.md)
 states that LLM-generated code is unwelcome upstream. This UI project was
 written with substantial LLM assistance and exists as a separate downstream
-work. **Its LLM-touched artifacts — the `patches/` diffs and this fork's
-code — are local implementation and provenance artifacts and are not
+work. **Its LLM-touched artifacts (the `patches/` diffs and this fork's
+code) are local implementation and provenance artifacts and are not
 submitted upstream directly.** This is not a claim that an idea can never
 reach upstream: a separately developed, fully understood, human-authored
 contribution may be proposed by the maintainer in accordance with upstream's
@@ -78,5 +79,5 @@ LLM-touched diffs.
 - **Benjamin C. Pierce** and the Unison contributors for ~25 years of
   maintaining one of the best file-synchronizers ever written.
 - **Trevor Jim, Craig Federighi, Ben Willmore** and others who built the
-  original Cocoa UI for Unison — the protocol and patterns this project
+  original Cocoa UI for Unison; the protocol and patterns this project
   follows owe everything to that work.
