@@ -1,7 +1,12 @@
 # Cut a GitHub release when a `v*` tag is pushed.
 #
-# Mirrors ci.yml's build environment but builds the Release configuration,
-# packages the ad-hoc-signed .app with `ditto`, and attaches the zip to a
+# Runs on the macos-26 runner and pins Xcode 26.6 (build 17F113): the native
+# Icon Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
+# actool, so an older Xcode would silently ship a .app with a broken/missing
+# icon. The toolchain is verified fail-closed below before any build.
+#
+# Builds the Release configuration, packages the ad-hoc-signed .app with
+# `ditto`, and attaches the zip to a
 # GitHub Release whose notes come from `release-notes/<version>.md` when that
 # approved, version-specific file is present, otherwise from the matching
 # CHANGELOG section (fallback).
@@ -40,7 +45,7 @@ permissions:
 jobs:
   release:
     name: Build + publish release
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -66,6 +71,24 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Select and verify Xcode 26.6 (fail closed)
+        # The native Icon Composer app icon (Resources/Unison.icon) only
+        # compiles under Xcode 26's actool. Pin the exact toolchain and refuse
+        # to build with anything else, so a runner-image change that drops or
+        # bumps Xcode 26.6 fails the release loudly here instead of silently
+        # shipping a .app with a broken/missing icon. Matched exactly against
+        # both lines of `xcodebuild -version` (Xcode 26.6 / Build 17F113).
+        run: |
+          dev="/Applications/Xcode_26.6.app/Contents/Developer"
+          if [ ! -d "$dev" ]; then
+            echo "::error::Xcode 26.6 not found at $dev"; exit 1
+          fi
+          sudo xcode-select -s "$dev"
+          ver="$(xcodebuild -version)"
+          echo "$ver"
+          echo "$ver" | grep -qx "Xcode 26.6"          || { echo "::error::expected Xcode 26.6, got: $(echo "$ver" | head -1)"; exit 1; }
+          echo "$ver" | grep -qx "Build version 17F113" || { echo "::error::expected build 17F113, got: $(echo "$ver" | sed -n 2p)"; exit 1; }
 
       - name: Untap aws/tap (runner-image noise)
         # The macOS runner pre-taps `aws/tap`, untrusted under Homebrew's
