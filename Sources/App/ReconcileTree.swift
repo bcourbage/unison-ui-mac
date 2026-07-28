@@ -1,12 +1,17 @@
 import Foundation
 
-/// A node in the reconcile-tree. Two kinds:
-///   - **Leaf**: maps to a single `StateItem` (a file or symlink in the
-///     reconcile result). `row` is the index into the controller's `items`
-///     array; `fullPath` is the original Unison path.
-///   - **Folder**: an intermediate path component. `row` is nil. Children
-///     are the contents (other folders or leaves). The synthetic root
-///     itself is a folder with no name.
+/// A node in the reconcile-tree. Two traits combine freely (see the accessors
+/// below): a node MAY carry its own reconcile row (`row != nil`,
+/// `hasReconcileRow`) and/or have children (`isContainer`).
+///   - **Terminal leaf**: a row, no children — a file/symlink reconcile item.
+///     `row` indexes the controller's `items`; `fullPath` is the Unison path.
+///   - **Grouping folder**: no row, has children — an intermediate path
+///     component. The synthetic root is a nameless grouping folder.
+///   - **Hybrid directory**: BOTH a row AND children — a directory that is
+///     itself a reconcile item (e.g. a dir-property change) *and* has changed
+///     descendants. It renders as an expandable folder while still carrying its
+///     own row. So `row != nil` does NOT imply "leaf", and a folder does NOT
+///     always have `row == nil`.
 ///
 /// Equality is reference identity. The outline view holds nodes as `Any`
 /// items and compares them with `===`; the tree is rebuilt on each
