@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/Unison-macOS-Dark-512x512@1x.png">
-    <img src="docs/assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI app icon" width="128">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/Unison-macOS-Dark-512x512@1x.png">
+    <img src="assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI app icon" width="128">
   </picture>
 </p>
 

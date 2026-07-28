@@ -3,22 +3,22 @@
 This page walks through getting Unison-UI-Mac running on your Mac.
 Three paths, in increasing order of effort:
 
-1. **[Homebrew (recommended)](#quickest-install--homebrew)** — one
+1. **[Homebrew (recommended)](#quickest-install-homebrew)**: one
    command, no Gatekeeper friction, auto-updates. The recommended path
    for anyone who already has Homebrew installed.
-2. **[Prebuilt `.app` from the Releases page](#quick-install--prebuilt-release)** —
+2. **[Prebuilt `.app` from the Releases page](#quick-install-prebuilt-release)**:
    the manual zip-download path. Use this if you don't use Homebrew or
    want explicit version control over what's installed. The binary is
    ad-hoc-signed (not Apple-notarized), so you'll need to handle a
    one-time Gatekeeper prompt; see
    [First launch & Gatekeeper](#first-launch--gatekeeper) below.
-3. **[Build from source](#install-from-source)** — required for
+3. **[Build from source](#install-from-source)**: required for
    development, or if you'd rather verify the binary yourself.
 
 > Already familiar with macOS dev tooling? The 60-second version is at the
 > bottom under [TL;DR](#tldr).
 
-## Quickest install — Homebrew
+## Quickest install: Homebrew
 
 The recommended path for end users:
 
@@ -29,8 +29,8 @@ open /Applications/unison-ui-mac.app
 ```
 
 That's it. Homebrew handles the macOS quarantine-attribute strip
-automatically, so first launch is a clean double-click — no Gatekeeper
-prompt, no right-click ceremony, no `xattr` invocation.
+automatically, so first launch is a clean double-click, with no Gatekeeper
+prompt, no right-click ceremony, and no `xattr` invocation.
 
 To upgrade later when a new release ships:
 
@@ -59,7 +59,7 @@ incompatible hosts rather than producing a bundle that won't launch.
   Intel Macs are not supported.
 - **~60 MB of disk.** The bundle is around 50 MB (the embedded OCaml
   core is the bulk of it).
-- **No admin rights** beyond what `/Applications` itself requires — the
+- **No admin rights** beyond what `/Applications` itself requires: the
   installer uses `sudo` only if `/Applications` isn't writable as your
   user, which is the macOS default.
 
@@ -76,17 +76,17 @@ incompatible hosts rather than producing a bundle that won't launch.
 - **Build tools**: `xcodegen` (via Homebrew) plus **OCaml 5.5.0**.
   ```sh
   brew install xcodegen
-  # OCaml 5.5.0 specifically — the vendored blob's runtime ABI is locked to
+  # OCaml 5.5.0 specifically: the vendored blob's runtime ABI is locked to
   # it, so the app must link against 5.5.0 (`libasmrun`, `libthreadsnat`, …).
   # The reproducible way is an opam switch:
   opam switch create 5.5.0    # then: eval $(opam env)
   ```
   A plain `brew install ocaml` works **only** while Homebrew's current
   formula is exactly 5.5.0; `make` runs `check-ocaml-version` and fails fast
-  otherwise. OCaml is needed for the runtime libraries we link — *not* to
+  otherwise. OCaml is needed for the runtime libraries we link, *not* to
   compile Unison itself.
 
-That's it. **No upstream Unison clone required** — a prebuilt
+That's it. **No upstream Unison clone required**: a prebuilt
 `unison-blob.o` lives in `vendor/` (see
 [vendor/README.md](vendor/README.md) for provenance). The build
 compiles Swift + C, links against the vendored blob + the OCaml 5.5.0
@@ -107,11 +107,11 @@ git clone https://github.com/bcpierce00/unison.git ../unison
 make build BLOB=$(pwd)/../unison/src/unison-blob.o
 ```
 
-## Quick install — prebuilt release
+## Quick install: prebuilt release
 
 Use this path if you don't have Homebrew, or want to install a specific
 version other than the latest. Otherwise the
-[Homebrew path above](#quickest-install--homebrew) is shorter and
+[Homebrew path above](#quickest-install-homebrew) is shorter and
 handles Gatekeeper for you.
 
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
@@ -120,17 +120,17 @@ handles Gatekeeper for you.
 3. **Clear the quarantine attribute, then launch.** macOS 15
    (Sequoia) blocks downloaded unsigned apps on first launch with
    *"Apple could not verify ... is free of malware"* and offers
-   only "Move to Trash" / "Done" — the old right-click → Open
-   trick no longer applies. See
+   only "Move to Trash" / "Done"; Sequoia offers no right-click → Open
+   bypass for downloaded apps. See
    [First launch & Gatekeeper](#first-launch--gatekeeper) for the
    two workarounds.
 
-The fastest path is the one-line shell install — strips the
+The fastest path is the one-line shell install, which strips the
 quarantine attribute up front so the first launch is a clean
 double-click (substitute the version you downloaded):
 
 ```sh
-VERSION=0.1.1
+VERSION=0.4.2
 unzip ~/Downloads/unison-ui-mac-${VERSION}.app.zip -d /Applications
 xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
@@ -150,12 +150,11 @@ blocked with:
 > *"Apple could not verify 'Unison-UI-Mac.app' is free of malware
 > that may harm your Mac or compromise your privacy."*
 
-with only **Move to Trash** and **Done** buttons. (Earlier macOS
-releases let you bypass this by right-clicking the app and picking
-"Open"; Sequoia removed that escape hatch for downloaded apps.) Two
+with only **Move to Trash** and **Done** buttons. (Sequoia offers no
+right-click → "Open" bypass for downloaded apps.) Two
 ways to unblock:
 
-### Option 1 — command line (fastest)
+### Option 1: command line (fastest)
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
@@ -167,7 +166,7 @@ adds to anything downloaded from the internet. Once the attribute
 is gone, Gatekeeper stops checking the bundle and double-click
 works normally from then on.
 
-### Option 2 — System Settings (GUI)
+### Option 2: System Settings (GUI)
 
 1. Click **Done** on the blocking dialog (don't move it to Trash).
 2. Open **System Settings → Privacy & Security**.
@@ -175,7 +174,7 @@ works normally from then on.
    > *"Unison-UI-Mac.app" was blocked to protect your Mac.*
 4. Click **Open Anyway**, authenticate with Touch ID or your
    password.
-5. Try opening the app again — you'll get one more confirmation
+5. Try opening the app again; you'll get one more confirmation
    dialog, click **Open Anyway**.
 
 After either path, the app launches normally and macOS adds it to
@@ -186,7 +185,7 @@ its approved list; future launches don't prompt.
 ```sh
 # 1. Get build prerequisites (one time)
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0) — ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
 
 # 2. Clone this repo
 cd ~/somewhere
@@ -198,7 +197,7 @@ make install
 ```
 
 That's it. `make install` builds the Release configuration (forced
-internally — `make build` on its own defaults to Debug for dev
+internally; `make build` on its own defaults to Debug for dev
 iteration) and hands off to `install.sh`, which signs, copies to
 `/Applications`, clears the quarantine attribute, and opens the app.
 After this you'll find **Unison-UI-Mac** in `/Applications` and in
@@ -214,8 +213,8 @@ make build CONFIG=Release   # Release build into .build/derived/...
 
 ## What the installer script does
 
-`install.sh` is a thin wrapper around three commands that you could run
-yourself; the script just makes them harder to typo. Specifically:
+`install.sh` is a thin wrapper around a handful of commands you could run
+yourself. Specifically:
 
 1. **Finds the built bundle.** Looks for the Release build first, then
    Debug, under `.build/derived/Build/Products/`. (`make install`
@@ -253,7 +252,7 @@ Apple-notarized distribution requires a paid Apple Developer account
 project; that level of process isn't worth the cost or the time. The
 ad-hoc signature path is the same one Apple's own documentation
 describes for in-house and homebrew-installed apps, and it doesn't
-weaken the app's security — it just means Gatekeeper has no third
+weaken the app's security; it just means Gatekeeper has no third
 party to vouch for the build, so you (the person who built it) are
 implicitly vouching.
 
@@ -278,7 +277,7 @@ open /Applications/unison-ui-mac.app
 
 ## Pinning a specific version
 
-Homebrew casks don't pin versions side by side — `brew upgrade` always
+Homebrew casks don't pin versions side by side: `brew upgrade` always
 moves you to the latest published release, and there's no
 `unison-ui-mac@0.1` track. If you want to **stay on a specific version**
 (e.g. keep `0.1.x` and skip a future `0.2.0`), install that version from
@@ -292,7 +291,7 @@ brew uninstall --cask unison-ui-mac
 git clone https://github.com/bcourbage/unison-ui-mac.git
 cd unison-ui-mac
 git tag                    # list available versions
-git checkout v0.1.2        # the version you want to stay on
+git checkout v0.4.2        # the version you want to stay on
 make install               # Release build → /Applications (see "Install from source")
 ```
 
@@ -303,7 +302,7 @@ again. To rejoin the auto-updating Homebrew track, reinstall the cask:
 
 Prerequisites are the same one-time tools as [Install from
 source](#install-from-source) (`xcode-select --install`,
-`brew install xcodegen` plus OCaml 5.5.0 — see above).
+`brew install xcodegen` plus OCaml 5.5.0; see above).
 
 ## Uninstall
 
@@ -314,7 +313,7 @@ defaults delete net.courbage.unison-ui-mac 2>/dev/null || true
 
 The second line removes the app's user defaults (hidden/reordered
 profiles, version-mismatch suppressions). Your `~/Library/Application
-Support/Unison/` profile and archive directory is left untouched —
+Support/Unison/` profile and archive directory is left untouched;
 delete it manually if you want a fully clean slate, but be aware that
 Unison's CLI also uses it.
 
@@ -330,36 +329,36 @@ brew install --cask bcourbage/tap/unison-ui-mac
 
 ```sh
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0) — ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
 make install
 ```
 
 ## Troubleshooting
 
 - **`brew install --cask bcourbage/tap/unison-ui-mac` errors with
-  "Cask 'unison-ui-mac' is unavailable"** — the tap isn't registered
+  "Cask 'unison-ui-mac' is unavailable"**: the tap isn't registered
   yet. Run `brew tap bcourbage/tap` once, then re-run install. The
   fully-qualified form (`bcourbage/tap/unison-ui-mac`) usually
   auto-taps, but some Homebrew configurations need the explicit
   `brew tap` first.
-- **`brew install --cask` errors with "depends_on macos"** — your
+- **`brew install --cask` errors with "depends_on macos"**: your
   Mac is older than macOS 15 (Sequoia) or running on Intel. The
   app is arm64-only and targets macOS 15+; the cask refuses to
   install on older OSes / Intel CPUs rather than producing a
   bundle that won't launch.
 - **"can't be opened because Apple cannot check it for malicious
-  software"** — quarantine attribute is still on the bundle. This
+  software"**: quarantine attribute is still on the bundle. This
   shouldn't happen with the Homebrew install (brew strips it
   automatically) but can happen with the manual zip path. Re-run
   `./install.sh` or `sudo xattr -dr com.apple.quarantine
   /Applications/unison-ui-mac.app`.
-- **App launches then immediately quits** — check Console.app under
+- **App launches then immediately quits**: check Console.app under
   subsystem `net.courbage.unison-ui-mac` for the crash reason. Most
   common cause is an OCaml install that doesn't match the host
   architecture (e.g. `brew install`ing OCaml under Rosetta on Apple
-  Silicon — the runtime libs end up x86_64 and won't link with the
+  Silicon, the runtime libs end up x86_64 and won't link with the
   arm64 vendored blob).
-- **`make build` fails with "xcodegen: command not found"** — Homebrew
+- **`make build` fails with "xcodegen: command not found"**: Homebrew
   is installed but `brew install xcodegen` hasn't run, or your shell
   hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew
   shellenv)"`).

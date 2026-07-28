@@ -7,7 +7,7 @@ assignees: ''
 ---
 
 > [!IMPORTANT]
-> **This template is for bug reports against the macOS GUI** —
+> **This template is for bug reports against the macOS GUI**:
 > reproducible incorrect behavior in this app. Before filing:
 >
 > - **Usage questions ("how do I…")** are not tracked as issues. See

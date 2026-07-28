@@ -1,4 +1,4 @@
-# Unison-UI-Mac — User Manual
+# Unison-UI-Mac, User Manual
 
 A feature-by-feature guide to the macOS app. For install steps see
 [INSTALL.md](INSTALL.md); for architecture overview and a build
@@ -11,7 +11,7 @@ authoritative reference is the **upstream Unison documentation**:
 - [Unison user manual (full)](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex)
 - [Preferences reference (`.prf` keys + syntax)](https://github.com/bcpierce00/unison/wiki/Manual)
 
-This document covers **how the macOS GUI exposes those concepts** — not the
+The sections below cover **how the macOS GUI exposes those concepts**, not the
 concepts themselves. When a feature touches a `.prf` preference, it's
 linked to the section of the upstream docs that defines it.
 
@@ -37,7 +37,7 @@ linked to the section of the upstream docs that defines it.
 ## Concepts in one paragraph
 
 Unison synchronizes a pair of file trees ("**replicas**") rooted at two
-paths ("**roots**") — both can be local directories, or one or both can be
+paths ("**roots**"), both can be local directories, or one or both can be
 remote over SSH. A **profile** is a `.prf` file under
 `~/Library/Application Support/Unison/` that declares the two roots plus
 any preferences (paths to sync, paths to ignore, merge command, etc.).
@@ -55,7 +55,7 @@ the next scan can tell what's changed.
 
 The app embeds Unison's OCaml runtime, so the local machine doesn't need a
 separate `unison` install. But profiles whose root is `ssh://…` spawn
-`unison -server` on the remote host — that remote needs Unison installed
+`unison -server` on the remote host, that remote needs Unison installed
 and reachable in `$PATH` (or via `servercmd = …` in the profile).
 
 Install instructions for the remote side:
@@ -67,7 +67,7 @@ Install instructions for the remote side:
 
 This project's embedded Unison is **v2.54.0** (see README's "Unison
 version" section for the exact upstream commit). The remote Unison must
-be the same major version — `2.54.x` works, `2.51.x` does not. The app
+be the same major version, `2.54.x` works, `2.51.x` does not. The app
 runs a one-shot `ssh ... unison -version` probe on profile open and
 surfaces a suppressible alert on mismatch (see
 [Version-mismatch warning](#version-mismatch-warning-on-profile-open)
@@ -76,7 +76,7 @@ below).
 ### 2. Launch the app
 
 The app opens with the **Profile Picker** (see next section). On first
-launch, if you have no profiles yet, the list will be empty — use
+launch, if you have no profiles yet, the list will be empty, use
 `Edit → Profile Editor…` (⌘⇧E) to create one.
 
 ### 3. Pick a profile, hit Run
@@ -95,18 +95,17 @@ you've set one (see [Profile Editor](#the-profile-editor-manager-window)),
 otherwise alphabetical. Hidden profiles (also a Profile Editor feature)
 don't appear here.
 
-**Run** (⏎ / Enter) — selects the highlighted profile and opens the
+**Run** (⏎ / Enter): selects the highlighted profile and opens the
 reconcile window in scanning mode.
 
 Double-click also runs.
 
-**Quit** — at the far left of the bottom bar, quits the app (same as
+**Quit**: at the far left of the bottom bar, quits the app (same as
 ⌘Q). Placed away from Run so it isn't clicked by reflex.
 
 > The button is labeled "Run" rather than "Open" because picking a profile
-> kicks off the sync workflow — same verb as the CLI `unison <profile>`.
-> "Open" was the old label but was misleading: nothing here opens a
-> document for editing.
+> kicks off the sync workflow, same verb as the CLI `unison <profile>`.
+> Nothing here opens a document for editing.
 
 **Initial selection**:
 
@@ -121,13 +120,13 @@ Double-click also runs.
 
 ### Profile creation, editing, deletion, etc.
 
-Not on the picker — those live in the Profile Editor manager. The picker
+Not on the picker, those live in the Profile Editor manager. The picker
 is intentionally minimal: list + Run.
 
 ### Refresh
 
 The picker re-reads the Unison directory automatically every time its
-window becomes key — so creating a `.prf` via the CLI, copying one in
+window becomes key, so creating a `.prf` via the CLI, copying one in
 from a backup, or editing a name in Finder is picked up the moment you
 switch back to the app. No manual refresh action on the picker; the
 Profile Editor has an explicit Refresh button (and ⌘R) for the edge case
@@ -141,52 +140,52 @@ Opens via `Edit → Profile Editor…` (⌘⇧E).
 
 A table of every profile, with three columns:
 
-- **☰ Drag handle** — grab and drag to reorder the list. The order
+- **☰ Drag handle**: grab and drag to reorder the list. The order
   persists across app launches (stored in `UserDefaults` under
   `profiles.order`). The custom order applies to the picker too. Reorder
   is **UI-only**: the `.prf` files themselves aren't touched, and the
   CLI `unison <profile>` sees every profile in whatever order Unison's
   own profile scanner returns.
-- **👁 / 👁‍🗨 Visibility toggle** — click to hide/unhide. Hidden profiles
+- **👁 / 👁‍🗨 Visibility toggle**: click to hide/unhide. Hidden profiles
   disappear from the picker (so you don't see profiles you only run
   rarely or have permanently retired from regular use), but remain on
   disk and remain visible in the Profile Editor. Stored in
-  `UserDefaults` under `profiles.hidden`. Like reorder, it's UI-only —
+  `UserDefaults` under `profiles.hidden`. Like reorder, it's UI-only,
   the CLI doesn't know about hidden state.
-- **Profile name** — the basename of the `.prf` file. Dimmed when the
+- **Profile name**: the basename of the `.prf` file. Dimmed when the
   profile is hidden.
 
 Above the list, a path line shows the Unison directory. The folder
-glyph at its right opens that directory in Finder — handy for
+glyph at its right opens that directory in Finder, handy for
 inspecting `.prf` files or archive files directly.
 
 Bottom-bar buttons (left to right by profile lifecycle):
 
-- **New…** — opens the Profile Form with empty fields. Save creates a
+- **New…**: opens the Profile Form with empty fields. Save creates a
   new `<name>.prf` in the Unison directory.
-- **Duplicate…** — copies the selected profile's `.prf` verbatim to a
+- **Duplicate…**: copies the selected profile's `.prf` verbatim to a
   new name. The new profile inherits everything: roots, paths, ignores,
   advanced prefs. Defaults the new name to `<original> copy`, prompts for
   the actual name. After save, the duplicate is inserted right after its
   source in the custom order.
-- **Edit…** — opens the Profile Form for the selected profile. Same form
+- **Edit…**: opens the Profile Form for the selected profile. Same form
   as New, but pre-populated and with the name field pre-filled. Editing
   the name field and saving performs a rename (see Profile Form below).
-- **Delete…** — confirmation alert, then moves the `.prf` (and its
+- **Delete…**: confirmation alert, then moves the `.prf` (and its
   `.prf.bak` sidecar from a prior save, if any) to the Trash via
   `NSFileManager.trashItem`. A misclick is recoverable from Finder's
   Trash.
 
   If the profile has matching archive files in the Unison directory
   (`ar<hash>`, `fp<hash>`, `lk<hash>`, etc.), the confirmation grows a
-  checkbox: **"Also move N archive file(s) to Trash"** — *checked by
+  checkbox: **"Also move N archive file(s) to Trash"**, *checked by
   default*. The hash is computed from the profile's roots before the
   `.prf` is deleted, so we still know which archives belong to it. If
   you uncheck the box, the `.prf` goes but the archives stay; useful
   when you plan to restore the profile from Trash and resume syncing.
   When there are no matching archives (e.g. both roots are remote,
   archives already cleaned up), the checkbox is hidden.
-- **Reset Archives…** — for the selected profile, compute its archive
+- **Reset Archives…**: for the selected profile, compute its archive
   hash (see [archive files](https://github.com/bcpierce00/unison/wiki/FAQ#what-are-archive-files-in-unison)
   in the upstream wiki), find matching `ar<hash>`, `fp<hash>`, `lk<hash>`,
   `tm<hash>`, `sc<hash>` files in the Unison directory, and move them to
@@ -194,15 +193,15 @@ Bottom-bar buttons (left to right by profile lifecycle):
   plus the computed hash (you can cross-check against
   `unison -showArchiveName <profile>` on the CLI if you want). The next
   sync of this profile will then rebuild reconciliation state from
-  scratch — a full re-scan of both replicas. Use this when you want to
+  scratch, a full re-scan of both replicas. Use this when you want to
   clean archives but keep the profile itself; Delete's archive-cleanup
   checkbox is the right tool for "I'm done with this profile entirely."
-- **Refresh** (⌘R) — re-reads the `.prf` directory. The editor also
+- **Refresh** (⌘R): re-reads the `.prf` directory. The editor also
   auto-refreshes whenever its window becomes key, so this button is for
   the edge case where you modify files in another tool without losing
   focus on the editor (e.g. running a command in Terminal that's already
   visible in a split with the editor window key).
-- **Done** — closes the manager window. ⏎ activates.
+- **Done**: closes the manager window. ⏎ activates.
 
 Hidden profiles are still listed (dimmed) so you can unhide them.
 
@@ -222,13 +221,13 @@ described below.
 
 ### General
 
-- **Profile name** — the `.prf` filename without the extension, editable in
+- **Profile name**: the `.prf` filename without the extension, editable in
   both New and Edit modes. Changing it on an existing profile and clicking
   Save renames the `.prf` on disk, carrying the `.prf.bak` sidecar and your
   hide / custom-order view preferences along. Renaming is benign for
   Unison's archive state, which is keyed off the roots and host, not the
   filename. Forbidden characters: `/`, `\`, `:`.
-- **Show in the profile picker** — mirrors the eye toggle in the Profile
+- **Show in the profile picker**: mirrors the eye toggle in the Profile
   Editor. Unchecked hides the profile from the picker. The `.prf` is
   untouched.
 
@@ -264,10 +263,10 @@ and Exceptions fields.)
 
 ### Ignore
 
-- **Ignore patterns** — one pattern per line (`Name *.tmp`, `Path build`,
+- **Ignore patterns**: one pattern per line (`Name *.tmp`, `Path build`,
   `Regex \..*`, `BelowPath foo`). The **Add Common…** menu appends typical
   sets. The reconcile window's right-click Ignore actions append here too.
-- **Exceptions (override ignore)** — one pattern per line, written as
+- **Exceptions (override ignore)**: one pattern per line, written as
   `ignorenot`. A match keeps a path even when an ignore rule would drop it.
 
 ### File Attributes
@@ -277,8 +276,8 @@ state that leaves the setting out of the profile (Unison's standard
 behavior):
 
 - **Modification times**, **Resource forks**, **Owner**, **Group**,
-  **Suppress chmod** — Default / On / Off.
-- **Permissions** — Default, "Ignore permission differences", or **Custom
+  **Suppress chmod**: Default / On / Off.
+- **Permissions**: Default, "Ignore permission differences", or **Custom
   mask…**, which reveals a field for an octal (`0o755`), hex (`0x1FF`), or
   decimal mask.
 
@@ -286,13 +285,13 @@ behavior):
 
 How a sync runs, as opposed to what is synced:
 
-- **Conflict handling** — Default (ask on conflict), or Prefer / Force a
+- **Conflict handling**: Default (ask on conflict), or Prefer / Force a
   root (first, second, newer, or older). "Force" makes one root
   authoritative and overwrites the other; "Prefer" only breaks ties on
   conflicting changes.
 - **Confirm big deletions** (`confirmbigdel`), **Auto-accept changes**
-  (`auto`), **Fast update check** (`fastcheck`) — Default / On / Off.
-- **Write a log file** — toggles `log`. Which fields appear depends on the
+  (`auto`), **Fast update check** (`fastcheck`), Default / On / Off.
+- **Write a log file**: toggles `log`. Which fields appear depends on the
   global logging mode set in [Settings → Logging](#logging): shared-file
   mode shows just the checkbox, shared-folder mode adds a file name, and
   per-profile mode adds a folder and a file name.
@@ -304,9 +303,9 @@ name (the dropdown lists the other `.prf` files in your Unison directory,
 or you can type a name), an optional **comment** line, and a **Top / Bottom**
 position:
 
-- **Top** — applied before this profile's own settings, so this profile
+- **Top**: applied before this profile's own settings, so this profile
   wins single-value conflicts.
-- **Bottom** — applied after, so the included file wins.
+- **Bottom**: applied after, so the included file wins.
 
 For list-valued prefs (ignore, ignorenot, path) the position has no effect;
 they accumulate either way. Use this to share a list across profiles, for
@@ -315,7 +314,7 @@ the *entire* target file, so a shared list file should contain only the
 relevant lines. A banner at the top of the editor notes when a profile
 includes others.
 
-Profile names with spaces are fine — they're written back-slash-escaped
+Profile names with spaces are fine, they're written back-slash-escaped
 (`include File\ System\ Ignores.prf`), which is how Unison reads a name as a
 single word. The `.prf` extension is added on the saved line for clarity;
 the editor still shows you the bare profile name.
@@ -343,7 +342,7 @@ to `.prf.bak`. `Cancel` discards everything.
 Opens when you click Run on the picker. Initially in "scanning" mode
 showing the indeterminate progress bar; populates with the list of
 differences once Unison's `init1` + `init2` complete (init1 sets up the
-roots and any SSH connection — that's where credential prompts appear —
+roots and any SSH connection, that's where credential prompts appear,
 and init2 walks both replicas to compute differences).
 
 ### Anatomy
@@ -369,34 +368,34 @@ and init2 walks both replicas to compute differences).
 
 ### Columns
 
-- **Path** — the file's relative path within the replica. Folder rows
+- **Path**: the file's relative path within the replica. Folder rows
   show a tinted folder icon (system blue); leaf rows show a neutral
   document icon. Names truncate with `byTruncatingMiddle`; the full
   path is available as a hover tooltip when truncation happens.
-- **First / Second** — SF Symbol status icons summarizing what changed
+- **First / Second**: SF Symbol status icons summarizing what changed
   on each side since the last sync:
   - ➕ Created (green)
   - 🔵 Modified (hollow blue circle)
-  - 🔘 PropsChanged (dashed blue) — only metadata changed
+  - 🔘 PropsChanged (dashed blue), only metadata changed
   - ➖ Deleted (red)
   - · Unchanged (tiny gray dot) or absent
-- **Action** — what the sync will do for this row. The badge shows
+- **Action**: what the sync will do for this row. The badge shows
   either the **direction** (→ Second / ← First, green / blue) for
   auto-resolved rows, OR the **user's decision** when an override is
   pinned:
-  - ⚠ (orange) — auto-detected conflict, needs your attention
-  - ⊖ (gray) — user-skipped (Skip applied)
-  - ↺ (brown) — Force Older applied (mtime-based decision; arrow hidden
+  - ⚠ (orange), auto-detected conflict, needs your attention
+  - ⊖ (gray), user-skipped (Skip applied)
+  - ↺ (brown), Force Older applied (mtime-based decision; arrow hidden
     on purpose so you can tell forced vs. deliberate left/right)
-  - ↻ (teal) — Force Newer applied
-  - M (purple) — Merge will run (requires `merge = …` in the `.prf`)
-  - → (green) — propagate first → second
-  - ← (blue) — propagate second → first
+  - ↻ (teal), Force Newer applied
+  - M (purple), Merge will run (requires `merge = …` in the `.prf`)
+  - → (green), propagate first → second
+  - ← (blue), propagate second → first
 
   Folder rows show an aggregate badge: same glyph/tint as a leaf when
   every descendant agrees, empty when descendants disagree.
-- **Size** — file size, formatted by `ByteCountFormatter`.
-- **Progress** — populated during sync. Shows a standard macOS
+- **Size**: file size, formatted by `ByteCountFormatter`.
+- **Progress**: populated during sync. Shows a standard macOS
   `NSProgressIndicator` bar (follows your **System Settings →
   Appearance → Accent color**) for in-flight rows, full bar when
   finished, and a bold red **`⚠`** marker on rows whose transfer
@@ -404,7 +403,7 @@ and init2 walks both replicas to compute differences).
   tooltip; the same text is also shown in the details panel at the
   bottom of the window when the failed row is selected. Empty when
   idle.
-- **Type** — `FILE`, `DIR`, `SYMLINK`, etc., as Unison reports.
+- **Type**: `FILE`, `DIR`, `SYMLINK`, etc., as Unison reports.
 
 ### Summary line
 
@@ -413,7 +412,7 @@ scanning ("Looking for changes...", "Reconciling...") and shows a count
 summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
 12 First → Second · 4 Second → First").
 
-The status word — when there is one — always leads. Six forms:
+The status word, when there is one, always leads. Six forms:
 
 | State | Example |
 | --- | --- |
@@ -427,8 +426,8 @@ The status word — when there is one — always leads. Six forms:
 During an active sync, the summary line stays pinned to the
 `Synchronizing · …` form so the at-a-glance totals (item count,
 total bytes, direction split) remain visible throughout the
-transfer. The dynamic state — *which* file is currently moving and
-how far along — is conveyed by the global progress bar above the
+transfer. The dynamic state, *which* file is currently moving and
+how far along, is conveyed by the global progress bar above the
 file list and by the per-row Progress column inside it. Mid-sync
 errors that attach to a row surface as the per-row `⚠` marker
 (hover for reason); the post-sync summary's
@@ -437,9 +436,8 @@ count. The full raw diagnostic stream (every `displayStatus`
 message Unison emits) is also logged to Console.app under subsystem
 `net.courbage.unison-ui-mac` for deeper debugging if needed.
 
-The profile name is **not** included in the summary — the window
-title carries it (`Unison — <profile>`), so repeating it just costs
-pixels. Each direction breakdown reads
+The profile name is **not** included in the summary; the window
+title carries it (`Unison — <profile>`). Each direction breakdown reads
 `<count> <source> → <destination>` so the arrow always points
 left-to-right in reading order, regardless of which side data
 flows toward. "First" and "Second" refer to the two replicas (the
@@ -456,10 +454,10 @@ failed row is selected.
 The size figure between the item count and the breakdown is the **total
 bytes that will move if you hit Go now**. Sum of file sizes for rows
 with a clear direction arrow (`←` First or `→` Second); conflicts and
-`<-M->` merge rows are excluded — conflicts won't transfer until
+`<-M->` merge rows are excluded, conflicts won't transfer until
 resolved, and merge runs an external command whose byte output isn't
 predictable in advance. User overrides on conflict rows aren't reflected
-in this total (same convention as the count breakdown) — rescan refreshes
+in this total (same convention as the count breakdown), rescan refreshes
 the snapshot after manual changes if you want an updated total.
 
 If a status message has multiple lines (typically SSH connect failures
@@ -472,12 +470,12 @@ one-hover alternative.
 
 During a sync, each **file** row shows its own transfer progress in the
 Progress column (a bar that fills as bytes move; `done` when complete; a
-red `⚠` on failure — hover for the reason).
+red `⚠` on failure, hover for the reason).
 
 A **collapsed folder** row shows an *aggregate* bar summarizing the
 transfer of everything hidden beneath it, so you can watch a whole branch
-advance without expanding it. The fraction is byte-weighted — a large file
-contributes more than a small one — and falls back to a simple
+advance without expanding it. The fraction is byte-weighted, a large file
+contributes more than a small one, and falls back to a simple
 done-count when the folder's items carry no size (e.g. a folder of
 deletions). Expanding the folder clears its aggregate bar (its children
 then show their own); collapsing it again brings the summary back.
@@ -489,20 +487,20 @@ when idle.
 
 ### Toolbar
 
-- **Profiles** — return to the picker (closes this reconcile window).
-- **Rescan** — re-run init2 without re-initializing the SSH connection.
+- **Profiles**: return to the picker (closes this reconcile window).
+- **Rescan**: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
   view.
-- **← First / → Second / Skip / Merge** — direction overrides for the
+- **← First / → Second / Skip / Merge**: direction overrides for the
   selected leaf rows. Multi-select supported; selecting a folder applies
   to every leaf under it.
-- **Go** (green) — synchronize. Propagates every row's Action.
-- **Stop** (red) — visible during sync. Aborts the running sync: it
+- **Go** (green): synchronize. Propagates every row's Action.
+- **Stop** (red): visible during sync. Aborts the running sync: it
   signals Unison to stop at its next checkpoint (between files), so a
   transfer already in flight may finish before the abort takes hold. The
   window stays open afterward so you can inspect any rows left `⚠ FAILED`
   in the Progress column; close it or Rescan when you're ready.
-- **Quit** — quit the app, identical to `⌘Q` (runs the clean OCaml
+- **Quit**: quit the app, identical to `⌘Q` (runs the clean OCaml
   bridge shutdown on the way out).
 
 ### Details footer
@@ -513,11 +511,11 @@ shows the folder's full path plus the count of items under it.
 
 ### Row context menu (right-click)
 
-- **Diff** (top — most common right-click intent) → opens the diff viewer.
+- **Diff** (top: most common right-click intent) → opens the diff viewer.
 - (separator)
-- **Ignore Path / Ignore Extension / Ignore Name** — adds a new `ignore`
+- **Ignore Path / Ignore Extension / Ignore Name**: adds a new `ignore`
   pattern to the profile's `.prf` *immediately* (no confirmation), then
-  re-filters the row list. **The pattern is permanent** — it persists in
+  re-filters the row list. **The pattern is permanent**, it persists in
   the `.prf` file and applies to the CLI `unison <profile>` too.
 
 ---
@@ -533,7 +531,7 @@ Opens via:
 **When the Diff item is greyed**: Unison's `canDiff` predicate rejects
 the row. That happens for directories, symlinks, rows with
 update-detection problems, and rows where the only change on both sides
-is metadata (PropsChanged). It does **not** reject binary files —
+is metadata (PropsChanged). It does **not** reject binary files,
 those just produce uninformative output from the configured `diff`
 command (typically `Binary files X and Y differ`).
 
@@ -551,7 +549,7 @@ The diff window:
 
 - Is read-only and selectable (⌘F opens the find bar for searching
   within the diff).
-- Reuses across multiple Diff invocations — clicking Diff on another row
+- Reuses across multiple Diff invocations, clicking Diff on another row
   updates the same window in place.
 - Survives the reconcile window closing (you can keep reading the diff
   after going back to the picker).
@@ -567,13 +565,13 @@ text. Pick another row's Diff to recover.
 Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
 (System Settings style) with four tabs that resize the window to fit:
 
-- **Saved State** — *implicit* state the app remembers and lets you
+- **Saved State**: *implicit* state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
   window & toolbar layout.
-- **Reconcile** — how the reconcile window renders differences.
-- **Sync** — the end-of-sync notification and sound (actual on/off
+- **Reconcile**: how the reconcile window renders differences.
+- **Sync**: the end-of-sync notification and sound (actual on/off
   preferences you set directly).
-- **Logging** — how log file locations are chosen across profiles.
+- **Logging**: how log file locations are chosen across profiles.
 
 Settings and the profile editor can't be open at the same time. Because a
 logging change here can rewrite `.prf` files, the **Settings** menu item is
@@ -591,7 +589,7 @@ place that holds preferences you toggle directly.
 
 Shows counts ("3 hidden profiles · 7 in custom order") for the keys
 `profiles.hidden` and `profiles.order`. The **Reset** button clears
-both — after a reset, every `.prf` is visible in alphabetical order in
+both, after a reset, every `.prf` is visible in alphabetical order in
 the picker. The `.prf` files themselves are untouched; this is purely
 UI presentation state.
 
@@ -603,7 +601,7 @@ you've dismissed via the "Don't remind me again" checkbox on the
 Each row can be selected and removed individually via **Remove
 Selected**, or wiped en masse via **Clear All** (which has a confirm
 sheet because it's a bulk destructive action; per-row removal doesn't
-prompt — one accidental removal is cheap to re-suppress next time the
+prompt, one accidental removal is cheap to re-suppress next time the
 alert fires).
 
 Removing a suppression doesn't immediately do anything; the next time
@@ -621,7 +619,7 @@ position and size. Useful when:
 - You want to start fresh after experimenting with the reconcile
   toolbar layout.
 
-Currently-open windows are not moved by the reset — autosaves are
+Currently-open windows are not moved by the reset, autosaves are
 written on close and read on open, so the effect only takes hold the
 next time each window is opened. The reset alert spells this out.
 
@@ -629,39 +627,37 @@ next time each window is opened. The reset alert spells this out.
 
 Two pickers that control how the reconcile window renders the list of
 differences. Mirrors upstream Unison's "Switch table nesting"
-segmented control (the three-segment icon in the legacy uimac
-toolbar) plus a smart-expand option that upstream calls
+segmented control plus a smart-expand option that upstream calls
 `expandConflictedParent`.
 
 **Layout**:
 
-- **Nested (collapsed)** *(default)* — folder tree by path components,
+- **Nested (collapsed)** *(default)*: folder tree by path components,
   with any folder whose only child is another folder merged into a
   combined-name row (`a/b/c/leaf.txt` instead of four separate folder
   rows). Compact for deep paths through otherwise-uninteresting
   directories.
-- **Nested (full)** — every folder level is its own row. Most
-  hierarchical, busiest visually. Earlier app default.
-- **Flat list** — every leaf is a top-level row. Sorted list of full
+- **Nested (full)**: every folder level is its own row. Most
+  hierarchical, busiest visually.
+- **Flat list**: every leaf is a top-level row. Sorted list of full
   paths, no folder nodes, no chevrons. Useful when the user wants
   to scan "did file X get touched?" without navigating a tree.
 
-**Expand on open** (applies on every fresh populate — initial scan
+**Expand on open** (applies on every fresh populate: initial scan
 or rescan; user-driven expand/collapse during a session is untouched):
 
-- **Smart (only branches with conflicts)** *(default)* — only folders
+- **Smart (only branches with conflicts)** *(default)*: only folders
   whose subtree contains a row needing the user's attention
   (unresolved conflict) are pre-expanded. Other folders stay
   collapsed. The user lands on what needs doing.
-- **All branches** — every folder is pre-expanded. The original
-  Finder-style "outline fully open" behavior.
-- **Top level only** — nothing pre-expanded; only top-level entries
+- **All branches**: every folder is pre-expanded. The Finder-style "outline fully open" behavior.
+- **Top level only**: nothing pre-expanded; only top-level entries
   visible. Useful for very large diffs where the user wants to
   navigate by clicking in.
 
 Both settings take effect on the **next reconcile populate** (rescan
 or profile open). Already-open reconcile windows aren't re-laid out
-live — the section description in Settings spells this out.
+live, the section description in Settings spells this out.
 
 **Post-sync failure reveal.** When a sync finishes with one or more
 failures, the app expands the ancestor chain of every ⚠ FAILED row,
@@ -676,9 +672,9 @@ policy still governs the pre-sync (just-rescanned) view.
 Two checkboxes controlling the optional cues fired when a sync
 finishes (both **on by default**):
 
-- **Show a notification when a sync finishes** — posts a Notification
+- **Show a notification when a sync finishes**: posts a Notification
   Center banner ("Sync complete", or "Sync finished with N errors").
-- **Play a sound when a sync finishes** — a chime on a clean sync, the
+- **Play a sound when a sync finishes**: a chime on a clean sync, the
   system error tone when there were failures.
 
 Unlike the other sections (which inspect/reset implicit state), these
@@ -686,7 +682,7 @@ are real, explicitly-set preferences, stored under
 `sync.complete.notify` and `sync.complete.sound`.
 
 Independent of these toggles, the reconcile summary **always** shows
-an inline result badge when a sync ends — a green ✓ (clean) or red ⚠
+an inline result badge when a sync ends, a green ✓ (clean) or red ⚠
 (errors), with the summary text tinted to match.
 
 > **Banner not appearing?** macOS suppresses notification banners
@@ -701,12 +697,12 @@ an inline result badge when a sync ends — a green ✓ (clean) or red ⚠
 Controls how each profile's `logfile` is chosen. A **Mode** popup with
 three choices, and a path field whose label follows the mode:
 
-- **All profiles share one log file** — every profile that has logging on
+- **All profiles share one log file**: every profile that has logging on
   writes to the same file. The field is that file's path.
-- **All profiles share one folder (one file each)** — a shared folder; each
+- **All profiles share one folder (one file each)**: a shared folder; each
   profile gets its own file in it (`Unison-<profile>.log` by default). The
   field is the folder.
-- **Each profile has its own location** *(default)* — every profile sets
+- **Each profile has its own location** *(default)*: every profile sets
   its own path in its editor. The field is a **default folder** used only
   to pre-fill a new profile's path; it is never forced and never changes a
   profile you've already configured.
@@ -724,7 +720,7 @@ Escape (Don't Update).
 
 The `logfile` line is written into each profile's `.prf` (which is what
 Unison reads). The matching per-profile controls live in the editor's
-**Options** section — see [Write a log file](#options).
+**Options** section: see [Write a log file](#options).
 
 ### What's stored, and where
 
@@ -744,8 +740,8 @@ accessed via the standard `UserDefaults` API. The keys this app writes:
 | `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 
 You can inspect them directly with `defaults read net.courbage.unison-ui-mac`,
-or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`
-— but the Settings window gives you fine-grained control by category.
+or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`,
+but the Settings window gives you fine-grained control by category.
 
 ---
 
@@ -766,9 +762,9 @@ the inspect-and-reset window described in [Settings](#settings) above.
 | Undo | ⌘Z | Standard responder action |
 | Redo | ⌘⇧Z | Standard responder action |
 | Cut / Copy / Paste / Select All | ⌘X / ⌘C / ⌘V / ⌘A | Standard text ops |
-| Ignore Path | — | Add `ignore = Path "<row's path>"` to the profile |
-| Ignore Extension | — | Add `ignore = Name {,.}*"<.ext>"` |
-| Ignore Name | — | Add `ignore = Name "<basename>"` |
+| Ignore Path | (none) | Add `ignore = Path "<row's path>"` to the profile |
+| Ignore Extension | (none) | Add `ignore = Name {,.}*"<.ext>"` |
+| Ignore Name | (none) | Add `ignore = Name "<basename>"` |
 | Profile Editor… | ⌘⇧E | Open the manager window |
 
 The three Ignore items dispatch to the reconcile window when it's key;
@@ -781,17 +777,17 @@ otherwise they're greyed.
 | Go | ⌘⏎ | Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows. |
 | Stop | ⌘. | Abort a running sync. Disabled when no sync is running. (See [Stop button](#stop-button-how-abort-works) for the abort semantics.) |
 | Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
-| Rescan Ignoring Archives… | — | Re-open the profile with a one-shot `ignorearchives` to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See [Troubleshooting](#archive-inconsistency-fatal-mid-reconcile). |
-| Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync — use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
+| Rescan Ignoring Archives… | (none) | Re-open the profile with a one-shot `ignorearchives` to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See [Troubleshooting](#archive-inconsistency-fatal-mid-reconcile). |
+| Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync, use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
 | → Second | `>` | Propagate first → second for selected leaves |
 | ← First | `<` | Propagate second → first |
 | Skip | `/` | Mark selected leaves as user-skipped |
-| Merge | — | Run the configured `merge` command on selected leaves (greyed if `merge` pref isn't set) |
-| Force Older | — | Pick the older-mtime side for each selected leaf |
-| Force Newer | — | Pick the newer-mtime side |
-| Diff | — | Open the diff viewer for the selected (or right-clicked) leaf |
-| Select Conflicts | — | Select every leaf row that's still unresolved (`<-?->` with no user override) |
-| Revert to Unison's Recommendation | — | Clear user overrides on selected leaves |
+| Merge | (none) | Run the configured `merge` command on selected leaves (greyed if `merge` pref isn't set) |
+| Force Older | (none) | Pick the older-mtime side for each selected leaf |
+| Force Newer | (none) | Pick the newer-mtime side |
+| Diff | (none) | Open the diff viewer for the selected (or right-clicked) leaf |
+| Select Conflicts | (none) | Select every leaf row that's still unresolved (`<-?->` with no user override) |
+| Revert to Unison's Recommendation | (none) | Clear user overrides on selected leaves |
 
 All items dispatch via the responder chain to `ReconcileWindowController`
 when the reconcile window is key. Disabled when no reconcile window is
@@ -800,7 +796,7 @@ key. Direction items are disabled during sync.
 The three workflow shortcuts follow macOS conventions:
 **⌘⏎ "submit / run"** (matches Mail's Send and similar primary actions),
 **⌘.** for "cancel currently running operation" (system-wide since
-System 6), and **⌘⇧R** for Rescan — parallel to Safari/Mail's "Reload"
+System 6), and **⌘⇧R** for Rescan, parallel to Safari/Mail's "Reload"
 and distinct from Profile Editor's ⌘R refresh so the two never collide.
 
 ### Window menu
@@ -809,20 +805,20 @@ Standard: Minimize, Zoom, Bring All to Front.
 
 ### Help menu
 
-- `Unison-UI-Mac Help` (⌘?) — opens this repo's README in the browser.
-- `Unison File Synchronizer Manual` — opens the full upstream Unison
+- `Unison-UI-Mac Help` (⌘?), opens this repo's README in the browser.
+- `Unison File Synchronizer Manual`, opens the full upstream Unison
   reference manual, rendered to HTML and bundled with the app (works
   offline). The HTML is the hevea-rendered output of upstream's
   `doc/unison-manual.tex` at the Unison version this app embeds; see
   the About panel for the exact version. Falls back to the upstream
   wiki if the bundled resource is missing.
-- `Report an Issue` — opens GitHub's new-issue form for this repo
+- `Report an Issue`, opens GitHub's new-issue form for this repo
   with an Environment block pre-filled (app version, embedded Unison
   version, macOS version, architecture). The repo's bug-report
   template provides the rest of the structure. You'll need a GitHub
   account to file the issue itself.
 
-No File menu — this isn't a document-based app. ⌘W still closes the
+No File menu, this isn't a document-based app. ⌘W still closes the
 focused window via the standard responder action.
 
 ---
@@ -847,7 +843,7 @@ focused window via the standard responder action.
 | ⌘Q | Quit |
 | ⌘F (in diff window) | Find bar |
 
-No keyboard shortcuts on Action-menu items by design — they're frequently
+No keyboard shortcuts on Action-menu items by design, they're frequently
 applied to multi-row selections where a mouse is usually already in
 play. Add custom shortcuts via System Settings → Keyboard → Keyboard
 Shortcuts → App Shortcuts if you want them.
@@ -862,13 +858,13 @@ Unison detected that its archive files are out of sync (typically from a
 crashed sync). A modal alert appears with the offending archive list,
 offering two recoveries:
 
-- **Retry Ignoring Archives** — always available. Unison rebuilds its
+- **Retry Ignoring Archives**: always available. Unison rebuilds its
   state by comparing the two replicas directly, ignoring the saved
   archive for one scan. Use this when the missing or extra archive is
   on the remote host (nothing local to delete), or whenever you just
   want to get going again. The scan may show more rows than usual, so
   review them before you sync. Your profile file is not changed.
-- **Delete N Orphan Archive(s) and Retry** — shown only when orphaned
+- **Delete N Orphan Archive(s) and Retry**: shown only when orphaned
   archive files exist on this Mac. Removes them and retries.
 
 You can also trigger the first option yourself any time from **Action →
@@ -880,7 +876,7 @@ suspect): use **Reset Archives…** in the Profile Editor.
 Unison runs SSH with whatever your `sshcmd` / `sshargs` prefs specify,
 and the macOS system SSH config. If you need a specific key or non-
 default host, set them in the Advanced field of the Profile Form. The
-multi-line error appears in the reconcile window's summary line — click
+multi-line error appears in the reconcile window's summary line, click
 **Details…** for the full text (especially useful when the SSH client
 returns a multi-line key fingerprint check or similar).
 
@@ -891,7 +887,7 @@ differently in the GUI's process environment. Use absolute paths in the
 Profile Form's root fields.
 
 Also: any preference that requires interactive CLI flags (e.g.,
-`-ignorearchives`) won't work here — those are command-line-only and
+`-ignorearchives`) won't work here, those are command-line-only and
 this app builds its own argv. Put their equivalent in the `.prf` if
 possible.
 
@@ -908,8 +904,8 @@ profile.
 Clicking **Stop** in the toolbar (or invoking it through the menu/
 context menu) calls into a local patch in our fork of Unison that
 sets the `Abort.abortAll` flag on the OCaml side. The in-flight sync
-worker observes the flag at its next `Abort.check` checkpoint —
-typically between file transfers — and unwinds by raising the
+worker observes the flag at its next `Abort.check` checkpoint,
+typically between file transfers, and unwinds by raising the
 internal `Aborted by user request` transient.
 
 **What you'll see**:
@@ -939,13 +935,13 @@ If you close the reconcile window mid-sync via ⌘W (or the red close
 button), you get a three-option prompt: **Keep Syncing** /
 **Abort & Close** / **Close (let it run)**. The third option closes
 the window but lets the sync continue in the background until natural
-completion — useful when you want to reclaim screen space but not
+completion, useful when you want to reclaim screen space but not
 interrupt the transfer.
 
 ### Sync-complete notification doesn't pop up
 
 You finished a sync but never saw the banner. This is almost always
-macOS holding it, not the app failing to send it — the notification
+macOS holding it, not the app failing to send it, the notification
 still lands in **Notification Center** (click the clock to check). The
 common causes:
 
@@ -960,7 +956,7 @@ common causes:
   Notification Center.
 
 The inline green ✓ / red ⚠ badge in the reconcile window and the
-completion sound don't depend on any of this — they always fire (when
+completion sound don't depend on any of this, they always fire (when
 the sound toggle is on). See [Settings → Sync completion](#sync-completion).
 
 ### The app starts slowly / OCaml takes time to spin up
@@ -968,10 +964,10 @@ the sound toggle is on). See [Settings → Sync completion](#sync-completion).
 First launch involves `caml_startup` and a few hundred milliseconds of
 OCaml runtime setup. Subsequent launches reuse the same `.app` bundle.
 If this is the very first launch from a downloaded release on macOS
-15 (Sequoia), Gatekeeper will block it — see
+15 (Sequoia), Gatekeeper blocks it: see
 [INSTALL.md § First launch & Gatekeeper](INSTALL.md#first-launch--gatekeeper)
-for the one-shot unblock (the right-click → Open trick from earlier
-macOS releases no longer works).
+for the one-shot unblock. Right-click → Open does not bypass Gatekeeper
+on macOS 15.
 
 ### How do I read this app's diagnostic logs?
 
@@ -999,10 +995,9 @@ Categories: `lifecycle` (app/window open-close), `bridge`
 `displayStatus`), `version-check` (the SSH version probe; see below),
 `general` (the legacy `TraceLog` catch-all).
 
-Earlier versions of this app wrote to `/tmp/unison-ui-mac.log` — that
-file is no longer produced. Migrating to Unified Logging gives you
-filterable categories, structured search, and persistence across
-reboots without the disk-hygiene problem of a stray /tmp file.
+Unified Logging gives you filterable categories, structured search, and
+persistence across reboots without the disk-hygiene problem of a stray
+/tmp file.
 
 ### Version-mismatch warning on profile open
 
@@ -1010,7 +1005,7 @@ When you open a profile that has an `ssh://…` root, the app spawns a
 one-shot `ssh -o BatchMode=yes host servercmd -version` in the
 background and compares the result with the locally-embedded Unison
 version. **You only see a warning when the two sides straddle Unison's
-2.52.0 wire-protocol boundary** — i.e., the local side is >= 2.52.0
+2.52.0 wire-protocol boundary**, i.e., the local side is >= 2.52.0
 and the remote is < 2.52.0, or vice versa. Same-side-of-boundary
 differences (e.g., `2.54.0` ↔ `2.53.8`) negotiate features through
 the new wire protocol and don't warn.
@@ -1020,35 +1015,35 @@ The alert looks like:
 > **Unison wire-protocol incompatibility**  
 > This Mac has Unison 2.54.0. The remote (server.example.com) is
 > running 2.51.5. Unison changed its wire protocol at version 2.52.0,
-> and the two sides here are on opposite sides of that change — they
+> and the two sides here are on opposite sides of that change, they
 > cannot connect to each other. Update the older side to a release
 > >= 2.52.0.
 >
 > ☐ Don't remind me again for this host (until either version changes)
 
 The checkbox persists per `(host, localVersion, remoteVersion)` triple.
-Once you suppress it, you won't see it again for that exact combination
-— but as soon as you upgrade either side, the triple changes and you'll
+Once you suppress it, you won't see it again for that exact combination,
+but as soon as you upgrade either side, the triple changes and you'll
 see the alert again so you can re-confirm.
 
 **Rationale for the 2.52 boundary**: Unison 2.52.0 introduced the
 "new wire protocol" with feature negotiation, so any pair of versions
 >= 2.52.0 interoperates regardless of which exact minor release each
-side runs. Older versions of this UI alerted on any version difference;
-current builds only alert when the wire protocol itself is incompatible.
+side runs. The app alerts only when the wire protocol itself is
+incompatible.
 
 **The probe is silent in normal operation**:
-- Uses `BatchMode=yes` — won't prompt for a password. If the remote
+- Uses `BatchMode=yes`, won't prompt for a password. If the remote
   requires password auth, the probe fails silently and no alert
   appears (Unison's own connection will prompt as usual for the
   actual sync).
 - Times out after 5 seconds (`ConnectTimeout=5`).
-- `StrictHostKeyChecking=accept-new` — first-time hosts get added
+- `StrictHostKeyChecking=accept-new`, first-time hosts get added
   to known_hosts; changed keys are rejected (mirrors typical SSH
   workflow).
 
 **Limitations**:
-- Doesn't honor your `sshcmd` / `sshargs` prefs — invokes
+- Doesn't honor your `sshcmd` / `sshargs` prefs, invokes
   `/usr/bin/ssh` directly. If your Unison SSH config differs
   significantly from your shell SSH config, the probe may use a
   different path/auth than the actual Unison connection.
@@ -1061,13 +1056,13 @@ current builds only alert when the wire protocol itself is incompatible.
 
 ### What happens when a new version of Unison is released?
 
-Two halves of the answer — for the **local** side (the embedded Unison)
+Two halves of the answer, for the **local** side (the embedded Unison)
 and for the **remote** side (any `ssh://…` peer).
 
 **Local side (the embedded copy).** This app links in `unison-blob.o`,
 which is built from whichever upstream source you have checked out
 under `~/Documents/Sources/unison/` (or wherever `UNISON_SRC` points).
-The embedded version is frozen at build time — the app doesn't
+The embedded version is frozen at build time, the app doesn't
 "auto-update" Unison on its own. To pull a new version:
 
 ```sh
@@ -1081,7 +1076,7 @@ you can verify.
 **Remote side (`ssh://…` profiles).** Unrelated to local rebuilds. You
 update the remote Unison the way you'd update any CLI on that machine
 (`brew upgrade unison`, `apt upgrade unison`, etc.). The two Unisons
-negotiate compatibility at connection — see the upstream wiki's
+negotiate compatibility at connection, see the upstream wiki's
 [Cross-Platform Issues / Compatibility](https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex)
 section. As a rule of thumb:
 
@@ -1089,10 +1084,8 @@ section. As a rule of thumb:
   (e.g., `2.52.0` ↔ `2.54.0`, or `2.54.0` ↔ `2.54.3`) interoperate
   via feature negotiation in the new wire protocol.
 - Versions straddling 2.52.0 (e.g., `2.51` ↔ `2.54`) do NOT
-  interoperate — Unison 2.54.0 removed the old wire protocol
-  entirely. The UI surfaces a warning for this case; older versions
-  of this UI also warned on minor-version diffs within the
-  new-protocol generation, but current builds only warn on the
+  interoperate: Unison 2.54.0 removed the old wire protocol
+  entirely. The UI surfaces a warning for this case, only for the
   actual incompatibility.
 
 If you have multiple Unison versions on the remote and need to pin a
@@ -1131,7 +1124,7 @@ override, or set `UNISONLOCALHOSTNAME=<your-hostname>` in the launch
 environment so both pick up the same value.
 
 **2. Command-line argument overrides.** This app launches OCaml with
-`argv = [program_name]` — no CLI args propagate from your shell to
+`argv = [program_name]`, no CLI args propagate from your shell to
 Unison. So if you typically run `unison -opt=val <profile>` to
 override a preference at the command line, the GUI won't apply that
 override (it only sees the `.prf` content). Put the override in the
@@ -1140,7 +1133,7 @@ the GUI into parity.
 
 **3. Multi-profile session quirk.** If you switch profiles within
 one GUI session (via the picker), the GUI doesn't re-parse the
-command line for the new profile — only on first launch. The CLI
+command line for the new profile, only on first launch. The CLI
 re-parses on every profile open. For our app this is moot (we
 don't accept user CLI args anyway), but it's a documented
 divergence from upstream's `Uicommon.initPrefs` that matters if
@@ -1179,5 +1172,5 @@ upstream `Uicommon.initPrefs` runs it unconditionally (per the
 For everything else, the [upstream
 wiki](https://github.com/bcpierce00/unison/wiki) is the authoritative
 reference. This GUI is just a way of driving Unison; the synchronization
-semantics, the `.prf` format, the conflict-resolution rules — all of
+semantics, the `.prf` format, the conflict-resolution rules, all of
 that is Unison.
