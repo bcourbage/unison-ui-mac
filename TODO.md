@@ -47,6 +47,14 @@
       reconnect-after-sleep (a held connection dies on sleep). Separate
       future enhancement; no security shortcuts.
 
+- [ ] **Generalize vendored patch 0002 (`closeConnection`) for upstream-readiness.**
+      Strip downstream-specific elements so the patch can stand as a fork-neutral
+      contribution offered on its own, independent of the macUI wiring. Author
+      the OCaml changes by hand: upstream is wary of LLM-authored diffs (see
+      `docs/vendored-patches-upstream.md` "Caveats before investing"). Per-patch
+      state and upstream verdicts live in `docs/vendored-patches-upstream.md`
+      §0002.
+
 
 ---
 

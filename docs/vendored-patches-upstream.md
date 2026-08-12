@@ -39,6 +39,10 @@ each change a small, well-scoped piece of existing code (see below).
 - **Upstream relevance:** the bridge file is macUI-only, so this matters upstream
   only if the native macUI is to gain connection teardown. Depends on 0003's
   engine primitive.
+- **Upstream-readiness (generalization in progress):** the exception-handler
+  diagnostic emits a fork-neutral `closeConnection: <error>`; the downstream
+  `unison-mac:` prefix is dropped. Any remaining downstream-specific elements are
+  to be reviewed before 0002 is offered upstream. Tracked in `TODO.md`.
 
 ## 0003 — `remote-close-and-drain`
 

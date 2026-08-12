@@ -52,7 +52,7 @@ index caddeef..0dc8a7a 100644
 +    Remote.drainDroppedConnectionThreads ~rounds:(Transport.maxThreads ());
 +    0
 +  with e ->
-+    Printf.eprintf "unison-mac: closeConnection: %s\n%!" (Printexc.to_string e);
++    Printf.eprintf "closeConnection: %s\n%!" (Printexc.to_string e);
 +    2
 +;;
 +Callback.register "closeConnection" unisonCloseConnection;;
