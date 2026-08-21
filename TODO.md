@@ -16,6 +16,14 @@
         enable `SURequireSignedFeed` together with signing the feed in the
         appcast tooling (enabling it before the feed is signed breaks every
         update check).
+      - Harden the release-signing boundary: generate the appcast into a fresh
+        directory from known archives, keep the structural gate
+        (`verify-appcast-signatures.sh`), and add a step that *cryptographically*
+        verifies each generated archive against its signature using the archive
+        bytes and the public key (the structural gate proves shape, not
+        validity). Treat `generate_appcast` warnings as diagnostics only, not the
+        gate — warning text is version-sensitive and cannot prove the feed is
+        usable.
       - Set `auto_updates true` in the Homebrew cask so `brew upgrade` defers
         to Sparkle; refresh the Gatekeeper sections in `INSTALL.md`/`README`
         once notarization makes the `xattr`/"Open Anyway" steps obsolete.

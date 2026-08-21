@@ -43,6 +43,7 @@ expect nested-item-enclosure.xml             fail "signed enclosure under <item>
 expect main-item-default-namespace.xml       fail "unsigned main enclosure in a foreign default namespace (Sparkle parses by name)"
 expect delta-default-namespace.xml           fail "unsigned delta enclosure in a foreign default namespace"
 expect bad-shape-signature.xml               fail "signature present + namespaced but not 64-byte Ed25519 shape"
+expect internal-whitespace-signature.xml     fail "64-byte-decodable but has internal whitespace (Sparkle strict-rejects)"
 expect no-enclosure.xml                      fail "no enclosures at all"
 
 if [ "$fail" -ne 0 ]; then

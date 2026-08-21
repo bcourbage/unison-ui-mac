@@ -24,11 +24,6 @@ if ! command -v xmllint >/dev/null 2>&1; then
 	echo "error: xmllint (libxml2) is required to validate the appcast." >&2
 	exit 1
 fi
-if ! command -v openssl >/dev/null 2>&1; then
-	echo "error: openssl is required to check signature length." >&2
-	exit 1
-fi
-
 SPARKLE_NS="http://www.andymatuschak.org/xml-namespaces/sparkle"
 
 # ENCLOSURE NODE SET — mirror Sparkle's actual parsing:
@@ -71,17 +66,23 @@ if [ "$unsigned" -gt 0 ]; then
 	exit 1
 fi
 
-# Shape check: each signature must decode to exactly 64 bytes (Ed25519). A
-# present-but-malformed value (e.g. a truncated stub) is one Sparkle rejects, so
-# reject it here rather than reporting a false "signed".
+# Shape check: mirror Sparkle's STRICT Base64 decoding. Sparkle trims only
+# leading/trailing whitespace, then decodes with NSData's strict options (no
+# internal whitespace, standard alphabet, exact padding). A lenient decoder
+# (e.g. `openssl base64 -d`) silently drops internal whitespace and would accept
+# a value Sparkle rejects — so match the strict shape by PATTERN, not by
+# decoding: a 64-byte Ed25519 signature is exactly 86 standard Base64 characters
+# followed by "==".
 nsig=$(xpath_count "count(($enclosures)/@*[$edsig_pred])")
 i=1
 while [ "$i" -le "$nsig" ]; do
 	value=$(xmllint --xpath "string((($enclosures)/@*[$edsig_pred])[$i])" "$appcast" 2>/dev/null || true)
-	bytes=$(printf '%s' "$value" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')
-	if [ "$bytes" -ne 64 ]; then
-		echo "error: an enclosure's sparkle:edSignature in $appcast decodes to $bytes bytes, not 64" >&2
-		echo "       (not a well-formed Ed25519 signature). Sparkle would reject it; refusing to publish." >&2
+	# Trim leading/trailing whitespace exactly as Sparkle does before decoding.
+	value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+	if ! printf '%s\n' "$value" | grep -Eq '^[A-Za-z0-9+/]{86}==$'; then
+		echo "error: an enclosure's sparkle:edSignature in $appcast is not a strict 64-byte Ed25519" >&2
+		echo "       Base64 signature (needs exactly 86 standard Base64 chars + '==', no internal" >&2
+		echo "       whitespace or URL-safe characters). Sparkle would reject it; refusing to publish." >&2
 		exit 1
 	fi
 	i=$((i + 1))

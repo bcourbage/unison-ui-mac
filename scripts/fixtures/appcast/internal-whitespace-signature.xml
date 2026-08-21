@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Signature is valid 64-byte Base64 EXCEPT for an internal space. openssl's
+     lenient decoder would accept it, but Sparkle's strict NSData decode rejects
+     internal whitespace, so the gate must FAIL. -->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <sparkle:version>2</sparkle:version>
+      <enclosure url="https://example.com/App-2.zip" length="1000" type="application/octet-stream" sparkle:edSignature="dW5pc29uLXVpLW1hYyBzcGFya2xlIGFwcGNhc3QgZml4 dHVyZSBzaWduYXR1cmUgbnVtYmVyIG9uZSEhcGFkWA=="/>
+    </item>
+  </channel>
+</rss>
