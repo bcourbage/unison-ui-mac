@@ -39,10 +39,6 @@ import xml.etree.ElementTree as ET
 SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 
 
-def _local(tag):
-    return tag.rsplit("}", 1)[-1]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("appcast")
@@ -88,8 +84,12 @@ def main():
     # --- The one NEW archive, matched by EXACT url ---
     with open(args.appcast, "rb") as f:
         root = ET.fromstring(f.read())
+    # Match the canonical, unprefixed <enclosure> in no namespace — exactly what
+    # generate_appcast emits and what Sparkle parses. `e.tag == "enclosure"`
+    # rejects a foreign-prefixed <evil:enclosure> ({ns}enclosure) that Sparkle
+    # would ignore but that a local-name match would wrongly accept.
     matches = [e for e in root.iter()
-               if _local(e.tag) == "enclosure" and e.get("url") == args.expected_url]
+               if e.tag == "enclosure" and e.get("url") == args.expected_url]
     if len(matches) != 1:
         sys.stderr.write(
             f"error: expected exactly one enclosure with url {args.expected_url}, found {len(matches)}\n")

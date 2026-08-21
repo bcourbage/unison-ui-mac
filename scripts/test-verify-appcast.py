@@ -46,7 +46,8 @@ def run(appcast, key_b64, *flags):
     )
 
 
-def build(d, *, tamper_archive=False, poison_feed=False, duplicate=False):
+def build(d, *, tamper_archive=False, poison_feed=False, duplicate=False,
+          foreign_new=False):
     d = pathlib.Path(d)
     key_b64 = base64.b64encode(os.urandom(32)).decode()
     keyfile = d / "key.txt"
@@ -57,6 +58,20 @@ def build(d, *, tamper_archive=False, poison_feed=False, duplicate=False):
         [SIGN_UPDATE, "-p", "--ed-key-file", str(keyfile), str(archive)],
         capture_output=True, text=True,
     ).stdout.strip()
+    size = archive.stat().st_size
+    if foreign_new:
+        # The new archive appears ONLY as a foreign-prefixed <evil:enclosure> at
+        # the expected URL (Sparkle ignores it), alongside an unrelated real
+        # <enclosure> so a structural gate would still pass. The crypto gate must
+        # NOT accept the foreign node.
+        new_enc = (f'<evil:enclosure xmlns:evil="http://evil.example/ns" url="{URL}" '
+                   f'length="{size}" type="application/octet-stream" sparkle:edSignature="{sig}"/>')
+        old_enc = (f'<enclosure url="{PREFIX}old.zip" length="1" '
+                   f'type="application/octet-stream" sparkle:edSignature="{sig}"/>')
+    else:
+        new_enc = (f'<enclosure url="{URL}" length="{size}" '
+                   f'type="application/octet-stream" sparkle:edSignature="{sig}"/>')
+        old_enc = ""
     dup = (f'<enclosure url="{URL}" length="1" type="application/octet-stream" '
            f'sparkle:edSignature="{sig}"/>') if duplicate else ""
     feed = d / "appcast.xml"
@@ -64,9 +79,7 @@ def build(d, *, tamper_archive=False, poison_feed=False, duplicate=False):
         '<?xml version="1.0" standalone="yes"?>\n'
         '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">\n'
         '<channel>\n<item>\n<sparkle:version>19</sparkle:version>\n'
-        f'<enclosure url="{URL}" length="{archive.stat().st_size}" '
-        f'type="application/octet-stream" sparkle:edSignature="{sig}"/>\n'
-        f'{dup}'
+        f'{old_enc}{new_enc}\n{dup}'
         '</item>\n</channel>\n</rss>\n'
     )
     subprocess.run([SIGN_UPDATE, "--ed-key-file", str(keyfile), str(feed)],
@@ -118,6 +131,11 @@ with tempfile.TemporaryDirectory() as d:
 with tempfile.TemporaryDirectory() as d:
     feed, arc, key = build(d, duplicate=True)
     check("duplicate enclosure URL rejected (ambiguous)",
+          run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
+
+with tempfile.TemporaryDirectory() as d:
+    feed, arc, key = build(d, foreign_new=True)
+    check("foreign-prefixed <evil:enclosure> at URL rejected",
           run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
 
 if failures:
