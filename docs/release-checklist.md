@@ -10,7 +10,8 @@ be confirmed against the actual built artifact, not just CI.
 - [ ] `main` is green; the release build (`release.yml`, Release configuration)
       is built from the exact tagged commit.
 - [ ] Artifact reports the right `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`,
-      minimum macOS, ad-hoc signature, and no Debug/autotest symbols.
+      minimum macOS, a Developer ID signature with a hardened runtime, a stapled
+      notarization ticket, and no Debug/autotest symbols.
 - [ ] Vendored blob checksum matches `vendor/README.md`.
 
 ## 0.4.2

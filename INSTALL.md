@@ -4,16 +4,13 @@ This page walks through getting Unison-UI-Mac running on your Mac.
 Three paths, in increasing order of effort:
 
 1. **[Homebrew (recommended)](#quickest-install-homebrew)**: one
-   command, no Gatekeeper friction, auto-updates. The recommended path
-   for anyone who already has Homebrew installed.
+   command, and the app keeps itself up to date after that. The
+   recommended path for anyone who already has Homebrew installed.
 2. **[Prebuilt `.app` from the Releases page](#quick-install-prebuilt-release)**:
    the manual zip-download path. Use this if you don't use Homebrew or
-   want explicit version control over what's installed. The binary is
-   ad-hoc-signed (not Apple-notarized), so you'll need to handle a
-   one-time Gatekeeper prompt; see
-   [First launch & Gatekeeper](#first-launch--gatekeeper) below.
+   want explicit control over which version is installed.
 3. **[Build from source](#install-from-source)**: required for
-   development, or if you'd rather verify the binary yourself.
+   development, or if you'd rather build the binary yourself.
 
 > Already familiar with macOS dev tooling? The 60-second version is at the
 > bottom under [TL;DR](#tldr).
@@ -24,19 +21,11 @@ The recommended path for end users:
 
 ```sh
 brew install --cask bcourbage/tap/unison-ui-mac
-brew trust bcourbage/tap
 open /Applications/unison-ui-mac.app
 ```
 
-That's it. Homebrew handles the macOS quarantine-attribute strip
-automatically, so first launch is a clean double-click, with no Gatekeeper
-prompt, no right-click ceremony, and no `xattr` invocation.
-
-To upgrade later when a new release ships:
-
-```sh
-brew upgrade --cask unison-ui-mac
-```
+That's it. Launch the app once, and updates after that come through the app
+itself.
 
 To uninstall:
 
@@ -111,74 +100,17 @@ make build BLOB=$(pwd)/../unison/src/unison-blob.o
 
 Use this path if you don't have Homebrew, or want to install a specific
 version other than the latest. Otherwise the
-[Homebrew path above](#quickest-install-homebrew) is shorter and
-handles Gatekeeper for you.
+[Homebrew path above](#quickest-install-homebrew) is shorter.
 
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
-   download the `.app.zip` attached to the release you want.
-2. Unzip and drag `unison-ui-mac.app` to `/Applications`.
-3. **Clear the quarantine attribute, then launch.** macOS 15
-   (Sequoia) blocks downloaded unsigned apps on first launch with
-   *"Apple could not verify ... is free of malware"* and offers
-   only "Move to Trash" / "Done"; Sequoia offers no right-click → Open
-   bypass for downloaded apps. See
-   [First launch & Gatekeeper](#first-launch--gatekeeper) for the
-   two workarounds.
-
-The fastest path is the one-line shell install, which strips the
-quarantine attribute up front so the first launch is a clean
-double-click (substitute the version you downloaded):
-
-```sh
-VERSION=0.4.2
-unzip ~/Downloads/unison-ui-mac-${VERSION}.app.zip -d /Applications
-xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
-open /Applications/unison-ui-mac.app
-```
+   download the `unison-ui-mac-<version>.app.zip` attached to the release
+   you want.
+2. Unzip it and drag `Unison-UI-Mac.app` to `/Applications`.
+3. Double-click to launch. Updates after that come through the app itself.
 
 If no release is available for the version you want, or you'd rather
 build the binary yourself, see
 [Build from source](#install-from-source) below.
-
-## First launch & Gatekeeper
-
-The released `.app` is **ad-hoc code-signed but not Apple-notarized**
-(see [Why this isn't a notarized download](#why-this-isnt-a-notarized-download)).
-On macOS 15 (Sequoia) the first launch from `/Applications` will be
-blocked with:
-
-> *"Apple could not verify 'Unison-UI-Mac.app' is free of malware
-> that may harm your Mac or compromise your privacy."*
-
-with only **Move to Trash** and **Done** buttons. (Sequoia offers no
-right-click → "Open" bypass for downloaded apps.) Two
-ways to unblock:
-
-### Option 1: command line (fastest)
-
-```sh
-xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
-open /Applications/unison-ui-mac.app
-```
-
-This strips the `com.apple.quarantine` extended attribute macOS
-adds to anything downloaded from the internet. Once the attribute
-is gone, Gatekeeper stops checking the bundle and double-click
-works normally from then on.
-
-### Option 2: System Settings (GUI)
-
-1. Click **Done** on the blocking dialog (don't move it to Trash).
-2. Open **System Settings → Privacy & Security**.
-3. Scroll down to the Security section. You'll see:
-   > *"Unison-UI-Mac.app" was blocked to protect your Mac.*
-4. Click **Open Anyway**, authenticate with Touch ID or your
-   password.
-5. Try opening the app again; you'll get one more confirmation
-   dialog, click **Open Anyway**.
-
-After either path, the app launches normally and macOS adds it to
-its approved list; future launches don't prompt.
 
 ## Install from source
 
@@ -198,17 +130,16 @@ make install
 
 That's it. `make install` builds the Release configuration (forced
 internally; `make build` on its own defaults to Debug for dev
-iteration) and hands off to `install.sh`, which signs, copies to
-`/Applications`, clears the quarantine attribute, and opens the app.
-After this you'll find **Unison-UI-Mac** in `/Applications` and in
-Launchpad. Re-run `make install` after pulling updates to refresh the
-installed copy.
+iteration) and hands off to `install.sh`, which signs the app, copies it
+to `/Applications`, and opens it. After this you'll find
+**Unison-UI-Mac** in `/Applications` and in Launchpad. Re-run
+`make install` after pulling updates to refresh the installed copy.
 
 If you'd rather run the two halves separately, build Release explicitly:
 
 ```sh
 make build CONFIG=Release   # Release build into .build/derived/...
-./install.sh                # sign + copy + de-quarantine + launch
+./install.sh                # sign + copy to /Applications + launch
 ```
 
 ## What the installer script does
@@ -221,44 +152,17 @@ yourself. Specifically:
    produces Release; if you're calling `install.sh` directly, build
    Release explicitly with `make build CONFIG=Release` first.) Errors
    out with a clear message if neither exists.
-2. **Ad-hoc code-signs it**, replacing the development signature with a
-   fresh one tied to no particular identity:
-   ```sh
-   codesign --force --deep --sign - <bundle>
-   ```
-   This is the same kind of signature `xcodebuild` already applies in
-   the build step, but doing it again after we move the bundle keeps
-   the signature consistent with the bundle's new location and any
-   incidental file changes (extended attributes, etc.).
+2. **Signs it** via `scripts/sign-app.sh`, inside-out. When a Developer ID
+   Application certificate is in your keychain, it signs with that identity
+   and a hardened runtime; otherwise it falls back to an ad-hoc signature for
+   local use (`ADHOC=1` forces the fallback).
 3. **Copies the bundle into `/Applications`.** Uses `sudo` automatically
    if your user can't write there.
-4. **Clears the quarantine attribute** that macOS adds to anything
-   downloaded or copied from another origin:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
-   ```
-   Without this, Gatekeeper refuses to open the app and shows the
-   "cannot be opened because the developer cannot be verified" alert.
-5. **Opens the app** so you can verify it launches.
+4. **Opens the app** so you can verify it launches.
 
 You can pass `--no-launch` to skip the final `open` step, or
 `--dest <path>` to install somewhere other than `/Applications` (for
 example `~/Applications`).
-
-## Why this isn't a notarized download
-
-Apple-notarized distribution requires a paid Apple Developer account
-($99/year) and an automated submission pipeline. This is a personal
-project; that level of process isn't worth the cost or the time. The
-ad-hoc signature path is the same one Apple's own documentation
-describes for in-house and homebrew-installed apps, and it doesn't
-weaken the app's security; it just means Gatekeeper has no third
-party to vouch for the build, so you (the person who built it) are
-implicitly vouching.
-
-If a friend hands you a copy of this app without you building it
-yourself, that's a separate trust decision. Don't run unsigned macOS
-apps from untrusted sources.
 
 ## Manual install (without the script)
 
@@ -269,9 +173,9 @@ If you'd rather see every step:
 make build CONFIG=Release
 APP=.build/derived/Build/Products/Release/unison-ui-mac.app
 
-codesign --force --deep --sign - "$APP"
+scripts/sign-app.sh "$APP"          # Developer ID if one is in the keychain;
+                                    # pass "-" as a second argument for ad-hoc
 sudo cp -R "$APP" /Applications/
-sudo xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app
 open /Applications/unison-ui-mac.app
 ```
 
@@ -284,7 +188,7 @@ moves you to the latest published release, and there's no
 source by its git tag and take it out of Homebrew's hands:
 
 ```sh
-# 1. If you installed via Homebrew, stop it from managing/upgrading the app
+# 1. If you installed via Homebrew, stop it from managing the app
 brew uninstall --cask unison-ui-mac
 
 # 2. Build and install the exact version you want
@@ -295,7 +199,7 @@ git checkout v0.4.2        # the version you want to stay on
 make install               # Release build → /Applications (see "Install from source")
 ```
 
-Nothing will upgrade the app after this until you choose to. To move to
+Nothing will change the app after this until you choose to. To move to
 a different version later, `git checkout <other-tag>` then `make install`
 again. To rejoin the auto-updating Homebrew track, reinstall the cask:
 `brew install --cask bcourbage/tap/unison-ui-mac`.
@@ -346,12 +250,6 @@ make install
   app is arm64-only and targets macOS 15+; the cask refuses to
   install on older OSes / Intel CPUs rather than producing a
   bundle that won't launch.
-- **"can't be opened because Apple cannot check it for malicious
-  software"**: quarantine attribute is still on the bundle. This
-  shouldn't happen with the Homebrew install (brew strips it
-  automatically) but can happen with the manual zip path. Re-run
-  `./install.sh` or `sudo xattr -dr com.apple.quarantine
-  /Applications/unison-ui-mac.app`.
 - **App launches then immediately quits**: check Console.app under
   subsystem `net.courbage.unison-ui-mac` for the crash reason. Most
   common cause is an OCaml install that doesn't match the host
@@ -362,3 +260,4 @@ make install
   is installed but `brew install xcodegen` hasn't run, or your shell
   hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew
   shellenv)"`).
+```

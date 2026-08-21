@@ -686,8 +686,7 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
   trick that worked in older macOS releases no longer applies. Strip
   the quarantine attribute with
   `xattr -dr com.apple.quarantine /Applications/unison-ui-mac.app`,
-  or use System Settings → Privacy & Security → Open Anyway. See
-  [INSTALL.md § First launch & Gatekeeper](INSTALL.md#first-launch--gatekeeper).
+  or use System Settings → Privacy & Security → Open Anyway.
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 

@@ -963,11 +963,6 @@ the sound toggle is on). See [Settings → Sync completion](#sync-completion).
 
 First launch involves `caml_startup` and a few hundred milliseconds of
 OCaml runtime setup. Subsequent launches reuse the same `.app` bundle.
-If this is the very first launch from a downloaded release on macOS
-15 (Sequoia), Gatekeeper blocks it: see
-[INSTALL.md § First launch & Gatekeeper](INSTALL.md#first-launch--gatekeeper)
-for the one-shot unblock. Right-click → Open does not bypass Gatekeeper
-on macOS 15.
 
 ### How do I read this app's diagnostic logs?
 

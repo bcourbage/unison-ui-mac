@@ -24,12 +24,10 @@ on this fork).
 >
 > ```sh
 > brew install --cask bcourbage/tap/unison-ui-mac
-> brew trust bcourbage/tap
 > ```
 >
 > Other install paths (manual zip, build from source) live in
-> [INSTALL.md](INSTALL.md). First-run Gatekeeper notes apply to the
-> manual-zip path only; the Homebrew install handles it for you.
+> [INSTALL.md](INSTALL.md).
 >
 > **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
 > **Release history:** [CHANGELOG.md](CHANGELOG.md).
@@ -126,8 +124,8 @@ open (mostly P3 hygiene items at this point).
 
 ## Build and install
 
-For end-to-end install steps (Xcode/Homebrew prereqs, building, ad-hoc
-signing, copying to `/Applications`), see **[INSTALL.md](INSTALL.md)**.
+For end-to-end install steps (Xcode/Homebrew prereqs, building, signing,
+copying to `/Applications`), see **[INSTALL.md](INSTALL.md)**.
 
 For day-to-day development, the Makefile targets are:
 
@@ -229,7 +227,7 @@ unison-ui-mac/
 ├── Makefile                             Build orchestration
 ├── README.md                            Orientation and dev build
 ├── INSTALL.md                           End-user install guide
-├── install.sh                           One-shot installer (sign + /Applications + de-quarantine)
+├── install.sh                           One-shot installer (sign + copy to /Applications + launch)
 ├── MANUAL.md                            Full user manual (feature guide)
 ├── NOTICE.md                            Attribution and license details
 ├── CONTRIBUTING.md                      Contribution policy + LLM-usage disclosure
