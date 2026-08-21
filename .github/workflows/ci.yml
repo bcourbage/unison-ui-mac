@@ -104,6 +104,14 @@ jobs:
         # the (much slower) app build.
         run: make check-signing
 
+      - name: Check appcast signature verifier
+        # Pure-shell gate (no Xcode/OCaml/network): runs the per-enclosure EdDSA
+        # signature verifier against committed fixtures, including the regression
+        # case where a signed release-notes link must not mask an unsigned
+        # enclosure. Guards the release tooling from silently publishing an
+        # appcast that would break updates for installed clients.
+        run: make check-appcast
+
       - name: Build
         # `make build` regenerates the xcodeproj, builds the app for
         # Debug, and stops short of running tests. Catches Swift

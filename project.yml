@@ -22,6 +22,18 @@ settings:
     # mechanics in Makefile.
     BLOB: ${BLOB}
 
+packages:
+  # Sparkle 2 — in-app software updates. Pinned by REVISION, not tag, so a
+  # moved `2.9.6` tag (e.g. after an upstream account compromise) cannot swap
+  # the framework underneath us: SPM resolves this exact commit, whose
+  # Package.swift declares the binary xcframework's checksum. The revision below
+  # is tag 2.9.6. (Package.resolved lives inside the gitignored .xcodeproj, so
+  # the revision pin here is the tracked lock.) Bump deliberately — see
+  # docs/sparkle-updates.md — the same discipline as the vendored OCaml blob.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    revision: ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a
+
 targets:
   unison-ui-mac:
     type: application
@@ -79,6 +91,10 @@ targets:
         buildPhase: resources
       - path: NOTICE.md
         buildPhase: resources
+    dependencies:
+      # Sparkle framework (declared in the top-level `packages` block).
+      # Xcode links and auto-embeds the SPM binary framework into the app.
+      - package: Sparkle
     info:
       path: Resources/Info.plist
       properties:
@@ -100,6 +116,59 @@ targets:
         # chain live in LICENSE + NOTICE.md.
         NSHumanReadableCopyright: "Copyright © 2026 Bruno Courbage. Licensed under GNU GPLv3 or later. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors."
         LSApplicationCategoryType: public.app-category.utilities
+        # Sparkle in-app updater. These MUST be declared here, not only in
+        # Resources/Info.plist, because xcodegen regenerates the plist on every
+        # build (same reason as the version strings above).
+        #   SUFeedURL              — appcast location (HTTPS). The GitHub Pages
+        #                            URL below goes live in the release phase;
+        #                            until then, updates are exercised against a
+        #                            local appcast (see docs/sparkle-updates.md).
+        #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
+        #                            REAL key (its private half lives only in the
+        #                            maintainer's login keychain, never in the
+        #                            repo). NOT a placeholder — it changes only on
+        #                            a key rotation. Sparkle's validator accepts an
+        #                            update when EITHER a valid EdDSA archive
+        #                            signature OR a matching Apple Developer ID
+        #                            signature is present (an OR, not both). Today
+        #                            the ad-hoc build's cdhash-specific requirement
+        #                            makes the code-signing branch unusable, so
+        #                            EdDSA is effectively required — see
+        #                            docs/sparkle-updates.md.
+        #   SUVerifyUpdateBeforeExtraction — verify the archive's EdDSA
+        #                            signature BEFORE handing it to the
+        #                            unarchiver. Without it Sparkle extracts an
+        #                            unauthenticated archive first (in the
+        #                            unsandboxed Installer XPC service) and only
+        #                            checks the signature afterward, so a
+        #                            compromised feed serving a malicious archive
+        #                            reaches the unarchiver before the sole
+        #                            author-controlled trust check. Required here:
+        #                            EdDSA is our only trust anchor until Developer
+        #                            ID signing lands.
+        #   SUEnableSystemProfiling — send an anonymous system/app profile (OS
+        #                            version, CPU, Mac model, RAM, app version,
+        #                            language) as query parameters on the update
+        #                            check, at most once per week.
+        #   SUPromptUserOnFirstLaunch — ask about automatic checks on the FIRST
+        #                            launch (Sparkle otherwise defers the prompt to
+        #                            the second launch). That prompt carries an
+        #                            "Include anonymous system profile" checkbox
+        #                            that is checked by default, so profiling is
+        #                            opt-OUT within the prompt. Nothing is sent
+        #                            until the user answers. Details + rationale in
+        #                            docs/sparkle-updates.md.
+        # SUEnableAutomaticChecks is deliberately unset: the first-launch prompt
+        # above is what turns automatic checks on or off.
+        # SURequireSignedFeed (authenticate the appcast itself, not just each
+        # archive) is added at go-live, together with the feed-signing step in the
+        # appcast tooling — enabling it here before the feed is signed would make
+        # every update check fail.
+        SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
+        SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
+        SUVerifyUpdateBeforeExtraction: true
+        SUEnableSystemProfiling: true
+        SUPromptUserOnFirstLaunch: true
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""
     settings:

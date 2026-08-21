@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 
 /// Builds the application's main menu bar programmatically. Macos doesn't
 /// give us a menu for free without a storyboard, so we assemble the
@@ -22,7 +23,12 @@ enum MainMenu {
     /// selector has been removed, so omitting it would break the command rather
     /// than silently fall back. Passing an explicit target detaches that
     /// app-global navigation command from transient responder-chain resolution.
-    static func build(pickerTarget: AnyObject) -> NSMenu {
+    /// `updaterTarget` is the Sparkle `SPUStandardUpdaterController`, the
+    /// explicit target for the App ▸ "Check for Updates…" item. Sparkle's
+    /// controller owns both the `checkForUpdates:` action and the
+    /// `validateMenuItem:` that greys the item while a check is running, so
+    /// binding it as the item's target is all the wiring the command needs.
+    static func build(pickerTarget: AnyObject, updaterTarget: AnyObject) -> NSMenu {
         // Prefer CFBundleDisplayName / CFBundleName so the user-visible
         // app name (e.g. "Unison-UI-Mac") is what appears in the App
         // menu's "About / Hide / Quit" items and the Help menu —
@@ -42,7 +48,7 @@ enum MainMenu {
         // entries. Apple's own non-document apps (Calculator, System
         // Settings) ship without a File menu.
         let main = NSMenu()
-        main.addItem(makeAppMenu(appName: appName))
+        main.addItem(makeAppMenu(appName: appName, updaterTarget: updaterTarget))
         main.addItem(makeEditMenu())
         main.addItem(makeActionMenu(pickerTarget: pickerTarget))
         main.addItem(makeWindowMenu())
@@ -95,7 +101,7 @@ enum MainMenu {
         return item
     }
 
-    private static func makeAppMenu(appName: String) -> NSMenuItem {
+    private static func makeAppMenu(appName: String, updaterTarget: AnyObject) -> NSMenuItem {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu(title: appName)
 
@@ -105,6 +111,19 @@ enum MainMenu {
         appMenu.addItem(withTitle: "About \(appName)",
                         action: #selector(AppDelegate.showAboutPanel(_:)),
                         keyEquivalent: "")
+        appMenu.addItem(.separator())
+
+        // Check for Updates… — the Sparkle updater. Explicit target is the
+        // SPUStandardUpdaterController; it supplies the action and the
+        // validation that disables the item during an in-flight check.
+        // Ellipsis because it opens update UI rather than acting instantly.
+        // App-menu placement is the macOS convention for this command.
+        let checkForUpdates = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: "")
+        checkForUpdates.target = updaterTarget
+        appMenu.addItem(checkForUpdates)
         appMenu.addItem(.separator())
 
         // macOS-idiomatic Settings entry. ⌘, is the canonical shortcut;

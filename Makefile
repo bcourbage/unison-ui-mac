@@ -341,6 +341,15 @@ app: build
 check-signing:
 	@./scripts/test-resolve-signing.sh
 
+# Deterministic test for the appcast signature verifier (no Xcode / no network /
+# no Sparkle tools needed). Runs verify-appcast-signatures.sh against committed
+# fixtures to lock the per-enclosure EdDSA-signature check — including the
+# regression case where a signed release-notes link must not mask an unsigned
+# enclosure.
+.PHONY: check-appcast
+check-appcast:
+	@./scripts/test-sparkle-appcast.sh
+
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
 # user-facing install wants the optimized binary, not a Debug build with
