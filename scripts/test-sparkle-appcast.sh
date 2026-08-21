@@ -30,6 +30,7 @@ expect signed.xml                            pass "one signed enclosure"
 expect multi-signed.xml                      pass "two signed enclosures"
 expect alternate-prefix-correct-namespace.xml pass "non-'sparkle' prefix bound to the exact Sparkle URI"
 expect delta-signed.xml                      pass "signed main + signed delta enclosure (sparkle:deltas)"
+expect foreign-default-signed.xml            pass "foreign default-namespace enclosure, validly signed (Sparkle parses+accepts)"
 expect unsigned.xml                          fail "one unsigned enclosure"
 expect mixed.xml                             fail "one signed + one unsigned enclosure"
 expect release-notes-sig.xml                 fail "unsigned enclosure, signed release-notes link (must not mask)"
@@ -39,6 +40,9 @@ expect unrelated-enclosure.xml               fail "only a namespaced <evil:enclo
 expect delta-unsigned.xml                    fail "signed main but UNSIGNED delta enclosure"
 expect out-of-schema-signed-enclosure.xml    fail "signed enclosure under <channel><metadata> (Sparkle never parses it)"
 expect nested-item-enclosure.xml             fail "signed enclosure under <item><metadata> (not a first-level child)"
+expect main-item-default-namespace.xml       fail "unsigned main enclosure in a foreign default namespace (Sparkle parses by name)"
+expect delta-default-namespace.xml           fail "unsigned delta enclosure in a foreign default namespace"
+expect bad-shape-signature.xml               fail "signature present + namespaced but not 64-byte Ed25519 shape"
 expect no-enclosure.xml                      fail "no enclosures at all"
 
 if [ "$fail" -ne 0 ]; then

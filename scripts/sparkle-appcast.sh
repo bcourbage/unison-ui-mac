@@ -59,9 +59,10 @@ if [ ! -f "$appcast" ]; then
 	exit 1
 fi
 
-# Fail closed unless EVERY enclosure is individually EdDSA-signed. generate_appcast
-# only warns (exit 0) on a missing/mismatched key; a per-enclosure check (not a
-# global signature count) is required because Sparkle also signs release-notes
-# elements, whose signatures would otherwise mask an unsigned enclosure.
+# Fail closed unless every Sparkle-parsable enclosure carries its own
+# Sparkle-namespaced, 64-byte-shaped edSignature (generate_appcast only warns,
+# exit 0, on a missing/mismatched key). This is a structural signature-presence
+# and shape check — not cryptographic verification (Sparkle does that on the
+# client with the public key).
 "$(dirname "$0")/verify-appcast-signatures.sh" "$appcast"
-echo "Wrote (verified): $appcast" >&2
+echo "Wrote: $appcast (signature-attribute presence + 64-byte shape check passed)" >&2

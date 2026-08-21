@@ -112,10 +112,15 @@ with the keychain EdDSA key, generates binary deltas, and writes `appcast.xml`:
 SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/
 ```
 
-The wrapper fails (non-zero) if `generate_appcast` produces any enclosure without
-a `sparkle:edSignature` — e.g. when the keychain key is missing or does not match
-the app. That mismatch is only a *warning* from `generate_appcast` itself, so
-never publish an appcast that skipped the wrapper's check.
+The wrapper fails (non-zero) via `scripts/verify-appcast-signatures.sh` unless
+every enclosure Sparkle would parse (a `name()='enclosure'` child of an `<item>`
+or of a `sparkle:deltas`) carries a `sparkle:edSignature` in the exact Sparkle
+namespace whose value decodes to 64 bytes. That is a **structural** check —
+signature *presence*, location, namespace, and Ed25519 shape — **not**
+cryptographic verification (that needs the referenced archive bytes plus the
+public key and is Sparkle's job on the client). It exists because a
+missing/mismatched key makes `generate_appcast` only *warn* (exit 0), so never
+publish an appcast that skipped this check.
 
 Host the resulting `appcast.xml` (and the archives it references) at the
 `SUFeedURL` in `project.yml` — GitHub Pages on this repo is the intended home.
