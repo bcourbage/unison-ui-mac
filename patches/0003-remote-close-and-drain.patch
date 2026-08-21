@@ -1,0 +1,217 @@
+diff --git a/src/remote.ml b/src/remote.ml
+index 2302b62..6a4807d 100644
+--- a/src/remote.ml
++++ b/src/remote.ml
+@@ -646,6 +646,42 @@ let clientCloseRootConnection = function
+       | None -> ()
+       end
+
++(* After a connection has been closed (by [clientCloseRootConnection] or by
++   a failure), threads belonging to it that were in the middle of execution
++   are just discarded. They are not gone, however: they resume the next time
++   [Lwt_unix.run] is called and typically terminate by raising an uncaught
++   exception ("Lost connection with the server"). If by then another
++   connection has been opened, that exception ends the *new* connection's
++   [Lwt_unix.run], breaking it.
++
++   This function advances such pending teardown by driving the scheduler
++   through a bounded number of yields, so discarded threads can finish
++   (their exceptions are caught and dropped here) before another connection
++   is opened. This must be done in a loop since each failing thread may
++   raise an uncaught exception which will end [Lwt_unix.run]. We don't know
++   how many threads can finish this way, so we don't know when to stop
++   looping; callers pass a bound (typically [Transport.maxThreads ()],
++   which is probably much more than needed). This does not guarantee that
++   every thread in existence has completed -- a thread still blocked on I/O
++   will not finish here; it advances whatever teardown is runnable now.
++
++   Scheduler-safety contract: this drives [Lwt_unix.run], and Unison's Lwt
++   scheduler is a single global instance, so this call must not overlap any
++   other run of the scheduler -- neither re-entrantly (do not call it from
++   within a callback of an already-running [Lwt_unix.run]) nor concurrently
++   (no other thread may be executing [Lwt_unix.run] while this runs). Two
++   overlapping [Lwt_unix.run] invocations corrupt the scheduler. It does
++   not matter which thread makes the call. Equivalently: call this only
++   when the connection engine is quiescent -- no connect/scan/sync in
++   flight -- which is exactly the state right after closing a connection. *)
++let drainDroppedConnectionThreads ~rounds =
++  let rec loop_yield n () =
++    if n = 0 then Lwt.return () else Lwt_unix.yield () >>= loop_yield (n - 1)
++  in
++  for _ = 1 to rounds do
++    try Lwt_unix.run (loop_yield 10 ()) with _ -> ()
++  done
++
+ (****)
+
+ (* Implemented as a record to avoid polluting [Remote] namespace. If
+diff --git a/src/remote.mli b/src/remote.mli
+index 9d168c1..81e7b27 100644
+--- a/src/remote.mli
++++ b/src/remote.mli
+@@ -67,6 +67,23 @@ val isRootConnected : Common.root -> bool
+    to close). *)
+ val clientCloseRootConnection : Common.root -> unit
+
++(* Advance pending teardown of threads belonging to closed (or failed)
++   connections by driving the Lwt scheduler through a bounded number of
++   yields ([rounds] iterations, typically [Transport.maxThreads ()]).
++   Discarded threads otherwise resume during the next [Lwt_unix.run] and
++   can break a newly opened connection with their dying exceptions. This
++   does not prove that every thread has completed; it advances whatever
++   teardown is runnable now. Call this after closing a connection and
++   before opening another one in the same process.
++
++   Because this drives [Lwt_unix.run] (a single global scheduler), it must
++   not overlap another run of the scheduler -- not re-entrantly (from within
++   a running [Lwt_unix.run] callback) and not concurrently (another thread
++   in [Lwt_unix.run]); overlapping runs corrupt the scheduler. It may run on
++   any thread. Equivalently: call it only when the connection engine is
++   quiescent (no connect/scan/sync in flight). *)
++val drainDroppedConnectionThreads : rounds:int -> unit
++
+ (* Statistics *)
+ val emittedBytes : float ref
+ val receivedBytes : float ref
+diff --git a/src/test.ml b/src/test.ml
+index 72e4714..12b66d9 100644
+--- a/src/test.ml
++++ b/src/test.ml
+@@ -247,6 +247,97 @@ type checkable = R1 | R2 | BACKUP1 | BACKUP2
+ let checkable2string = function
+   R1 -> "R1" | R2 -> "R2" | BACKUP1 -> "BACKUP1" | BACKUP2 -> "BACKUP2"
+
++(* Test repeated in-process connection lifecycle correctness: close a
++   remote connection and open a new one in the same process, several
++   times over. Graphical UIs do this when the user switches profiles (or
++   when the UI closes the connection between syncs). A thread belonging
++   to the closed connection that is still pending in the scheduler must
++   not break the next connection when it resumes; this is what
++   [Remote.drainDroppedConnectionThreads] (called here after each close,
++   the same way a UI should call it) guarantees. Without the drain, the
++   second cycle fails with "Lost connection with the server" /
++   "Protocol error: corrupted message received".
++
++   Uses the real shell-connection transport (child process plus pipes,
++   exactly the code path interactive UIs use), but with [sshcmd] pointing
++   at a wrapper script that ignores the ssh arguments and directly runs
++   this same executable as the server. Self-contained and deterministic:
++   no network, no ssh setup. Unix only (shell wrapper script). *)
++let testCloseReopen () =
++  Util.msg "Running connection close/reopen tests...\n";
++  (* Snapshot all preferences so we can restore them (we change [sshcmd]). *)
++  let origPrefs = Prefs.dump 1 in
++  let tdir =
++    let f = Filename.temp_file "unison-closereopen" "" in
++    Unix.unlink f; Unix.mkdir f 0o700; f
++  in
++  let servedRoot = Filename.concat tdir "root" in
++  Unix.mkdir servedRoot 0o700;
++  (* "ssh" replacement: ignore every argument (host, server command) and
++     exec this very binary in server mode on stdio. *)
++  let fakeSsh = Filename.concat tdir "fake-ssh" in
++  begin
++    let c = open_out fakeSsh in
++    output_string c
++      (Printf.sprintf "#!/bin/sh\nexec %s -server\n"
++         (Filename.quote Sys.executable_name));
++    close_out c;
++    Unix.chmod fakeSsh 0o700
++  end;
++  (* The connection opened in the current cycle. Tracked so exception
++     cleanup can close an established connection (each cycle normally
++     closes its own before the next one opens). *)
++  let openRoot = ref None in
++  let closeOpenRoot () =
++    match !openRoot with
++    | None -> ()
++    | Some root ->
++        openRoot := None;
++        (try Remote.clientCloseRootConnection root with _ -> ());
++        (try Remote.drainDroppedConnectionThreads
++               ~rounds:(Transport.maxThreads ())
++         with _ -> ())
++  in
++  let cleanup () =
++    closeOpenRoot ();
++    Prefs.load origPrefs 1;
++    begin try Unix.unlink fakeSsh with Unix.Unix_error _ -> () end;
++    begin try Unix.rmdir servedRoot with Unix.Unix_error _ -> () end;
++    begin try Unix.rmdir tdir with Unix.Unix_error _ -> () end
++  in
++  begin try
++    Prefs.loadStrings [Printf.sprintf "sshcmd = %s" fakeSsh];
++    let clroot =
++      Clroot.parseRoot (Printf.sprintf "ssh://testhost/%s" servedRoot) in
++    for i = 1 to 5 do
++      debug (fun () -> Util.msg "close/reopen cycle %d\n" i);
++      (* Open; the fake ssh never prompts. *)
++      begin match Remote.openConnectionStart clroot with
++      | None -> ()
++      | Some pre ->
++          begin match Remote.openConnectionPrompt pre with
++          | Some _ ->
++              Remote.openConnectionCancel pre;
++              raise (Util.Fatal "close/reopen test: unexpected prompt")
++          | None -> Remote.openConnectionEnd pre
++          end
++      end;
++      let root = Remote.canonize clroot in
++      openRoot := Some root;
++      (* A round trip over the new connection must succeed. *)
++      ignore (Lwt_unix.run (getfs root ()));
++      (* Close, then advance the closed connection's pending teardown
++         before the next cycle opens a new connection. *)
++      Remote.clientCloseRootConnection root;
++      openRoot := None;
++      Remote.drainDroppedConnectionThreads ~rounds:(Transport.maxThreads ())
++    done;
++    cleanup ()
++  with e ->
++    cleanup ();
++    raise e
++  end
++
+ let test() =
+   Util.warnPrinter := None;
+   Prefs.set Trace.logging false;
+@@ -269,6 +360,11 @@ let test() =
+
+   Util.msg "Running internal tests...\n";
+
++  (* Self-contained (server runs as a child process communicating over its
++     stdio pipes, via a fake-ssh wrapper); does not touch the profile's
++     roots. Restores any preferences it changes. Unix only. *)
++  if Sys.os_type = "Unix" then testCloseReopen ();
++
+   (* Paranoid checks, to make sure we do not delete anybody's filesystem! *)
+   if not (Safelist.for_all
+             (fun r -> Util.findsubstring "test" r <> None)
+diff --git a/src/uicommon.ml b/src/uicommon.ml
+index 42452ca..23e16fb 100644
+--- a/src/uicommon.ml
++++ b/src/uicommon.ml
+@@ -772,19 +772,10 @@ let transportItems items pRiThisRound makeAction =
+
+        Not all threads are stuck or purged and will continue the next
+        time [Lwt_unix.run] is called. Try to finish these threads now.
+-       This must be done in a loop since each failing thread may raise
+-       an uncaught exception which will end [Lwt_unix.run]. We don't
+-       know how many threads can finish this way, so we don't know when
+-       to stop looping. The limit of concurrent threads is used as an
+-       approximation (which is probably much more than needed). *)
+-    let rec loop_yield n () =
+-      if n = 0 then Lwt.return () else Lwt_unix.yield () >>= loop_yield (n - 1)
+-    in
+-    for _ = 1 to Transport.maxThreads () do
+-      try
+-        Lwt_unix.run (loop_yield 10 ())
+-      with _ -> ()
+-    done
++       The limit of concurrent threads is used as an approximation of
++       how many threads can finish this way (which is probably much
++       more than needed). *)
++    Remote.drainDroppedConnectionThreads ~rounds:(Transport.maxThreads ())
+   in
+
+   starting (); (* Count the dispense loop as one of the tasks to complete *)

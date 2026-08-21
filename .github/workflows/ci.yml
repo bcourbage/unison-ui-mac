@@ -1,0 +1,141 @@
+# Continuous integration for unison-ui-mac.
+#
+# Verifies that the vendored OCaml blob still links against the host
+# OCaml runtime, the Swift app still compiles, and the XCTest suite
+# still passes on a clean macOS arm64 runner. Intentionally minimal —
+# this is a personal-use project, not a fan-out matrix.
+#
+# Why we don't build the OCaml blob from upstream here:
+#   - `vendor/unison-blob-2.54.0-arm64.o` is committed, so `make build`
+#     just compiles Swift + links. The 5–10 min OCaml compile only
+#     happens via `make vendor-blob`, which is a maintainer workflow.
+#   - We do still need an OCaml install because the Swift app links
+#     against libasmrun.a / libthreadsnat.a / libunixnat.a /
+#     libcamlstrnat.a from it, and includes its headers.
+#
+# OCaml is PINNED to 5.5.0 via opam (ocaml/setup-ocaml), NOT `brew install
+# ocaml` (which follows the latest formula). The vendored blob's runtime ABI
+# is version-locked, so linking must use the same 5.5.0 runtime; a silent
+# Homebrew bump to a newer OCaml would break the link. `make build` derives
+# OCAMLLIBDIR from `ocamlc -where` (the opam switch) and runs
+# `check-ocaml-version` as a fail-fast guard.
+#
+# Trigger surface:
+#   - push to main (post-merge confidence + green badge for README)
+#   - pull_request (run before review)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual re-runs from the Actions tab without pushing a no-op
+  # commit — useful when only the workflow file itself changes.
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build + test
+    # macos-15 is the arm64 runner image as of 2026. macos-14 also
+    # works (arm64 since GitHub flipped the default). macos-latest is
+    # tempting but it drags us forward on Apple's schedule rather
+    # than ours — pin explicitly.
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        # No submodules / LFS — the vendored blob lives in the tree.
+
+      - name: Untap aws/tap (runner-image noise)
+        # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
+        # untrusted under Homebrew's tap-trust gate and warns on EVERY brew
+        # call — including the ones setup-ocaml makes below. Untap it first so
+        # every later brew step is quiet. `|| true`: a future image that drops
+        # the tap must not fail the job.
+        run: brew untap aws/tap || true
+
+      - name: Show toolchain versions
+        # Useful for debugging CI-vs-local discrepancies in failure
+        # reports. Cheap; runs in <1 s.
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          uname -m
+
+      # Pinned OCaml 5.5.0 via opam (setup-ocaml manages its own caching).
+      # This is the runtime the vendored blob is linked against; do not
+      # replace with an unversioned `brew install ocaml`.
+      - name: Set up OCaml 5.5.0 (pinned)
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.5.0"
+
+      # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
+      # steps; add it so `ocamlc` (and thus `make`'s `ocamlc -where` /
+      # check-ocaml-version) resolves in every later step.
+      - name: Put the pinned OCaml switch on PATH
+        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
+
+      - name: Verify pinned OCaml
+        run: |
+          ocamlc -version
+          test "$(ocamlc -version)" = "5.5.0"
+
+      - name: Install xcodegen
+        # xcodegen regenerates the .xcodeproj from project.yml. The
+        # `unison-ui-mac.xcodeproj` directory IS tracked, but Makefile
+        # regenerates it on every build — easier to just install the
+        # tool than fight Make. (aws/tap is untapped in an earlier step so
+        # this brew call is quiet.)
+        run: brew install xcodegen
+
+      - name: Check signing resolver matrix
+        # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
+        # in scripts/test-resolve-signing.sh (24 cases, 38 assertions)
+        # exercises resolve-signing.sh and the select-signing.sh Makefile
+        # adapter — manual-override pairing, keychain verification, hostile
+        # identity values, the fail-loud contract on resolver error / malformed
+        # output, and the identity/team pairing contract. Runs before Build so
+        # a regression in the signing policy fails fast and independently of
+        # the (much slower) app build.
+        run: make check-signing
+
+      - name: Check appcast signature verifier
+        # Pure-shell gate (no Xcode/OCaml/network): runs the per-enclosure EdDSA
+        # signature verifier against committed fixtures, including the regression
+        # case where a signed release-notes link must not mask an unsigned
+        # enclosure. Guards the release tooling from silently publishing an
+        # appcast that would break updates for installed clients.
+        run: make check-appcast
+
+      - name: Check sign-app guards
+        # Pure-shell gate: sign-app.sh's fail-fast presence + identity guards
+        # (required Sparkle components; explicit identity must be Developer ID).
+        run: make check-sign-app
+
+      - name: Build
+        # `make build` regenerates the xcodeproj, builds the app for
+        # Debug, and stops short of running tests. Catches Swift
+        # compile errors with a smaller failure surface than `make
+        # test`, so a broken build shows up clearly in CI logs.
+        run: make build
+
+      - name: Run tests
+        # 286 tests at the v0.1.0 baseline. Should run in ~1 s on the
+        # M-series runner; the wall clock here will be Xcode startup
+        # (~10–20 s) plus the test execution.
+        run: make test
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcresult-bundle
+          path: .build/derived/Logs/Test/*.xcresult
+          # Don't keep these forever — they're large and only useful
+          # for the immediate failure investigation.
+          retention-days: 7

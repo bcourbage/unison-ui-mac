@@ -1,0 +1,225 @@
+name: unison-ui-mac
+options:
+  bundleIdPrefix: net.courbage
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.4.2"
+    CURRENT_PROJECT_VERSION: "18"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEAD_CODE_STRIPPING: NO
+    OCAMLLIBDIR: ${OCAMLLIBDIR}
+    UNISON_SRC: ${UNISON_SRC}
+    STRIPPED_ASMRUN_DIR: ${STRIPPED_ASMRUN_DIR}
+    # Absolute path to the OCaml object the Swift app links against.
+    # Set by the Makefile to either the vendored blob (default) or the
+    # freshly-built upstream blob when BLOB is overridden on the
+    # command line. See the BLOB / VENDORED_BLOB / UPSTREAM_BLOB
+    # mechanics in Makefile.
+    BLOB: ${BLOB}
+
+packages:
+  # Sparkle 2 — in-app software updates. Pinned by REVISION, not tag, so a
+  # moved `2.9.6` tag (e.g. after an upstream account compromise) cannot swap
+  # the framework underneath us: SPM resolves this exact commit, whose
+  # Package.swift declares the binary xcframework's checksum. The revision below
+  # is tag 2.9.6. (Package.resolved lives inside the gitignored .xcodeproj, so
+  # the revision pin here is the tracked lock.) Bump deliberately — see
+  # docs/sparkle-updates.md — the same discipline as the vendored OCaml blob.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    revision: ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a
+
+targets:
+  unison-ui-mac:
+    type: application
+    platform: macOS
+    preBuildScripts:
+      # Fail loudly if the OCaml engine object isn't wired up, instead of
+      # linking a broken bundle that crashes at launch with undefined
+      # caml_* symbols. BLOB is baked in by `xcodegen generate` (see the
+      # Makefile's `export BLOB`); if it's empty here the project was
+      # generated without it — build via `make build`.
+      - name: Check OCaml blob is linked
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -z "${BLOB}" ] || [ ! -f "${BLOB}" ]; then
+            echo "error: OCaml engine object not found (BLOB='${BLOB}'). Build with 'make build', which generates the Xcode project and runtime libs. See README → Build and install." >&2
+            exit 1
+          fi
+          if [ ! -f "${STRIPPED_ASMRUN_DIR}/libasmrun_nomain.a" ]; then
+            echo "error: stripped OCaml runtime not found in STRIPPED_ASMRUN_DIR='${STRIPPED_ASMRUN_DIR}'. Run 'make build' to generate it. See README → Build and install." >&2
+            exit 1
+          fi
+    sources:
+      - path: Sources/App
+        # Never let a stray build/coverage artifact in the source dir leak into
+        # the .app bundle: xcodegen globs this directory wholesale, and an
+        # untracked `default.profraw` (LLVM coverage output from `make test`)
+        # was otherwise copied into Contents/Resources of a local package.
+        excludes:
+          - "**/*.profraw"
+      - path: Sources/Bridge
+      # Native Icon Composer app icon (macOS 26 Liquid Glass). Carries the light
+      # gradient plus dark/tinted appearance variants natively, so the OS renders
+      # the right variant on EVERY surface — Finder, Dock, About — on macOS 26+,
+      # and falls back to the light rendering on macOS < 26. actool compiles it
+      # (a standalone `.icon` package, sibling to any catalog) into Assets.car +
+      # an .icns fallback; selected via ASSETCATALOG_COMPILER_APPICON_NAME /
+      # CFBundleIconName below. No runtime icon-swapping is needed.
+      - path: Resources/Unison.icon
+      # The rendered Unison reference manual. Lives in vendor/ rather
+      # than Resources/ because it's a generated artifact (hevea →
+      # `make vendor-manual`) versioned alongside the OCaml blob. Xcode
+      # copies it into the .app bundle's Resources at build time;
+      # AppDelegate.openUnisonProjectHelp(_:) opens it via NSWorkspace.
+      - path: vendor/unison-manual-2.54.0.html
+        buildPhase: resources
+      # GPLv3 §5 obligation: a conveyed copy must "give all recipients
+      # a copy of this License along with the Program." When the .app
+      # is distributed standalone (zipped on GitHub Releases, for
+      # example), the LICENSE + NOTICE files inside the repo aren't
+      # along for the ride — they have to live inside the bundle. We
+      # copy both into Resources/ so anyone Show-Package-Contents-ing
+      # the .app finds them at Contents/Resources/LICENSE and
+      # Contents/Resources/NOTICE.md.
+      - path: LICENSE
+        buildPhase: resources
+      - path: NOTICE.md
+        buildPhase: resources
+    dependencies:
+      # Sparkle framework (declared in the top-level `packages` block).
+      # Xcode links and auto-embeds the SPM binary framework into the app.
+      - package: Sparkle
+    info:
+      path: Resources/Info.plist
+      properties:
+        # Version strings — must be listed here, not just in Resources/Info.plist,
+        # because xcodegen regenerates the plist on every `make build` and falls
+        # back to "1.0" / "1" defaults for any version keys absent from this
+        # block. Substitution variables resolve at xcodebuild time against the
+        # MARKETING_VERSION / CURRENT_PROJECT_VERSION declared in `settings.base`.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Icon comes from the native Icon Composer Unison.icon (compiled by
+        # actool). CFBundleIconName selects it; the OS renders light/dark/tinted
+        # variants natively on macOS 26+, with a light fallback on <26.
+        CFBundleIconName: Unison
+        CFBundleName: Unison-UI-Mac
+        CFBundleDisplayName: Unison-UI-Mac
+        # Shows in Finder's Get Info → "More info...". Short form by
+        # convention; the full GPLv3 grant + upstream attribution
+        # chain live in LICENSE + NOTICE.md.
+        NSHumanReadableCopyright: "Copyright © 2026 Bruno Courbage. Licensed under GNU GPLv3 or later. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors."
+        LSApplicationCategoryType: public.app-category.utilities
+        # Sparkle in-app updater. These MUST be declared here, not only in
+        # Resources/Info.plist, because xcodegen regenerates the plist on every
+        # build (same reason as the version strings above).
+        #   SUFeedURL              — appcast location (HTTPS). The GitHub Pages
+        #                            URL below goes live in the release phase;
+        #                            until then, updates are exercised against a
+        #                            local appcast (see docs/sparkle-updates.md).
+        #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
+        #                            REAL key (its private half lives only in the
+        #                            maintainer's login keychain, never in the
+        #                            repo). NOT a placeholder — it changes only on
+        #                            a key rotation. Sparkle's validator accepts an
+        #                            update when EITHER a valid EdDSA archive
+        #                            signature OR a matching Apple Developer ID
+        #                            signature is present (an OR, not both). Today
+        #                            the ad-hoc build's cdhash-specific requirement
+        #                            makes the code-signing branch unusable, so
+        #                            EdDSA is effectively required — see
+        #                            docs/sparkle-updates.md.
+        #   SUVerifyUpdateBeforeExtraction — verify the archive's EdDSA
+        #                            signature BEFORE handing it to the
+        #                            unarchiver. Without it Sparkle extracts an
+        #                            unauthenticated archive first (in the
+        #                            unsandboxed Installer XPC service) and only
+        #                            checks the signature afterward, so a
+        #                            compromised feed serving a malicious archive
+        #                            reaches the unarchiver before the sole
+        #                            author-controlled trust check. Required here:
+        #                            EdDSA is our only trust anchor until Developer
+        #                            ID signing lands.
+        #   SUEnableSystemProfiling — send an anonymous system/app profile (OS
+        #                            version, CPU, Mac model, RAM, app version,
+        #                            language) as query parameters on the update
+        #                            check, at most once per week.
+        #   SUPromptUserOnFirstLaunch — ask about automatic checks on the FIRST
+        #                            launch (Sparkle otherwise defers the prompt to
+        #                            the second launch). That prompt carries an
+        #                            "Include anonymous system profile" checkbox
+        #                            that is checked by default, so profiling is
+        #                            opt-OUT within the prompt. Nothing is sent
+        #                            until the user answers. Details + rationale in
+        #                            docs/sparkle-updates.md.
+        # SUEnableAutomaticChecks is deliberately unset: the first-launch prompt
+        # above is what turns automatic checks on or off.
+        # SURequireSignedFeed (authenticate the appcast itself, not just each
+        # archive) is added at go-live, together with the feed-signing step in the
+        # appcast tooling — enabling it here before the feed is signed would make
+        # every update check fail.
+        SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
+        SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
+        SUVerifyUpdateBeforeExtraction: true
+        SUEnableSystemProfiling: true
+        SUPromptUserOnFirstLaunch: true
+        # No storyboard / nib — the menu is wired programmatically in main.swift.
+        NSMainNibFile: ""
+    settings:
+      base:
+        PRODUCT_NAME: unison-ui-mac
+        PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-mac
+        INFOPLIST_FILE: Resources/Info.plist
+        # actool needs to know which asset-catalog set is the app icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Unison
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/UnisonBridgeC.h
+        HEADER_SEARCH_PATHS:
+          - $(OCAMLLIBDIR)
+          - $(SRCROOT)/Sources/Bridge
+        # NOTE: not inheriting — Xcode's Debug config defines DEBUG=1, which
+        # activates CAMLassert macros that reference caml_failed_assert (only
+        # present in OCaml's debug runtime libasmrund.a, which we don't link).
+        # We therefore can't use DEBUG to gate test-only C; UNISON_DEBUG_HOOKS
+        # (Debug-config only, below) plays that role for the reaper test reset.
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - CAML_NAME_SPACE=1
+        LIBRARY_SEARCH_PATHS:
+          - $(OCAMLLIBDIR)
+          - $(STRIPPED_ASMRUN_DIR)
+        OTHER_LDFLAGS:
+          - $(BLOB)
+          - -lasmrun_nomain
+          - -lthreadsnat
+          - -lunixnat
+          - -lcamlstrnat
+          - -lpthread
+      configs:
+        Debug:
+          GCC_PREPROCESSOR_DEFINITIONS:
+            - CAML_NAME_SPACE=1
+            - UNISON_DEBUG_HOOKS=1
+
+  unison-ui-macTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: unison-ui-mac
+    settings:
+      base:
+        PRODUCT_NAME: unison-ui-macTests
+        PRODUCT_BUNDLE_IDENTIFIER: net.courbage.unison-ui-macTests
+        # Tests link into the running app process (TEST_HOST below), so the
+        # OCaml runtime is already initialized by AppDelegate.applicationDidFinishLaunching.
+        # No need to re-link blob.o or libasmrun here.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/unison-ui-mac.app/Contents/MacOS/unison-ui-mac
+        BUNDLE_LOADER: $(TEST_HOST)
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
