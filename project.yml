@@ -135,7 +135,7 @@ targets:
         # user on first launch whether to check automatically, so update checks
         # (and the profiling that rides along with them) are opt-in.
         SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
-        SUPublicEDKey: REPLACE_WITH_SUPUBLICEDKEY_FROM_generate_keys
+        SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
         SUEnableSystemProfiling: true
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""

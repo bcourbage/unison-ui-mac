@@ -20,11 +20,24 @@ app.delegate = delegate
 // for the whole process. startingUpdater:true performs Sparkle's normal
 // post-launch background check (on first launch Sparkle prompts the user
 // whether to check automatically; SUEnableAutomaticChecks is left unset).
-let updaterController = SPUStandardUpdaterController(
-    startingUpdater: true,
-    updaterDelegate: nil,
-    userDriverDelegate: nil)
+//
+// NOT started under XCTest: the test bundle is hosted inside this app, so
+// applicationDidFinishLaunching (and this file) run in the test process. A live
+// updater there would schedule Sparkle's first-launch permission prompt and a
+// background feed check inside the headless host — main-thread activity that
+// perturbs timing-sensitive tests. Mirrors the app's other XCTest guards (e.g.
+// the UNISON-directory redirect in AppDelegate).
+let underXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+let updaterController: SPUStandardUpdaterController? = underXCTest ? nil
+    : SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil)
 
-app.mainMenu = MainMenu.build(pickerTarget: delegate, updaterTarget: updaterController)
+// Under XCTest the menu still needs a non-nil target; a throwaway object keeps
+// the item constructible without a live updater (tests build their own menu
+// with an explicit target, so the app's runtime item is never exercised there).
+app.mainMenu = MainMenu.build(pickerTarget: delegate,
+                              updaterTarget: updaterController ?? NSObject())
 
 app.run()
