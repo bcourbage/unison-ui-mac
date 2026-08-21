@@ -1,0 +1,62 @@
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index caddeef..0dc8a7a 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -685,6 +685,57 @@ Callback.register "unisonSynchronize" unisonSynchronize;;
+ let unisonAbortAll () = Abort.all ();;
+ Callback.register "abortAll" unisonAbortAll;;
+
++(* unison-ui-mac extension: cleanly close the established remote
++ * connection for the current profile.
++ *
++ * Uses the same ClientConn-registry teardown upstream itself uses in
++ * [Uicommon.doTransportFailCleanup]: [Remote.clientCloseRootConnection]
++ * closes the connection's channels, unregisters it, and runs the
++ * per-connection close handlers (one of which reaps the ssh child via
++ * [Terminal.close_session]). This is safe on an ESTABLISHED connection,
++ * unlike [Remote.openConnectionCancel] on a raw preconnection (which
++ * directly closes fds an Lwt thread may still await, tripping a wakeup).
++ *
++ * Only meaningful for a remote root; a local-only sync has no connection
++ * and [clientCloseRootConnection] is a harmless cleanup no-op there.
++ *
++ * Returns: 0 = ok (closed, or nothing to close), 2 = exception (logged).
++ *
++ * NOT in upstream uimac — local patch in this fork (patch 0002). The
++ * former 0001 abortAll patch is retired (mid-sync abort was upstreamed
++ * in PR #1198); see the GUI repo's vendoring notes. *)
++let unisonCloseConnection () =
++  try
++    (match Globals.rootsInCanonicalOrder () with
++     | [_; otherRoot] -> Remote.clientCloseRootConnection otherRoot
++     | _ -> ());
++    (* Synchronous close-and-drain: advance the closed connection's pending
++       teardown before the GUI opens another connection in this process.
++       Without this, the closed connection's discarded receiver thread
++       resumes during the NEXT connection's [Lwt_unix.run] and breaks it
++       ("Protocol error: corrupted message received" / negotiation timeout).
++       Same post-close drain as [Uicommon.doTransportFailCleanup].
++
++       Scheduler-safety (see [Remote.drainDroppedConnectionThreads]): the
++       drain drives [Lwt_unix.run], so it must not overlap any other run of
++       the scheduler. It runs here on a bridge worker thread (via
++       [run_on_ocaml_thread]), NOT on the AppKit main thread, and it is not
++       nested inside another [Lwt_unix.run]. Concurrency is excluded by the
++       caller: the GUI's session coordinator only issues "closeConnection"
++       from a quiescent state -- a connect/scan/sync that is still running
++       sets an "abandoned" flag and the close is deferred until that
++       operation's terminal event fires, after its worker has returned from
++       [Lwt_unix.run]. So no [doInOtherThread] worker is inside the scheduler
++       while this drains. It advances runnable teardown; it is not a proof
++       that every Lwt thread in the process has completed. *)
++    Remote.drainDroppedConnectionThreads ~rounds:(Transport.maxThreads ());
++    0
++  with e ->
++    Printf.eprintf "closeConnection: %s\n%!" (Printexc.to_string e);
++    2
++;;
++Callback.register "closeConnection" unisonCloseConnection;;
++
+ let unisonIgnorePath pathString =
+   Uicommon.addIgnorePattern (Uicommon.ignorePath (Path.fromString pathString));;
+ let unisonIgnoreExt pathString =

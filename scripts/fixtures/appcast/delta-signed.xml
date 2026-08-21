@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Main enclosure + a signed delta enclosure under sparkle:deltas. Must PASS. -->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <sparkle:version>3</sparkle:version>
+      <enclosure url="https://example.com/App-3.zip" length="1100" type="application/octet-stream" sparkle:edSignature="dW5pc29uLXVpLW1hYyBzcGFya2xlIGFwcGNhc3QgZml4dHVyZSBzaWduYXR1cmUgbnVtYmVyIG9uZSEhcGFkWA=="/>
+      <sparkle:deltas>
+        <enclosure url="https://example.com/App-2-3.delta" length="200" type="application/octet-stream" sparkle:deltaFrom="2" sparkle:edSignature="dW5pc29uLXVpLW1hYyBzcGFya2xlIGRlbHRhIGVuY2xvc3VyZSBzaWduYXR1cmUgZml4dHVyZSEhcGFkQUJDRA=="/>
+      </sparkle:deltas>
+    </item>
+  </channel>
+</rss>

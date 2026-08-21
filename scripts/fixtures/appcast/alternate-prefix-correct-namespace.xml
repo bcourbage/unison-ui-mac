@@ -1,0 +1,10 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- 's' is bound to the exact Sparkle URI; Sparkle keys by namespace, not prefix. Must PASS. -->
+<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <s:version>2</s:version>
+      <enclosure url="https://example.com/App-2.zip" length="1000" type="application/octet-stream" s:edSignature="dW5pc29uLXVpLW1hYyBzcGFya2xlIGFwcGNhc3QgZml4dHVyZSBzaWduYXR1cmUgbnVtYmVyIG9uZSEhcGFkWA=="/>
+    </item>
+  </channel>
+</rss>

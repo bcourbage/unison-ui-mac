@@ -1,0 +1,9 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Signed enclosure under <channel><metadata> — not a location Sparkle parses. Must FAIL. -->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <metadata>
+      <enclosure url="https://example.com/App-2.zip" length="1000" type="application/octet-stream" sparkle:edSignature="dW5pc29uLXVpLW1hYyBzcGFya2xlIGFwcGNhc3QgZml4dHVyZSBzaWduYXR1cmUgbnVtYmVyIG9uZSEhcGFkWA=="/>
+    </metadata>
+  </channel>
+</rss>
