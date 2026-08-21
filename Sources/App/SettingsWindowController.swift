@@ -103,10 +103,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// Retains the review window while it's open.
     private var staleWindowController: CleanStaleArchivesWindowController?
 
+    // MARK: - Section 8: Software updates
+
+    /// Sparkle update preferences. Nil when there is no live updater (the
+    /// XCTest host), in which case the Updates tab is omitted entirely.
+    private let updatePreferences: (any UpdatePreferences)?
+    private let autoUpdateCheckbox = NSButton(
+        checkboxWithTitle: "Automatically check for updates",
+        target: nil, action: nil)
+    private let systemProfileCheckbox = NSButton(
+        checkboxWithTitle: "Include an anonymous system profile with update checks",
+        target: nil, action: nil)
+
     // MARK: - Init
 
-    init(unisonDirectory: String) {
+    init(unisonDirectory: String,
+         updatePreferences: (any UpdatePreferences)? = nil) {
         self.unisonDirectory = unisonDirectory
+        self.updatePreferences = updatePreferences
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -292,6 +306,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         section7Row.orientation = .horizontal
         section7Row.spacing = 8
 
+        // Section 8: Software updates. Built and shown only when an updater
+        // exists; the XCTest host has none, so the tab is absent there.
+        let section8Title = sectionHeader("Software Updates")
+        let section8Desc = sectionDescription(
+            "Choose whether the app checks for updates on its own and what it " +
+            "includes when it does. You can change these at any time, including " +
+            "after the first-launch prompt.")
+        autoUpdateCheckbox.target = self
+        autoUpdateCheckbox.action = #selector(autoUpdateToggled(_:))
+        systemProfileCheckbox.target = self
+        systemProfileCheckbox.action = #selector(systemProfileToggled(_:))
+        let updatesCheckboxRow = NSStackView(
+            views: [autoUpdateCheckbox, systemProfileCheckbox])
+        updatesCheckboxRow.orientation = .vertical
+        updatesCheckboxRow.alignment = .leading
+        updatesCheckboxRow.spacing = 6
+        let section8ProfileDesc = sectionDescription(
+            "The profile is anonymous: macOS version, Mac model, CPU, memory, " +
+            "app version, and preferred language. It is sent only when the app " +
+            "checks for updates.")
+
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
         // views, and animates the window to each pane's preferredContentSize
@@ -318,6 +353,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabVC.addTabViewItem(makePane(
             symbol: "archivebox", label: "Maintenance",
             views: [section7Title, section7Desc, section7Row]))
+        if updatePreferences != nil {
+            tabVC.addTabViewItem(makePane(
+                symbol: "arrow.triangle.2.circlepath", label: "Updates",
+                views: [section8Title, section8Desc,
+                        updatesCheckboxRow, section8ProfileDesc]))
+        }
 
         window?.contentViewController = tabVC
         window?.toolbarStyle = .preference
@@ -458,6 +499,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         if window?.firstResponder !== logPathField.currentEditor() {
             syncLogPathRowToMode()
+        }
+
+        // Software updates: reflect Sparkle's current preferences. No-op when
+        // there is no updater (the Updates tab is absent).
+        if let prefs = updatePreferences {
+            autoUpdateCheckbox.state = prefs.automaticallyChecksForUpdates ? .on : .off
+            systemProfileCheckbox.state = prefs.sendsSystemProfile ? .on : .off
         }
     }
 
@@ -628,6 +676,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func soundToggled(_ sender: NSButton) {
         SettingsModel.setSoundOnSyncComplete(sender.state == .on)
+    }
+
+    @objc private func autoUpdateToggled(_ sender: NSButton) {
+        updatePreferences?.automaticallyChecksForUpdates = (sender.state == .on)
+    }
+
+    @objc private func systemProfileToggled(_ sender: NSButton) {
+        updatePreferences?.sendsSystemProfile = (sender.state == .on)
     }
 
     @objc private func logModeChanged(_ sender: Any?) {

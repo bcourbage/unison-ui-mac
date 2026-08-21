@@ -34,6 +34,11 @@ let updaterController: SPUStandardUpdaterController? = underXCTest ? nil
         updaterDelegate: nil,
         userDriverDelegate: nil)
 
+// Hand the updater to the delegate so the Settings window can expose the
+// automatic-check and system-profile toggles (see UpdatePreferences). Nil under
+// XCTest, where the Settings window omits the Updates tab.
+delegate.updater = updaterController?.updater
+
 // Under XCTest there is no live updater. The menu is still built, but because
 // NSMenuItem.target is a WEAK reference the throwaway fallback is released
 // immediately, so the runtime item's updater target ends up nil. That is
