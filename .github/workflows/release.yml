@@ -5,8 +5,9 @@
 # actool, so an older Xcode would silently ship a .app with a broken/missing
 # icon. The toolchain is verified fail-closed below before any build.
 #
-# Builds the Release configuration, packages the ad-hoc-signed .app with
-# `ditto`, and attaches the zip to a
+# Builds the Release configuration, signs it with Developer ID + the hardened
+# runtime (inside-out, via scripts/sign-app.sh), notarizes and staples it,
+# packages the stapled .app with `ditto`, and attaches the zip to a
 # GitHub Release whose notes come from `release-notes/<version>.md` when that
 # approved, version-specific file is present, otherwise from the matching
 # CHANGELOG section (fallback).
@@ -146,16 +147,72 @@ jobs:
         run: make test
 
       - name: Build (Release configuration)
+        # Builds ad-hoc (the signing resolver forces ad-hoc for Release/CI); the
+        # Developer ID signature is applied by the explicit sign step below.
         run: make build CONFIG=Release
+
+      - name: Import Developer ID signing certificate
+        # Import the Developer ID Application cert (a base64 .p12 secret) into an
+        # ephemeral keychain and put it first in the search list, so sign-app.sh's
+        # `security find-identity` resolves exactly this identity.
+        env:
+          CERT_B64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          CERT_PW: ${{ secrets.P12_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpw="$(uuidgen)"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CERT_PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed s/\"//g)
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "Signing identities visible to codesign:"
+          security find-identity -v -p codesigning
+
+      - name: Sign (Developer ID, hardened runtime, inside-out)
+        run: ./scripts/sign-app.sh ".build/derived/Build/Products/Release/unison-ui-mac.app"
+
+      - name: Notarize and staple
+        # Submit to Apple's notary service with the App Store Connect API key
+        # (base64 .p8 + key-id + issuer secrets), fail on anything but Accepted
+        # (printing the notary log), then staple the ticket into the bundle so it
+        # validates offline on first launch.
+        env:
+          ASC_KEY_B64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          app=".build/derived/Build/Products/Release/unison-ui-mac.app"
+          key="$RUNNER_TEMP/asc.p8"
+          printf '%s' "$ASC_KEY_B64" | base64 --decode > "$key"
+          zip="$RUNNER_TEMP/notarize.zip"
+          /usr/bin/ditto -c -k --keepParent "$app" "$zip"
+          out="$(xcrun notarytool submit "$zip" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --output-format json)"
+          echo "$out"
+          id="$(echo "$out" | /usr/bin/python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+          status="$(echo "$out" | /usr/bin/python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
+          if [ "$status" != "Accepted" ]; then
+            echo "::error::notarization returned $status"
+            xcrun notarytool log "$id" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            rm -f "$key"
+            exit 1
+          fi
+          rm -f "$key"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
 
       - name: Package the .app
         id: pkg
         run: |
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
-          # Fail loudly if the ad-hoc signature didn't take — a stripped
-          # signature is the classic cause of "app is damaged" on launch.
+          # Fail loudly if the signature didn't take, and confirm Gatekeeper
+          # accepts the notarized+stapled bundle before zipping it for release.
           codesign --verify --deep --strict "$app"
+          spctl -a -vvv --type exec "$app"
           zip="unison-ui-mac-${{ steps.ver.outputs.version }}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"

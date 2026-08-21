@@ -39,9 +39,17 @@ if [ -z "$identity" ]; then
 	identity=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
 fi
 
+# Developer ID signing gets the hardened runtime + a secure timestamp (both
+# required for notarization). Ad-hoc ("-", the local no-cert fallback) gets
+# neither — there's no certificate or timestamp authority to anchor them, and a
+# locally built bundle is never notarized.
 sign() {
 	echo "  sign: ${1##*/}" >&2
-	codesign --force --options runtime --timestamp --sign "$identity" "$1"
+	if [ "$identity" = "-" ]; then
+		codesign --force --sign - "$1"
+	else
+		codesign --force --options runtime --timestamp --sign "$identity" "$1"
+	fi
 }
 
 echo "sign-app: signing '$app' with [$identity]" >&2
