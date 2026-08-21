@@ -22,17 +22,18 @@ when **either** passes — the check is an OR, not an AND (`SUUpdateValidator`:
    running app's (same team), Sparkle accepts it even without a valid EdDSA
    archive signature. This is the key-rotation path.
 
-What that OR means in practice:
+What that OR means in practice, now that the Release build is Developer
+ID-signed and notarized:
 
-- **Today (ad-hoc Release, no Developer ID):** the running app's designated
-  requirement is cdhash-specific, so a *different* app cannot satisfy the
-  code-signing branch. EdDSA is therefore effectively required, and every update
-  MUST be EdDSA-signed — `scripts/sparkle-appcast.sh` refuses to publish an
-  appcast with an unsigned enclosure.
-- **After Developer ID signing lands:** the OR is live. A Developer-ID-matched
-  update could install even if its EdDSA signature were missing or wrong, so
-  keep EdDSA-signing every update anyway and treat the EdDSA private key as
+- The code-signing branch is live: a Developer-ID-matched update (same team)
+  could install even if its EdDSA signature were missing or wrong. Keep
+  EdDSA-signing every update anyway and treat the EdDSA private key as
   security-critical.
+- EdDSA stays mandatory on the publish path: `scripts/sparkle-appcast.sh`
+  refuses to publish an appcast with a missing or malformed enclosure signature
+  (attribute present, correct 64-byte shape). This is a **structural** gate, not
+  proof of validity — cryptographically verifying each archive against the public
+  key is a go-live prerequisite (see `TODO.md`).
 
 Separately, **Apple notarization** (a stapled ticket) is what lets Gatekeeper
 accept the *first* download from GitHub Releases without a quarantine prompt; a
