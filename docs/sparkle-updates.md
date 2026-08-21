@@ -32,18 +32,28 @@ ID-signed and notarized:
 - EdDSA is enforced on the publish path by two gates in the release pipeline:
   `scripts/verify-appcast-signatures.sh` (**structural** — every parsed enclosure
   carries a well-formed, correctly located, 64-byte Sparkle edSignature) and
-  `scripts/verify-archive-signatures.py` (**cryptographic** — each new archive's
-  signature actually verifies over the archive bytes under the shipped
-  `SUPublicEDKey`, as does the feed-level signature below).
+  `scripts/verify-appcast.py` (**cryptographic**). The crypto gate does not
+  reimplement any signature parsing: it delegates to the pinned **`sign_update
+  --verify`** (Sparkle's own verifier), confirming the feed-level signature and
+  the new archive's signature over its bytes, and it constrains every enclosure
+  URL to the Releases prefix.
 
 **Feed-level signature (`SURequireSignedFeed`).** On top of the per-archive
 signature, Sparkle 2.9.6 signs the whole appcast: `generate_appcast` appends a
 trailing `<!-- sparkle-signatures: ... -->` block carrying an Ed25519 signature
 over the feed body, using the same maintainer key. With `SURequireSignedFeed =
-true` in the app (enabled at go-live — it requires `SUVerifyUpdateBeforeExtraction
-= true`, which is set, or the updater refuses to start), the client rejects any
-appcast whose feed-level signature is missing or invalid. `generate_appcast`
-emits it automatically because the archived app's Info.plist carries the key.
+true` in the app (it requires `SUVerifyUpdateBeforeExtraction = true`, which is
+set, or the updater refuses to start), the client rejects any appcast whose
+feed-level signature is missing or invalid. `generate_appcast` emits it
+automatically because the archived app's Info.plist carries the key. We also set
+**`SUSignedFeedFailureExpirationInterval: 0`**: Sparkle otherwise recovers into
+unsigned-feed handling after ~20 days of continuous feed-signature failures (a
+key-rotation escape hatch), and `0` disables that recovery so enforcement stays
+permanently fail-closed. Because the whole feed body is signed, carrying old
+items forward is only safe if the seed feed is authenticated first — so the
+release job runs `sign_update --verify` on the downloaded feed **before** reusing
+it, and fails closed on any tamper (a fetch error other than 404 also fails,
+rather than silently starting a fresh feed).
 
 Separately, **Apple notarization** (a stapled ticket) is what lets Gatekeeper
 accept the *first* download from GitHub Releases without a quarantine prompt; a
@@ -121,24 +131,35 @@ The appcast is an RSS feed listing available versions; the app polls it at
 the app is signed, notarized, stapled, and the release asset is uploaded:
 
 1. **Fetch the Sparkle tools** from the pinned, checksum-verified tarball (same
-   SHA-256 as "Getting the tools" above).
-2. **Seed** a work dir with the currently-published `appcast.xml` (so older
-   versions survive — `generate_appcast` copies forward items whose archive is
-   not present locally), and drop in the new `.app.zip` plus the release notes
-   converted to an embedded HTML fragment (`scripts/release-notes-to-html.py`
-   turns `notes.md` into `unison-ui-mac-<version>.app.html`).
+   SHA-256 as "Getting the tools" above) — provides both `generate_appcast` and
+   `sign_update`.
+2. **Authenticate the seed feed + check build monotonicity.** Download the
+   currently-published `appcast.xml` (so older versions survive —
+   `generate_appcast` copies forward items whose archive is not present locally).
+   Before reusing it, run `verify-appcast.py --feed-only` (= `sign_update
+   --verify`) on it so a tampered feed cannot smuggle forged carried-forward
+   metadata into a freshly-signed release. A 404 means "first release, start
+   fresh"; any other fetch error fails the job. The new `CURRENT_PROJECT_VERSION`
+   must be a positive integer greater than every `sparkle:version` already in the
+   authenticated feed.
 3. **Generate + sign:** `generate_appcast --ed-key-file -` (private key on stdin,
    from the `SPARKLE_ED_PRIVATE_KEY` secret) with `--download-url-prefix` pointing
-   at the GitHub Releases asset URL for the tag. Because the archived app's
-   Info.plist has `SURequireSignedFeed`, this emits both the per-enclosure
+   at the GitHub Releases asset URL for the tag, plus the new `.app.zip` and the
+   release notes as an embedded HTML fragment (`scripts/release-notes-to-html.py`
+   turns `notes.md` into `unison-ui-mac-<version>.app.html`). Because the archived
+   app's Info.plist has `SURequireSignedFeed`, this emits both the per-enclosure
    signatures and the feed-level signature.
 4. **Two verification gates (fail closed):** `verify-appcast-signatures.sh`
-   (structural) then `verify-archive-signatures.py --require-feed-signature
-   --skip-absent` (cryptographic — the new archive's signature and the feed-level
-   signature verify under `SUPublicEDKey`; carried-forward archives that are not
-   on disk are logged and covered by the feed-level signature).
-5. **Publish** `appcast.xml` to the `gh-pages` branch, which GitHub Pages serves
-   at `SUFeedURL`. The archives themselves live on GitHub Releases, not Pages.
+   (structural) then `verify-appcast.py --skip-absent --expected-prefix <releases
+   URL>` (cryptographic, via `sign_update --verify`: the feed-level signature and
+   the new archive's signature over its bytes verify, and every enclosure URL is
+   under the Releases prefix; carried-forward archives not on disk are logged and
+   covered by the authenticated feed-level signature).
+5. **Publish** `appcast.xml` to the `gh-pages` branch (which must already exist),
+   which GitHub Pages serves at `SUFeedURL`. Archives live on GitHub Releases.
+6. **Verify publication:** poll `SUFeedURL` until it serves the new version, then
+   `sign_update --verify` the served bytes — a green `git push` is not proof the
+   asynchronous Pages deploy succeeded.
 
 For **local testing** (not a real release), the manual wrapper still works:
 `SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/` runs

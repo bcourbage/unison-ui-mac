@@ -130,11 +130,11 @@ targets:
         #                            a key rotation. Sparkle's validator accepts an
         #                            update when EITHER a valid EdDSA archive
         #                            signature OR a matching Apple Developer ID
-        #                            signature is present (an OR, not both). Today
-        #                            the ad-hoc build's cdhash-specific requirement
-        #                            makes the code-signing branch unusable, so
-        #                            EdDSA is effectively required — see
-        #                            docs/sparkle-updates.md.
+        #                            signature is present (an OR, not both). The
+        #                            Release build is Developer ID-signed and
+        #                            notarized, so both branches are live; EdDSA
+        #                            stays mandatory on the publish path regardless
+        #                            — see docs/sparkle-updates.md.
         #   SUVerifyUpdateBeforeExtraction — verify the archive's EdDSA
         #                            signature BEFORE handing it to the
         #                            unarchiver. Without it Sparkle extracts an
@@ -143,9 +143,9 @@ targets:
         #                            checks the signature afterward, so a
         #                            compromised feed serving a malicious archive
         #                            reaches the unarchiver before the sole
-        #                            author-controlled trust check. Required here:
-        #                            EdDSA is our only trust anchor until Developer
-        #                            ID signing lands.
+        #                            author-controlled trust check. Required here,
+        #                            and a hard prerequisite of SURequireSignedFeed
+        #                            below.
         #   SUEnableSystemProfiling — send an anonymous system/app profile (OS
         #                            version, CPU, Mac model, RAM, app version,
         #                            language) as query parameters on the update
@@ -169,8 +169,14 @@ targets:
         # start. Safe to enable with the FIRST Sparkle release: there are no prior
         # update-checking clients to break, and the release pipeline publishes a
         # signed feed. Enabling it once clients exist, before the feed is signed,
-        # would break every update check.
+        # would break every update check. Sparkle can otherwise RECOVER into
+        # unsigned-feed handling after continuous feed-signature failures for
+        # SUSignedFeedFailureExpirationInterval seconds (default 1,728,000 = 20
+        # days), a key-rotation escape hatch that also fails open. Set it to 0,
+        # which the pinned 2.9.6 source treats as "never recover", so feed-level
+        # enforcement stays permanently fail-closed.
         SURequireSignedFeed: true
+        SUSignedFeedFailureExpirationInterval: 0
         SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
         SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
         SUVerifyUpdateBeforeExtraction: true

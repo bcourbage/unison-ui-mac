@@ -9,10 +9,9 @@
       release-notes ("What's New") embedding, `SURequireSignedFeed` + feed
       signing, structural + cryptographic signature gates, and GitHub Pages
       publish (all in `release.yml`) — are in place (see `docs/sparkle-updates.md`).
-      Remaining before the first tag:
-      - One-time maintainer setup: add the `SPARKLE_ED_PRIVATE_KEY` secret to the
-        `release` environment (base64 from `generate_keys -x`), and set GitHub
-        Pages to deploy from the `gh-pages` branch (root).
+      The one-time maintainer setup is done: the `SPARKLE_ED_PRIVATE_KEY` secret
+      is set in the `release` environment, and GitHub Pages deploys from the
+      `gh-pages` branch. Remaining before the first tag:
       - Set `auto_updates true` in the Homebrew cask and drop its
         quarantine-removing postflight so updates defer to Sparkle. The install
         docs no longer describe the `xattr`/"Open Anyway" steps, so this cask

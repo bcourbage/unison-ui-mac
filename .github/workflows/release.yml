@@ -289,10 +289,39 @@ jobs:
           test -x "$tools/bin/generate_appcast" || { echo "::error::generate_appcast missing from tarball"; exit 1; }
           echo "SPARKLE_BIN=$tools/bin" >> "$GITHUB_ENV"
 
-      - name: Set up PyNaCl (isolated venv)
+      - name: Authenticate the seed feed and check build monotonicity
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          python3 -m venv "$RUNNER_TEMP/nacl-venv"
-          "$RUNNER_TEMP/nacl-venv/bin/pip" install --quiet pynacl
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "::error::SPARKLE_ED_PRIVATE_KEY secret is empty"; exit 1; }
+          work="$RUNNER_TEMP/appcast"; mkdir -p "$work"
+          feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
+          # New build number == CFBundleVersion == the item's sparkle:version.
+          build=$(grep -E '^\s*CURRENT_PROJECT_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          case "$build" in ''|*[!0-9]*) echo "::error::CURRENT_PROJECT_VERSION '$build' is not a positive integer"; exit 1;; esac
+          echo "New build number: $build"
+          # Seed from the published feed so older versions survive — but the
+          # signer must not bless attacker-controlled carried-forward metadata, so
+          # AUTHENTICATE the seed's feed-level signature before reusing it.
+          code=$(curl -sS -o "$work/seed.xml" -w '%{http_code}' "$feedurl" || echo 000)
+          if [ "$code" = "404" ]; then
+            echo "No published feed yet (first release); starting fresh."
+            rm -f "$work/seed.xml"
+          elif [ "$code" = "200" ]; then
+            echo "Authenticating the published seed feed before reuse..."
+            printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$work/seed.xml" "$work" --feed-only
+            # Build must strictly exceed every version already in the (now
+            # authenticated) feed, or installed clients won't treat this as newer.
+            maxbuild=$(grep -oE 'sparkle:version="[0-9]+"|<sparkle:version>[0-9]+' "$work/seed.xml" | grep -oE '[0-9]+' | sort -n | tail -1)
+            maxbuild="${maxbuild:-0}"
+            echo "Greatest build already published: $maxbuild"
+            if [ "$build" -le "$maxbuild" ]; then
+              echo "::error::build $build must exceed the published feed's max $maxbuild"; exit 1
+            fi
+            cp "$work/seed.xml" "$work/appcast.xml"
+          else
+            echo "::error::unexpected HTTP $code fetching $feedurl (only 404 may start a fresh feed)"; exit 1
+          fi
 
       - name: Generate, sign, and verify the appcast
         env:
@@ -302,39 +331,30 @@ jobs:
           REPO: ${{ github.repository }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "::error::SPARKLE_ED_PRIVATE_KEY secret is empty"; exit 1; }
           work="$RUNNER_TEMP/appcast"
-          mkdir -p "$work"
-          # Seed with the currently-published feed so older versions survive
-          # (generate_appcast copies forward items whose archive is not present).
-          if curl -fsSL -o "$work/appcast.xml" "https://bcourbage.github.io/unison-ui-mac/appcast.xml"; then
-            echo "Seeded from the published appcast."
-          else
-            echo "No existing appcast (first release?); starting fresh."
-          fi
+          prefix="https://github.com/${REPO}/releases/download/"
           # The new archive (exact-named) and its embedded "What's New" fragment,
           # converted from the same notes.md used for the GitHub Release body.
           cp "$ZIP" "$work/"
           python3 scripts/release-notes-to-html.py notes.md > "$work/unison-ui-mac-${VERSION}.app.html"
-          # Generate + sign. Because the archived app's Info.plist has
-          # SURequireSignedFeed, generate_appcast emits BOTH the per-enclosure
-          # edSignature and the feed-level signature, using the same key. The
-          # private key is passed on stdin (never argv); strip any stray newline.
+          # generate_appcast emits BOTH the per-enclosure edSignature and the
+          # feed-level signature (the archived app carries SURequireSignedFeed),
+          # using the same key. Private key on stdin, never argv; strip newlines.
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | tr -d '\r\n' | "$SPARKLE_BIN/generate_appcast" \
             --ed-key-file - \
-            --download-url-prefix "https://github.com/${REPO}/releases/download/${TAG}/" \
+            --download-url-prefix "${prefix}${TAG}/" \
             -o "$work/appcast.xml" \
             "$work"
-          # Gate 1 — structural: every parsed enclosure carries a well-formed,
-          # correctly located, Sparkle-namespaced 64-byte edSignature.
+          # Gate 1 — structural (shape/location/namespace), committed-fixture-tested.
           ./scripts/verify-appcast-signatures.sh "$work/appcast.xml"
-          # Gate 2 — cryptographic: the new archive's signature verifies over its
-          # bytes, and the feed-level signature verifies, both under the shipped
-          # public key. Older carried-forward archives are not on disk (their
-          # bytes were verified at their own release); --skip-absent logs them and
-          # the feed-level signature covers their feed entries.
-          "$RUNNER_TEMP/nacl-venv/bin/python" scripts/verify-archive-signatures.py \
-            "$work/appcast.xml" "$work" --require-feed-signature --skip-absent
+          # Gate 2 — cryptographic, via Sparkle's OWN sign_update (no third-party
+          # crypto lib, no reimplemented signature-block parse): the feed-level
+          # signature + the NEW archive's signature over its bytes, with every
+          # enclosure URL constrained to our Releases prefix. Carried-forward
+          # archives aren't on disk (--skip-absent); their metadata is authenticated
+          # by the verified feed-level signature.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py \
+            "$work/appcast.xml" "$work" --skip-absent --expected-prefix "$prefix"
           echo "APPCAST_PATH=$work/appcast.xml" >> "$GITHUB_ENV"
 
       - name: Publish the appcast to GitHub Pages
@@ -344,14 +364,11 @@ jobs:
         run: |
           pages="$RUNNER_TEMP/pages"
           url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          if git clone --branch gh-pages --depth 1 "$url" "$pages" 2>/dev/null; then
-            echo "Updating existing gh-pages."
-          else
-            echo "Creating gh-pages (first publish)."
-            git clone --depth 1 "$url" "$pages"
-            git -C "$pages" checkout --orphan gh-pages
-            git -C "$pages" rm -rq . 2>/dev/null || true
-          fi
+          # gh-pages is a prerequisite (created during setup). Fail loudly rather
+          # than silently reconstructing it — a botched reconstruct once published
+          # the whole repo tree.
+          git clone --branch gh-pages --depth 1 "$url" "$pages" \
+            || { echo "::error::gh-pages branch missing; create it before releasing"; exit 1; }
           cp "$APPCAST_PATH" "$pages/appcast.xml"
           git -C "$pages" config user.name "github-actions[bot]"
           git -C "$pages" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -362,3 +379,23 @@ jobs:
             git -C "$pages" commit -m "appcast: publish ${TAG}"
             git -C "$pages" push origin gh-pages
           fi
+
+      - name: Verify the published appcast
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
+          pub="$RUNNER_TEMP/published.xml"
+          # Pages deploys asynchronously; a green git push is not proof the feed is
+          # actually served. Poll until the new version appears, then verify the
+          # SERVED bytes carry a valid feed-level signature.
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o "$pub" -w '%{http_code}' "$feedurl" || echo 000)
+            if [ "$code" = "200" ] && grep -q "unison-ui-mac-${VERSION}.app.zip" "$pub"; then ok=1; break; fi
+            echo "waiting for Pages to serve ${VERSION} (attempt $i, http $code)..."; sleep 10
+          done
+          test "$ok" = "1" || { echo "::error::published feed never surfaced ${VERSION} at ${feedurl}"; exit 1; }
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$pub" "$RUNNER_TEMP" --feed-only
+          echo "Published appcast verified at ${feedurl}"

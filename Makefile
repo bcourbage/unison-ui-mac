@@ -363,13 +363,15 @@ PYTHON ?= python3
 check-release-notes:
 	@$(PYTHON) ./scripts/test-release-notes-to-html.py
 
-# Cryptographic appcast-signature verifier test (per-enclosure + feed-level
-# Ed25519 against the shipped public key). Requires PyNaCl; CI provides it in a
-# venv: `make check-archive-sigs PYTHON=.venv/bin/python`. Fails — never skips —
-# if PyNaCl is absent, because this is a release gate.
-.PHONY: check-archive-sigs
-check-archive-sigs:
-	@$(PYTHON) ./scripts/test-verify-archive-signatures.py
+# Cryptographic appcast verifier test. Exercises verify-appcast.py against the
+# REAL pinned sign_update (Sparkle's own verifier) with a THROWAWAY key: a signed
+# feed + archive pass; a tampered archive, a poisoned feed, the wrong key, and an
+# out-of-prefix enclosure URL all fail closed. Requires SPARKLE_BIN (the
+# checksum-pinned Sparkle tools bin/); CI fetches it. Fails — never skips — if
+# SPARKLE_BIN is absent, because this is a release gate.
+.PHONY: check-verify-appcast
+check-verify-appcast:
+	@$(PYTHON) ./scripts/test-verify-appcast.py
 
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
