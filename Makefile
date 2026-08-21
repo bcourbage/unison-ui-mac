@@ -350,6 +350,12 @@ check-signing:
 check-appcast:
 	@./scripts/test-sparkle-appcast.sh
 
+# Deterministic guard tests for sign-app.sh (no Xcode / no cert / no network):
+# the fail-fast presence + identity guards against a fake bundle skeleton.
+.PHONY: check-sign-app
+check-sign-app:
+	@./scripts/test-sign-app.sh
+
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
 # user-facing install wants the optimized binary, not a Debug build with

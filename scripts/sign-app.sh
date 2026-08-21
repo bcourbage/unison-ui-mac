@@ -1,48 +1,47 @@
 #!/bin/sh
-# sign-app.sh — sign an app bundle for Developer ID distribution.
+# sign-app.sh — sign an app bundle for Developer ID distribution (or ad-hoc
+# locally).
 #
-# Signs every nested code component inside-out (deepest first) with the hardened
-# runtime and a secure timestamp, then the app itself. Deliberately NOT
-# `--deep` (deprecated, and unreliable for a framework's nested XPC services).
-# No entitlements are applied: unison-ui-mac is non-sandboxed and needs none,
-# and re-signing without `--entitlements` drops any `get-task-allow` so the
-# result can be notarized.
+# Signs Sparkle's nested components inside-out, then the app, with the hardened
+# runtime + a secure timestamp for Developer ID. Not `--deep` (deprecated, and
+# unreliable for a framework's nested XPC services). No entitlements: the app is
+# non-sandboxed, and re-signing without `--entitlements` also drops
+# `get-task-allow` so the result notarizes.
 #
-# Validated against Apple's notary service: the app binary (OCaml core linked
-# in) plus every Sparkle component (Downloader/Installer XPC, Updater.app,
-# Autoupdate, the framework) notarize with no entitlements and no library-
-# validation exception. The final `codesign --verify --deep --strict` fails
-# closed if any nested code was missed.
+# Sparkle is a REQUIRED, hard-linked dependency: the framework and all four
+# nested components must exist and are signed EXPLICITLY — a build missing any
+# of them is broken and fails here rather than shipping (an app that dlopen-links
+# a stripped Sparkle crashes at launch, and a bare `codesign --verify` only
+# checks the code that remains). For distribution signing, any OTHER embedded
+# code is rejected: adding a dependency must come with an explicit signing rule
+# below, so nothing rides along unaccounted-for behind the final --verify (which
+# would happily accept a valid ad-hoc nested framework).
 #
 # Usage: sign-app.sh <app-bundle> [identity]
-#   identity: a codesign identity string or SHA-1; defaults to $SIGN_DIST_IDENTITY,
-#   else the single "Developer ID Application" identity in the keychain.
+#   identity: a Developer ID Application identity (name or SHA-1); defaults to
+#   $SIGN_DIST_IDENTITY, else the single Developer ID Application identity in the
+#   keychain. Pass "-" for ad-hoc signing (local installs only).
 set -eu
 
 app="${1:?usage: sign-app.sh <app-bundle> [identity]}"
 identity="${2:-${SIGN_DIST_IDENTITY:-}}"
 
-if [ ! -d "$app" ]; then
-	echo "sign-app: not an app bundle: $app" >&2
-	exit 2
-fi
+[ -d "$app" ] || { echo "sign-app: not an app bundle: $app" >&2; exit 2; }
 
 if [ -z "$identity" ]; then
-	# Resolve the single Developer ID Application identity from the keychain.
-	# Refuse on zero or multiple matches rather than guess which to ship with.
+	# Auto-resolve the single Developer ID Application identity (a Developer ID
+	# by construction); refuse on zero or multiple matches rather than guess.
 	count=$(security find-identity -v -p codesigning 2>/dev/null | grep -c 'Developer ID Application' || true)
-	if [ "$count" != 1 ]; then
-		echo "sign-app: expected exactly one 'Developer ID Application' identity in the keychain (found $count)." >&2
-		echo "          Set SIGN_DIST_IDENTITY to choose one explicitly." >&2
-		exit 1
-	fi
+	[ "$count" = 1 ] || { echo "sign-app: expected exactly one 'Developer ID Application' identity in the keychain (found $count); set SIGN_DIST_IDENTITY." >&2; exit 1; }
 	identity=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
+elif [ "$identity" != "-" ]; then
+	# An explicitly supplied identity MUST be a Developer ID Application identity.
+	# Reject an Apple Development (or any other) cert: it would sign and verify
+	# locally but is not a valid distribution/notarization identity.
+	security find-identity -v -p codesigning | grep 'Developer ID Application' | grep -qF -- "$identity" \
+		|| { echo "sign-app: identity '$identity' is not a Developer ID Application identity (use '-' for ad-hoc local signing)." >&2; exit 1; }
 fi
 
-# Developer ID signing gets the hardened runtime + a secure timestamp (both
-# required for notarization). Ad-hoc ("-", the local no-cert fallback) gets
-# neither — there's no certificate or timestamp authority to anchor them, and a
-# locally built bundle is never notarized.
 sign() {
 	echo "  sign: ${1##*/}" >&2
 	if [ "$identity" = "-" ]; then
@@ -54,27 +53,34 @@ sign() {
 
 echo "sign-app: signing '$app' with [$identity]" >&2
 
+# Sparkle: required framework + all four nested components, signed inside-out.
 fw="$app/Contents/Frameworks/Sparkle.framework"
-if [ -d "$fw" ]; then
-	v="$fw/Versions/Current"
-	# Sparkle ships its current version under Versions/B; follow whatever
-	# Versions/Current resolves to.
-	for c in \
-		"$v/XPCServices/Downloader.xpc" \
-		"$v/XPCServices/Installer.xpc" \
-		"$v/Updater.app" \
-		"$v/Autoupdate" ; do
-		[ -e "$c" ] && sign "$c"
-	done
-	sign "$fw"
-fi
-
-# Defensive: sign any other embedded dylibs/frameworks a build might add. A
-# clean Release bundle currently embeds only Sparkle, so these usually match
-# nothing; the trailing --verify is the real backstop.
-find "$app/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' 2>/dev/null | while IFS= read -r d; do
-	sign "$d"
+[ -d "$fw" ] || { echo "sign-app: required Sparkle.framework not found in $app" >&2; exit 1; }
+v="$fw/Versions/Current"
+components="XPCServices/Downloader.xpc XPCServices/Installer.xpc Updater.app Autoupdate"
+for rel in $components; do
+	[ -e "$v/$rel" ] || { echo "sign-app: required Sparkle component missing: Sparkle.framework/Versions/Current/$rel" >&2; exit 1; }
 done
+for rel in $components; do
+	sign "$v/$rel"
+done
+sign "$fw"
+
+# Distribution signing: reject any embedded code we have no explicit rule for,
+# so a new dependency can't ride along un(properly)-signed behind the final
+# --verify. Ad-hoc local installs are lenient — a Debug bundle carries extra
+# dylibs, and the build's existing signatures + --verify are enough locally.
+if [ "$identity" != "-" ]; then
+	unexpected=$(find "$app/Contents" \
+		\( -name '*.framework' -o -name '*.xpc' -o -name '*.app' -o -name '*.dylib' \) \
+		! -path "$fw" ! -path "$fw/*" 2>/dev/null || true)
+	if [ -n "$unexpected" ]; then
+		echo "sign-app: unexpected embedded code with no explicit signing rule:" >&2
+		printf '%s\n' "$unexpected" | sed 's/^/  /' >&2
+		echo "          Add an explicit signing rule for it in sign-app.sh, then retry." >&2
+		exit 1
+	fi
+fi
 
 # The app itself, last (seals the bundle over the now-signed nested code).
 sign "$app"

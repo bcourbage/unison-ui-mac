@@ -1,29 +1,23 @@
-# Cut a GitHub release when a `v*` tag is pushed.
+# Release pipeline, split into two jobs so production code-signing can never be
+# reached from an arbitrary ref:
 #
-# Runs on the macos-26 runner and pins Xcode 26.6 (build 17F113): the native
-# Icon Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
-# actool, so an older Xcode would silently ship a .app with a broken/missing
-# icon. The toolchain is verified fail-closed below before any build.
+#   build   — runs for every trigger (a v* tag push, or a manual dispatch of any
+#             branch/SHA). Builds + tests + packages the app UNSIGNED. Sees NO
+#             signing/notary secrets and holds a read-only token. This is the
+#             safe "dry-run" build check.
+#   release — runs ONLY on a pushed v* tag, gated by the `release` GitHub
+#             Environment (required reviewers + a v* tag deployment rule). Only
+#             this job can read the Developer ID / notary secrets and holds a
+#             write token, so signing + notarization + publishing are reachable
+#             solely through the protected tag path, with human approval.
 #
-# Builds the Release configuration, signs it with Developer ID + the hardened
-# runtime (inside-out, via scripts/sign-app.sh), notarizes and staples it,
-# packages the stapled .app with `ditto`, and attaches the zip to a
-# GitHub Release whose notes come from `release-notes/<version>.md` when that
-# approved, version-specific file is present, otherwise from the matching
-# CHANGELOG section (fallback).
+# Runs on macos-26, pinned to Xcode 26.6 (build 17F113): the native Icon
+# Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
+# actool, verified fail-closed below.
 #
-# This replaces the manual flow (`make build CONFIG=Release` → `ditto` →
-# `gh release create`). The Homebrew cask is NOT bumped here — the tap
-# repo's `bump-cask.yml` detects the new release via `brew livecheck`
-# daily and opens the bump PR on its own.
-#
-# Normal use: bump MARKETING_VERSION in project.yml, update CHANGELOG,
+# Normal release: bump MARKETING_VERSION in project.yml, update CHANGELOG,
 # commit, then `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
-#
-# Dry run: Actions tab → Run workflow → pick a tag, leave dry_run=true.
-# It builds + packages and uploads the zip as a workflow artifact, but
-# does NOT create or modify any Release (so a published asset's bytes —
-# and thus the cask's sha256 — are never disturbed).
+# Dry-run build check: Actions ▸ Run workflow ▸ optionally name a branch/SHA.
 
 name: Release
 
@@ -32,108 +26,131 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Ref to build: a v* tag to publish, or any branch/SHA (e.g. main) for a dry run"
-        required: true
-      dry_run:
-        description: "Build + package only; do not create/modify a Release"
-        type: boolean
-        default: true
+      ref:
+        description: "Branch or SHA to build UNSIGNED as a dry-run check. Signed releases come only from pushing a v* tag."
+        required: false
+        default: ""
 
+# Least privilege by default; the release job elevates its own token.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build + publish release
+  build:
+    name: Build check (unsigned)
     runs-on: macos-26
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+    permissions:
+      contents: read
     steps:
-      - name: Resolve ref + version
-        id: ver
-        env:
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
-        run: |
-          ref="${{ github.event.inputs.tag || github.ref_name }}"
-          # Real publishes must come from a v* tag. Dry runs may target any
-          # ref (e.g. `main`) to test the release build before tagging.
-          case "$ref" in
-            v*) ;;
-            *) if [ "${{ github.event_name }}" = "push" ] || [ "$DRY_RUN" = "false" ]; then
-                 echo "::error::ref '$ref' must be a v* tag for a real release"; exit 1
-               fi ;;
-          esac
-          echo "tag=$ref"            >> "$GITHUB_OUTPUT"
-          echo "version=${ref#v}"    >> "$GITHUB_OUTPUT"
-
-      - name: Check out the tagged commit
+      # The dispatch input is consumed ONLY as an actions/checkout `ref:` input
+      # (an expression, not shell), so it cannot inject into a run step.
+      - name: Check out
         uses: actions/checkout@v5
         with:
-          ref: ${{ steps.ver.outputs.tag }}
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Select and verify Xcode 26.6 (fail closed)
-        # The native Icon Composer app icon (Resources/Unison.icon) only
-        # compiles under Xcode 26's actool. Pin the exact toolchain and refuse
-        # to build with anything else, so a runner-image change that drops or
-        # bumps Xcode 26.6 fails the release loudly here instead of silently
-        # shipping a .app with a broken/missing icon. Matched exactly against
-        # both lines of `xcodebuild -version` (Xcode 26.6 / Build 17F113).
         run: |
           dev="/Applications/Xcode_26.6.app/Contents/Developer"
-          if [ ! -d "$dev" ]; then
-            echo "::error::Xcode 26.6 not found at $dev"; exit 1
-          fi
+          [ -d "$dev" ] || { echo "::error::Xcode 26.6 not found at $dev"; exit 1; }
           sudo xcode-select -s "$dev"
-          ver="$(xcodebuild -version)"
-          echo "$ver"
-          echo "$ver" | grep -qx "Xcode 26.6"          || { echo "::error::expected Xcode 26.6, got: $(echo "$ver" | head -1)"; exit 1; }
-          echo "$ver" | grep -qx "Build version 17F113" || { echo "::error::expected build 17F113, got: $(echo "$ver" | sed -n 2p)"; exit 1; }
+          ver="$(xcodebuild -version)"; echo "$ver"
+          echo "$ver" | grep -qx "Xcode 26.6"           || { echo "::error::expected Xcode 26.6"; exit 1; }
+          echo "$ver" | grep -qx "Build version 17F113" || { echo "::error::expected build 17F113"; exit 1; }
 
       - name: Untap aws/tap (runner-image noise)
-        # The macOS runner pre-taps `aws/tap`, untrusted under Homebrew's
-        # tap-trust gate; it warns on every brew call, including setup-ocaml's
-        # below. Untap first so all later brew steps are quiet. `|| true`: a
-        # future image without the tap must not fail the release.
         run: brew untap aws/tap || true
 
-      - name: Show toolchain versions
-        run: |
-          sw_vers
-          xcodebuild -version
-          swift --version
-          uname -m
-
-      # Pinned OCaml 5.5.0 via opam — the release binary must link against the
-      # same runtime the vendored blob was compiled with (ABI is version-locked).
-      # Do not replace with an unversioned `brew install ocaml`.
       - name: Set up OCaml 5.5.0 (pinned)
         uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: "5.5.0"
-
-      # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
-      # steps; add it so `ocamlc` resolves in every later step.
       - name: Put the pinned OCaml switch on PATH
         run: echo "$(opam var bin)" >> "$GITHUB_PATH"
-
       - name: Verify pinned OCaml
         run: |
           ocamlc -version
           test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install xcodegen
-        # (aws/tap is untapped in an earlier step so this brew call is quiet.)
+        run: brew install xcodegen
+
+      - name: Run tests
+        run: make test
+
+      - name: Build (Release configuration, unsigned)
+        run: make build CONFIG=Release
+
+      - name: Package unsigned build (for inspection)
+        run: |
+          app=".build/derived/Build/Products/Release/unison-ui-mac.app"
+          test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
+          # Name off the immutable run id — never off a user-supplied ref (which
+          # could contain '/').
+          zip="unison-ui-mac-unsigned-${{ github.run_id }}.app.zip"
+          /usr/bin/ditto -c -k --keepParent "$app" "$zip"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+          shasum -a 256 "$zip"
+
+      - name: Upload unsigned artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: unison-ui-mac-unsigned-${{ github.run_id }}
+          path: ${{ env.ZIP }}
+          retention-days: 7
+
+  release:
+    name: Sign, notarize, publish
+    needs: build
+    # Only a pushed v* tag reaches this job; the `release` environment adds
+    # required-reviewer approval and a v* tag deployment rule on top.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve version from the tag
+        id: ver
+        run: |
+          tag="${{ github.ref_name }}"          # GitHub-controlled; safe
+          echo "tag=$tag"          >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"  >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Select and verify Xcode 26.6 (fail closed)
+        run: |
+          dev="/Applications/Xcode_26.6.app/Contents/Developer"
+          [ -d "$dev" ] || { echo "::error::Xcode 26.6 not found at $dev"; exit 1; }
+          sudo xcode-select -s "$dev"
+          ver="$(xcodebuild -version)"; echo "$ver"
+          echo "$ver" | grep -qx "Xcode 26.6"           || { echo "::error::expected Xcode 26.6"; exit 1; }
+          echo "$ver" | grep -qx "Build version 17F113" || { echo "::error::expected build 17F113"; exit 1; }
+
+      - name: Untap aws/tap (runner-image noise)
+        run: brew untap aws/tap || true
+
+      - name: Set up OCaml 5.5.0 (pinned)
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.5.0"
+      - name: Put the pinned OCaml switch on PATH
+        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
+      - name: Verify pinned OCaml
+        run: |
+          ocamlc -version
+          test "$(ocamlc -version)" = "5.5.0"
+
+      - name: Install xcodegen
         run: brew install xcodegen
 
       - name: Verify the tag matches MARKETING_VERSION
-        # Guards against tagging without bumping project.yml (or vice
-        # versa) — the About panel / CFBundleShortVersionString would
-        # otherwise disagree with the release name. Skipped for dry runs,
-        # which may target a branch (e.g. `main`) to test the release build
-        # before tagging — there's no version to match yet.
-        if: github.event_name == 'push' || github.event.inputs.dry_run != 'true'
         run: |
           mv=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           if [ "$mv" != "${{ steps.ver.outputs.version }}" ]; then
@@ -141,20 +158,12 @@ jobs:
             exit 1
           fi
 
-      - name: Run tests
-        # The tag is usually cut from a green main, but a release is
-        # high-stakes — re-verify on the exact tagged tree before shipping.
-        run: make test
-
       - name: Build (Release configuration)
-        # Builds ad-hoc (the signing resolver forces ad-hoc for Release/CI); the
+        # Builds ad-hoc (the resolver forces ad-hoc for Release/CI); the
         # Developer ID signature is applied by the explicit sign step below.
         run: make build CONFIG=Release
 
       - name: Import Developer ID signing certificate
-        # Import the Developer ID Application cert (a base64 .p12 secret) into an
-        # ephemeral keychain and put it first in the search list, so sign-app.sh's
-        # `security find-identity` resolves exactly this identity.
         env:
           CERT_B64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           CERT_PW: ${{ secrets.P12_PASSWORD }}
@@ -176,10 +185,6 @@ jobs:
         run: ./scripts/sign-app.sh ".build/derived/Build/Products/Release/unison-ui-mac.app"
 
       - name: Notarize and staple
-        # Submit to Apple's notary service with the App Store Connect API key
-        # (base64 .p8 + key-id + issuer secrets), fail on anything but Accepted
-        # (printing the notary log), then staple the ticket into the bundle so it
-        # validates offline on first launch.
         env:
           ASC_KEY_B64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -188,12 +193,10 @@ jobs:
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           key="$RUNNER_TEMP/asc.p8"
           printf '%s' "$ASC_KEY_B64" | base64 --decode > "$key"
-          # Trim any stray whitespace/newline captured when the secrets were set
-          # (a trailing newline makes notarytool reject the issuer as non-UUID).
           key_id="$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')"
           issuer="$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')"
           echo "$issuer" | grep -Eq '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' \
-            || { echo "::error::ASC_ISSUER_ID is not a valid UUID after trimming whitespace — re-set the secret to the App Store Connect Issuer ID (issuer and key-id may be swapped)"; exit 1; }
+            || { echo "::error::ASC_ISSUER_ID is not a valid UUID (issuer and key-id may be swapped)"; exit 1; }
           zip="$RUNNER_TEMP/notarize.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           out="$(xcrun notarytool submit "$zip" --key "$key" --key-id "$key_id" --issuer "$issuer" --wait --output-format json)"
@@ -210,37 +213,27 @@ jobs:
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
 
-      - name: Package the .app
+      - name: Package the stapled .app
         id: pkg
         run: |
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
-          # Fail loudly if the signature didn't take, and confirm Gatekeeper
-          # accepts the notarized+stapled bundle before zipping it for release.
           codesign --verify --deep --strict "$app"
           spctl -a -vvv --type exec "$app"
-          # Real releases version off a v* tag (no slash); a dry-run may target a
-          # branch like feat/x, so sanitize '/' out of the artifact name.
-          version="${{ steps.ver.outputs.version }}"
-          zip="unison-ui-mac-${version//\//-}.app.zip"
+          zip="unison-ui-mac-${{ steps.ver.outputs.version }}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"
           echo "Built $zip"
           shasum -a 256 "$zip"
 
       - name: Resolve release notes
-        id: notes
         run: |
           v="${{ steps.ver.outputs.version }}"
           approved="release-notes/${v}.md"
           if [ -s "$approved" ]; then
-            # Approved, version-specific release notes take precedence when
-            # present. Used verbatim — never rewritten here.
             cp "$approved" notes.md
             echo "Using approved release notes: $approved"
           else
-            # Fallback: lines between this version's `## [x.y.z]` header and
-            # the next `## [` header in the CHANGELOG.
             awk -v ver="$v" '
               $0 ~ ("^## \\[" ver "\\]") {f=1; next}
               /^## \[/ {f=0}
@@ -252,20 +245,7 @@ jobs:
             fi
           fi
 
-      # Dry run (workflow_dispatch with dry_run=true): keep the artifact
-      # for inspection, touch no Release.
-      - name: Upload artifact (dry run)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.pkg.outputs.zip }}
-          path: ${{ steps.pkg.outputs.zip }}
-          retention-days: 7
-
-      # Real publish (tag push, or dispatch with dry_run=false). Create the
-      # Release if it doesn't exist; otherwise replace its asset in place.
       - name: Create / update the GitHub Release
-        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
         run: |
           tag="${{ steps.ver.outputs.tag }}"
           zip="${{ steps.pkg.outputs.zip }}"
