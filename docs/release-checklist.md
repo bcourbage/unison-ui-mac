@@ -18,13 +18,13 @@ be confirmed against the actual built artifact, not just CI.
 
 ### App icon — native Icon Composer `.icon` (must build with Xcode 26.6)
 The app icon (`Resources/Unison.icon`) needs **Xcode 26's `actool`** to compile
-its appearance-aware renditions and the older-macOS `.icns` fallback. CI and
-`release.yml` currently run on the `macos-15` runner with its default Xcode
-(16.x), which does **not** exercise that compilation path — so this is verified
-by hand against the real artifact, produced with Xcode 26.6.
+its appearance-aware renditions and the older-macOS `.icns` fallback. The release
+pipeline (`release.yml`) runs on the `macos-26` runner and fail-closed pins
+**Xcode 26.6**, so it does exercise that compilation path. The PR CI job
+(`ci.yml`, `macos-15`) does not, so still confirm the icon against the real
+release artifact.
 
-- [ ] The release artifact is built with **Xcode 26.6** (pin it for the release
-      build, or build/verify locally with 26.6). Confirm `actool` compiled the
+- [ ] Confirm the release job selected **Xcode 26.6** and `actool` compiled the
       icon with no crash/warning.
 - [ ] In the built `.app`: `Contents/Resources/Assets.car` contains the `AppIcon`
       renditions (`assetutil --info … | grep -i AppIcon`), a fallback `*.icns` is

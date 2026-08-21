@@ -2,14 +2,12 @@
 
 ## To Do
 
-- [ ] **Sparkle in-app updates — signing, notarization, and go-live.** The
+- [ ] **Sparkle in-app updates — go-live.** The
       framework, updater UI, EdDSA signing + pre-extraction verification, the
-      real public key, appcast tooling, and first-launch consent (profiling
-      opt-out within the prompt) are in place (see `docs/sparkle-updates.md`).
+      real public key, appcast tooling, first-launch consent (profiling
+      opt-out within the prompt), and Developer ID signing + notarization
+      (`install.sh`, `release.yml`) are in place (see `docs/sparkle-updates.md`).
       Remaining:
-      - Developer ID signing + notarization in `install.sh` and `release.yml`:
-        sign nested code inside-out (drop `--deep`), enable the hardened
-        runtime, `notarytool submit --wait` + `stapler staple`.
       - Release-notes ("What's New") display: wire `release-notes/*.md` → HTML
         into the appcast so Sparkle shows them in the update prompt.
       - Publish the appcast (GitHub Pages), confirm `SUFeedURL` resolves, and
@@ -24,9 +22,10 @@
         validity). Treat `generate_appcast` warnings as diagnostics only, not the
         gate — warning text is version-sensitive and cannot prove the feed is
         usable.
-      - Set `auto_updates true` in the Homebrew cask so `brew upgrade` defers
-        to Sparkle; refresh the Gatekeeper sections in `INSTALL.md`/`README`
-        once notarization makes the `xattr`/"Open Anyway" steps obsolete.
+      - Set `auto_updates true` in the Homebrew cask and drop its
+        quarantine-removing postflight so updates defer to Sparkle. The install
+        docs no longer describe the `xattr`/"Open Anyway" steps, so this cask
+        change and the live feed must land before a release ships.
       - End-to-end verify a v(N)→v(N+1) update against the live, notarized feed.
 
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**

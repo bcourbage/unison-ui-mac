@@ -158,7 +158,11 @@ yourself. Specifically:
    local use (`ADHOC=1` forces the fallback).
 3. **Copies the bundle into `/Applications`.** Uses `sudo` automatically
    if your user can't write there.
-4. **Opens the app** so you can verify it launches.
+4. **Clears the quarantine attribute** (`xattr -dr com.apple.quarantine`).
+   This matters only for a locally built or ad-hoc-signed bundle that macOS
+   flagged after a copy from another origin; the official Homebrew and Releases
+   builds are Developer ID-signed and notarized, so they never need it.
+5. **Opens the app** so you can verify it launches.
 
 You can pass `--no-launch` to skip the final `open` step, or
 `--dest <path>` to install somewhere other than `/Applications` (for
