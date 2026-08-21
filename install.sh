@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# install.sh — ad-hoc sign the built unison-ui-mac.app, copy it to
-# /Applications, clear the quarantine attribute, and (optionally)
-# launch it. See INSTALL.md for the equivalent manual commands.
+# install.sh — sign the built unison-ui-mac.app (Developer ID when a cert is in
+# the keychain, else ad-hoc; ADHOC=1 forces ad-hoc), copy it to /Applications,
+# clear the quarantine attribute, and (optionally) launch it. See INSTALL.md
+# for the equivalent manual commands.
 #
 # Usage:
 #   ./install.sh                     # install into /Applications, then open
@@ -84,11 +85,20 @@ fi
 
 mkdir -p "$DEST" 2>/dev/null || $SUDO mkdir -p "$DEST"
 
-# 1. Ad-hoc sign the source bundle in place. `--deep` is deprecated but
-#    still functional and is sufficient for a bundle without nested
-#    frameworks. The `-` identity means "ad-hoc, no signing identity."
-echo "[1/4] Ad-hoc signing $BUNDLE_NAME"
-codesign --force --deep --sign - "$SRC_APP"
+# 1. Sign the source bundle in place, inside-out, via scripts/sign-app.sh.
+#    Prefer a Developer ID identity when one is in the keychain: it turns on the
+#    hardened runtime and gives a stable code identity, so TCC grants survive
+#    rebuilds. Fall back to ad-hoc ("-") when no Developer ID cert is present
+#    (or when ADHOC=1 is set) — local use only; the quarantine strip below keeps
+#    Gatekeeper satisfied for a locally built app. `--deep` is NOT used
+#    (deprecated, and unreliable for the nested Sparkle XPC services).
+if [[ "${ADHOC:-0}" != "1" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'; then
+    echo "[1/4] Signing $BUNDLE_NAME with Developer ID (hardened runtime)"
+    "$REPO_ROOT/scripts/sign-app.sh" "$SRC_APP"
+else
+    echo "[1/4] Ad-hoc signing $BUNDLE_NAME (no Developer ID identity, or ADHOC=1)"
+    "$REPO_ROOT/scripts/sign-app.sh" "$SRC_APP" -
+fi
 
 # 2. Copy into place, replacing any existing install.
 echo "[2/4] Copying to $DEST"
