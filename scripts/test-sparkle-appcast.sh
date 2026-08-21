@@ -26,12 +26,16 @@ expect() {
 }
 
 echo "verify-appcast-signatures.sh:"
-expect signed.xml            pass "one signed enclosure"
-expect multi-signed.xml      pass "two signed enclosures"
-expect unsigned.xml          fail "one unsigned enclosure"
-expect mixed.xml             fail "one signed + one unsigned enclosure"
-expect release-notes-sig.xml fail "unsigned enclosure, signed release-notes link (must not mask)"
-expect no-enclosure.xml      fail "no enclosures at all"
+expect signed.xml                            pass "one signed enclosure"
+expect multi-signed.xml                      pass "two signed enclosures"
+expect alternate-prefix-correct-namespace.xml pass "non-'sparkle' prefix bound to the exact Sparkle URI"
+expect unsigned.xml                          fail "one unsigned enclosure"
+expect mixed.xml                             fail "one signed + one unsigned enclosure"
+expect release-notes-sig.xml                 fail "unsigned enclosure, signed release-notes link (must not mask)"
+expect foreign-namespace-signature.xml       fail "edSignature in a foreign namespace (Sparkle ignores it)"
+expect unprefixed-signature.xml              fail "unprefixed edSignature (not in the Sparkle namespace)"
+expect unrelated-enclosure.xml               fail "only a namespaced <evil:enclosure> — no real enclosure"
+expect no-enclosure.xml                      fail "no enclosures at all"
 
 if [ "$fail" -ne 0 ]; then
 	echo "APPCAST VERIFIER TESTS FAILED" >&2

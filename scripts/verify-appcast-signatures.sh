@@ -22,11 +22,21 @@ if ! command -v xmllint >/dev/null 2>&1; then
 	exit 1
 fi
 
-# local-name() matches regardless of namespace prefix, so this catches
-# sparkle:edSignature (and any unprefixed edSignature) on the enclosure ELEMENT
-# itself — not on siblings like a signed release-notes link.
-total_xpath="count(//*[local-name()='enclosure'])"
-unsigned_xpath="count(//*[local-name()='enclosure'][not(@*[local-name()='edSignature' and string-length(normalize-space(.)) > 0])])"
+# Match Sparkle's OWN parsing, not a loose name match:
+#   - the update element is an RSS <enclosure> in NO namespace (namespace-uri='');
+#     a namespaced <evil:enclosure> is not one Sparkle reads.
+#   - the signature must be an edSignature attribute in the EXACT Sparkle
+#     namespace URI. An unprefixed edSignature, or a foreign-namespaced
+#     evil:edSignature, is invisible to Sparkle even though its local name
+#     matches — so a global/local-name-only check would fail open, approving a
+#     feed whose enclosures Sparkle treats as unsigned.
+# local-name() (not a prefix test) is used for the accepted attribute so that any
+# prefix bound to the Sparkle URI works (Sparkle keys by namespace, not prefix).
+SPARKLE_NS="http://www.andymatuschak.org/xml-namespaces/sparkle"
+enclosure_pred="local-name()='enclosure' and namespace-uri()=''"
+edsig_pred="local-name()='edSignature' and namespace-uri()='$SPARKLE_NS' and string-length(normalize-space(.)) > 0"
+total_xpath="count(//*[$enclosure_pred])"
+unsigned_xpath="count(//*[$enclosure_pred][not(@*[$edsig_pred])])"
 
 total=$(xmllint --xpath "$total_xpath" "$appcast" 2>/dev/null) || {
 	echo "error: could not parse $appcast as XML" >&2
