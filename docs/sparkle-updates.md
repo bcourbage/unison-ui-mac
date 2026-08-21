@@ -150,11 +150,12 @@ the app is signed, notarized, stapled, and the release asset is uploaded:
    app's Info.plist has `SURequireSignedFeed`, this emits both the per-enclosure
    signatures and the feed-level signature.
 4. **Two verification gates (fail closed):** `verify-appcast-signatures.sh`
-   (structural) then `verify-appcast.py --skip-absent --expected-prefix <releases
-   URL>` (cryptographic, via `sign_update --verify`: the feed-level signature and
-   the new archive's signature over its bytes verify, and every enclosure URL is
-   under the Releases prefix; carried-forward archives not on disk are logged and
-   covered by the authenticated feed-level signature).
+   (structural — enclosure shape/location/qualified-name via `xmllint name()`)
+   then `verify-appcast.py --archive <zip> --expected-url <exact Releases URL>`
+   (cryptographic, via `sign_update --verify`: the feed-level signature
+   authenticates the whole feed body, and the new archive's signature verifies
+   over its bytes, matched by its EXACT expected URL so a foreign/duplicate
+   enclosure or a dot-segment URL cannot stand in for it).
 5. **Publish** `appcast.xml` to the `gh-pages` branch (which must already exist),
    which GitHub Pages serves at `SUFeedURL`. Archives live on GitHub Releases.
 6. **Verify publication:** poll `SUFeedURL` until it serves the new version, then
@@ -185,9 +186,10 @@ treat it as security-critical.
 ### GitHub Pages (one-time setup)
 
 Pages must be configured to **Deploy from a branch → `gh-pages` → `/ (root)`**
-(repo Settings → Pages). The release job creates `gh-pages` on the first publish
-and commits `appcast.xml` to it thereafter; nothing else is hosted there (release
-notes are embedded in the feed, archives live on Releases).
+(repo Settings → Pages). The `gh-pages` branch must already exist — the release
+job requires it and commits `appcast.xml` to it, but does not create it (a
+botched auto-create once published the whole repo tree). Nothing else is hosted
+there (release notes are embedded in the feed, archives live on Releases).
 
 ## Testing the update cycle locally (before the feed is live)
 
@@ -195,7 +197,8 @@ Until the production feed is published you can exercise the full cycle against a
 local appcast:
 
 1. Build and archive the current version, and a build with a higher
-   `MARKETING_VERSION`, into an `updates/` folder.
+   `MARKETING_VERSION` **and** a higher `CURRENT_PROJECT_VERSION` (Sparkle
+   compares the build number), into an `updates/` folder.
 2. Run `scripts/sparkle-appcast.sh updates/` to sign them and emit
    `updates/appcast.xml`.
 3. Serve it locally (`python3 -m http.server` in `updates/`) and temporarily set

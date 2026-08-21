@@ -15,8 +15,10 @@
 # Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
 # actool, verified fail-closed below.
 #
-# Normal release: bump MARKETING_VERSION in project.yml, update CHANGELOG,
-# commit, then `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
+# Normal release: bump BOTH MARKETING_VERSION and CURRENT_PROJECT_VERSION in
+# project.yml (the build number must strictly increase — Sparkle compares it, and
+# the appcast step enforces it), update CHANGELOG, commit, then
+# `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
 # Dry-run build check: Actions ▸ Run workflow ▸ optionally name a branch/SHA.
 
 name: Release
@@ -257,22 +259,6 @@ jobs:
             fi
           fi
 
-      - name: Create / update the GitHub Release
-        env:
-          TAG: ${{ steps.ver.outputs.tag }}
-          ZIP: ${{ steps.pkg.outputs.zip }}
-          REPO: ${{ github.repository }}
-        run: |
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release $TAG exists — replacing its asset."
-            gh release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
-          else
-            gh release create "$TAG" "$ZIP" \
-              --repo "$REPO" \
-              --title "$TAG" \
-              --notes-file notes.md
-          fi
-
       - name: Fetch the Sparkle tools (checksum-pinned)
         env:
           SPARKLE_VERSION: "2.9.6"
@@ -291,9 +277,15 @@ jobs:
 
       - name: Authenticate the seed feed and check build monotonicity
         env:
+          TAG: ${{ steps.ver.outputs.tag }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "::error::SPARKLE_ED_PRIVATE_KEY secret is empty"; exit 1; }
+          # The ONLY release allowed to start a fresh feed (a seed 404). Every
+          # later tag must find and authenticate the published feed, so a Pages
+          # deletion, routing mistake, or transient 404 fails closed instead of
+          # silently truncating the feed and bypassing seed auth + monotonicity.
+          FIRST_SPARKLE_TAG="v0.5.0"
           work="$RUNNER_TEMP/appcast"; mkdir -p "$work"
           feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
           # New build number == CFBundleVersion == the item's sparkle:version.
@@ -305,11 +297,14 @@ jobs:
           # AUTHENTICATE the seed's feed-level signature before reusing it.
           code=$(curl -sS -o "$work/seed.xml" -w '%{http_code}' "$feedurl" || echo 000)
           if [ "$code" = "404" ]; then
-            echo "No published feed yet (first release); starting fresh."
+            if [ "$TAG" != "$FIRST_SPARKLE_TAG" ]; then
+              echo "::error::feed 404 for $TAG, but only $FIRST_SPARKLE_TAG may start a fresh feed. A later 404 means the published feed is missing — refusing to truncate history."; exit 1
+            fi
+            echo "First Sparkle release ($TAG); starting a fresh feed."
             rm -f "$work/seed.xml"
           elif [ "$code" = "200" ]; then
             echo "Authenticating the published seed feed before reuse..."
-            printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$work/seed.xml" "$work" --feed-only
+            printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$work/seed.xml" --feed-only
             # Build must strictly exceed every version already in the (now
             # authenticated) feed, or installed clients won't treat this as newer.
             maxbuild=$(grep -oE 'sparkle:version="[0-9]+"|<sparkle:version>[0-9]+' "$work/seed.xml" | grep -oE '[0-9]+' | sort -n | tail -1)
@@ -320,7 +315,7 @@ jobs:
             fi
             cp "$work/seed.xml" "$work/appcast.xml"
           else
-            echo "::error::unexpected HTTP $code fetching $feedurl (only 404 may start a fresh feed)"; exit 1
+            echo "::error::unexpected HTTP $code fetching $feedurl"; exit 1
           fi
 
       - name: Generate, sign, and verify the appcast
@@ -345,17 +340,37 @@ jobs:
             --download-url-prefix "${prefix}${TAG}/" \
             -o "$work/appcast.xml" \
             "$work"
-          # Gate 1 — structural (shape/location/namespace), committed-fixture-tested.
+          # Gate 1 — structural (enclosure shape/location/qualified-name), via
+          # xmllint name() semantics; committed-fixture-tested.
           ./scripts/verify-appcast-signatures.sh "$work/appcast.xml"
           # Gate 2 — cryptographic, via Sparkle's OWN sign_update (no third-party
           # crypto lib, no reimplemented signature-block parse): the feed-level
-          # signature + the NEW archive's signature over its bytes, with every
-          # enclosure URL constrained to our Releases prefix. Carried-forward
-          # archives aren't on disk (--skip-absent); their metadata is authenticated
-          # by the verified feed-level signature.
+          # signature authenticates the whole feed body (so carried-forward items
+          # are covered), and the NEW archive's signature verifies over its bytes,
+          # matched by its EXACT expected Releases URL — so a foreign/duplicate
+          # enclosure or a dot-segment URL cannot stand in for it.
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py \
-            "$work/appcast.xml" "$work" --skip-absent --expected-prefix "$prefix"
+            "$work/appcast.xml" --archive "$work/${ZIP}" --expected-url "${prefix}${TAG}/${ZIP}"
           echo "APPCAST_PATH=$work/appcast.xml" >> "$GITHUB_ENV"
+
+      # Only NOW, after every signing/generation/verification gate has passed, is
+      # anything made public — so a key/seed/monotonicity/generator failure never
+      # leaves a public "latest" release pointing at an absent or stale feed.
+      - name: Create / update the GitHub Release
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG exists — replacing its asset."
+            gh release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" "$ZIP" \
+              --repo "$REPO" \
+              --title "$TAG" \
+              --notes-file notes.md
+          fi
 
       - name: Publish the appcast to GitHub Pages
         env:
@@ -382,20 +397,20 @@ jobs:
 
       - name: Verify the published appcast
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
           pub="$RUNNER_TEMP/published.xml"
           # Pages deploys asynchronously; a green git push is not proof the feed is
-          # actually served. Poll until the new version appears, then verify the
-          # SERVED bytes carry a valid feed-level signature.
+          # served. Poll until the served bytes are BYTE-IDENTICAL to the appcast
+          # we generated (a mere filename match could be satisfied by a stale
+          # already-signed feed), then cryptographically verify those exact bytes.
           ok=0
           for i in $(seq 1 30); do
             code=$(curl -sS -o "$pub" -w '%{http_code}' "$feedurl" || echo 000)
-            if [ "$code" = "200" ] && grep -q "unison-ui-mac-${VERSION}.app.zip" "$pub"; then ok=1; break; fi
-            echo "waiting for Pages to serve ${VERSION} (attempt $i, http $code)..."; sleep 10
+            if [ "$code" = "200" ] && cmp -s "$pub" "$APPCAST_PATH"; then ok=1; break; fi
+            echo "waiting for Pages to serve the new feed (attempt $i, http $code)..."; sleep 10
           done
-          test "$ok" = "1" || { echo "::error::published feed never surfaced ${VERSION} at ${feedurl}"; exit 1; }
-          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$pub" "$RUNNER_TEMP" --feed-only
-          echo "Published appcast verified at ${feedurl}"
+          test "$ok" = "1" || { echo "::error::published feed did not become byte-identical to the generated appcast at ${feedurl}"; exit 1; }
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$pub" --feed-only
+          echo "Published appcast verified (byte-identical + signed) at ${feedurl}"

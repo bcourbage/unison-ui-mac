@@ -1,42 +1,39 @@
 #!/usr/bin/env python3
 """Cryptographically verify a Sparkle appcast by delegating to the pinned
 `sign_update` (Sparkle's own verifier). No third-party crypto library: the only
-dependency is the checksum-pinned Sparkle tools tarball (`SPARKLE_BIN`), which
-the release job already fetches.
+dependency is the checksum-pinned Sparkle tools tarball (`SPARKLE_BIN`).
 
-Why delegate: Sparkle 2.9.6's feed-level signature lives in a trailing
-`<!-- sparkle-signatures: ... -->` block whose exact boundaries only Sparkle's
-own extractor gets right; reimplementing that parse is how a verifier ends up
-disagreeing with the client. So this script parses only the RSS enclosure list
-(to locate archives and constrain URLs) and hands every actual signature check
-to `sign_update --verify`.
+Two checks, both fail-closed:
+
+  * Feed-level signature (always): `sign_update --verify <appcast>` authenticates
+    the entire feed body, so every enclosure URL and edSignature it carries is
+    exactly what the maintainer signed.
+
+  * The NEW release archive (with --archive PATH --expected-url URL): the appcast
+    must contain exactly one <enclosure> whose `url` is EXACTLY `URL`, and that
+    enclosure's `sparkle:edSignature` must verify over PATH's bytes. Matching the
+    exact expected URL — not a prefix, and not by enumerating "enclosures Sparkle
+    would parse" — sidesteps both the foreign-prefixed-enclosure ambiguity
+    (ElementTree cannot faithfully reproduce Sparkle's qualified-name rule) and
+    URL-canonicalization tricks (dot segments, encoded separators). Enclosure-set
+    shape is the structural gate's job (verify-appcast-signatures.sh, xmllint
+    name()); this gate proves the one archive we are shipping is validly signed.
+
+  * --feed-only: verify just the feed-level signature — to authenticate a seed
+    feed before reuse, or the published feed.
 
 The Ed25519 private key (base64) is read on stdin and passed to each
 `sign_update` invocation on its stdin — never argv, never disk.
 
-Checks (all fail-closed):
-  * feed-level signature: `sign_update --verify <appcast>` authenticates the
-    whole feed body, so every enclosure URL and edSignature it carries is exactly
-    what the maintainer signed. Always required.
-  * each enclosure whose archive is present locally: `sign_update --verify
-    <archive> <edSignature>` — the signature actually verifies over the bytes.
-  * --expected-prefix P: every parsed enclosure URL must start with P.
-  * --skip-absent: enclosures whose archive is not on disk are logged and
-    skipped (their metadata is covered by the feed-level signature); at least one
-    local archive must still verify (unless --feed-only).
-  * --feed-only: verify just the feed-level signature — used to authenticate a
-    seed feed before reuse, or a published feed, where no archives are local.
-
 Usage:
-  SPARKLE_BIN=<dir> verify-appcast.py <appcast.xml> <archives-dir> \
-      [--expected-prefix URL] [--skip-absent] [--feed-only]
+  SPARKLE_BIN=<dir> verify-appcast.py <appcast.xml> \
+      [--archive PATH --expected-url URL] [--feed-only]
   # private key (base64) on stdin
 """
 import argparse
 import os
 import subprocess
 import sys
-import urllib.parse
 import xml.etree.ElementTree as ET
 
 SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
@@ -46,32 +43,17 @@ def _local(tag):
     return tag.rsplit("}", 1)[-1]
 
 
-def _ns(tag):
-    return tag[1:tag.index("}")] if tag.startswith("{") else ""
-
-
-def enclosures(root):
-    """The enclosure elements Sparkle would parse: a direct <enclosure> child of
-    an <item>, or of a <sparkle:deltas> under an item; excludes a
-    sparkle-namespaced <enclosure>. Mirrors verify-appcast-signatures.sh."""
-    for item in root.findall("./channel/item"):
-        for child in list(item):
-            if _local(child.tag) == "enclosure" and _ns(child.tag) != SPARKLE_NS:
-                yield child
-            elif _local(child.tag) == "deltas" and _ns(child.tag) == SPARKLE_NS:
-                for d in list(child):
-                    if _local(d.tag) == "enclosure":
-                        yield d
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("appcast")
-    ap.add_argument("archives_dir")
-    ap.add_argument("--expected-prefix", default=None)
-    ap.add_argument("--skip-absent", action="store_true")
+    ap.add_argument("--archive")
+    ap.add_argument("--expected-url")
     ap.add_argument("--feed-only", action="store_true")
     args = ap.parse_args()
+
+    if not args.feed_only and not (args.archive and args.expected_url):
+        sys.stderr.write("error: --archive and --expected-url are required unless --feed-only\n")
+        return 2
 
     sparkle_bin = os.environ.get("SPARKLE_BIN")
     if not sparkle_bin or not os.access(f"{sparkle_bin}/sign_update", os.X_OK):
@@ -85,7 +67,7 @@ def main():
         return 2
 
     def su_verify(*extra):
-        # Key on stdin, never argv/disk. Returns (ok, stderr).
+        # Key on stdin, never argv/disk.
         p = subprocess.run(
             [sign_update, "--verify", "--ed-key-file", "-", *extra],
             input=key, capture_output=True, text=True,
@@ -103,43 +85,28 @@ def main():
         print("cryptographic verification passed: feed-level signature")
         return 0
 
-    # --- Per-enclosure: URL constraint + verify local archives over bytes ---
+    # --- The one NEW archive, matched by EXACT url ---
     with open(args.appcast, "rb") as f:
         root = ET.fromstring(f.read())
-    encs = list(enclosures(root))
-    if not encs:
-        sys.stderr.write("error: no Sparkle-parsable <enclosure> entries found\n")
+    matches = [e for e in root.iter()
+               if _local(e.tag) == "enclosure" and e.get("url") == args.expected_url]
+    if len(matches) != 1:
+        sys.stderr.write(
+            f"error: expected exactly one enclosure with url {args.expected_url}, found {len(matches)}\n")
         return 1
-
-    verified = 0
-    for enc in encs:
-        url = enc.get("url", "")
-        name = urllib.parse.unquote(url.rsplit("/", 1)[-1])
-        if args.expected_prefix and not url.startswith(args.expected_prefix):
-            sys.stderr.write(f"error: enclosure URL not under expected prefix: {url}\n")
-            return 1
-        sig = enc.get(f"{{{SPARKLE_NS}}}edSignature")
-        if not sig:
-            sys.stderr.write(f"error: enclosure {name} has no sparkle:edSignature\n")
-            return 1
-        path = os.path.join(args.archives_dir, name)
-        if not os.path.exists(path):
-            if args.skip_absent:
-                print(f"  skip (archive not local)  {name}")
-                continue
-            sys.stderr.write(f"error: archive not found for enclosure: {path}\n")
-            return 1
-        ok, err = su_verify(path, sig)
-        if not ok:
-            sys.stderr.write(f"error: enclosure {name} signature did not verify over its bytes: {err}\n")
-            return 1
-        print(f"  ok (enclosure)  {name}")
-        verified += 1
-
-    if verified == 0:
-        sys.stderr.write("error: no local archive was cryptographically verified\n")
+    sig = matches[0].get(f"{{{SPARKLE_NS}}}edSignature")
+    if not sig:
+        sys.stderr.write("error: the expected enclosure has no sparkle:edSignature\n")
         return 1
-    print(f"cryptographic verification passed: feed + {verified} archive(s)")
+    if not os.path.exists(args.archive):
+        sys.stderr.write(f"error: archive not found: {args.archive}\n")
+        return 1
+    ok, err = su_verify(args.archive, sig)
+    if not ok:
+        sys.stderr.write(f"error: the new archive's signature did not verify over its bytes: {err}\n")
+        return 1
+    print(f"  ok (new archive)  {os.path.basename(args.archive)}")
+    print("cryptographic verification passed: feed-level signature + new archive")
     return 0
 
 

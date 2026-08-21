@@ -4,9 +4,10 @@
 Requires SPARKLE_BIN (the checksum-pinned Sparkle tools bin/). Uses a THROWAWAY
 Ed25519 key — never the project key — to build a signed feed + archive, then
 asserts verify-appcast.py passes on valid input and fails closed on: a tampered
-archive, a poisoned (re-content) feed, an enclosure URL outside the expected
-prefix, and an absent local archive. Locks the exact attack classes the review
-found.
+archive, a poisoned (re-content) feed, the wrong key, an absent archive, a
+non-exact (dot-segment) URL, and a duplicated enclosure URL. Locks the exact
+attack classes the review found (foreign-prefixed / duplicate enclosures and
+URL-canonicalization tricks).
 """
 import base64
 import os
@@ -17,7 +18,9 @@ import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 VERIFIER = HERE / "verify-appcast.py"
-PREFIX = "https://github.com/bcourbage/unison-ui-mac/releases/download/"
+PREFIX = "https://github.com/bcourbage/unison-ui-mac/releases/download/v9.9.9/"
+NAME = "unison-ui-mac-9.9.9.app.zip"
+URL = PREFIX + NAME
 
 SPARKLE_BIN = os.environ.get("SPARKLE_BIN")
 if not SPARKLE_BIN or not os.access(f"{SPARKLE_BIN}/sign_update", os.X_OK):
@@ -32,92 +35,90 @@ def check(desc, cond):
     global failures
     if not cond:
         failures += 1
-    print(f"  {desc:44s} {'PASS' if cond else 'FAIL'}")
+    print(f"  {desc:46s} {'PASS' if cond else 'FAIL'}")
 
 
-def run(appcast, archives, key_b64, *flags):
+def run(appcast, key_b64, *flags):
     return subprocess.run(
-        [sys.executable, str(VERIFIER), str(appcast), str(archives), *flags],
+        [sys.executable, str(VERIFIER), str(appcast), *flags],
         input=key_b64, capture_output=True, text=True,
         env={**os.environ, "SPARKLE_BIN": SPARKLE_BIN},
     )
 
 
-def build(d, *, tamper_archive=False, poison_feed=False, bad_url=False, absent=False):
+def build(d, *, tamper_archive=False, poison_feed=False, duplicate=False):
     d = pathlib.Path(d)
     key_b64 = base64.b64encode(os.urandom(32)).decode()
     keyfile = d / "key.txt"
     keyfile.write_text(key_b64)
-    name = "unison-ui-mac-9.9.9.app.zip"
-    archive = d / name
+    archive = d / NAME
     archive.write_bytes(b"payload-" + os.urandom(64))
     sig = subprocess.run(
         [SIGN_UPDATE, "-p", "--ed-key-file", str(keyfile), str(archive)],
         capture_output=True, text=True,
     ).stdout.strip()
-    url = ("https://evil.example/" if bad_url else PREFIX + "v9.9.9/") + name
+    dup = (f'<enclosure url="{URL}" length="1" type="application/octet-stream" '
+           f'sparkle:edSignature="{sig}"/>') if duplicate else ""
     feed = d / "appcast.xml"
     feed.write_text(
         '<?xml version="1.0" standalone="yes"?>\n'
         '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">\n'
         '<channel>\n<item>\n<sparkle:version>19</sparkle:version>\n'
-        f'<enclosure url="{url}" length="{archive.stat().st_size}" '
+        f'<enclosure url="{URL}" length="{archive.stat().st_size}" '
         f'type="application/octet-stream" sparkle:edSignature="{sig}"/>\n'
+        f'{dup}'
         '</item>\n</channel>\n</rss>\n'
     )
-    # Sign the feed in place (embeds the feed-level signature trailer).
     subprocess.run([SIGN_UPDATE, "--ed-key-file", str(keyfile), str(feed)],
                    capture_output=True, text=True, check=True)
     if poison_feed:
-        # Inject a forged carried item AFTER signing → feed body no longer matches
-        # the embedded feed signature (the review's carry-forward attack).
-        text = feed.read_text().replace(
+        feed.write_text(feed.read_text().replace(
             "</channel>",
-            '<item><sparkle:version>99</sparkle:version>'
-            f'<enclosure url="{PREFIX}v99/x.zip" length="1" '
-            f'type="application/octet-stream" sparkle:edSignature="{sig}"/></item></channel>',
-        )
-        feed.write_text(text)
+            f'<item><enclosure url="{PREFIX}evil.zip" length="1" '
+            f'type="application/octet-stream" sparkle:edSignature="{sig}"/></item></channel>'))
     if tamper_archive:
         with open(archive, "ab") as fh:
             fh.write(b"tampered")
-    if absent:
-        archive.unlink()
-    return feed, d, key_b64
+    return feed, str(archive), key_b64
 
 
 print("verify-appcast.py (via real sign_update):")
 
 with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d)
-    check("valid feed + archive", run(feed, ar, key, "--expected-prefix", PREFIX).returncode == 0)
-    check("valid --feed-only", run(feed, ar, key, "--feed-only").returncode == 0)
+    feed, arc, key = build(d)
+    check("valid feed + new archive", run(feed, key, "--archive", arc, "--expected-url", URL).returncode == 0)
+    check("valid --feed-only", run(feed, key, "--feed-only").returncode == 0)
 
 with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d, tamper_archive=True)
-    check("tampered archive rejected", run(feed, ar, key).returncode != 0)
+    feed, arc, key = build(d, tamper_archive=True)
+    check("tampered archive rejected", run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
 
 with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d, poison_feed=True)
-    check("poisoned feed rejected", run(feed, ar, key).returncode != 0)
-    check("poisoned feed rejected (--feed-only)", run(feed, ar, key, "--feed-only").returncode != 0)
+    feed, arc, key = build(d, poison_feed=True)
+    check("poisoned feed rejected", run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
+    check("poisoned feed rejected (--feed-only)", run(feed, key, "--feed-only").returncode != 0)
 
 with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d, bad_url=True)
-    r = run(feed, ar, key, "--expected-prefix", PREFIX)
-    check("URL outside prefix rejected", r.returncode != 0)
-
-with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d, absent=True)
-    check("absent archive rejected (default)", run(feed, ar, key).returncode != 0)
-    r = run(feed, ar, key, "--skip-absent")
-    check("absent-only + --skip-absent fails (nothing verified)", r.returncode != 0)
-    check("absent + --feed-only passes", run(feed, ar, key, "--feed-only").returncode == 0)
-
-with tempfile.TemporaryDirectory() as d:
-    feed, ar, key = build(d)
+    feed, arc, key = build(d)
     wrong = base64.b64encode(os.urandom(32)).decode()
-    check("wrong key rejected", run(feed, ar, wrong).returncode != 0)
+    check("wrong key rejected", run(feed, wrong, "--archive", arc, "--expected-url", URL).returncode != 0 and
+          run(feed, wrong, "--feed-only").returncode != 0)
+
+with tempfile.TemporaryDirectory() as d:
+    feed, arc, key = build(d)
+    os.remove(arc)
+    check("absent archive rejected", run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
+
+with tempfile.TemporaryDirectory() as d:
+    feed, arc, key = build(d)
+    dotseg = PREFIX + "../../evil/" + NAME
+    check("non-exact (dot-segment) URL rejected",
+          run(feed, key, "--archive", arc, "--expected-url", dotseg).returncode != 0)
+
+with tempfile.TemporaryDirectory() as d:
+    feed, arc, key = build(d, duplicate=True)
+    check("duplicate enclosure URL rejected (ambiguous)",
+          run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
 
 if failures:
     print(f"VERIFY-APPCAST TESTS FAILED ({failures})", file=sys.stderr)
