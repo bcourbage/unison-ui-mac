@@ -219,7 +219,10 @@ jobs:
           # accepts the notarized+stapled bundle before zipping it for release.
           codesign --verify --deep --strict "$app"
           spctl -a -vvv --type exec "$app"
-          zip="unison-ui-mac-${{ steps.ver.outputs.version }}.app.zip"
+          # Real releases version off a v* tag (no slash); a dry-run may target a
+          # branch like feat/x, so sanitize '/' out of the artifact name.
+          version="${{ steps.ver.outputs.version }}"
+          zip="unison-ui-mac-${version//\//-}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"
           echo "Built $zip"
