@@ -94,6 +94,14 @@ enum MainMenu {
                      action: #selector(AppDelegate.reportIssue(_:)),
                      keyEquivalent: "")
 
+        // Donate — its own separator: supporting the project is a distinct
+        // category from reading docs or filing feedback. No ellipsis, matching
+        // the other URL-opening Help items; opens the GitHub Sponsors page.
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Donate",
+                     action: #selector(AppDelegate.donate(_:)),
+                     keyEquivalent: "")
+
         // Wire as the official Help menu so the system's "Help search"
         // (the Spotlight-style menu-item finder) lives here.
         NSApp.helpMenu = menu

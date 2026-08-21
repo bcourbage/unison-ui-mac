@@ -2532,6 +2532,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         openIssueReport()
     }
 
+    /// Open the project's GitHub Sponsors page in the default browser.
+    @objc func donate(_ sender: Any?) {
+        if let url = URL(string: "https://github.com/sponsors/bcourbage") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     /// Open the GitHub new-issue form with a pre-filled body. `context`
     /// (when set) prefills "What happened?" — used by the post-crash
     /// prompt to seed the report.
@@ -2650,7 +2657,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
                 Embeds Unison \(unisonVersion).
 
-                Distributed under the GNU GPL v3, like the upstream project. See NOTICE.md in the source tree for attribution.
+                Software updates are provided by Sparkle, © the Sparkle Project, under the MIT License.
+
+                Distributed under the GNU GPL v3, like the upstream project. See NOTICE.md for full attribution (Unison and Sparkle).
                 """,
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
