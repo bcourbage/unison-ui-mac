@@ -188,15 +188,21 @@ jobs:
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           key="$RUNNER_TEMP/asc.p8"
           printf '%s' "$ASC_KEY_B64" | base64 --decode > "$key"
+          # Trim any stray whitespace/newline captured when the secrets were set
+          # (a trailing newline makes notarytool reject the issuer as non-UUID).
+          key_id="$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')"
+          issuer="$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')"
+          echo "$issuer" | grep -Eq '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' \
+            || { echo "::error::ASC_ISSUER_ID is not a valid UUID after trimming whitespace — re-set the secret to the App Store Connect Issuer ID (issuer and key-id may be swapped)"; exit 1; }
           zip="$RUNNER_TEMP/notarize.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
-          out="$(xcrun notarytool submit "$zip" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --output-format json)"
+          out="$(xcrun notarytool submit "$zip" --key "$key" --key-id "$key_id" --issuer "$issuer" --wait --output-format json)"
           echo "$out"
           id="$(echo "$out" | /usr/bin/python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
           status="$(echo "$out" | /usr/bin/python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
           if [ "$status" != "Accepted" ]; then
             echo "::error::notarization returned $status"
-            xcrun notarytool log "$id" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            xcrun notarytool log "$id" --key "$key" --key-id "$key_id" --issuer "$issuer" || true
             rm -f "$key"
             exit 1
           fi
