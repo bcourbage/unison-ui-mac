@@ -45,7 +45,7 @@ jobs:
       # The dispatch input is consumed ONLY as an actions/checkout `ref:` input
       # (an expression, not shell), so it cannot inject into a run step.
       - name: Check out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
@@ -62,7 +62,7 @@ jobs:
         run: brew untap aws/tap || true
 
       - name: Set up OCaml 5.5.0 (pinned)
-        uses: ocaml/setup-ocaml@v3
+        uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
         with:
           ocaml-compiler: "5.5.0"
       - name: Put the pinned OCaml switch on PATH
@@ -82,18 +82,20 @@ jobs:
         run: make build CONFIG=Release
 
       - name: Package unsigned build (for inspection)
+        env:
+          RUN_ID: ${{ github.run_id }}
         run: |
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
           # Name off the immutable run id — never off a user-supplied ref (which
-          # could contain '/').
-          zip="unison-ui-mac-unsigned-${{ github.run_id }}.app.zip"
+          # could contain '/'). Passed via env, not interpolated into the body.
+          zip="unison-ui-mac-unsigned-${RUN_ID}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "ZIP=$zip" >> "$GITHUB_ENV"
           shasum -a 256 "$zip"
 
       - name: Upload unsigned artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unison-ui-mac-unsigned-${{ github.run_id }}
           path: ${{ env.ZIP }}
@@ -114,13 +116,17 @@ jobs:
     steps:
       - name: Resolve version from the tag
         id: ver
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          tag="${{ github.ref_name }}"          # GitHub-controlled; safe
-          echo "tag=$tag"          >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}"  >> "$GITHUB_OUTPUT"
+          # A Git tag name is attacker-controllable (e.g. 'v1.2.3$(cmd)' is a
+          # valid ref). Pass it in via env so it is DATA in a shell variable,
+          # never rendered into the script body where it could inject.
+          echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"  >> "$GITHUB_OUTPUT"
 
       - name: Check out the tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.ref }}
 
@@ -137,7 +143,7 @@ jobs:
         run: brew untap aws/tap || true
 
       - name: Set up OCaml 5.5.0 (pinned)
-        uses: ocaml/setup-ocaml@v3
+        uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
         with:
           ocaml-compiler: "5.5.0"
       - name: Put the pinned OCaml switch on PATH
@@ -151,10 +157,12 @@ jobs:
         run: brew install xcodegen
 
       - name: Verify the tag matches MARKETING_VERSION
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           mv=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ "$mv" != "${{ steps.ver.outputs.version }}" ]; then
-            echo "::error::tag version ${{ steps.ver.outputs.version }} != project.yml MARKETING_VERSION $mv"
+          if [ "$mv" != "$VERSION" ]; then
+            echo "::error::tag version $VERSION != project.yml MARKETING_VERSION $mv"
             exit 1
           fi
 
@@ -215,20 +223,24 @@ jobs:
 
       - name: Package the stapled .app
         id: pkg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           app=".build/derived/Build/Products/Release/unison-ui-mac.app"
           test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
           codesign --verify --deep --strict "$app"
           spctl -a -vvv --type exec "$app"
-          zip="unison-ui-mac-${{ steps.ver.outputs.version }}.app.zip"
+          zip="unison-ui-mac-${VERSION}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"
           echo "Built $zip"
           shasum -a 256 "$zip"
 
       - name: Resolve release notes
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          v="${{ steps.ver.outputs.version }}"
+          v="$VERSION"
           approved="release-notes/${v}.md"
           if [ -s "$approved" ]; then
             cp "$approved" notes.md
@@ -246,15 +258,17 @@ jobs:
           fi
 
       - name: Create / update the GitHub Release
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          REPO: ${{ github.repository }}
         run: |
-          tag="${{ steps.ver.outputs.tag }}"
-          zip="${{ steps.pkg.outputs.zip }}"
-          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $tag exists — replacing its asset."
-            gh release upload "$tag" "$zip" --repo "${{ github.repository }}" --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG exists — replacing its asset."
+            gh release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
           else
-            gh release create "$tag" "$zip" \
-              --repo "${{ github.repository }}" \
-              --title "$tag" \
+            gh release create "$TAG" "$ZIP" \
+              --repo "$REPO" \
+              --title "$TAG" \
               --notes-file notes.md
           fi
