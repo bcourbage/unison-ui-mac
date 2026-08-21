@@ -272,3 +272,93 @@ jobs:
               --title "$TAG" \
               --notes-file notes.md
           fi
+
+      - name: Fetch the Sparkle tools (checksum-pinned)
+        env:
+          SPARKLE_VERSION: "2.9.6"
+          # Keep in lockstep with docs/sparkle-updates.md and the project.yml
+          # revision pin; recompute on a Sparkle bump in the same commit.
+          SPARKLE_SHA256: "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
+        run: |
+          tools="$RUNNER_TEMP/sparkle-tools"
+          mkdir -p "$tools"
+          curl -fL -o "$tools/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          echo "${SPARKLE_SHA256}  $tools/sparkle.tar.xz" | shasum -a 256 -c -
+          tar -xf "$tools/sparkle.tar.xz" -C "$tools"
+          test -x "$tools/bin/generate_appcast" || { echo "::error::generate_appcast missing from tarball"; exit 1; }
+          echo "SPARKLE_BIN=$tools/bin" >> "$GITHUB_ENV"
+
+      - name: Set up PyNaCl (isolated venv)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/nacl-venv"
+          "$RUNNER_TEMP/nacl-venv/bin/pip" install --quiet pynacl
+
+      - name: Generate, sign, and verify the appcast
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          REPO: ${{ github.repository }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "::error::SPARKLE_ED_PRIVATE_KEY secret is empty"; exit 1; }
+          work="$RUNNER_TEMP/appcast"
+          mkdir -p "$work"
+          # Seed with the currently-published feed so older versions survive
+          # (generate_appcast copies forward items whose archive is not present).
+          if curl -fsSL -o "$work/appcast.xml" "https://bcourbage.github.io/unison-ui-mac/appcast.xml"; then
+            echo "Seeded from the published appcast."
+          else
+            echo "No existing appcast (first release?); starting fresh."
+          fi
+          # The new archive (exact-named) and its embedded "What's New" fragment,
+          # converted from the same notes.md used for the GitHub Release body.
+          cp "$ZIP" "$work/"
+          python3 scripts/release-notes-to-html.py notes.md > "$work/unison-ui-mac-${VERSION}.app.html"
+          # Generate + sign. Because the archived app's Info.plist has
+          # SURequireSignedFeed, generate_appcast emits BOTH the per-enclosure
+          # edSignature and the feed-level signature, using the same key. The
+          # private key is passed on stdin (never argv); strip any stray newline.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | tr -d '\r\n' | "$SPARKLE_BIN/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${REPO}/releases/download/${TAG}/" \
+            -o "$work/appcast.xml" \
+            "$work"
+          # Gate 1 — structural: every parsed enclosure carries a well-formed,
+          # correctly located, Sparkle-namespaced 64-byte edSignature.
+          ./scripts/verify-appcast-signatures.sh "$work/appcast.xml"
+          # Gate 2 — cryptographic: the new archive's signature verifies over its
+          # bytes, and the feed-level signature verifies, both under the shipped
+          # public key. Older carried-forward archives are not on disk (their
+          # bytes were verified at their own release); --skip-absent logs them and
+          # the feed-level signature covers their feed entries.
+          "$RUNNER_TEMP/nacl-venv/bin/python" scripts/verify-archive-signatures.py \
+            "$work/appcast.xml" "$work" --require-feed-signature --skip-absent
+          echo "APPCAST_PATH=$work/appcast.xml" >> "$GITHUB_ENV"
+
+      - name: Publish the appcast to GitHub Pages
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          pages="$RUNNER_TEMP/pages"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          if git clone --branch gh-pages --depth 1 "$url" "$pages" 2>/dev/null; then
+            echo "Updating existing gh-pages."
+          else
+            echo "Creating gh-pages (first publish)."
+            git clone --depth 1 "$url" "$pages"
+            git -C "$pages" checkout --orphan gh-pages
+            git -C "$pages" rm -rq . 2>/dev/null || true
+          fi
+          cp "$APPCAST_PATH" "$pages/appcast.xml"
+          git -C "$pages" config user.name "github-actions[bot]"
+          git -C "$pages" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$pages" add appcast.xml
+          if git -C "$pages" diff --cached --quiet; then
+            echo "appcast unchanged; nothing to publish."
+          else
+            git -C "$pages" commit -m "appcast: publish ${TAG}"
+            git -C "$pages" push origin gh-pages
+          fi

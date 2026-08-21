@@ -29,11 +29,21 @@ ID-signed and notarized:
   could install even if its EdDSA signature were missing or wrong. Keep
   EdDSA-signing every update anyway and treat the EdDSA private key as
   security-critical.
-- EdDSA stays mandatory on the publish path: `scripts/sparkle-appcast.sh`
-  refuses to publish an appcast with a missing or malformed enclosure signature
-  (attribute present, correct 64-byte shape). This is a **structural** gate, not
-  proof of validity — cryptographically verifying each archive against the public
-  key is a go-live prerequisite (see `TODO.md`).
+- EdDSA is enforced on the publish path by two gates in the release pipeline:
+  `scripts/verify-appcast-signatures.sh` (**structural** — every parsed enclosure
+  carries a well-formed, correctly located, 64-byte Sparkle edSignature) and
+  `scripts/verify-archive-signatures.py` (**cryptographic** — each new archive's
+  signature actually verifies over the archive bytes under the shipped
+  `SUPublicEDKey`, as does the feed-level signature below).
+
+**Feed-level signature (`SURequireSignedFeed`).** On top of the per-archive
+signature, Sparkle 2.9.6 signs the whole appcast: `generate_appcast` appends a
+trailing `<!-- sparkle-signatures: ... -->` block carrying an Ed25519 signature
+over the feed body, using the same maintainer key. With `SURequireSignedFeed =
+true` in the app (enabled at go-live — it requires `SUVerifyUpdateBeforeExtraction
+= true`, which is set, or the updater refuses to start), the client rejects any
+appcast whose feed-level signature is missing or invalid. `generate_appcast`
+emits it automatically because the archived app's Info.plist carries the key.
 
 Separately, **Apple notarization** (a stapled ticket) is what lets Gatekeeper
 accept the *first* download from GitHub Releases without a quarantine prompt; a
@@ -106,25 +116,57 @@ revision (and the tools checksum above) deliberately.
 ## Producing an appcast for a release
 
 The appcast is an RSS feed listing available versions; the app polls it at
-`SUFeedURL`. `generate_appcast` scans a folder of update archives, signs each
-with the keychain EdDSA key, generates binary deltas, and writes `appcast.xml`:
+`SUFeedURL`. On a pushed `v*` tag, the `release` job in
+`.github/workflows/release.yml` produces and publishes it automatically, after
+the app is signed, notarized, stapled, and the release asset is uploaded:
+
+1. **Fetch the Sparkle tools** from the pinned, checksum-verified tarball (same
+   SHA-256 as "Getting the tools" above).
+2. **Seed** a work dir with the currently-published `appcast.xml` (so older
+   versions survive — `generate_appcast` copies forward items whose archive is
+   not present locally), and drop in the new `.app.zip` plus the release notes
+   converted to an embedded HTML fragment (`scripts/release-notes-to-html.py`
+   turns `notes.md` into `unison-ui-mac-<version>.app.html`).
+3. **Generate + sign:** `generate_appcast --ed-key-file -` (private key on stdin,
+   from the `SPARKLE_ED_PRIVATE_KEY` secret) with `--download-url-prefix` pointing
+   at the GitHub Releases asset URL for the tag. Because the archived app's
+   Info.plist has `SURequireSignedFeed`, this emits both the per-enclosure
+   signatures and the feed-level signature.
+4. **Two verification gates (fail closed):** `verify-appcast-signatures.sh`
+   (structural) then `verify-archive-signatures.py --require-feed-signature
+   --skip-absent` (cryptographic — the new archive's signature and the feed-level
+   signature verify under `SUPublicEDKey`; carried-forward archives that are not
+   on disk are logged and covered by the feed-level signature).
+5. **Publish** `appcast.xml` to the `gh-pages` branch, which GitHub Pages serves
+   at `SUFeedURL`. The archives themselves live on GitHub Releases, not Pages.
+
+For **local testing** (not a real release), the manual wrapper still works:
+`SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/` runs
+`generate_appcast` plus the structural gate against a folder of archives.
+
+### The CI signing key (`SPARKLE_ED_PRIVATE_KEY` secret)
+
+CI runners have no login keychain, so the EdDSA private key is provided to the
+`release` environment as the `SPARKLE_ED_PRIVATE_KEY` secret and passed to
+`generate_appcast` on **stdin** (never argv). Its value is the base64 private key
+exported from the maintainer keychain:
 
 ```bash
-SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/
+./bin/generate_keys -x sparkle-private-key.txt   # writes the base64 private key
+# paste the FILE CONTENTS as the SPARKLE_ED_PRIVATE_KEY secret, then:
+rm -P sparkle-private-key.txt                     # do not keep the plaintext around
 ```
 
-The wrapper fails (non-zero) via `scripts/verify-appcast-signatures.sh` unless
-every enclosure Sparkle would parse (a `name()='enclosure'` child of an `<item>`
-or of a `sparkle:deltas`) carries a `sparkle:edSignature` in the exact Sparkle
-namespace whose value decodes to 64 bytes. That is a **structural** check —
-signature *presence*, location, namespace, and Ed25519 shape — **not**
-cryptographic verification (that needs the referenced archive bytes plus the
-public key and is Sparkle's job on the client). It exists because a
-missing/mismatched key makes `generate_appcast` only *warn* (exit 0), so never
-publish an appcast that skipped this check.
+Set it only in the gated `release` environment (not repo-wide), like the
+notarization secrets. It is the same key whose public half is `SUPublicEDKey`;
+treat it as security-critical.
 
-Host the resulting `appcast.xml` (and the archives it references) at the
-`SUFeedURL` in `project.yml` — GitHub Pages on this repo is the intended home.
+### GitHub Pages (one-time setup)
+
+Pages must be configured to **Deploy from a branch → `gh-pages` → `/ (root)`**
+(repo Settings → Pages). The release job creates `gh-pages` on the first publish
+and commits `appcast.xml` to it thereafter; nothing else is hosted there (release
+notes are embedded in the feed, archives live on Releases).
 
 ## Testing the update cycle locally (before the feed is live)
 

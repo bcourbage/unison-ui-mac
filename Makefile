@@ -356,6 +356,21 @@ check-appcast:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# Release-notes markdown -> Sparkle "What's New" HTML fragment converter test
+# (Python stdlib only, no network / no Sparkle tools).
+PYTHON ?= python3
+.PHONY: check-release-notes
+check-release-notes:
+	@$(PYTHON) ./scripts/test-release-notes-to-html.py
+
+# Cryptographic appcast-signature verifier test (per-enclosure + feed-level
+# Ed25519 against the shipped public key). Requires PyNaCl; CI provides it in a
+# venv: `make check-archive-sigs PYTHON=.venv/bin/python`. Fails — never skips —
+# if PyNaCl is absent, because this is a release gate.
+.PHONY: check-archive-sigs
+check-archive-sigs:
+	@$(PYTHON) ./scripts/test-verify-archive-signatures.py
+
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
 # user-facing install wants the optimized binary, not a Debug build with

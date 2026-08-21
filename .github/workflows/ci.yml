@@ -117,6 +117,22 @@ jobs:
         # (required Sparkle components; explicit identity must be Developer ID).
         run: make check-sign-app
 
+      - name: Check release-notes HTML converter
+        # Pure-Python (stdlib) gate: the release-notes markdown -> Sparkle
+        # "What's New" HTML-fragment converter, including the fragment invariant
+        # generate_appcast relies on to embed the notes inline.
+        run: make check-release-notes
+
+      - name: Check appcast cryptographic verifier
+        # Verifies the real Ed25519 checks (per-enclosure over archive bytes +
+        # feed-level) reject tampered archives, corrupt signatures, and the wrong
+        # key. Needs PyNaCl, installed in an isolated venv so the runner's
+        # system Python is left untouched (PEP 668).
+        run: |
+          python3 -m venv "$RUNNER_TEMP/nacl-venv"
+          "$RUNNER_TEMP/nacl-venv/bin/pip" install --quiet pynacl
+          make check-archive-sigs PYTHON="$RUNNER_TEMP/nacl-venv/bin/python"
+
       - name: Build
         # `make build` regenerates the xcodeproj, builds the app for
         # Debug, and stops short of running tests. Catches Swift
