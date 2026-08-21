@@ -32,7 +32,11 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://bcourbage.github.io/unison-ui-mac/appcast.xml</string>
+	<key>SUPromptUserOnFirstLaunch</key>
+	<true/>
 	<key>SUPublicEDKey</key>
 	<string>/jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

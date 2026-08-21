@@ -23,14 +23,16 @@ settings:
     BLOB: ${BLOB}
 
 packages:
-  # Sparkle 2 — in-app software updates. Pinned to an exact version for
-  # reproducible builds; the package's binary target is a notarized
-  # xcframework that xcodebuild fetches, embeds, and signs into the app.
-  # Bump deliberately (see docs/sparkle-updates.md), the same discipline as
-  # the vendored OCaml blob and manual.
+  # Sparkle 2 — in-app software updates. Pinned by REVISION, not tag, so a
+  # moved `2.9.6` tag (e.g. after an upstream account compromise) cannot swap
+  # the framework underneath us: SPM resolves this exact commit, whose
+  # Package.swift declares the binary xcframework's checksum. The revision below
+  # is tag 2.9.6. (Package.resolved lives inside the gitignored .xcodeproj, so
+  # the revision pin here is the tracked lock.) Bump deliberately — see
+  # docs/sparkle-updates.md — the same discipline as the vendored OCaml blob.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    exactVersion: 2.9.6
+    revision: ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a
 
 targets:
   unison-ui-mac:
@@ -127,16 +129,40 @@ targets:
         #                            of Apple code signing. PLACEHOLDER below —
         #                            replaced with the real key once the
         #                            maintainer runs `generate_keys`.
+        #   SUVerifyUpdateBeforeExtraction — verify the archive's EdDSA
+        #                            signature BEFORE handing it to the
+        #                            unarchiver. Without it Sparkle extracts an
+        #                            unauthenticated archive first (in the
+        #                            unsandboxed Installer XPC service) and only
+        #                            checks the signature afterward, so a
+        #                            compromised feed serving a malicious archive
+        #                            reaches the unarchiver before the sole
+        #                            author-controlled trust check. Required here:
+        #                            EdDSA is our only trust anchor until Developer
+        #                            ID signing lands.
         #   SUEnableSystemProfiling — send an anonymous system/app profile (OS
         #                            version, CPU, Mac model, RAM, app version,
         #                            language) as query parameters on the update
         #                            check, at most once per week.
-        # SUEnableAutomaticChecks is intentionally NOT set: Sparkle then asks the
-        # user on first launch whether to check automatically, so update checks
-        # (and the profiling that rides along with them) are opt-in.
+        #   SUPromptUserOnFirstLaunch — ask about automatic checks on the FIRST
+        #                            launch (Sparkle otherwise defers the prompt to
+        #                            the second launch). That prompt carries an
+        #                            "Include anonymous system profile" checkbox
+        #                            that is checked by default, so profiling is
+        #                            opt-OUT within the prompt. Nothing is sent
+        #                            until the user answers. Details + rationale in
+        #                            docs/sparkle-updates.md.
+        # SUEnableAutomaticChecks is deliberately unset: the first-launch prompt
+        # above is what turns automatic checks on or off.
+        # SURequireSignedFeed (authenticate the appcast itself, not just each
+        # archive) is added at go-live, together with the feed-signing step in the
+        # appcast tooling — enabling it here before the feed is signed would make
+        # every update check fail.
         SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
         SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
+        SUVerifyUpdateBeforeExtraction: true
         SUEnableSystemProfiling: true
+        SUPromptUserOnFirstLaunch: true
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""
     settings:

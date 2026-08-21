@@ -3,18 +3,23 @@
 ## To Do
 
 - [ ] **Sparkle in-app updates — signing, notarization, and go-live.** The
-      framework, updater UI, appcast tooling, and system-profiling opt-in are in
-      place (see `docs/sparkle-updates.md`). Remaining:
-      - Replace the `SUPublicEDKey` placeholder in `project.yml` with the real
-        public key from `generate_keys`.
-      - Developer ID signing + notarization in `install.sh` and
-        `release.yml`: sign nested code inside-out (drop `--deep`), enable the
-        hardened runtime, `notarytool submit --wait` + `stapler staple`.
-      - Publish the appcast (GitHub Pages) and confirm `SUFeedURL` resolves.
+      framework, updater UI, EdDSA signing + pre-extraction verification, the
+      real public key, appcast tooling, and first-launch consent (profiling
+      opt-out within the prompt) are in place (see `docs/sparkle-updates.md`).
+      Remaining:
+      - Developer ID signing + notarization in `install.sh` and `release.yml`:
+        sign nested code inside-out (drop `--deep`), enable the hardened
+        runtime, `notarytool submit --wait` + `stapler staple`.
+      - Release-notes ("What's New") display: wire `release-notes/*.md` → HTML
+        into the appcast so Sparkle shows them in the update prompt.
+      - Publish the appcast (GitHub Pages), confirm `SUFeedURL` resolves, and
+        enable `SURequireSignedFeed` together with signing the feed in the
+        appcast tooling (enabling it before the feed is signed breaks every
+        update check).
       - Set `auto_updates true` in the Homebrew cask so `brew upgrade` defers
         to Sparkle; refresh the Gatekeeper sections in `INSTALL.md`/`README`
         once notarization makes the `xattr`/"Open Anyway" steps obsolete.
-      - End-to-end verify a v(N)→v(N+1) update against the live feed.
+      - End-to-end verify a v(N)→v(N+1) update against the live, notarized feed.
 
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
       Two independent, fail-closed tracks remain after the qualified direct-SSH
