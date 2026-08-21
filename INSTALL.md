@@ -105,7 +105,7 @@ version other than the latest. Otherwise the
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
    download the `unison-ui-mac-<version>.app.zip` attached to the release
    you want.
-2. Unzip it and drag `Unison-UI-Mac.app` to `/Applications`.
+2. Unzip it and drag `unison-ui-mac.app` to `/Applications`.
 3. Double-click to launch. Updates after that come through the app itself.
 
 If no release is available for the version you want, or you'd rather
@@ -264,4 +264,3 @@ make install
   is installed but `brew install xcodegen` hasn't run, or your shell
   hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew
   shellenv)"`).
-```

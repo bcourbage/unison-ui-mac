@@ -29,10 +29,11 @@ ID-signed and notarized:
   could install even if its EdDSA signature were missing or wrong. Keep
   EdDSA-signing every update anyway and treat the EdDSA private key as
   security-critical.
-- EdDSA stays mandatory on the publish path regardless:
-  `scripts/sparkle-appcast.sh` refuses to publish an appcast with an unsigned
-  enclosure, so a missing or bad EdDSA signature never reaches users in the
-  first place.
+- EdDSA stays mandatory on the publish path: `scripts/sparkle-appcast.sh`
+  refuses to publish an appcast with a missing or malformed enclosure signature
+  (attribute present, correct 64-byte shape). This is a **structural** gate, not
+  proof of validity — cryptographically verifying each archive against the public
+  key is a go-live prerequisite (see `TODO.md`).
 
 Separately, **Apple notarization** (a stapled ticket) is what lets Gatekeeper
 accept the *first* download from GitHub Releases without a quarantine prompt; a
