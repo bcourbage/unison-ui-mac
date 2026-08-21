@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// reopening just brings the existing instance to front.
     private var settingsWindowController: SettingsWindowController?
     private var unisonDirectory: String = ""
+    /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
+    /// updater), in which case the Settings window omits the Updates tab.
+    var updater: (any UpdatePreferences)?
     /// Tracks the profile we last asked OCaml to load. Used by the fatal
     /// recovery path to re-run init1+init2 against the same profile after
     /// the user accepts an "auto-fix" action (e.g. orphan archive cleanup).
@@ -2369,7 +2372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
-        let settings = SettingsWindowController(unisonDirectory: unisonDirectory)
+        let settings = SettingsWindowController(
+            unisonDirectory: unisonDirectory, updatePreferences: updater)
         settings.showWindow(nil)
         settings.window?.makeKeyAndOrderFront(nil)
         settingsWindowController = settings
