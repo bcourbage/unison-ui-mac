@@ -9,6 +9,26 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.5.0] — 2026-08-21
+
+Adds in-app updates and moves to a Developer ID-signed, notarized build, on top
+of 0.4.2. (Build 19.) Existing profiles and settings continue to work without
+migration.
+
+### Added
+- **In-app updates.** The app checks for and installs updates itself through the
+  Sparkle framework (App menu ▸ Check for Updates). On first launch it asks
+  whether to check automatically.
+- **Software Updates settings.** A new Updates tab in Settings changes whether the
+  app checks for updates automatically and whether it includes an anonymous system
+  profile, at any time after the first-launch prompt.
+- **Donate menu item.** Help ▸ Donate opens the project's GitHub Sponsors page.
+
+### Changed
+- **Signed and notarized distribution.** The app is now distributed as a Developer
+  ID-signed, notarized build, so it opens with a normal double-click. Updates after
+  the first install come through the app itself.
+
 ## [0.4.2] — 2026-07-27
 
 A feature release adding a native, appearance-aware app icon and clearer folder
