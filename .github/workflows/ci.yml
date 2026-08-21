@@ -117,6 +117,28 @@ jobs:
         # (required Sparkle components; explicit identity must be Developer ID).
         run: make check-sign-app
 
+      - name: Check release-notes HTML converter
+        # Pure-Python (stdlib) gate: the release-notes markdown -> Sparkle
+        # "What's New" HTML-fragment converter, including the fragment invariant
+        # generate_appcast relies on to embed the notes inline.
+        run: make check-release-notes
+
+      - name: Check appcast cryptographic verifier
+        # Exercises verify-appcast.py against the pinned sign_update (Sparkle's
+        # own verifier — no third-party crypto lib): a signed feed + archive pass;
+        # a tampered archive, poisoned feed, wrong key, and out-of-prefix URL fail
+        # closed. Fetches the checksum-pinned Sparkle tools (same SHA-256 as the
+        # release job and docs/sparkle-updates.md).
+        env:
+          SPARKLE_SHA256: "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
+        run: |
+          tools="$RUNNER_TEMP/sparkle-tools"; mkdir -p "$tools"
+          curl -fL -o "$tools/s.tar.xz" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
+          echo "${SPARKLE_SHA256}  $tools/s.tar.xz" | shasum -a 256 -c -
+          tar -xf "$tools/s.tar.xz" -C "$tools"
+          SPARKLE_BIN="$tools/bin" make check-verify-appcast
+
       - name: Build
         # `make build` regenerates the xcodeproj, builds the app for
         # Debug, and stops short of running tests. Catches Swift

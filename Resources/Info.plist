@@ -36,6 +36,10 @@
 	<true/>
 	<key>SUPublicEDKey</key>
 	<string>/jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
 </dict>

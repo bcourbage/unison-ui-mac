@@ -29,11 +29,31 @@ ID-signed and notarized:
   could install even if its EdDSA signature were missing or wrong. Keep
   EdDSA-signing every update anyway and treat the EdDSA private key as
   security-critical.
-- EdDSA stays mandatory on the publish path: `scripts/sparkle-appcast.sh`
-  refuses to publish an appcast with a missing or malformed enclosure signature
-  (attribute present, correct 64-byte shape). This is a **structural** gate, not
-  proof of validity — cryptographically verifying each archive against the public
-  key is a go-live prerequisite (see `TODO.md`).
+- EdDSA is enforced on the publish path by two gates in the release pipeline:
+  `scripts/verify-appcast-signatures.sh` (**structural** — every parsed enclosure
+  carries a well-formed, correctly located, 64-byte Sparkle edSignature) and
+  `scripts/verify-appcast.py` (**cryptographic**). The crypto gate does not
+  reimplement any signature parsing: it delegates to the pinned **`sign_update
+  --verify`** (Sparkle's own verifier), confirming the feed-level signature and
+  the new archive's signature over its bytes, and it constrains every enclosure
+  URL to the Releases prefix.
+
+**Feed-level signature (`SURequireSignedFeed`).** On top of the per-archive
+signature, Sparkle 2.9.6 signs the whole appcast: `generate_appcast` appends a
+trailing `<!-- sparkle-signatures: ... -->` block carrying an Ed25519 signature
+over the feed body, using the same maintainer key. With `SURequireSignedFeed =
+true` in the app (it requires `SUVerifyUpdateBeforeExtraction = true`, which is
+set, or the updater refuses to start), the client rejects any appcast whose
+feed-level signature is missing or invalid. `generate_appcast` emits it
+automatically because the archived app's Info.plist carries the key. We also set
+**`SUSignedFeedFailureExpirationInterval: 0`**: Sparkle otherwise recovers into
+unsigned-feed handling after ~20 days of continuous feed-signature failures (a
+key-rotation escape hatch), and `0` disables that recovery so enforcement stays
+permanently fail-closed. Because the whole feed body is signed, carrying old
+items forward is only safe if the seed feed is authenticated first — so the
+release job runs `sign_update --verify` on the downloaded feed **before** reusing
+it, and fails closed on any tamper (a fetch error other than 404 also fails,
+rather than silently starting a fresh feed).
 
 Separately, **Apple notarization** (a stapled ticket) is what lets Gatekeeper
 accept the *first* download from GitHub Releases without a quarantine prompt; a
@@ -106,25 +126,70 @@ revision (and the tools checksum above) deliberately.
 ## Producing an appcast for a release
 
 The appcast is an RSS feed listing available versions; the app polls it at
-`SUFeedURL`. `generate_appcast` scans a folder of update archives, signs each
-with the keychain EdDSA key, generates binary deltas, and writes `appcast.xml`:
+`SUFeedURL`. On a pushed `v*` tag, the `release` job in
+`.github/workflows/release.yml` produces and publishes it automatically, after
+the app is signed, notarized, stapled, and the release asset is uploaded:
+
+1. **Fetch the Sparkle tools** from the pinned, checksum-verified tarball (same
+   SHA-256 as "Getting the tools" above) — provides both `generate_appcast` and
+   `sign_update`.
+2. **Authenticate the seed feed + check build monotonicity.** Download the
+   currently-published `appcast.xml` (so older versions survive —
+   `generate_appcast` copies forward items whose archive is not present locally).
+   Before reusing it, run `verify-appcast.py --feed-only` (= `sign_update
+   --verify`) on it so a tampered feed cannot smuggle forged carried-forward
+   metadata into a freshly-signed release. A 404 means "first release, start
+   fresh"; any other fetch error fails the job. The new `CURRENT_PROJECT_VERSION`
+   must be a positive integer greater than every `sparkle:version` already in the
+   authenticated feed.
+3. **Generate + sign:** `generate_appcast --ed-key-file -` (private key on stdin,
+   from the `SPARKLE_ED_PRIVATE_KEY` secret) with `--download-url-prefix` pointing
+   at the GitHub Releases asset URL for the tag, plus the new `.app.zip` and the
+   release notes as an embedded HTML fragment (`scripts/release-notes-to-html.py`
+   turns `notes.md` into `unison-ui-mac-<version>.app.html`). Because the archived
+   app's Info.plist has `SURequireSignedFeed`, this emits both the per-enclosure
+   signatures and the feed-level signature.
+4. **Two verification gates (fail closed):** `verify-appcast-signatures.sh`
+   (structural — enclosure shape/location/qualified-name via `xmllint name()`)
+   then `verify-appcast.py --archive <zip> --expected-url <exact Releases URL>`
+   (cryptographic, via `sign_update --verify`: the feed-level signature
+   authenticates the whole feed body, and the new archive's signature verifies
+   over its bytes, matched by its EXACT expected URL so a foreign/duplicate
+   enclosure or a dot-segment URL cannot stand in for it).
+5. **Publish** `appcast.xml` to the `gh-pages` branch (which must already exist),
+   which GitHub Pages serves at `SUFeedURL`. Archives live on GitHub Releases.
+6. **Verify publication:** poll `SUFeedURL` until it serves the new version, then
+   `sign_update --verify` the served bytes — a green `git push` is not proof the
+   asynchronous Pages deploy succeeded.
+
+For **local testing** (not a real release), the manual wrapper still works:
+`SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/` runs
+`generate_appcast` plus the structural gate against a folder of archives.
+
+### The CI signing key (`SPARKLE_ED_PRIVATE_KEY` secret)
+
+CI runners have no login keychain, so the EdDSA private key is provided to the
+`release` environment as the `SPARKLE_ED_PRIVATE_KEY` secret and passed to
+`generate_appcast` on **stdin** (never argv). Its value is the base64 private key
+exported from the maintainer keychain:
 
 ```bash
-SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/
+./bin/generate_keys -x sparkle-private-key.txt   # writes the base64 private key
+# paste the FILE CONTENTS as the SPARKLE_ED_PRIVATE_KEY secret, then:
+rm -P sparkle-private-key.txt                     # do not keep the plaintext around
 ```
 
-The wrapper fails (non-zero) via `scripts/verify-appcast-signatures.sh` unless
-every enclosure Sparkle would parse (a `name()='enclosure'` child of an `<item>`
-or of a `sparkle:deltas`) carries a `sparkle:edSignature` in the exact Sparkle
-namespace whose value decodes to 64 bytes. That is a **structural** check —
-signature *presence*, location, namespace, and Ed25519 shape — **not**
-cryptographic verification (that needs the referenced archive bytes plus the
-public key and is Sparkle's job on the client). It exists because a
-missing/mismatched key makes `generate_appcast` only *warn* (exit 0), so never
-publish an appcast that skipped this check.
+Set it only in the gated `release` environment (not repo-wide), like the
+notarization secrets. It is the same key whose public half is `SUPublicEDKey`;
+treat it as security-critical.
 
-Host the resulting `appcast.xml` (and the archives it references) at the
-`SUFeedURL` in `project.yml` — GitHub Pages on this repo is the intended home.
+### GitHub Pages (one-time setup)
+
+Pages must be configured to **Deploy from a branch → `gh-pages` → `/ (root)`**
+(repo Settings → Pages). The `gh-pages` branch must already exist — the release
+job requires it and commits `appcast.xml` to it, but does not create it (a
+botched auto-create once published the whole repo tree). Nothing else is hosted
+there (release notes are embedded in the feed, archives live on Releases).
 
 ## Testing the update cycle locally (before the feed is live)
 
@@ -132,7 +197,8 @@ Until the production feed is published you can exercise the full cycle against a
 local appcast:
 
 1. Build and archive the current version, and a build with a higher
-   `MARKETING_VERSION`, into an `updates/` folder.
+   `MARKETING_VERSION` **and** a higher `CURRENT_PROJECT_VERSION` (Sparkle
+   compares the build number), into an `updates/` folder.
 2. Run `scripts/sparkle-appcast.sh updates/` to sign them and emit
    `updates/appcast.xml`.
 3. Serve it locally (`python3 -m http.server` in `updates/`) and temporarily set

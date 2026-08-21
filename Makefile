@@ -356,6 +356,23 @@ check-appcast:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# Release-notes markdown -> Sparkle "What's New" HTML fragment converter test
+# (Python stdlib only, no network / no Sparkle tools).
+PYTHON ?= python3
+.PHONY: check-release-notes
+check-release-notes:
+	@$(PYTHON) ./scripts/test-release-notes-to-html.py
+
+# Cryptographic appcast verifier test. Exercises verify-appcast.py against the
+# REAL pinned sign_update (Sparkle's own verifier) with a THROWAWAY key: a signed
+# feed + archive pass; a tampered archive, a poisoned feed, the wrong key, and an
+# out-of-prefix enclosure URL all fail closed. Requires SPARKLE_BIN (the
+# checksum-pinned Sparkle tools bin/); CI fetches it. Fails — never skips — if
+# SPARKLE_BIN is absent, because this is a release gate.
+.PHONY: check-verify-appcast
+check-verify-appcast:
+	@$(PYTHON) ./scripts/test-verify-appcast.py
+
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
 # user-facing install wants the optimized binary, not a Debug build with

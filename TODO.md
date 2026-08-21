@@ -2,26 +2,16 @@
 
 ## To Do
 
-- [ ] **Sparkle in-app updates — go-live.** The
-      framework, updater UI, EdDSA signing + pre-extraction verification, the
-      real public key, appcast tooling, first-launch consent (profiling
-      opt-out within the prompt), and Developer ID signing + notarization
-      (`install.sh`, `release.yml`) are in place (see `docs/sparkle-updates.md`).
-      Remaining:
-      - Release-notes ("What's New") display: wire `release-notes/*.md` → HTML
-        into the appcast so Sparkle shows them in the update prompt.
-      - Publish the appcast (GitHub Pages), confirm `SUFeedURL` resolves, and
-        enable `SURequireSignedFeed` together with signing the feed in the
-        appcast tooling (enabling it before the feed is signed breaks every
-        update check).
-      - Harden the release-signing boundary: generate the appcast into a fresh
-        directory from known archives, keep the structural gate
-        (`verify-appcast-signatures.sh`), and add a step that *cryptographically*
-        verifies each generated archive against its signature using the archive
-        bytes and the public key (the structural gate proves shape, not
-        validity). Treat `generate_appcast` warnings as diagnostics only, not the
-        gate — warning text is version-sensitive and cannot prove the feed is
-        usable.
+- [ ] **Sparkle in-app updates — go-live.** The framework, updater UI, EdDSA
+      signing + pre-extraction verification, the real public key, appcast tooling,
+      first-launch consent (profiling opt-out within the prompt), Developer ID
+      signing + notarization, and the full release-phase appcast pipeline —
+      release-notes ("What's New") embedding, `SURequireSignedFeed` + feed
+      signing, structural + cryptographic signature gates, and GitHub Pages
+      publish (all in `release.yml`) — are in place (see `docs/sparkle-updates.md`).
+      The one-time maintainer setup is done: the `SPARKLE_ED_PRIVATE_KEY` secret
+      is set in the `release` environment, and GitHub Pages deploys from the
+      `gh-pages` branch. Remaining before the first tag:
       - Set `auto_updates true` in the Homebrew cask and drop its
         quarantine-removing postflight so updates defer to Sparkle. The install
         docs no longer describe the `xattr`/"Open Anyway" steps, so this cask
