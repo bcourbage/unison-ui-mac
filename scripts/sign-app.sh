@@ -64,25 +64,36 @@ main="$app/Contents/MacOS/$main_exe"
 # error must fail the run, not pass silently.
 inv=$(mktemp)
 files=$(mktemp)
-# Code bundles by name. `find` runs outside a pipe so a scan failure trips
-# `set -e` (not masked) instead of passing silently.
+sorted=$(mktemp)
+extra=$(mktemp)
+# Everything runs OUTSIDE pipes so a failure of find/sort/file trips `set -e`
+# (or an explicit check) and aborts — a scan error must never pass as "clean".
+# Code bundles by name.
 find "$app/Contents" -type d \( -name '*.framework' -o -name '*.xpc' -o -name '*.app' \) -print > "$inv"
-# Every Mach-O by CONTENT (thin or fat), not extension.
+# Every Mach-O by CONTENT (thin or fat), not extension. `file`'s exit status is
+# checked explicitly: a CLASSIFIER FAILURE aborts, distinct from a successful
+# "not Mach-O" answer (which would otherwise let a helper slip through).
 find "$app/Contents" -type f -print > "$files"
 while IFS= read -r f; do
-	if file -b "$f" 2>/dev/null | grep -q 'Mach-O'; then printf '%s\n' "$f" >> "$inv"; fi
+	if ! ftype=$(file -b "$f" 2>/dev/null); then
+		echo "sign-app: could not classify '$f' (file failed) — refusing to sign" >&2
+		exit 1
+	fi
+	case "$ftype" in
+		*Mach-O*) printf '%s\n' "$f" >> "$inv" ;;
+	esac
 done < "$files"
-rm -f "$files"
-# Filter to a temp file rather than $(...) — bash 3.2 (/bin/sh) mis-parses a
-# `case` whose `)` pattern terminator sits inside command substitution.
-extra=$(mktemp)
-sort -u "$inv" | while IFS= read -r p; do
+# Sort into a file (not a pipe): under /bin/sh a piped `sort | while` reports
+# only the while's status, so a failing sort would yield an empty inventory and
+# pass. Redirecting lets `set -e` catch the sort failure.
+sort -u "$inv" > "$sorted"
+while IFS= read -r p; do
 	case "$p" in
 		"$main"|"$fw"|"$fw"/*) continue ;;
 	esac
-	printf '%s\n' "$p"
-done > "$extra"
-rm -f "$inv"
+	printf '%s\n' "$p" >> "$extra"
+done < "$sorted"
+rm -f "$inv" "$files" "$sorted"
 if [ -s "$extra" ]; then
 	echo "sign-app: unexpected embedded code with no explicit signing rule:" >&2
 	sed 's/^/  /' "$extra" >&2

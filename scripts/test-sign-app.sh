@@ -66,5 +66,20 @@ expect_fail "raw-macho-helper" "$d" "-" "unexpected embedded code"
 e=$(skel e.app); mkdir -p "$e/Contents/Frameworks/Other.framework"
 expect_fail "unexpected-framework" "$e" "-" "unexpected embedded code"
 
+# A failing classifier (`file`) must ABORT — not be read as "not Mach-O" and let
+# a helper slip through. Shadow `file` with a stub that always fails.
+g=$(skel g.app)
+mkdir -p "$tmp/stub_file"; printf '#!/bin/sh\nexit 1\n' > "$tmp/stub_file/file"; chmod +x "$tmp/stub_file/file"
+PATH="$tmp/stub_file:$PATH" "$signer" "$g" - >/dev/null 2>"$tmp/err"; rc=$?
+if [ "$rc" -ne 0 ] && grep -q "could not classify" "$tmp/err"; then r=PASS; else r=FAIL; fail=1; fi
+printf '  %-26s rc=%s  %s\n' "classifier-failure" "$rc" "$r"
+
+# A failing `sort` must ABORT — not yield an empty inventory that passes.
+h=$(skel h.app)
+mkdir -p "$tmp/stub_sort"; printf '#!/bin/sh\nexit 1\n' > "$tmp/stub_sort/sort"; chmod +x "$tmp/stub_sort/sort"
+PATH="$tmp/stub_sort:$PATH" "$signer" "$h" - >/dev/null 2>"$tmp/err"; rc=$?
+if [ "$rc" -ne 0 ]; then r=PASS; else r=FAIL; fail=1; fi
+printf '  %-26s rc=%s  %s\n' "sort-failure" "$rc" "$r"
+
 if [ "$fail" -ne 0 ]; then echo "SIGN-APP TESTS FAILED" >&2; exit 1; fi
 echo "all sign-app structural tests passed"
