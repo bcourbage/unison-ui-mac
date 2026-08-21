@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 
 TraceLog.shared.write("main.swift: entering NSApplicationMain")
 
@@ -11,6 +12,19 @@ app.setActivationPolicy(.regular)
 // responder-chain resolution.
 let delegate = AppDelegate()
 app.delegate = delegate
-app.mainMenu = MainMenu.build(pickerTarget: delegate)
+
+// Sparkle updater controller. Created before the menu so the App ▸ "Check for
+// Updates…" item can target it directly — the controller supplies both the
+// checkForUpdates: action and the validateMenuItem: that disables the item
+// while a check is already in flight. Held by a top-level binding so it lives
+// for the whole process. startingUpdater:true performs Sparkle's normal
+// post-launch background check (on first launch Sparkle prompts the user
+// whether to check automatically; SUEnableAutomaticChecks is left unset).
+let updaterController = SPUStandardUpdaterController(
+    startingUpdater: true,
+    updaterDelegate: nil,
+    userDriverDelegate: nil)
+
+app.mainMenu = MainMenu.build(pickerTarget: delegate, updaterTarget: updaterController)
 
 app.run()

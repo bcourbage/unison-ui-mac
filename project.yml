@@ -22,6 +22,16 @@ settings:
     # mechanics in Makefile.
     BLOB: ${BLOB}
 
+packages:
+  # Sparkle 2 — in-app software updates. Pinned to an exact version for
+  # reproducible builds; the package's binary target is a notarized
+  # xcframework that xcodebuild fetches, embeds, and signs into the app.
+  # Bump deliberately (see docs/sparkle-updates.md), the same discipline as
+  # the vendored OCaml blob and manual.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
+
 targets:
   unison-ui-mac:
     type: application
@@ -79,6 +89,10 @@ targets:
         buildPhase: resources
       - path: NOTICE.md
         buildPhase: resources
+    dependencies:
+      # Sparkle framework (declared in the top-level `packages` block).
+      # Xcode links and auto-embeds the SPM binary framework into the app.
+      - package: Sparkle
     info:
       path: Resources/Info.plist
       properties:
@@ -100,6 +114,29 @@ targets:
         # chain live in LICENSE + NOTICE.md.
         NSHumanReadableCopyright: "Copyright © 2026 Bruno Courbage. Licensed under GNU GPLv3 or later. Embeds Unison File Synchronizer © Benjamin C. Pierce and contributors."
         LSApplicationCategoryType: public.app-category.utilities
+        # Sparkle in-app updater. These MUST be declared here, not only in
+        # Resources/Info.plist, because xcodegen regenerates the plist on every
+        # build (same reason as the version strings above).
+        #   SUFeedURL              — appcast location (HTTPS). The GitHub Pages
+        #                            URL below goes live in the release phase;
+        #                            until then, updates are exercised against a
+        #                            local appcast (see docs/sparkle-updates.md).
+        #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key. An
+        #                            update whose archive is not signed by the
+        #                            matching private key is refused, independent
+        #                            of Apple code signing. PLACEHOLDER below —
+        #                            replaced with the real key once the
+        #                            maintainer runs `generate_keys`.
+        #   SUEnableSystemProfiling — send an anonymous system/app profile (OS
+        #                            version, CPU, Mac model, RAM, app version,
+        #                            language) as query parameters on the update
+        #                            check, at most once per week.
+        # SUEnableAutomaticChecks is intentionally NOT set: Sparkle then asks the
+        # user on first launch whether to check automatically, so update checks
+        # (and the profiling that rides along with them) are opt-in.
+        SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
+        SUPublicEDKey: REPLACE_WITH_SUPUBLICEDKEY_FROM_generate_keys
+        SUEnableSystemProfiling: true
         # No storyboard / nib — the menu is wired programmatically in main.swift.
         NSMainNibFile: ""
     settings:

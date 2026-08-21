@@ -2,6 +2,20 @@
 
 ## To Do
 
+- [ ] **Sparkle in-app updates — signing, notarization, and go-live.** The
+      framework, updater UI, appcast tooling, and system-profiling opt-in are in
+      place (see `docs/sparkle-updates.md`). Remaining:
+      - Replace the `SUPublicEDKey` placeholder in `project.yml` with the real
+        public key from `generate_keys`.
+      - Developer ID signing + notarization in `install.sh` and
+        `release.yml`: sign nested code inside-out (drop `--deep`), enable the
+        hardened runtime, `notarytool submit --wait` + `stapler staple`.
+      - Publish the appcast (GitHub Pages) and confirm `SUFeedURL` resolves.
+      - Set `auto_updates true` in the Homebrew cask so `brew upgrade` defers
+        to Sparkle; refresh the Gatekeeper sections in `INSTALL.md`/`README`
+        once notarization makes the `xattr`/"Open Anyway" steps obsolete.
+      - End-to-end verify a v(N)→v(N+1) update against the live feed.
+
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
       Two independent, fail-closed tracks remain after the qualified direct-SSH
       Stop Scan shipped (PR #51):
