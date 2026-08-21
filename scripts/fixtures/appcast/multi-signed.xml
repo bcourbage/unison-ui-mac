@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <sparkle:version>2</sparkle:version>
+      <enclosure url="https://example.com/App-2.zip" length="1000" type="application/octet-stream" sparkle:edSignature="c2lnbmF0dXJlLW9uZQ=="/>
+    </item>
+    <item>
+      <sparkle:version>3</sparkle:version>
+      <enclosure url="https://example.com/App-3.zip" length="1100" type="application/octet-stream" sparkle:edSignature="c2lnbmF0dXJlLXR3bw=="/>
+    </item>
+  </channel>
+</rss>

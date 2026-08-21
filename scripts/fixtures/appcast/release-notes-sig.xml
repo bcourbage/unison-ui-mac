@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Regression fixture for the naive global-count check: the ENCLOSURE is
+     unsigned, but a signed release-notes link supplies an unrelated
+     sparkle:edSignature. A per-enclosure check must still FAIL this. -->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:releaseNotesLink sparkle:edSignature="cmVsZWFzZS1ub3Rlcy1zaWc=">https://example.com/notes-2.html</sparkle:releaseNotesLink>
+      <enclosure url="https://example.com/App-2.zip" length="1000" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>

@@ -123,12 +123,18 @@ targets:
         #                            URL below goes live in the release phase;
         #                            until then, updates are exercised against a
         #                            local appcast (see docs/sparkle-updates.md).
-        #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key. An
-        #                            update whose archive is not signed by the
-        #                            matching private key is refused, independent
-        #                            of Apple code signing. PLACEHOLDER below —
-        #                            replaced with the real key once the
-        #                            maintainer runs `generate_keys`.
+        #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
+        #                            REAL key (its private half lives only in the
+        #                            maintainer's login keychain, never in the
+        #                            repo). NOT a placeholder — it changes only on
+        #                            a key rotation. Sparkle's validator accepts an
+        #                            update when EITHER a valid EdDSA archive
+        #                            signature OR a matching Apple Developer ID
+        #                            signature is present (an OR, not both). Today
+        #                            the ad-hoc build's cdhash-specific requirement
+        #                            makes the code-signing branch unusable, so
+        #                            EdDSA is effectively required — see
+        #                            docs/sparkle-updates.md.
         #   SUVerifyUpdateBeforeExtraction — verify the archive's EdDSA
         #                            signature BEFORE handing it to the
         #                            unarchiver. Without it Sparkle extracts an

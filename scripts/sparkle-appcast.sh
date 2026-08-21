@@ -43,28 +43,25 @@ fi
 echo "Generating appcast in: $updates_dir" >&2
 "$gen" "$@" "$updates_dir"
 
+# Determine the appcast path generate_appcast actually wrote. It defaults to
+# <updates-dir>/appcast.xml, but a caller may redirect it with -o/--output-path
+# (which we pass through); validate whatever it actually produced.
 appcast="$updates_dir/appcast.xml"
+prev=""
+for a in "$@"; do
+	case "$prev" in
+		-o|--output-path) appcast="$a" ;;
+	esac
+	prev="$a"
+done
 if [ ! -f "$appcast" ]; then
 	echo "error: generate_appcast did not produce $appcast" >&2
 	exit 1
 fi
 
-# Fail closed on unsigned enclosures. generate_appcast only WARNS (and still
-# exits 0) when the EdDSA key is missing or does not match the app — it then
-# emits enclosures with no sparkle:edSignature. Publishing such an appcast
-# silently breaks updates for every installed client (Sparkle rejects an
-# unsigned archive), so refuse unless EVERY <enclosure> carries a signature.
-enclosures=$(grep -c '<enclosure' "$appcast" || true)
-signatures=$(grep -o 'sparkle:edSignature="[^"]\{1,\}"' "$appcast" | wc -l | tr -d '[:space:]')
-if [ "$enclosures" -eq 0 ]; then
-	echo "error: no <enclosure> entries in $appcast — no updates were added." >&2
-	exit 1
-fi
-if [ "$signatures" -lt "$enclosures" ]; then
-	echo "error: $appcast has $enclosures enclosure(s) but only $signatures EdDSA signature(s)." >&2
-	echo "       An enclosure without sparkle:edSignature means generate_appcast could not sign" >&2
-	echo "       it — usually a missing or mismatched key in the keychain. Refusing to publish;" >&2
-	echo "       fix the signing key (see docs/sparkle-updates.md) and regenerate." >&2
-	exit 1
-fi
-echo "Wrote: $appcast ($enclosures enclosure(s), all EdDSA-signed)" >&2
+# Fail closed unless EVERY enclosure is individually EdDSA-signed. generate_appcast
+# only warns (exit 0) on a missing/mismatched key; a per-enclosure check (not a
+# global signature count) is required because Sparkle also signs release-notes
+# elements, whose signatures would otherwise mask an unsigned enclosure.
+"$(dirname "$0")/verify-appcast-signatures.sh" "$appcast"
+echo "Wrote (verified): $appcast" >&2
