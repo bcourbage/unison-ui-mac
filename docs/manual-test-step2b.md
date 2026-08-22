@@ -275,8 +275,10 @@ A real password profile with a wrong/failing password.
   cancellation is declined (issue #53, not planned); the dormant machinery's
   structural removal is tracked in #94.
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
-  later reopen re-prompts. Keychain/ControlMaster caching is a separate
-  future item.
+  later reopen re-prompts. The app does not cache passwords; the recommended way
+  to avoid re-prompts is SSH key authentication with the key held by `ssh-agent`
+  / the macOS Keychain (`ssh-add --apple-use-keychain`), configured in the
+  profile's `sshargs` / your `ssh_config`. See MANUAL.md "SSH authentication".
 
 ---
 

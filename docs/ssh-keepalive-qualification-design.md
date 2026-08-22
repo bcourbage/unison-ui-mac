@@ -1,10 +1,17 @@
 # Design: SSH keepalive qualification (issue #55)
 
-Status: **design / qualification pass, for adversarial review.** No runtime change,
-no `patches/` change, no blob rebuild, and **no live blackhole matrix yet**. This
-document maps how the transport is built, decides where keepalive/connect options can
-be applied *safely*, defines the fail-closed rule, and specifies the reduced
-phase-specific spike matrix to run **after** this design is reviewed.
+> **SUPERSEDED — DO NOT EXECUTE.** The spike this document plans has been run and
+> concluded: see `docs/ssh-keepalive-spike-results.md`. The result was
+> **transport-positive, app-inconclusive**, so **#55 will not be implemented**
+> (the app could not demonstrate bounded failure recovery). This document is
+> retained only as the historical design/qualification record; the "matrix to
+> run after review" below has already been run and its plan is not a live task.
+
+Status: **HISTORICAL (spike completed; #55 not planned).** Originally a design /
+qualification pass for adversarial review. It maps how the transport is built,
+decides where keepalive/connect options could be applied *safely*, defines the
+fail-closed rule, and specified the reduced phase-specific spike matrix — which
+has since been run (see the results document above).
 
 Inherits the actionable residue of #41 (closed infeasible): the only failure class a
 transport signal can address is a **dead socket**, and ssh keepalive is the safer

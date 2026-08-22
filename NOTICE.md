@@ -52,12 +52,16 @@ If you redistribute this software (modified or unmodified):
 - Keep this NOTICE file and the [LICENSE](LICENSE) file alongside the
   distribution.
 - Make the **complete corresponding source code** available, including
-  the modifications this project applies to the upstream Unison
-  source. The modifications live in `patches/` (a small set of OCaml
-  callback registrations that the upstream `uimac` UI doesn't need)
-  and are auto-applied by `make apply-patches` before `make blob`
-  builds `unison-blob.o`. The `.app` bundle links against the
-  resulting patched build.
+  the modifications this project applies to the upstream Unison source.
+  Those modifications live in `patches/` and are applied to the pinned
+  upstream checkout when the vendored blob is regenerated
+  (`make vendor-blob`). `vendor/unison-blob-*.o` is therefore a
+  **patched** build of Unison, not a verbatim upstream binary. The
+  patches are small but downstream-authored, and some change shared
+  engine behavior (0003 modifies `remote.ml` / `uicommon.ml`) or the
+  macUI bridge ABI (0005 changes the `syncComplete` bridge interface);
+  see `docs/vendored-patches-upstream.md` for the full per-patch table.
+  The `.app` bundle links against the resulting patched build.
 - Disclose the Unison version this build was linked against. Run
   `make print-config` or check the "About" panel in the running app.
 

@@ -105,7 +105,8 @@ version other than the latest. Otherwise the
 1. Open <https://github.com/bcourbage/unison-ui-mac/releases> and
    download the `unison-ui-mac-<version>.app.zip` attached to the release
    you want.
-2. Unzip it and drag `Unison-UI-Mac.app` to `/Applications`.
+2. Unzip it and drag the app (its file name is `unison-ui-mac.app`, shown in
+   Finder as **Unison-UI-Mac**) to `/Applications`.
 3. Double-click to launch. Updates after that come through the app itself.
 
 If no release is available for the version you want, or you'd rather
@@ -199,7 +200,7 @@ brew uninstall --cask unison-ui-mac
 git clone https://github.com/bcourbage/unison-ui-mac.git
 cd unison-ui-mac
 git tag                    # list available versions
-git checkout v0.4.2        # the version you want to stay on
+git checkout <version-tag> # e.g. the version you want to stay on
 make install               # Release build → /Applications (see "Install from source")
 ```
 

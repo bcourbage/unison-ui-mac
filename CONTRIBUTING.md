@@ -71,9 +71,12 @@ These belong upstream, on `bcpierce00/unison`:
 
 - **Anything that changes the OCaml core's behavior**: sync
   semantics, archive-format changes, RPC protocol changes,
-  Unison's `Prefs` framework, OCaml-side I/O. We embed
-  `unison-blob.o` verbatim; any change to that surface needs to
-  happen in upstream's `src/` and ship in a future Unison release
+  Unison's `Prefs` framework, OCaml-side I/O. We embed a **patched**
+  build of `unison-blob.o` (the minimal downstream patch set in
+  `patches/`, some of which touch shared engine modules such as
+  `remote.ml`/`uicommon.ml`); any *further* change to that surface
+  needs to happen in upstream's `src/` and ship in a future Unison
+  release
   we then rebuild against.
 - **Fixes to `src/uimacbridge.ml`** beyond the minimal local fork
   patches in `patches/`. The local patches exist only because they
@@ -109,8 +112,8 @@ Code PRs are accepted with a few caveats:
 2. **No expectation of acceptance.** This is a personal-use project.
    The maintainer reviews on availability and may reject contributions
    that don't fit the project's direction without much explanation.
-3. **CI hygiene**: `make test` must pass (997 tests at last count,
-   about 13 s on Apple silicon). New behavior should add tests where the
+3. **CI hygiene**: `make test` must pass (the full XCTest suite, roughly
+   15 s on Apple silicon). New behavior should add tests where the
    existing patterns (pure-function helpers + XCTest pinning) apply.
 4. **GPLv3 inbound = outbound**: by submitting a PR you certify the
    code is your own work (or compatibly licensed) and you license it

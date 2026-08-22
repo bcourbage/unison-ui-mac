@@ -35,8 +35,11 @@ ID-signed and notarized:
   `scripts/verify-appcast.py` (**cryptographic**). The crypto gate does not
   reimplement any signature parsing: it delegates to the pinned **`sign_update
   --verify`** (Sparkle's own verifier), confirming the feed-level signature and
-  the new archive's signature over its bytes, and it constrains every enclosure
-  URL to the Releases prefix.
+  the new archive's signature over its bytes, matched by the **exact** expected
+  release URL. The feed-level signature is what authenticates every enclosure
+  URL and edSignature carried forward in the feed; the crypto gate does not
+  independently constrain every enclosure URL to a Releases prefix (that
+  enclosure-set shape is the structural gate's job).
 
 **Feed-level signature (`SURequireSignedFeed`).** On top of the per-archive
 signature, Sparkle 2.9.6 signs the whole appcast: `generate_appcast` appends a
@@ -64,9 +67,14 @@ regardless. Notarization is wired in the signing phase (`install.sh`,
 ## The EdDSA key (one-time, maintainer-owned)
 
 The private key is the single most sensitive secret in the release process:
-anyone holding it can sign an update the app will accept. It is created once,
-lives in the **login keychain**, and is **never** committed to the repo or
-pasted into CI as plaintext.
+anyone holding it can sign an update the app will accept. It is created once and
+its canonical copy lives in the **login keychain**. It is **never committed to
+the repo**. A copy is stored as the **gated GitHub Actions secret**
+`SPARKLE_ED_PRIVATE_KEY` (encrypted at rest by GitHub, injected as an env var
+only in the reviewer-gated `release` environment, and read on stdin by the
+signing tools — never on argv or disk in the runner). Setting that secret is a
+one-time manual step in the repo settings; treat it with the same care as the
+keychain copy.
 
 Generate it with Sparkle's tool (from the version-matched release tarball —
 see "Getting the tools"):
@@ -127,8 +135,12 @@ revision (and the tools checksum above) deliberately.
 
 The appcast is an RSS feed listing available versions; the app polls it at
 `SUFeedURL`. On a pushed `v*` tag, the `release` job in
-`.github/workflows/release.yml` produces and publishes it automatically, after
-the app is signed, notarized, stapled, and the release asset is uploaded:
+`.github/workflows/release.yml` produces and publishes it automatically. The
+appcast is generated, signed, and **cryptographically verified before the
+GitHub Release is created and the archive uploaded** (deliberately: the signed
+feed is proven over local bytes first). The Release is then created/uploaded,
+the verified appcast is published to GitHub Pages, and finally the served feed
+is re-verified byte-for-byte:
 
 1. **Fetch the Sparkle tools** from the pinned, checksum-verified tarball (same
    SHA-256 as "Getting the tools" above) — provides both `generate_appcast` and
@@ -138,10 +150,13 @@ the app is signed, notarized, stapled, and the release asset is uploaded:
    `generate_appcast` copies forward items whose archive is not present locally).
    Before reusing it, run `verify-appcast.py --feed-only` (= `sign_update
    --verify`) on it so a tampered feed cannot smuggle forged carried-forward
-   metadata into a freshly-signed release. A 404 means "first release, start
-   fresh"; any other fetch error fails the job. The new `CURRENT_PROJECT_VERSION`
-   must be a positive integer greater than every `sparkle:version` already in the
-   authenticated feed.
+   metadata into a freshly-signed release. A 404 is accepted as "start a fresh
+   feed" **only for the seed tag `v0.5.0`** (`FIRST_SPARKLE_TAG` in
+   `release.yml`); for every later tag a 404 (or any other fetch error) **fails
+   the job closed**, so a Pages deletion, routing mistake, or transient 404
+   cannot silently truncate the feed and bypass seed authentication and
+   monotonicity. The new `CURRENT_PROJECT_VERSION` must be a positive integer
+   greater than every `sparkle:version` already in the authenticated feed.
 3. **Generate + sign:** `generate_appcast --ed-key-file -` (private key on stdin,
    from the `SPARKLE_ED_PRIVATE_KEY` secret) with `--download-url-prefix` pointing
    at the GitHub Releases asset URL for the tag, plus the new `.app.zip` and the
@@ -191,10 +206,11 @@ job requires it and commits `appcast.xml` to it, but does not create it (a
 botched auto-create once published the whole repo tree). Nothing else is hosted
 there (release notes are embedded in the feed, archives live on Releases).
 
-## Testing the update cycle locally (before the feed is live)
+## Testing the update cycle locally (without touching the production feed)
 
-Until the production feed is published you can exercise the full cycle against a
-local appcast:
+The production feed is live (first published with v0.5.0). To exercise the full
+cycle safely, point a local build at a local appcast instead of the production
+`SUFeedURL`, so nothing you test touches the published feed:
 
 1. Build and archive the current version, and a build with a higher
    `MARKETING_VERSION` **and** a higher `CURRENT_PROJECT_VERSION` (Sparkle

@@ -55,11 +55,13 @@ OCaml core** (`unison-blob.o`) into the app bundle, so installing the
 This project embeds upstream Unison at **v2.54.0** (commit `91421d0`,
 i.e. `v2.54.0-19-g91421d0`, 19 commits past the `v2.54.0` tag on
 `master`). See [`vendor/README.md`](vendor/README.md) for the authoritative
-blob provenance. The
-`MAJORVERSION=2.54` value is significant: an SSH peer running a different
-major version will be flagged by the in-app version-mismatch check
-(`VersionCheck.swift`) on profile open. The Unison wire protocol
-guarantees compatibility within a major version only.
+blob provenance.
+
+The compatibility boundary is Unison's **2.52.0 wire protocol**, not an exact
+version match: any SSH peer at `>= 2.52.0` interoperates (so `2.53.x` and
+`2.54.x` connect fine). The in-app version-mismatch check
+(`VersionCheck.swift`) on profile open flags only peers on the *other* side of
+that boundary (`< 2.52.0`).
 
 The OCaml core lives as a prebuilt object file under
 [`vendor/`](vendor/). See [vendor/README.md](vendor/README.md) for
@@ -76,8 +78,10 @@ installed because `ssh://` profiles spawn `unison -server` on the far
 side. Pure local-to-local profiles (two local directories) have no
 external dependency.
 
-The remote `unison` must be the **same major version** (2.54.x) as this
-app's embedded copy. Common ways to install it on the remote:
+The remote `unison` must be at **>= 2.52.0** (Unison's 2.52 wire-protocol
+boundary); `2.53.x` and `2.54.x` interoperate with this app's embedded 2.54.0,
+while `2.51.x` and earlier cannot connect. Common ways to install it on the
+remote:
 
 - **macOS**: `brew install unison`
 - **Debian/Ubuntu**: `sudo apt install unison`
@@ -112,12 +116,14 @@ feature set:
 - **Archive recovery**: reactive (one-click "delete orphans and retry"
   during reconcile fatals) and proactive (`Reset Archives…` in the Profile
   Editor).
-- **997 unit tests** via `make test`. Pure-logic modules
+- **Extensive unit tests** via `make test`. Pure-logic modules
   (`ReconcileTree`, `ArchiveHash`, `ArchiveRecovery`, `ProfileDocument`,
   `ProfilePreferences`, `RowSelectionRules`, `ReconcileSummary`,
   `SettingsModel`, `ArchiveCleanup`, etc.) carry exhaustive coverage;
-  AppKit view-controllers are verified by interactive testing rather
-  than XCTest.
+  targeted real-AppKit tests cover selected view-controller seams (menu
+  construction, settings injection/wiring, password-sheet field style),
+  with broader view-controller behavior still exercised by interactive
+  testing.
 
 See [TODO.md](TODO.md) for the full prioritized status and what's still
 open (mostly P3 hygiene items at this point).
@@ -165,8 +171,12 @@ so afterwards `make open` (or opening `unison-ui-mac.xcodeproj`
 directly) and a bare `xcodebuild` both build and link correctly with no
 extra flags. A build that somehow runs without those paths set fails
 immediately with a clear error pointing back here, rather than
-producing a bundle that crashes at launch. Prerequisites for any build:
-Xcode, `xcodegen`, and `ocaml` (`brew install xcodegen ocaml`).
+producing a bundle that crashes at launch. Prerequisites for a normal
+build: Xcode and `xcodegen` (`brew install xcodegen`). OCaml is **not**
+needed for ordinary builds (they link the committed vendored blob); it
+is required only to regenerate that blob (`make vendor-blob`), and then
+it must be exactly **OCaml 5.5.0** — the build rejects any other version
+(`make check-ocaml-version`).
 
 ### Local fork patches
 
@@ -200,9 +210,13 @@ LLM-touched (see [NOTICE.md](NOTICE.md) and
 ```
 
 - **Swift→OCaml** synchronous calls go through a single-slot request /
-  response handoff to a dedicated OCaml worker thread. The worker acquires
-  the OCaml runtime lock, runs the requested callback, signals completion
-  on a condvar.
+  response handoff serviced by a small pool of three OCaml worker threads.
+  Only one worker runs OCaml at a time (the OCaml runtime lock serializes
+  them); the extra workers exist so a re-entrant chain
+  (C → OCaml → C-callback → Swift → `unison_bridge_*`) finds a free worker
+  instead of deadlocking on the single in-flight slot. The active worker
+  acquires the runtime lock, runs the requested callback, and signals
+  completion on a condvar.
 - **OCaml→Swift** callbacks (status, progress, init1/2 complete, per-row
   reload, sync complete, diff, warn, fatal) run inside `CAMLprim` functions
   on the OCaml thread; the Swift trampoline copies any strings
@@ -265,7 +279,7 @@ unison-ui-mac/
 │   └── Bridge/
 │       ├── UnisonBridgeC.h              C public API
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
-├── Tests/                               XCTest bundle (997 tests)
+├── Tests/                               XCTest bundle
 └── Resources/
     ├── Info.plist                       App bundle metadata
     └── Unison.icon/                     Native Icon Composer app icon (light/dark)

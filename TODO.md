@@ -625,9 +625,10 @@ landed across the bring-up and follow-on sessions.*
   quit + reopen (clean since #5 + #7); PR #9 additionally guarantees the
   registered SSH transport child receives `SIGKILL` during quit. In-place
   cancellation would require a different architecture (process isolation
-  of the engine, or engine-level interruptibility) and should only be
-  revisited in that context; see the scan-phase true-cancellation task
-  in the open items above for the related, separately-feasible mid-scan
-  teardown.
+  of the engine, or engine-level interruptibility) and is **not planned**
+  (issue #53, declined on file-integrity grounds). The v0.4.0 in-place scan
+  Stop was withdrawn and disabled; its dormant machinery's structural removal
+  is tracked in #94. Mid-scan cancellation is not a separately-feasible open
+  task.
 
 </details>
