@@ -9,21 +9,6 @@
       seed-authentication and build-monotonicity paths in `release.yml` against a
       published feed (0.5.0 took the first-release 404 path).
 
-- [ ] **Structurally remove the dormant scan-interruption machinery (#94) —
-      highest-priority file-integrity hardening.** Released v0.5.0 shipped a
-      reachable interrupt-and-reuse path whose safety was never proven; current
-      `main` disables it via `stopInPlaceEnabled == false`, a flag still guarding
-      reachable code. Make reuse impossible by construction: remove the dormant
-      `.interruptingScan`/`.stopped` machinery, transport-SIGKILL effects, reap
-      polling, kill-authorization SSH qualification, post-interruption lock-retry,
-      and `ScanTerminalDispatch`, while preserving Return-to-Profiles/abandon,
-      queued-profile serialization, archive-maintenance gating, the remote-wait
-      watchdog → restart-required, genuine-terminal → (remote) connection close
-      or (local-only) direct-to-idle, sync-time `Abort.all`, and the general
-      teardown reaper (patch 0004). Own reviewed PR;
-      gated on #53 closing not-planned. Full scope, remove/preserve/regression
-      lists: #94.
-
 - [ ] **Generalize vendored patch 0002 (`closeConnection`) for upstream-readiness.**
       Strip downstream-specific elements so the patch can stand as a fork-neutral
       contribution offered on its own, independent of the macUI wiring. Author
@@ -45,6 +30,22 @@
 *Historical log of finished work, preserved for context. 40+ items
 landed across the bring-up and follow-on sessions.*
 
+### File-integrity hardening
+
+- [x] **Structurally removed the dormant scan-interruption machinery (#94,
+      2026-08-22).** Made interrupt-and-reuse impossible by construction: deleted
+      the `.interruptingScan`/`.stopped` coordinator phases + interruption
+      types/effects/reducers, the transport-SIGKILL C primitives
+      (`signal_scan_transport` / `classify_reap`, absent from the Release
+      binary), reap polling, the kill-authorization SSH qualification, the
+      post-interruption lock-retry, and `ScanTerminalDispatch` /
+      `ScanInterruptPolicy` / related files. Preserved: Return-to-Profiles/
+      abandon, queued-profile serialization, archive-maintenance gating, the
+      remote-wait watchdog → restart-required, sync-time `Abort.all`, and the
+      shared transport-child registry/reaper (`transport_child_terminated`,
+      patch 0004). The safety property is now "no in-process state or effect can
+      interrupt a scan and reuse the engine," not a flag guarding reachable code.
+
 ### Resolved as won't-do
 
 - [x] **In-place scan cancellation (issue #53) — NOT PLANNED (2026-08-22).**
@@ -53,15 +54,13 @@ landed across the bring-up and follow-on sessions.*
       non-direct SSH transports, a vendored `update.ml` cancellation patch, or
       inferring a terminal from timing/error text) can prove the embedded Unison
       engine state is consistent for same-process reuse afterward. PR #92
-      disabled the previous stop-in-place mechanism at the policy gate (on
-      `main`, commit `27a1ddb`; ships in v0.5.1 — released v0.5.0 still contains
-      the reachable mechanism, see #94). On `main` the safe Return-to-Profiles
-      fallback is the only path (it abandons presentation only, and does not
-      cancel the scan). Full rationale, rejected approaches, and the
-      upstream contract that reconsideration would require:
+      disabled the previous stop-in-place mechanism at the policy gate; #94 then
+      **removed the dormant machinery outright** (done). On `main` the safe
+      Return-to-Profiles fallback is the only path (it abandons presentation
+      only, and does not cancel the scan). Full rationale, rejected approaches,
+      and the upstream contract that reconsideration would require:
       `docs/scan-interruption-design.md` (decision record). Sync-time Stop
-      (`Abort.all`) is separate and unaffected. A separate follow-up may remove
-      the now-dormant machinery, tracked in #94.
+      (`Abort.all`) is separate and unaffected.
 
 - [x] **SSH keepalive (`ServerAliveInterval` / `ServerAliveCountMax`, issue #55)
       — WILL NOT IMPLEMENT.** The Phase-0 spike

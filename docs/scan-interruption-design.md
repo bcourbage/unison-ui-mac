@@ -32,31 +32,39 @@ transport, accept any matching terminal, and reuse the embedded engine. Do not
 read the guarantees below as true of v0.5.0. On v0.5.0, if a remote scan hangs,
 quit and relaunch rather than Stop Scan followed by Rescan. See issue #94.
 
-On `main` after PR #92, in-place interruption is disabled at the shared policy
-gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`,
-`ScanInterruptPolicy.swift:45`, folded into `interruptReady` at `:22`). Stop
-Scan, Show/Return to Profiles, and window close therefore cannot enter
-`.interruptingScan`; every leave takes the Return-to-Profiles fallback:
+**Update (#94, 2026-08-22):** the dormant machinery has since been
+**structurally removed** on `main` — the safety property is now "no in-process
+state or effect can interrupt a scan and reuse the engine," not a policy flag
+guarding reachable code. There is no longer an `.interruptingScan`/`.stopped`
+phase, transport-SIGKILL primitive, or `ScanInterruptPolicy`. The
+Return-to-Profiles behavior described below is unchanged; the references to the
+now-deleted flag/phase are retained as the historical account of how the
+interim mitigation worked.
 
-- It abandons **presentation only** — detaches the reconcile window and shows
-  the picker (`AppDelegate.leaveSession` → `engine.abandon` at
-  `AppDelegate.swift:595`, `showProfilePicker` at `:596`) — and marks the op
-  abandoned without claiming the OCaml scan stopped
-  (`EngineSessionCoordinator.abandon`, the `.opening/.scanning/.syncing` case at
-  `EngineSessionCoordinator.swift:465`).
+Every leave takes the Return-to-Profiles fallback (this is the current, post-#94
+behavior; symbols are named rather than line-anchored, since exact lines drift):
+
+- It abandons **presentation only** — `AppDelegate.leaveSession` detaches the
+  reconcile window and shows the picker, then calls
+  `EngineSessionCoordinator.abandon`, which for `.opening`/`.scanning`/`.syncing`
+  marks the op abandoned without claiming the OCaml scan stopped.
 - The engine lease is retained while the original scan continues; a
-  later-selected profile is **queued**, not started
-  (`requestOpen` queue path, `EngineSessionCoordinator.swift:353`/`365`/`381`).
+  later-selected profile is **queued**, not started (`requestOpen`'s default
+  queue branch).
 - Destructive archive maintenance stays forbidden while the abandoned scan owns
-  the engine (`allowsDestructiveArchiveMutation` is true only for `.idle` /
-  `.stopped`, `EngineSessionCoordinator.swift:326`/`331`).
+  the engine: `allowsDestructiveArchiveMutation` is true **only for `.idle`**
+  (post-#94 there is no `.stopped` phase).
 - Queued work starts only after the scan's genuine terminal and, **for a remote
   session, a successful connection close**; a local-only session has no
-  connection to close. Abandoned `scanCompleted` → `beginClose` (`:704`); for a
-  remote (`.open`) connection that closes and `closeCompleted(status: 0)` →
-  `finishToIdle` → queued open (`:751`), while for `.localOnly` / `.disconnected`
-  `beginClose` goes straight to `finishToIdle` (`:832`–`:835`, no close); a
-  failed remote close → restart-required (`:775`).
+  connection to close. Abandoned `scanCompleted` → `beginClose`; for a remote
+  (`.open`) connection, `closeCompleted(status: 0)` → `finishToIdle` → the queued
+  open, while for `.localOnly` / `.disconnected` `beginClose` goes straight to
+  `finishToIdle` (no close); a failed remote close → restart-required.
+
+Historical note: during the interim between PR #92 and #94, this same
+Return-to-Profiles behavior was reached by *disabling* the interruption machinery
+at the policy gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`) rather
+than removing it; #94 deleted the machinery outright.
 
 Accepted costs of this fallback:
 

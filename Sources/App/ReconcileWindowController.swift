@@ -14,23 +14,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     typealias CloseHandler = @MainActor () -> Void
     typealias RescanRequest = @MainActor () -> Void
-    /// Invoked when the user presses Stop while a connect/scan (not a
-    /// sync) is in flight. The owner (AppDelegate) owns the connect
-    /// lifecycle, so it does the actual abort + teardown.
+    /// Invoked when the user presses "Return to Profiles" while a connect/scan
+    /// (not a sync) is in flight. The owner (AppDelegate) abandons the
+    /// presentation and returns to the picker; it does NOT cancel the scan,
+    /// which continues in the background until its own terminal (the coordinator
+    /// retains the engine lease and closes on that terminal).
     typealias CancelScanRequest = @MainActor () -> Void
-    /// Genuine in-process scan interruption (issue #24). Distinct from
-    /// `CancelScanRequest`: that returns to the picker; this stops the scan in
-    /// place, keeping the same profile window.
-    typealias StopScanRequest = @MainActor () -> Void
-    /// Owner veto for a window-close (issue #24, Finding 1): returns true to
-    /// ALLOW the close, false to intercept it (the owner started a coordinator-
-    /// driven interruption and will close the window itself on quiescence).
+    /// Owner veto for a window-close: returns true to ALLOW the close, false to
+    /// intercept it. In-place scan interruption was withdrawn (issue #53 / #94),
+    /// so the owner allows the close during a connect/scan and handles it via the
+    /// leave path (abandon presentation, retain the scan lease).
     typealias WindowShouldCloseRequest = @MainActor () -> Bool
-    /// The Profiles toolbar action, routed to the owner so a qualified scan
-    /// becomes a `.returnToPicker` interruption instead of a bare close. Returns
-    /// true if the owner HANDLED it (interruption started); false → the
-    /// controller falls back to `performClose` so a running sync still gets its
-    /// three-way confirmation via `windowShouldClose`.
+    /// The Profiles toolbar action, routed to the owner. Returns true if the
+    /// owner HANDLED it, false → the controller falls back to `performClose` so a
+    /// running sync still gets its three-way confirmation via `windowShouldClose`.
+    /// Post-#94 the owner never "handles" it, so this always returns false.
     typealias ProfilesRequest = @MainActor () -> Bool
     /// Invoked when the user presses Go. The window never calls the sync
     /// bridge itself — it asks the engine coordinator (via AppDelegate) to
@@ -94,16 +92,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
     private let onCancelScan: CancelScanRequest
-    private let onStopScan: StopScanRequest
     private let onWindowShouldClose: WindowShouldCloseRequest
     private let onProfilesRequested: ProfilesRequest
 
-    /// Whether this session's transport qualified for genuine in-process scan
-    /// interruption (issue #24). Set asynchronously by the AppDelegate once the
-    /// `ssh -G` probe resolves `.supportedDirect`; drives whether the scan-phase
-    /// Stop item reads "Stop Scan" (true) or the honest "Return to Profiles"
-    /// (false, the default until/unless qualified).
-    private(set) var scanInterruptAvailable = false
     /// User pressed Go; see `SyncStartRequest`.
     private let onSyncStart: SyncStartRequest
     /// User chose how to leave a running sync; see `SyncExitRequest`.
@@ -134,8 +125,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private var syncResultsUnavailable = false
     /// True between `beginScanning` and `endRescan` — i.e. while the
     /// initial connect/scan (or a rescan) is in flight. Gates the Stop
-    /// button so the user can abort a slow/wedged connection instead of
-    /// waiting for AppDelegate's watchdog. Distinct from `isSyncing`
+    /// button, which during a connect/scan is "Return to Profiles": it
+    /// abandons the presentation and returns to the picker (the scan winds
+    /// down in the background; it is not cancelled). Distinct from `isSyncing`
     /// (a running file transfer).
     private(set) var isScanning = false
     private let outlineView = NSOutlineView()
@@ -226,7 +218,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest,
          onCancelScan: @escaping CancelScanRequest,
-         onStopScan: @escaping StopScanRequest = {},
          onWindowShouldClose: @escaping WindowShouldCloseRequest = { true },
          onProfilesRequested: @escaping ProfilesRequest = { false },
          onSyncStart: @escaping SyncStartRequest,
@@ -241,7 +232,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         self.onCancelScan = onCancelScan
-        self.onStopScan = onStopScan
         self.onWindowShouldClose = onWindowShouldClose
         self.onProfilesRequested = onProfilesRequested
         self.onSyncStart = onSyncStart
@@ -307,11 +297,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///     going but reclaim screen space.
     nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
         MainActor.assumeIsolated {
-            // Issue #24 (Finding 1): a qualified scan / in-flight interruption
-            // is intercepted by the owner, which starts a coordinator-driven
-            // `.returnToPicker` interruption and vetoes the close (the window is
-            // retained until the coordinator's `.closeWindow` effect fires on
-            // quiescence). false here → do not close.
+            // The owner's veto hook. In-place scan interruption was withdrawn
+            // (issue #53 / #94), so this always allows the close during a
+            // connect/scan; the close then routes through the owner's leave path
+            // (abandon presentation, retain the scan lease). false here → do not
+            // close.
             if !onWindowShouldClose() { return false }
             guard isSyncing else { return true }
             let alert = NSAlert()
@@ -617,13 +607,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         syncStall.start()   // arm the advisory no-progress detector for the transfer
     }
 
-    /// Toolbar "Profiles" action — return to the picker. Routed to the owner
-    /// (issue #24): a qualified scan / in-flight interruption is HANDLED as a
-    /// `.returnToPicker` interruption (window retained, coordinator closes it on
-    /// quiescence). Otherwise the owner did NOT handle it, so we fall back to
-    /// `performClose(nil)`, which routes through `windowShouldClose` — this is
-    /// what preserves the three-way confirmation when a sync is running (round 3
-    /// correction 1).
+    /// Toolbar "Profiles" action — return to the picker. Routed to the owner,
+    /// which does not "handle" it (in-place scan interruption was withdrawn,
+    /// issue #53 / #94), so we fall back to `performClose(nil)`, which routes
+    /// through `windowShouldClose` — this is what preserves the three-way
+    /// confirmation when a sync is running (round 3 correction 1). During a
+    /// connect/scan the close then abandons the presentation (the scan winds
+    /// down in the background).
     func returnToPicker() {
         if !onProfilesRequested() {
             window?.performClose(nil)
@@ -644,23 +634,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// unwinds. `finalizeSyncUI` fires once OCaml has fully wound
     /// down and resets the UI to "done" state.
     func cancelSync() {
-        // Stop during the connect/scan phase (pre-sync): hand off to the
-        // owner, which aborts the in-flight connection and returns to the
-        // picker. Lets the user bail out of a slow/wedged connect without
+        // Stop during the connect/scan phase (pre-sync): hand off to the owner,
+        // which abandons the presentation and returns to the picker. It does NOT
+        // cancel the scan (that continues in the background until its own
+        // terminal); it lets the user leave a slow/wedged connect without
         // waiting for the watchdog timeout.
         if isScanning && !isSyncing {
-            // Issue #24: when this session's transport qualified for in-process
-            // interruption, the item is a genuine "Stop Scan" — hand off to the
-            // interruption path (stop in place, keep the window). Otherwise it is
-            // the honest "Return to Profiles" (abandons the connect/scan and
-            // returns to the picker; no sync to abort). See StopItemAppearance.
-            if stopItemAppearance == .stopScan {
-                Log.reconcile.notice("user requested Stop Scan (in-process interruption)")
-                TraceLog.shared.write("ReconcileWindow: Stop Scan (in-process interruption)")
-                setSummary(StopItemAppearance.stopScan.progressSummary)
-                onStopScan()
-                return
-            }
+            // The connect/scan-phase Stop item is the honest "Return to
+            // Profiles": it abandons the connect/scan and returns to the picker
+            // (no sync to abort; the scan winds down in the background). In-place
+            // scan interruption was withdrawn (issue #53 / #94). See
+            // StopItemAppearance.
             Log.reconcile.notice("user requested Return to Profiles during connect/scan")
             TraceLog.shared.write("ReconcileWindow: Return to Profiles during connect/scan")
             setSummary(StopItemAppearance.returnToProfiles.progressSummary)
@@ -1735,9 +1719,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         }
         if menuItem.action == #selector(stopMenuAction(_:)) {
-            // Stop is meaningful mid-sync OR mid connect/scan (abort a
-            // slow/wedged connection without waiting for the watchdog).
-            // Disabled once the engine needs a restart.
+            // Stop is meaningful mid-sync (abort the sync) OR mid connect/scan
+            // (Return to Profiles: abandon presentation and go back to the
+            // picker; the scan winds down in the background). Disabled once the
+            // engine needs a restart.
             if restartRequired { return false }
             if case .syncing = phase { return true }
             return isScanning
@@ -1816,37 +1801,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// sync) and "Stop" during an actual sync. Pure decision in
     /// `StopItemAppearance`.
     var stopItemAppearance: StopItemAppearance {
-        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing,
-                                    scanInterruptAvailable: scanInterruptAvailable)
-    }
-
-    /// Enable/disable the genuine Stop-Scan affordance for this session (issue
-    /// #24). Called by the AppDelegate when the `ssh -G` qualification resolves.
-    /// Re-validates the toolbar so the Stop item re-skins (Stop Scan ⇄ Return to
-    /// Profiles) immediately.
-    func setScanInterruptAvailable(_ available: Bool) {
-        guard scanInterruptAvailable != available else { return }
-        scanInterruptAvailable = available
-        refreshToolbarEnabled()
-    }
-
-    /// Present the terminal "scan stopped in place" state (issue #24), reached
-    /// when an in-process interruption lands on `.stopped`. The window is
-    /// retained on the same profile; the spinner stops and Rescan stays live so
-    /// the user can try again. Distinct from `showRestartRequired` — the engine
-    /// is quiescent and reusable, not contaminated.
-    func presentScanStopped() {
-        isSyncing = false
-        isScanning = false
-        scanInterruptAvailable = false        // no scan in flight to interrupt now
-        cancelSyncStallDetector()
-        progressBar.stopAnimation(nil)
-        progressBar.isIndeterminate = false
-        progressBar.isHidden = true
-        setSummary("Scan stopped. Choose Rescan to try again.")
-        applyCompletionEmphasis(failures: 0, stopped: true)
-        refreshToolbarEnabled()
-        TraceLog.shared.write("ReconcileWindow: scan stopped in place")
+        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing)
     }
 
     /// True when the current *selection* (ignoring any clicked row) is
@@ -1883,9 +1838,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         case DirectionAction.stopIdentifier:
             // Stop is meaningful while a sync is in flight OR while the
-            // connect/scan is running — the latter lets the user abort a
-            // slow/wedged connection rather than wait for the watchdog.
-            // Disabled once the engine needs a restart (nothing to abort).
+            // connect/scan is running — during a sync it aborts; during a
+            // connect/scan it is "Return to Profiles" (abandon the presentation
+            // and go back to the picker; the scan winds down in the background).
+            // Disabled once the engine needs a restart (nothing to act on).
             return !restartRequired && (syncing || isScanning)
         case DirectionAction.rescanIdentifier:
             // Rescan is the way out of `.done` back to `.ready` — explicitly

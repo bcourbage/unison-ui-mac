@@ -31,7 +31,7 @@ final class ShowProfilePickerMenuPolicyTests: XCTestCase {
     }
 
     func test_reconcileWindow_otherPermittedPhases() {
-        for phase: Phase in [.scanning(s, op), .ready(s), .stopped(s)] {
+        for phase: Phase in [.scanning(s, op), .ready(s)] {
             XCTAssertEqual(P.route(hasNavigableReconcileWindow: true, phase: phase,
                                    hasWaitingWindow: false), .reconcileWindow)
         }
