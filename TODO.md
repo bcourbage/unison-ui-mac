@@ -7,9 +7,7 @@
       0.5.1, confirm an installed 0.5.0 finds, downloads, verifies, and installs
       0.5.1 through the app. This is also the first real exercise of the appcast
       seed-authentication and build-monotonicity paths in `release.yml` against a
-      published feed (0.5.0 took the first-release 404 path). While here, remove
-      the now-reversed "App signing / notarization: not pursuing" entry from the
-      Completed → won't-do section (0.5.0 shipped exactly that).
+      published feed (0.5.0 took the first-release 404 path).
 
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
       Two independent, fail-closed tracks remain after the qualified direct-SSH
@@ -65,14 +63,13 @@ landed across the bring-up and follow-on sessions.*
 
 ### Resolved as won't-do
 
-- [x] **App signing / notarization for distribution:** not pursuing.
-      For personal use this is already settled: the ad-hoc signature
-      (`codesign --sign -`) plus `install.sh`'s `xattr -dr
-      com.apple.quarantine` means launches from `/Applications` don't
-      trip Gatekeeper. Distributing notarized builds to other Macs
-      (Developer ID cert + `notarytool` + Hardened Runtime +
-      entitlements) is out of scope and not of interest. The Mac App
-      Store route stays off the table anyway (GPLv3 vs. App Store terms).
+- [x] **App signing / notarization for distribution — SUPERSEDED by 0.5.0
+      (2026-08-22).** Originally recorded as "not pursuing" (ad-hoc signature
+      only; notarized distribution deemed out of scope). That decision was
+      reversed once the app went public: 0.5.0 ships a Developer ID-signed,
+      notarized build with in-app Sparkle updates and a signed appcast. Kept here
+      for the record. (The Mac App Store route does remain off the table — GPLv3
+      vs. App Store terms.)
 
 
 ### Bring-up workflow
