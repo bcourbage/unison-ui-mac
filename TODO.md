@@ -35,10 +35,6 @@
       kill-ssh experiment suggests ssh's own exit may not wake Unison's
       `select()`), so any adoption must be *validated against a
       reproduced wedge*, not assumed. Add via `sshargs`/ssh_config.
-- [ ] **Secure credential caching (optional):** Keychain and/or SSH
-      `ControlMaster` so password-auth profiles don't re-prompt on
-      reconnect-after-sleep (a held connection dies on sleep). Separate
-      future enhancement; no security shortcuts.
 
 - [ ] **Generalize vendored patch 0002 (`closeConnection`) for upstream-readiness.**
       Strip downstream-specific elements so the patch can stand as a fork-neutral
