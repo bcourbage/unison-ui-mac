@@ -880,6 +880,76 @@ multi-line error appears in the reconcile window's summary line, click
 **Details…** for the full text (especially useful when the SSH client
 returns a multi-line key fingerprint check or similar).
 
+If you are re-entering your password on every reconnect, switch that profile to
+SSH key authentication instead of passwords: see [Avoiding repeated password
+prompts](#avoiding-repeated-password-prompts-recommended-ssh-setup) below.
+
+### Avoiding repeated password prompts (recommended SSH setup)
+
+unison-ui-mac never stores or replays your credentials. Every SSH prompt is
+passed straight through from the system `ssh`, and the app cannot tell whether a
+given prompt is a password, a key passphrase, or a one-time code. So the place to
+stop re-entering a password on every reconnect is your SSH configuration, not the
+app: switch the profile to **public-key authentication** with the system
+`/usr/bin/ssh`, and let macOS hold the key's passphrase.
+
+**1. Create a key and copy it to the server** (skip if you already have one):
+
+```
+ssh-keygen -t ed25519
+ssh-copy-id my-user@server.example.com
+```
+
+**2. Add a host block to `~/.ssh/config`:**
+
+```
+Host my-server
+    HostName server.example.com
+    User my-user
+    IdentityFile ~/.ssh/id_ed25519
+    AddKeysToAgent yes
+    UseKeychain yes
+```
+
+**3. Store the key's passphrase in the macOS Keychain, once:**
+
+```
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+```
+
+**4. Confirm it works in Terminal before using it in the app.** Run `ssh
+my-server`, accept the host key on the first connection, and check that it logs
+in without asking for the remote account password. Once that works, open the
+matching profile in the app (point its host at `my-server`, or use the same
+`HostName` and `User`).
+
+**What is and isn't stored.** The macOS Keychain holds your *private key's
+passphrase*, never the remote account's password. unison-ui-mac itself stores
+nothing and replays nothing; all key handling belongs to OpenSSH and macOS.
+
+If you share `~/.ssh/config` with a non-Apple OpenSSH (for example on Linux),
+guard the macOS-only option so those clients don't reject the file:
+
+```
+Host my-server
+    IgnoreUnknown UseKeychain
+    UseKeychain yes
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+Avoid these "shortcuts"; each trades real protection for convenience:
+
+- Disabling host-key verification (`StrictHostKeyChecking no`): removes the
+  guarantee that you are connecting to the intended server.
+- Leaving the private key unencrypted (no passphrase): an encrypted key held by
+  the agent is just as convenient and far safer.
+- `UserKnownHostsFile=/dev/null`: discards host-key memory entirely, so a
+  man-in-the-middle cannot be detected.
+- `ControlMaster` purely to avoid re-authenticating: its shared transport
+  ownership disables the app's safe in-place **Stop Scan** (that feature tears
+  down a direct-SSH transport it must solely own), so it is the wrong trade here.
+
 ### A profile won't open from the GUI but works from the CLI
 
 Likely cause: the `.prf` references `~` or relative paths that resolve
