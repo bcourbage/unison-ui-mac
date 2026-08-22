@@ -2,21 +2,12 @@
 
 ## To Do
 
-- [ ] **Sparkle in-app updates — go-live.** The framework, updater UI, EdDSA
-      signing + pre-extraction verification, the real public key, appcast tooling,
-      first-launch consent (profiling opt-out within the prompt), Developer ID
-      signing + notarization, and the full release-phase appcast pipeline —
-      release-notes ("What's New") embedding, `SURequireSignedFeed` + feed
-      signing, structural + cryptographic signature gates, and GitHub Pages
-      publish (all in `release.yml`) — are in place (see `docs/sparkle-updates.md`).
-      The one-time maintainer setup is done: the `SPARKLE_ED_PRIVATE_KEY` secret
-      is set in the `release` environment, and GitHub Pages deploys from the
-      `gh-pages` branch. Remaining before the first tag:
-      - Set `auto_updates true` in the Homebrew cask and drop its
-        quarantine-removing postflight so updates defer to Sparkle. The install
-        docs no longer describe the `xattr`/"Open Anyway" steps, so this cask
-        change and the live feed must land before a release ships.
-      - End-to-end verify a v(N)→v(N+1) update against the live, notarized feed.
+- [ ] **Verify a Sparkle auto-update end to end on the 0.5.1 release.** 0.5.0 was
+      the first Sparkle build, so there was no prior client to update *from*. On
+      0.5.1, confirm an installed 0.5.0 finds, downloads, verifies, and installs
+      0.5.1 through the app. This is also the first real exercise of the appcast
+      seed-authentication and build-monotonicity paths in `release.yml` against a
+      published feed (0.5.0 took the first-release 404 path).
 
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
       Two independent, fail-closed tracks remain after the qualified direct-SSH
@@ -35,20 +26,6 @@
       coordinator retains engine ownership; the 120 s watchdog bounds a wedged op
       to restart-required). No dependency on #41 (closed infeasible) or #55 (no
       implementation). Analysis in #53 and `docs/scan-interruption-design.md`.
-
-- [ ] **AppKit view-controller test coverage (deferred).** Pure-logic modules
-      are well covered; the window/view-controllers
-      (`ReconcileWindowController`, `ProfileEditorWindowController`,
-      `ProfileFormWindowController`, `AppDelegate`, `DiffWindowController`,
-      `PasswordSheet`) remain the low-coverage surface, because meaningful tests
-      there would need an `NSApplication`-hosted UI harness driving synthetic
-      events, a multi-day effort, fragile against AppKit changes. **Posture:**
-      keep extracting testable pure-logic out of the controllers as the
-      opportunity arises (as `RowSelectionRules`, `ProfileDocument`,
-      `ProfileRootResolver`, `SyncCompletionModel`, and `DiffRequestBroker` were),
-      rather than building a UI harness. Deferred unless a regression pattern
-      emerges that pure-logic tests can't catch. UI-path behaviors that only a
-      hands-on run can confirm live in `docs/manual-test-step2b.md`.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`), as *mitigation* for wedged connections:
@@ -86,14 +63,13 @@ landed across the bring-up and follow-on sessions.*
 
 ### Resolved as won't-do
 
-- [x] **App signing / notarization for distribution:** not pursuing.
-      For personal use this is already settled: the ad-hoc signature
-      (`codesign --sign -`) plus `install.sh`'s `xattr -dr
-      com.apple.quarantine` means launches from `/Applications` don't
-      trip Gatekeeper. Distributing notarized builds to other Macs
-      (Developer ID cert + `notarytool` + Hardened Runtime +
-      entitlements) is out of scope and not of interest. The Mac App
-      Store route stays off the table anyway (GPLv3 vs. App Store terms).
+- [x] **App signing / notarization for distribution — SUPERSEDED by 0.5.0
+      (2026-08-22).** Originally recorded as "not pursuing" (ad-hoc signature
+      only; notarized distribution deemed out of scope). That decision was
+      reversed once the app went public: 0.5.0 ships a Developer ID-signed,
+      notarized build with in-app Sparkle updates and a signed appcast. Kept here
+      for the record. (The Mac App Store route does remain off the table — GPLv3
+      vs. App Store terms.)
 
 
 ### Bring-up workflow
