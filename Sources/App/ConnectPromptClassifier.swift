@@ -108,25 +108,30 @@ enum ConnectPromptClassifier {
         return lower == retryNotice
     }
 
-    /// The canonical OpenSSH host-key prompt, recognized on the FINAL non-empty
-    /// line only. ssh prints "Are you sure you want to continue connecting
-    /// (yes/no…)?" as the last thing before it blocks on the answer, so a
-    /// credential prompt appended after it — on a later line
-    /// ("…(yes/no)?\nPassword:") or the same line ("…(yes/no)? Password:") —
-    /// must NOT be read as a host-key question, or that password field would be
-    /// left unmasked. Matching `contains` anywhere was fail-open for exactly that.
-    /// We instead require the last line to BE the question: it holds the canonical
-    /// phrase and its "(yes/no…)" hint and ENDS at the "?" with no trailing prompt
-    /// content. An unrecognized variant falls through to `.credential` → a masked
-    /// field (fail-safe). `(yes/no` also matches the newer `(yes/no/[fingerprint])`.
+    /// The two canonical OpenSSH host-key questions, matched by EQUALITY on the
+    /// FINAL non-empty line (lowercased, trimmed). `/usr/bin/ssh` prints exactly
+    /// one of these as the last thing before it blocks on the answer:
+    ///   "Are you sure you want to continue connecting (yes/no)?"
+    ///   "Are you sure you want to continue connecting (yes/no/[fingerprint])?"
+    /// Anything else — a credential prompt appended after the question on a later
+    /// line ("…(yes/no)?\nPassword:") or the same line ("…(yes/no)? Password?"),
+    /// or an unrecognized future variant — stays `.credential` → a masked field,
+    /// the fail-safe default. (A substring/`hasSuffix` heuristic was fail-open:
+    /// "…(yes/no)? Password?" contains both markers and ends in "?".)
+    private static let hostKeyQuestions: Set<String> = [
+        "are you sure you want to continue connecting (yes/no)?",
+        "are you sure you want to continue connecting (yes/no/[fingerprint])?",
+    ]
+
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
+        // Split on `isNewline`, not the Character "\n": Swift treats a CRLF
+        // ("\r\n", as ssh emits) as ONE grapheme, so `split(separator: "\n")`
+        // would not split it and the "last line" would be the whole prompt.
         let lastLine = lower
-            .split(separator: "\n", omittingEmptySubsequences: false)
+            .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .last { !$0.isEmpty } ?? ""
-        return lastLine.contains("are you sure you want to continue connecting")
-            && lastLine.contains("(yes/no")
-            && lastLine.hasSuffix("?")
+        return hostKeyQuestions.contains(lastLine)
     }
 
     /// ssh terminal output that means the transport died or was refused — none

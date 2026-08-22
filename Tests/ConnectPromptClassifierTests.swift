@@ -188,6 +188,17 @@ final class ConnectPromptClassifierTests: XCTestCase {
             .credential)
     }
 
+    /// The fail-open case a `hasSuffix("?")` check missed: a same-line credential
+    /// prompt that also ends in "?" ("… (yes/no)? Password?"). Equality on the
+    /// canonical lines rejects it → .credential (masked).
+    func test_hostKeyQuestionWithTrailingPasswordQuestion_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Are you sure you want to continue connecting (yes/no)? Password?",
+                transportTerminated: false),
+            .credential)
+    }
+
     // MARK: supplemental fatal-string classification (child not yet terminated)
 
     func test_brokenPipe_isFatal_evenIfNotYetTerminated() {
