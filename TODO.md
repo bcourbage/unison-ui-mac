@@ -47,9 +47,11 @@ landed across the bring-up and follow-on sessions.*
       non-direct SSH transports, a vendored `update.ml` cancellation patch, or
       inferring a terminal from timing/error text) can prove the embedded Unison
       engine state is consistent for same-process reuse afterward. PR #92
-      disabled the previous stop-in-place mechanism at the policy gate; the safe
-      Return-to-Profiles fallback remains (it abandons presentation only, and
-      does not cancel the scan). Full rationale, rejected approaches, and the
+      disabled the previous stop-in-place mechanism at the policy gate (on
+      `main`, commit `27a1ddb`; ships in v0.5.1 — released v0.5.0 still contains
+      the reachable mechanism, see #94). On `main` the safe Return-to-Profiles
+      fallback is the only path (it abandons presentation only, and does not
+      cancel the scan). Full rationale, rejected approaches, and the
       upstream contract that reconsideration would require:
       `docs/scan-interruption-design.md` (decision record). Sync-time Stop
       (`Abort.all`) is separate and unaffected. A separate follow-up may remove
