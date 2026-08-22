@@ -157,6 +157,24 @@ final class EngineSessionCoordinator {
     /// Polled reap classification of the captured identity.
     enum ReapState: Equatable { case absent, reused, zombie, live, unknown }
 
+    /// Why the interrupted scan's worker terminal arrived — the ONLY thing that
+    /// licenses winding the engine down for reuse afterward.
+    ///
+    /// A clean scan completion (`init2-complete`) leaves the engine quiescent
+    /// and the archive committed, so it is safe to tear the connection down.
+    /// A scan FAILURE, or a generic fatal that cannot be STRUCTURALLY attributed
+    /// to our own transport SIGKILL, leaves the runtime in an unprovable state;
+    /// treating it as the expected interruption terminal would launder a
+    /// normally restart-required terminal into a reusable engine. There is no
+    /// authenticated transport-interruption cause on the wire — the SIGKILL's
+    /// own transport EOF is indistinguishable from an unrelated fatal — so we do
+    /// NOT infer one from message text, timing, or "a SIGKILL was issued": every
+    /// non-clean terminal is `.unsafe` and forces restart-required.
+    enum InterruptTerminalCause: Equatable {
+        case cleanCompletion
+        case unsafe(String)
+    }
+
     /// Side effects for the caller to perform after state is fully mutated.
     /// Presentation (`showSession`) is separate from engine work
     /// (`beginConnect`/`beginScan`/...) so the driver retains one window
@@ -516,11 +534,21 @@ final class EngineSessionCoordinator {
         return false
     }
 
-    /// The matching worker terminal (fatal / scan-failed / init2-complete) for
-    /// the interrupted op. Recorded exactly once; handles the terminal arriving
-    /// before the signal result (`signalling` remembers it).
-    func interruptTerminalObserved(_ session: SessionID, _ op: OperationID) -> [Effect] {
+    /// The matching worker terminal for the interrupted op. Recorded exactly
+    /// once; handles the terminal arriving before the signal result
+    /// (`signalling` remembers it).
+    ///
+    /// `cause` is authoritative and fail-closed: only a clean completion may
+    /// advance the teardown toward a reusable engine. A `.unsafe` terminal
+    /// (scan-failed, or a generic fatal with no authenticated transport cause)
+    /// enters restart-required from ANY stage — an interruption must never
+    /// upgrade a normally restart-required terminal into a reusable `.stopped`.
+    func interruptTerminalObserved(_ session: SessionID, _ op: OperationID,
+                                   cause: InterruptTerminalCause) -> [Effect] {
         guard case .interruptingScan(session, op, let stage, let dest) = phase else { return [] }
+        if case .unsafe(let why) = cause {
+            return enterRestartRequired("scan-interrupt terminal not provably safe: \(why)")
+        }
         switch stage {
         case .signalling(false):
             phase = .interruptingScan(session, op, .signalling(terminalObserved: true), dest)

@@ -168,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private typealias SessionID = EngineSessionCoordinator.SessionID
     private typealias OperationID = EngineSessionCoordinator.OperationID
     private typealias OpenRequestID = EngineSessionCoordinator.OpenRequestID
+    private typealias InterruptTerminalCause = EngineSessionCoordinator.InterruptTerminalCause
 
     /// Exact identity of each in-flight bridge op, recorded when the op is
     /// STARTED (in response to a coordinator effect) and read back on its
@@ -1120,12 +1121,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.log.write("dropping init2 completion — no pending scan"); return
             }
             // Scan interruption (issue #24): if this session/op is being
-            // interrupted, this init2-complete is the interrupted scan's own
-            // terminal (it unwound after the SIGKILL). Route it to the
-            // coordinator's interruption path and SUPPRESS the normal results
-            // presentation. A replacement/unrelated scan returns false and
-            // presents normally.
-            if self.scanInterruptObserveTerminal(s, op) { return }
+            // interrupted, this init2-complete is a CLEAN terminal — the scan
+            // actually finished (engine quiescent, archive committed). Route it
+            // to the coordinator's interruption path as `.cleanCompletion` and
+            // SUPPRESS the normal results presentation. A replacement/unrelated
+            // scan returns false and presents normally.
+            if self.scanInterruptObserveTerminal(s, op, cause: .cleanCompletion) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             // A scan completed cleanly → the post-interruption reconnect (if any)
@@ -1167,10 +1168,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.log.write("dropping scan-failed — no pending scan"); return
             }
             // Scan interruption (issue #24): a matching scan-failed during an
-            // interruption is the interrupted scan's terminal (it failed out
-            // after the SIGKILL). Route to the coordinator's interruption path
-            // and suppress the normal restart-required routing.
-            if self.scanInterruptObserveTerminal(s, op) { return }
+            // interruption is an UNSAFE terminal. Its cause cannot be
+            // structurally attributed to our SIGKILL (a scan can fail on its own
+            // mid-emission), so it must NOT be laundered into a reusable engine:
+            // route it to the coordinator as `.unsafe`, which forces
+            // restart-required. Still suppresses the normal restart-required
+            // routing below because the coordinator now owns the transition.
+            if self.scanInterruptObserveTerminal(
+                s, op, cause: .unsafe("scan-failed during interruption")) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             self.log.write("scan failed (state emission) \(s)/\(op) — restart required")
@@ -2770,6 +2775,14 @@ extension AppDelegate {
     /// Return-to-Profiles and route leaves through the background wind-down, not
     /// the interruption. Gates BOTH the Stop-Scan affordance and the
     /// leave/close interruption routing.
+    ///
+    /// Currently ALWAYS false: `ScanInterruptPolicy.stopInPlaceEnabled` is held
+    /// off (terminal-causality fix), so genuine in-place interruption is
+    /// disabled and every leave takes the honest Return-to-Profiles path. The
+    /// qualification/remote-wait machinery below and the `.stopScan` affordance
+    /// it would enable are therefore dormant — retained, not live. The comments
+    /// on the dead Stop-Scan paths describe how it WOULD behave if the switch
+    /// were re-enabled behind a cause-authenticated bridge contract.
     private func scanInterruptReady(_ s: SessionID) -> Bool {
         ScanInterruptPolicy.interruptReady(qualified: scanInterruptSupported(s),
                                            sawRemoteWait: scanSawRemoteWait)
@@ -2823,13 +2836,18 @@ extension AppDelegate {
     func installScanInterruptFatalInterceptor() {
         UnisonBridge.fatalInterceptor = { [weak self] msg, opaque in
             guard let self else { return false }
-            // (1) The interrupted scan's own transport-EOF terminal, during the
-            // interruption teardown itself.
+            // (1) A generic fatal arriving during the interruption teardown. We
+            // acknowledge it to the bridge so OCaml unwinds, but we do NOT trust
+            // it as the SIGKILL's own transport EOF: no authenticated cause
+            // distinguishes our kill from an unrelated fatal, so it is `.unsafe`
+            // and the coordinator enters restart-required rather than reusing
+            // the engine.
             if let (s, op) = self.pendingScan,
                case .interruptingScan(s, op, _, _) = self.engine.phase {
-                self.log.write("scan-interrupt: intercepted transport fatal for \(s)/\(op)")
+                self.log.write("scan-interrupt: intercepted fatal during interruption for \(s)/\(op) — unsafe terminal, restart required")
                 unison_bridge_fatal_response(opaque)
-                _ = self.scanInterruptObserveTerminal(s, op)
+                _ = self.scanInterruptObserveTerminal(
+                    s, op, cause: .unsafe("fatal during interruption"))
                 return true
             }
             // (2) A TRANSIENT "archives are locked" on a post-interruption
@@ -2907,14 +2925,17 @@ extension AppDelegate {
         scanInterruptRetryWork = nil
     }
 
-    /// Route the interrupted scan's own terminal (init2-complete / scan-failed /
-    /// transport fatal) into the coordinator. Returns true iff the coordinator
-    /// is interrupting THIS op (so the caller suppresses normal presentation).
-    private func scanInterruptObserveTerminal(_ s: SessionID, _ op: OperationID) -> Bool {
+    /// Route the interrupted scan's own terminal into the coordinator, tagged
+    /// with its `cause`. Returns true iff the coordinator is interrupting THIS
+    /// op (so the caller suppresses normal presentation). The coordinator is
+    /// fail-closed on `cause`: only `.cleanCompletion` winds the engine down for
+    /// reuse; a `.unsafe` terminal forces restart-required.
+    private func scanInterruptObserveTerminal(_ s: SessionID, _ op: OperationID,
+                                              cause: InterruptTerminalCause) -> Bool {
         guard case .interruptingScan(s, op, _, _) = engine.phase else { return false }
-        log.write("scan-interrupt: interrupted scan terminal observed \(s)/\(op)")
+        log.write("scan-interrupt: interrupted scan terminal observed \(s)/\(op) cause=\(cause)")
         pendingScan = nil            // scan op is terminal (didSet disarms stall)
-        run(engine.interruptTerminalObserved(s, op))
+        run(engine.interruptTerminalObserved(s, op, cause: cause))
         return true
     }
 

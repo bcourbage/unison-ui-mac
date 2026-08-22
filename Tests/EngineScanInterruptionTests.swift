@@ -2,10 +2,21 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Phase 1a (issue #24): deterministic coordinator coverage for the first-class
-/// `.interruptingScan` / `.stopped` states — the production authority that
-/// replaces the Phase 0 Debug spike driver. Pure reducer tests: no AppKit, no
-/// bridge, no timing. This is the "complete deterministic race suite" the
-/// reviewer requires for the Foundation PR.
+/// `.interruptingScan` / `.stopped` states. Pure reducer tests: no AppKit, no
+/// bridge, no timing.
+///
+/// Production caveat (terminal-causality fix): genuine in-place scan
+/// interruption is DISABLED at the policy boundary (`ScanInterruptPolicy
+/// .stopInPlaceEnabled == false`), so `.interruptingScan` is unreachable in the
+/// shipping app — every leave takes the honest Return-to-Profiles path. These
+/// tests still exercise the RETAINED coordinator mechanism directly, because the
+/// state machine must stay correct for the day a cause-authenticated bridge
+/// contract re-enables it. Each drives the cycle with a `.cleanCompletion`
+/// terminal (the only terminal that may advance toward a reusable `.stopped`);
+/// the fail-closed `.unsafe` terminal cases live in
+/// `EngineScanInterruptTerminalCauseTests`. The earlier conclusion that an
+/// interrupted scan's transport-EOF terminal could be reused in place is
+/// SUPERSEDED by that finding.
 @MainActor
 final class EngineScanInterruptionTests: XCTestCase {
 
@@ -104,7 +115,7 @@ final class EngineScanInterruptionTests: XCTestCase {
         let (c, s, op) = scanning()
         for e in c.requestOpen(profile: "q") { _ = e }
         _ = c.requestScanInterruption(s, destination: .stopInPlace)
-        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
         _ = c.interruptReapClassified(s, op, .absent)
         guard case .interruptingScan(_, _, .closing(let closeOp), .openQueued) = c.phase else {
             return XCTFail("expected closing→openQueued, got \(c.phase)")
@@ -126,7 +137,7 @@ final class EngineScanInterruptionTests: XCTestCase {
 
     func test_terminalBeforeSignalResult_thenSignalled_awaitsReap() {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-        XCTAssertTrue(c.interruptTerminalObserved(s, op).isEmpty)     // remembered
+        XCTAssertTrue(c.interruptTerminalObserved(s, op, cause: .cleanCompletion).isEmpty)     // remembered
         XCTAssertEqual(c.phase, .interruptingScan(s, op, .signalling(terminalObserved: true), .stopInPlace))
         let e = c.transportSignalCompleted(s, op, .signalled(idA))
         XCTAssertEqual(c.phase, .interruptingScan(s, op, .awaitingReap(idA), .stopInPlace))
@@ -136,7 +147,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     func test_signalled_thenTerminal_awaitsReap() {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
         _ = c.transportSignalCompleted(s, op, .signalled(idA))       // → awaitingTerminal
-        let e = c.interruptTerminalObserved(s, op)
+        let e = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
         XCTAssertEqual(c.phase, .interruptingScan(s, op, .awaitingReap(idA), .stopInPlace))
         XCTAssertTrue(has(e, .pollReap(s, op, idA)))
     }
@@ -149,7 +160,7 @@ final class EngineScanInterruptionTests: XCTestCase {
 
     func test_noChild_restartRequired_evenIfTerminalRaced() {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-        _ = c.interruptTerminalObserved(s, op)                       // terminal seen
+        _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)                       // terminal seen
         let e = c.transportSignalCompleted(s, op, .noChild)
         XCTAssertTrue(c.isRestartRequired)
         XCTAssertTrue(e.contains { if case .restartRequired = $0 { return true }; return false })
@@ -169,7 +180,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     func test_reap_absentOrReused_closes() {
         for reap: EngineSessionCoordinator.ReapState in [.absent, .reused] {
             let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-            _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+            _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
             let e = c.interruptReapClassified(s, op, reap)
             guard case .interruptingScan(s, op, .closing(let closeOp), .stopInPlace) = c.phase else {
                 return XCTFail("expected closing, got \(c.phase)")
@@ -181,7 +192,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     func test_reap_ambiguous_restartRequired() {
         for reap: EngineSessionCoordinator.ReapState in [.zombie, .live, .unknown] {
             let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-            _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+            _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
             _ = c.interruptReapClassified(s, op, reap)
             XCTAssertTrue(c.isRestartRequired, "\(reap) must be restart-required")
         }
@@ -192,7 +203,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     /// Drive to `.interruptingScan(.closing(closeOp))` for a destination.
     private func closing(_ dest: Dest) -> (C, SID, OID, OID) {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: dest)
-        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
         _ = c.interruptReapClassified(s, op, .absent)
         guard case .interruptingScan(_, _, .closing(let closeOp), _) = c.phase else {
             fatalError("not closing")
@@ -342,7 +353,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     /// a never-arriving signal result would hang the cycle forever.
     func test_deadline_signallingClass_firesAfterEarlyTerminalFlip() {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-        _ = c.interruptTerminalObserved(s, op)                   // flag flips false→true
+        _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)                   // flag flips false→true
         guard case .interruptingScan(_, _, .signalling(terminalObserved: true), _) = c.phase else {
             return XCTFail("expected signalling(true) after early terminal, got \(c.phase)")
         }
@@ -354,7 +365,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     /// (the class match only covers signalling↔signalling, not signalling→later).
     func test_deadline_signallingClass_doesNotFireOnceAwaitingReap() {
         let (c, s, op) = scanning(); _ = c.requestScanInterruption(s, destination: .stopInPlace)
-        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op)
+        _ = c.transportSignalCompleted(s, op, .signalled(idA)); _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)
         guard case .interruptingScan(_, _, .awaitingReap, _) = c.phase else { return XCTFail() }
         _ = c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false))
         XCTAssertFalse(c.isRestartRequired, "signalling deadline must not fire in awaitingReap")
@@ -364,7 +375,7 @@ final class EngineScanInterruptionTests: XCTestCase {
 
     func test_staleTerminalAfterStopped_isNoOp() {
         let (c, s, op) = closingClosed(.stopInPlace)             // now .stopped
-        _ = c.interruptTerminalObserved(s, op)                  // stale
+        _ = c.interruptTerminalObserved(s, op, cause: .cleanCompletion)                  // stale
         XCTAssertEqual(c.phase, .stopped(s))
     }
 
@@ -418,7 +429,7 @@ final class EngineScanInterruptionTests: XCTestCase {
     private func assertStaleInterruptEventsInert(_ c: C, _ s: SID, _ op: OID,
                                                  file: StaticString = #filePath, line: UInt = #line) {
         let before = c.phase
-        XCTAssertTrue(c.interruptTerminalObserved(s, op).isEmpty, file: file, line: line)
+        XCTAssertTrue(c.interruptTerminalObserved(s, op, cause: .cleanCompletion).isEmpty, file: file, line: line)
         XCTAssertTrue(c.transportSignalCompleted(s, op, .signalled(idA)).isEmpty, file: file, line: line)
         XCTAssertTrue(c.interruptReapClassified(s, op, .absent).isEmpty, file: file, line: line)
         XCTAssertTrue(c.interruptDeadlineElapsed(s, op, .signalling(terminalObserved: false)).isEmpty,

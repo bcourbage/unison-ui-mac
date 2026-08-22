@@ -4,6 +4,25 @@
 **Supersedes:** v1 and v2 entirely. This is the canonical document; earlier
 versions are historical and are not incorporated by reference.
 
+> **Superseded conclusion (terminal-causality fix).** The stop-in-place
+> outcome specified below — SIGKILL the scan's transport, wind the engine down,
+> and REUSE it as `.stopped` (Rescan reuses the session) — is **disabled in the
+> shipping app** and must not be treated as supported. Its safety rested on
+> recognizing the interrupted scan's own terminal, but no terminal event
+> carries a structurally authenticated cause: a `scanFailed` or an unrelated
+> fatal racing the SIGKILL is indistinguishable on the wire from the kill's own
+> transport EOF, so accepting it as the expected terminal would launder a
+> normally restart-required engine into a reusable one. The single policy gate
+> `ScanInterruptPolicy.stopInPlaceEnabled` is therefore held **off**: every
+> leave (Stop Scan, Profiles, window-close) routes through the honest
+> Return-to-Profiles path — abandon the presentation, retain the scan lease,
+> and close on the scan's own terminal. The coordinator's interruption state
+> machine is retained (and unit-tested for the clean-completion terminal plus
+> the fail-closed unsafe cases) so a future, separately-reviewed
+> **cause-authenticated bridge contract** could re-enable it. The empirical
+> Phase-1a evidence in PR #51 stands as history; only its *reuse conclusion* is
+> superseded by this finding.
+
 **Round-3 changes.** Per the round-2 review: (B1) consolidated into one
 standalone document, v1's incorrect "synchronous blocking init2" statement
 replaced and the Ctrl-C/`select()` explanation softened; (B2) rung-4
