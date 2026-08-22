@@ -18,8 +18,9 @@
       polling, kill-authorization SSH qualification, post-interruption lock-retry,
       and `ScanTerminalDispatch`, while preserving Return-to-Profiles/abandon,
       queued-profile serialization, archive-maintenance gating, the remote-wait
-      watchdog → restart-required, genuine-terminal → connection close, sync-time
-      `Abort.all`, and the general teardown reaper (patch 0004). Own reviewed PR;
+      watchdog → restart-required, genuine-terminal → (remote) connection close
+      or (local-only) direct-to-idle, sync-time `Abort.all`, and the general
+      teardown reaper (patch 0004). Own reviewed PR;
       gated on #53 closing not-planned. Full scope, remove/preserve/regression
       lists: #94.
 

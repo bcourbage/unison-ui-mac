@@ -177,8 +177,10 @@ running transport; both closing choices reap the child at the right time).
 ### TC7 — Local-only profile (sanity)
 
 1. Open the **local-only** profile, sync, then leave.
-2. **Expect (log):** `closeConnection (…) -> status 0` is harmless (status 0)
-   and there is **no** error; no ssh child ever appears.
+2. **Expect (log):** the terminal sends the coordinator **directly to idle** —
+   there is **no** connection to close, so **no** `closeConnection` line appears
+   (a local-only session's `beginClose` goes straight to `finishToIdle`); no
+   error; no ssh child ever appears.
 3. **Expect:** the scan-stall detector never arms (it is remote-only).
 
 **PASS =** no errors, no spurious ssh processes.
@@ -263,8 +265,9 @@ A real password profile with a wrong/failing password.
   proven infeasible (a `select()` blocked on a dead connection can't be woken
   from another thread by closing the fd or killing ssh). The sync-phase stall
   hint (TC10, 45 s) and the scan-phase detector (TC11, 120 s) both detect it and
-  point the user to quit + reopen, which is clean now. SSH keepalive prevention
-  is deferred.
+  point the user to quit + reopen, which is clean now. SSH keepalive (#55) as a
+  mitigation **will not be implemented** — the spike was transport-positive but
+  app-inconclusive (see `docs/ssh-keepalive-spike-results.md`).
 - **In-app exits do not unwind a genuinely wedged op.** No UI control unwinds a
   scan in-process. During scanning the only leave is **Return to Profiles**
   (abandonment), and **sheet Cancel** / **Stop** cancel credential entry or a

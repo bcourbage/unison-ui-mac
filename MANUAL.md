@@ -493,9 +493,10 @@ when idle.
 - **Profiles**: return to the picker (closes this reconcile window). During a
   scan this action reads **Return to Profiles**: it abandons the view and
   returns to the picker but does **not** cancel the scan, which keeps running in
-  the background until it finishes on its own (the app then closes the
-  connection). There is no in-place "stop the scan" control; if a remote scan
-  hangs, quit and relaunch.
+  the background until it finishes on its own (for a remote session the app then
+  closes the connection; a local-only session has no connection and simply goes
+  idle). There is no in-place "stop the scan" control; if a remote scan hangs,
+  quit and relaunch.
 - **Rescan**: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
   view.
