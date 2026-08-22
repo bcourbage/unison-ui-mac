@@ -125,8 +125,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private var syncResultsUnavailable = false
     /// True between `beginScanning` and `endRescan` — i.e. while the
     /// initial connect/scan (or a rescan) is in flight. Gates the Stop
-    /// button so the user can abort a slow/wedged connection instead of
-    /// waiting for AppDelegate's watchdog. Distinct from `isSyncing`
+    /// button, which during a connect/scan is "Return to Profiles": it
+    /// abandons the presentation and returns to the picker (the scan winds
+    /// down in the background; it is not cancelled). Distinct from `isSyncing`
     /// (a running file transfer).
     private(set) var isScanning = false
     private let outlineView = NSOutlineView()
@@ -633,9 +634,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// unwinds. `finalizeSyncUI` fires once OCaml has fully wound
     /// down and resets the UI to "done" state.
     func cancelSync() {
-        // Stop during the connect/scan phase (pre-sync): hand off to the
-        // owner, which aborts the in-flight connection and returns to the
-        // picker. Lets the user bail out of a slow/wedged connect without
+        // Stop during the connect/scan phase (pre-sync): hand off to the owner,
+        // which abandons the presentation and returns to the picker. It does NOT
+        // cancel the scan (that continues in the background until its own
+        // terminal); it lets the user leave a slow/wedged connect without
         // waiting for the watchdog timeout.
         if isScanning && !isSyncing {
             // The connect/scan-phase Stop item is the honest "Return to
@@ -1717,9 +1719,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         }
         if menuItem.action == #selector(stopMenuAction(_:)) {
-            // Stop is meaningful mid-sync OR mid connect/scan (abort a
-            // slow/wedged connection without waiting for the watchdog).
-            // Disabled once the engine needs a restart.
+            // Stop is meaningful mid-sync (abort the sync) OR mid connect/scan
+            // (Return to Profiles: abandon presentation and go back to the
+            // picker; the scan winds down in the background). Disabled once the
+            // engine needs a restart.
             if restartRequired { return false }
             if case .syncing = phase { return true }
             return isScanning

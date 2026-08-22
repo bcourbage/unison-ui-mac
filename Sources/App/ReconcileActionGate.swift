@@ -35,7 +35,7 @@ struct ReconcileActionGate: Equatable {
         case details      // ri_get_details for the selection
         case sync         // Go
         case rescan       // Rescan (init2)
-        case stop         // Stop (abort sync / cancel scan)
+        case stop         // Stop (abort sync / Return to Profiles during connect/scan)
         case profiles     // navigate back to picker / close window
         case quit         // quit the app
     }

@@ -403,20 +403,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
     /// the ✕ / ⌘W path only). Reached from `windowWillClose` — i.e. AFTER
     /// `windowShouldClose` (see `windowShouldCloseSession`) already ALLOWED the
-    /// close. An interruptible scan / in-flight interruption vetoes the close
-    /// there and never reaches here, so this is only the non-interruptible
-    /// honest leave-to-picker.
+    /// close. `windowShouldClose` always allows during a connect/scan now
+    /// (in-place interruption withdrawn, #53 / #94), so this is the honest
+    /// leave-to-picker for every case: it abandons presentation while the
+    /// coordinator retains the scan lease.
     private func handleWindowClosed(session s: SessionID, profile: String) {
         leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
     }
 
-    /// `NSWindowDelegate.windowShouldClose` for a session (round 2 Finding 1).
-    /// A qualified `.scanning` or an in-flight interruption must NOT close-and-
-    /// present here: it starts/upgrades a `.returnToPicker` interruption and
-    /// returns FALSE so the window (and its qualification) is RETAINED until the
-    /// coordinator's later `.closeWindow` effect performs the real close on
-    /// quiescence. This also avoids `applicationShouldTerminateAfterLastWindow-
-    /// Closed` quitting mid-teardown. Returns true → allow the normal close.
+    /// `NSWindowDelegate.windowShouldClose` for a session. In-place scan
+    /// interruption was withdrawn (issue #53 / #94), so a close during a
+    /// connect/scan is always allowed and takes the honest leave path; there is
+    /// no interruption to start and no window to retain for a later teardown.
+    /// Returns true → allow the normal close.
     private func windowShouldCloseSession(_ s: SessionID) -> Bool {
         // In-place scan interruption was withdrawn (issue #53 / #94): a
         // window-close during a scan takes the honest path — allow the close,
