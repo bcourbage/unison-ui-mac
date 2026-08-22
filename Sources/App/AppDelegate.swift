@@ -165,6 +165,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// back in. No lifecycle decision is made outside the coordinator.
     private let engine = EngineSessionCoordinator()
 
+    /// Registrar for the three scan-terminal callbacks' fixed interrupt events
+    /// (issue #24). The callback sites call the correspondingly-named method, so
+    /// the callback→event binding is a tested unit (`ScanTerminalDispatch`), not
+    /// a free literal at each site. The sink forwards to the coordinator-facing
+    /// observer.
+    private lazy var scanTerminalDispatch = ScanTerminalDispatch { [weak self] s, op, event in
+        self?.scanInterruptObserveTerminal(s, op, event: event) ?? false
+    }
+
     private typealias SessionID = EngineSessionCoordinator.SessionID
     private typealias OperationID = EngineSessionCoordinator.OperationID
     private typealias OpenRequestID = EngineSessionCoordinator.OpenRequestID
@@ -1126,7 +1135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // to the coordinator's interruption path as `.cleanCompletion` and
             // SUPPRESS the normal results presentation. A replacement/unrelated
             // scan returns false and presents normally.
-            if self.scanInterruptObserveTerminal(s, op, event: .init2Completed) { return }
+            if self.scanTerminalDispatch.init2Completed(s, op) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             // A scan completed cleanly → the post-interruption reconnect (if any)
@@ -1174,7 +1183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // restart-required, so it is never laundered into a reusable engine.
             // Still suppresses the normal restart-required routing below because
             // the coordinator now owns the transition.
-            if self.scanInterruptObserveTerminal(s, op, event: .scanFailed) { return }
+            if self.scanTerminalDispatch.scanFailed(s, op) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             self.log.write("scan failed (state emission) \(s)/\(op) — restart required")
@@ -2848,7 +2857,7 @@ extension AppDelegate {
                case .interruptingScan(s, op, _, _) = self.engine.phase {
                 self.log.write("scan-interrupt: intercepted fatal during interruption for \(s)/\(op) — unsafe terminal, restart required")
                 unison_bridge_fatal_response(opaque)
-                _ = self.scanInterruptObserveTerminal(s, op, event: .genericFatal)
+                _ = self.scanTerminalDispatch.fatal(s, op)
                 return true
             }
             // (2) A TRANSIENT "archives are locked" on a post-interruption
