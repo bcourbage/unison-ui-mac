@@ -425,11 +425,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return true
     }
 
-    /// The Profiles toolbar item for a session (round 3 correction 1). Returns
-    /// true iff HANDLED here (an interruption was started/upgraded). When it
-    /// returns false, the controller falls back to `window.performClose`, which
-    /// goes through `windowShouldClose` — so Profiles during a running SYNC
-    /// cannot bypass the three-way sync-confirmation alert.
+    /// The Profiles toolbar item for a session. Always returns false now
+    /// (in-place scan interruption was withdrawn, #53 / #94): nothing is
+    /// "handled" here, so the controller always falls back to
+    /// `window.performClose`, which routes through `windowShouldClose` — so
+    /// Profiles during a running SYNC still cannot bypass the three-way
+    /// sync-confirmation alert.
     private func profilesRequested(_ s: SessionID) -> Bool {
         // In-place scan interruption was withdrawn (issue #53 / #94): Profiles is
         // never "handled" here, so the controller falls back to
