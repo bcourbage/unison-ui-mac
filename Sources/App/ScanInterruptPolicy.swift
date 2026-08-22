@@ -19,8 +19,30 @@ enum ScanInterruptPolicy {
     /// teardown. The `qualified:` inputs below are therefore fed this predicate,
     /// NOT bare transport qualification.
     static func interruptReady(qualified: Bool, sawRemoteWait: Bool) -> Bool {
-        qualified && sawRemoteWait
+        stopInPlaceEnabled && qualified && sawRemoteWait
     }
+
+    /// Master switch for genuine in-place scan interruption, held OFF.
+    ///
+    /// An in-place interruption ends the running scan by SIGKILLing its
+    /// transport child and then reuses the engine (`.stopped`, Rescan reuses the
+    /// session). Its safety rests on recognizing the interrupted scan's own
+    /// terminal, but no terminal event carries a STRUCTURALLY AUTHENTICATED
+    /// cause: the SIGKILL's transport EOF is indistinguishable on the wire from
+    /// an unrelated `scanFailed` or fatal racing the interruption, so such a
+    /// terminal could launder a normally restart-required engine into a reusable
+    /// one. Until a typed, cause-bound bridge contract exists (a separate,
+    /// separately-reviewed change), stop-in-place stays disabled and every leave
+    /// takes the honest Return-to-Profiles path: abandon the presentation,
+    /// retain the scan lease, and close on the scan's own terminal.
+    ///
+    /// This flag is the SINGLE policy boundary. Stop Scan, Profiles, and
+    /// window-close all consult `interruptReady` (Stop directly; Profiles and
+    /// window-close through `leaveRouting`/`stopScanAvailable`), so forcing it
+    /// false disables entry to `.interruptingScan` for all three at once — it
+    /// does not merely hide the toolbar button while leaving the other routes
+    /// able to start an interruption.
+    static let stopInPlaceEnabled = false
 
     /// Authorization for the IRREVERSIBLE transport SIGKILL at the signal driver
     /// (acceptance point 1 — the second, authoritative checkpoint immediately

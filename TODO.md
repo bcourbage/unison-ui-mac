@@ -9,9 +9,24 @@
       seed-authentication and build-monotonicity paths in `release.yml` against a
       published feed (0.5.0 took the first-release 404 path).
 
-- [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
-      Two independent, fail-closed tracks remain after the qualified direct-SSH
-      Stop Scan shipped (PR #51):
+- [ ] **Scan interruption: cause-authenticated re-enable (umbrella, tracked in #53).**
+      Genuine in-place scan interruption is disabled at the policy gate
+      (`ScanInterruptPolicy.stopInPlaceEnabled == false`): every leave takes the
+      honest Return-to-Profiles path (abandon presentation, retain the scan
+      lease, close on the scan's own terminal). Remote-wait wedges are bounded by
+      the 120 s watchdog (→ restart-required); pre-remote-wait silence (local
+      walk / TCC prompt) deliberately stays unbounded because it cannot be safely
+      distinguished from a legitimate local delay, so a stuck local walk is
+      escaped only by quit/relaunch. Re-enabling it safely requires a **cause-bound
+      bridge contract** so an interruption terminal can be structurally
+      distinguished from an unrelated failure — without it a `scanFailed`/fatal
+      racing the SIGKILL would launder a restart-required engine into a reusable
+      one. Prerequisites, all fail-closed:
+      - **Authenticated terminal cause** (the gate for re-enabling): a typed
+        bridge signal proving a terminal was the interruption's own transport
+        teardown, not message-text / timing / "a SIGKILL was issued". Upstream-
+        first (a cooperative scan-cancellation primitive), gated by upstream's
+        LLM-authorship ban.
       - **Track A, CPU-bound local-replica walk:** a scan hashing locally is not
         blocked on the transport, so no transport kill unwinds it. Needs
         scan-specific cooperative cancellation (safe points in `update.ml` +
@@ -22,10 +37,10 @@
         custom `sshcmd`): a transport-ownership problem (killing a shared
         ControlMaster or a proxy with descendant processes is unsafe), stays
         fail-closed until proven.
-      Both fall back safely today (Return to Profiles → abandon while the
-      coordinator retains engine ownership; the 120 s watchdog bounds a wedged op
-      to restart-required). No dependency on #41 (closed infeasible) or #55 (no
-      implementation). Analysis in #53 and `docs/scan-interruption-design.md`.
+      No dependency on #41 (closed infeasible) or #55 (no implementation).
+      Analysis in #53 and `docs/scan-interruption-design.md`; the retained
+      coordinator machinery is unit-tested for the clean-completion and
+      fail-closed unsafe terminals.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`), as *mitigation* for wedged connections:

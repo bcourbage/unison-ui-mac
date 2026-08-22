@@ -17,64 +17,61 @@ final class ScanInterruptPolicyTests: XCTestCase {
     private let op = OID(raw: 2)
     private let idA = Ident(pid: 100, startSec: 5, startUsec: 6)
 
-    // MARK: - Finding #3: interruptReady gates on transport-blocked (remote-wait)
+    // MARK: - Master switch (terminal-causality fix): stop-in-place disabled
+    //
+    // `interruptReady` now folds in `stopInPlaceEnabled`, held OFF because no
+    // terminal event carries an authenticated transport-interruption cause (a
+    // `scanFailed`/fatal racing the SIGKILL is indistinguishable from the kill's
+    // own transport EOF, and would launder a restart-required engine into a
+    // reusable `.stopped`). While disabled, `interruptReady` is false for EVERY
+    // (qualified, sawRemoteWait) combination, and — because Stop Scan, Profiles,
+    // and window-close all consume it — all three route to the honest
+    // Return-to-Profiles path. The finding-#3 qualified∧remoteWait distinction is
+    // retained behind the switch (the pure routing functions below still honor a
+    // hypothetical `qualified: true`), but it is dormant in the shipping app.
 
-    func test_interruptReady_requiresBothQualifiedAndRemoteWait() {
-        XCTAssertTrue(P.interruptReady(qualified: true, sawRemoteWait: true))
-        // Qualified but still in the CPU-bound local walk → NOT interruptible in
-        // place (SIGKILL would time out the reap → restart-required).
-        XCTAssertFalse(P.interruptReady(qualified: true, sawRemoteWait: false))
-        // Past remote-wait but not a qualified transport → still not interruptible.
-        XCTAssertFalse(P.interruptReady(qualified: false, sawRemoteWait: true))
-        XCTAssertFalse(P.interruptReady(qualified: false, sawRemoteWait: false))
+    func test_interruptReady_disabledByMasterSwitch_falseForAllInputs() {
+        XCTAssertFalse(P.stopInPlaceEnabled, "shipping default: stop-in-place is disabled")
+        for q in [true, false] {
+            for w in [true, false] {
+                XCTAssertFalse(P.interruptReady(qualified: q, sawRemoteWait: w),
+                               "disabled → interruptReady must be false (qualified: \(q), remoteWait: \(w))")
+            }
+        }
     }
 
-    func test_stopScanAvailable_isGatedByInterruptReady_notBareQualification() {
-        // The driver feeds `interruptReady` as `qualified:`. A qualified scan
-        // pre-remote-wait therefore does NOT expose Stop Scan…
-        XCTAssertFalse(P.stopScanAvailable(
-            phase: .scanning(s, op),
-            qualified: P.interruptReady(qualified: true, sawRemoteWait: false)))
-        // …and only exposes it once the engine is transport-blocked.
-        XCTAssertTrue(P.stopScanAvailable(
-            phase: .scanning(s, op),
-            qualified: P.interruptReady(qualified: true, sawRemoteWait: true)))
+    func test_disabled_stopScanAffordanceInactive_evenQualifiedAndTransportBlocked() {
+        // The driver feeds `interruptReady` as `qualified:`. With the switch off,
+        // even a qualified, transport-blocked scan does NOT expose Stop Scan.
+        let ready = P.interruptReady(qualified: true, sawRemoteWait: true)
+        XCTAssertFalse(P.stopScanAvailable(phase: .scanning(s, op), qualified: ready))
     }
 
-    func test_leaveRouting_qualifiedButPreRemoteWait_leavesImmediately() {
-        // A qualified scan still in the local walk routes the honest background
-        // wind-down (leaveImmediately), NOT the SIGKILL interruption that would
-        // time out its reap (finding #3).
-        XCTAssertEqual(
-            P.leaveRouting(phase: .scanning(s, op),
-                           qualified: P.interruptReady(qualified: true, sawRemoteWait: false)),
-            .leaveImmediately)
-        // Once transport-blocked, Profiles/close routes the interruption.
-        XCTAssertEqual(
-            P.leaveRouting(phase: .scanning(s, op),
-                           qualified: P.interruptReady(qualified: true, sawRemoteWait: true)),
-            .interruptReturnToPicker)
+    func test_disabled_profilesAndWindowClose_routeLeaveImmediately() {
+        // Profiles and window-close both consult `leaveRouting`/`allowWindowClose`
+        // with `interruptReady` — disabled → honest immediate leave, close allowed,
+        // not handled by the (dead) interruption path.
+        let ready = P.interruptReady(qualified: true, sawRemoteWait: true)
+        let phase: Phase = .scanning(s, op)
+        XCTAssertEqual(P.leaveRouting(phase: phase, qualified: ready), .leaveImmediately)
+        XCTAssertTrue(P.allowWindowClose(phase: phase, qualified: ready))
+        XCTAssertFalse(P.profilesHandledByInterruption(phase: phase, qualified: ready))
     }
 
-    func test_signalAuthorized_requiresInterruptReadyAndExactPendingOp() {
-        // The authoritative pre-SIGKILL checkpoint. Proceed only when
-        // interruptible-in-place AND the signal targets the exact pending op.
+    func test_disabled_signalRefused_noSIGKILL_evenWithExactPendingOp() {
+        // The authoritative pre-SIGKILL checkpoint: disabled → refused even when
+        // the signal targets the exact pending op.
+        let ready = P.interruptReady(qualified: true, sawRemoteWait: true)
+        XCTAssertFalse(P.signalAuthorized(interruptReady: ready, pendingScanMatches: true))
+    }
+
+    // The pure `signalAuthorized` contract itself (independent of the switch):
+    // proceed only when interruptible-in-place AND the exact pending op matches.
+    func test_signalAuthorized_pureContract_requiresBothInputs() {
         XCTAssertTrue(P.signalAuthorized(interruptReady: true, pendingScanMatches: true))
-        // Qualified but PRE-remote-wait (interruptReady == false, e.g. still in
-        // the CPU-bound local walk) → REFUSED at the signal layer, no SIGKILL.
         XCTAssertFalse(P.signalAuthorized(interruptReady: false, pendingScanMatches: true))
-        // Wrong / superseded operation identity → REFUSED, no SIGKILL.
         XCTAssertFalse(P.signalAuthorized(interruptReady: true, pendingScanMatches: false))
         XCTAssertFalse(P.signalAuthorized(interruptReady: false, pendingScanMatches: false))
-    }
-
-    func test_signalAuthorized_composesInterruptReady_qualifiedPreRemoteWaitRefused() {
-        // End-to-end of the gate the driver feeds it: a qualified transport that
-        // has NOT reached remote-wait is refused even with the right pending op.
-        let readyPreWait = P.interruptReady(qualified: true, sawRemoteWait: false)
-        XCTAssertFalse(P.signalAuthorized(interruptReady: readyPreWait, pendingScanMatches: true))
-        let readyBlocked = P.interruptReady(qualified: true, sawRemoteWait: true)
-        XCTAssertTrue(P.signalAuthorized(interruptReady: readyBlocked, pendingScanMatches: true))
     }
 
     // MARK: - Blocker 1: capability is bound to the exact .scanning phase
