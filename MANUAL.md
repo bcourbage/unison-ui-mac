@@ -893,10 +893,12 @@ stop re-entering a password on every reconnect is your SSH configuration, not th
 app: switch the profile to **public-key authentication** with Apple's system
 client at `/usr/bin/ssh`, and let macOS hold the key's passphrase.
 
-The steps below call the tools by their explicit `/usr/bin/` paths on purpose:
-`UseKeychain` and `--apple-use-keychain` are features of Apple's OpenSSH, so if a
-Homebrew (or other) OpenSSH is earlier in your `PATH`, a bare `ssh` / `ssh-add`
-would silently ignore them.
+The steps below call the tools by their explicit `/usr/bin/` paths on purpose.
+`UseKeychain` and `--apple-use-keychain` are features of Apple's OpenSSH; a
+non-Apple OpenSSH earlier in your `PATH` does not honor them. Such a client
+rejects `UseKeychain` in a config it reads (hence the `IgnoreUnknown` guard
+below), and `ssh-add --apple-use-keychain` fails on the unknown option rather
+than caching the passphrase. A bare `ssh` / `ssh-add` could be that wrong client.
 
 **1. Create a key** (skip if you already have one):
 
@@ -919,10 +921,13 @@ verified. This order matters: never accept an unseen host key and type a passwor
 in the same breath, or a machine-in-the-middle could capture it.
 
 **3. Install your public key** so future logins use the key, not the password.
-The host is already trusted from step 2, so this does not re-prompt for it:
+The host is already trusted from step 2, so this does not re-prompt for it.
+`ssh-copy-id` resolves its own child `ssh` through `PATH` (its script sets
+`SSH="ssh -a -x"`), so pin `PATH` to the system directories for this one command:
 
 ```
-/usr/bin/ssh-copy-id -i ~/.ssh/id_ed25519.pub my-user@server.example.com
+PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  /usr/bin/ssh-copy-id -i ~/.ssh/id_ed25519.pub my-user@server.example.com
 ```
 
 **4. Add a host block to `~/.ssh/config`:**
@@ -948,8 +953,12 @@ Host my-server
 /usr/bin/ssh my-server
 ```
 
-It should log in with no password prompt. (If it still asks for a password,
-you are probably reaching a different `ssh` on your `PATH`; see the note above.)
+It should log in with no password prompt. If it still asks for a password, the
+key most likely was not installed or accepted (this command already pins the
+client, so it is not a `PATH` issue): run `/usr/bin/ssh -v my-server` and check
+that the server's `~/.ssh/authorized_keys` contains your public key, that
+`~/.ssh` and `authorized_keys` have safe permissions (`700` and `600`), and that
+the identity being offered is the one you installed.
 
 **7. Point the profile at the alias, not the raw host.** In the app, set the
 remote root to use the `my-server` alias, for example
