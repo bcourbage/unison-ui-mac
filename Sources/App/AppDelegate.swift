@@ -1363,6 +1363,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // error dialog (no connection was established, so the engine is
                 // quiescent once the cancel is acknowledged).
                 let transportGone = unison_bridge_transport_child_terminated() != 0
+                // Preserve the classifier's verdict as the field style — the
+                // single source of truth. Fatal/retry return before this is used.
+                let inputStyle: PasswordSheet.InputStyle
                 switch ConnectPromptClassifier.classify(
                     prompt: prompt, transportTerminated: transportGone) {
                 case .fatal(let reason):
@@ -1382,8 +1385,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     self.retryNotice.hold(notice, for: s, op)
                     self.drivePromptLoop(s, op)
                     return
-                case .credential, .hostKeyQuestion:
-                    break
+                case .credential:
+                    inputStyle = .secureCredential
+                case .hostKeyQuestion:
+                    inputStyle = .plainResponse
                 }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
@@ -1391,7 +1396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // (real) prompt, so the user sees the denial and answers once.
                 let sheetPrompt = self.retryNotice.fold(into: prompt, for: s, op)
                 self.log.write("connection prompt: \(sheetPrompt)")
-                let sheet = PasswordSheet(prompt: sheetPrompt) { [weak self] response in
+                let sheet = PasswordSheet(prompt: sheetPrompt, style: inputStyle) { [weak self] response in
                     guard let self else { return }
                     guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
                     self.pendingPasswordSheet = nil

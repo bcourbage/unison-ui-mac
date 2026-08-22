@@ -134,6 +134,41 @@ final class ConnectPromptClassifierTests: XCTestCase {
             .hostKeyQuestion)
     }
 
+    /// Case + surrounding-whitespace variation of the canonical prompt still
+    /// classifies as the host-key question (classify() trims + lowercases).
+    func test_hostKeyQuestion_caseAndWhitespaceVariant_isHostKeyQuestion() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "\n  ARE YOU SURE you want to continue connecting (yes/no)?  \n",
+                transportTerminated: false),
+            .hostKeyQuestion)
+    }
+
+    // MARK: tightened host-key heuristic — credential prompts that merely mention
+    // "authenticity" / "yes/no" must stay .credential (→ a MASKED field), not be
+    // downgraded to a plain host-key response.
+
+    func test_passwordPromptMentioningAuthenticity_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Enter password to verify authenticity:", transportTerminated: false),
+            .credential)
+    }
+
+    func test_passwordPromptMentioningYesNo_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Password (yes/no policy):", transportTerminated: false),
+            .credential)
+    }
+
+    func test_approveConnectionYesNo_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Approve this connection? yes/no", transportTerminated: false),
+            .credential)
+    }
+
     // MARK: supplemental fatal-string classification (child not yet terminated)
 
     func test_brokenPipe_isFatal_evenIfNotYetTerminated() {

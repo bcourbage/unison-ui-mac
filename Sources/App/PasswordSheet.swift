@@ -2,9 +2,9 @@ import AppKit
 
 /// Modal sheet that asks the user for a credential in response to an
 /// OCaml-driven Remote.openConnectionPrompt. The prompt text comes straight
-/// from Unison (often "password for user@host:" or similar) so we just
-/// display it verbatim — sometimes it's a yes/no question (host key auth),
-/// hence the editable text field rather than a secure-only field.
+/// from Unison and is displayed verbatim; whether the response field is masked
+/// is the caller's typed decision (`InputStyle`), NOT sniffed from the prompt
+/// here — the `ConnectPromptClassifier` verdict is the single source of truth.
 ///
 /// Two ways to dismiss: typing a response + clicking OK (or Enter), or
 /// Cancel. The completion gets the response (or nil for cancel).
@@ -13,22 +13,27 @@ final class PasswordSheet: NSWindowController {
 
     typealias Completion = (_ response: String?) -> Void
 
+    /// How the response field is presented. Set from the classifier verdict
+    /// (`.credential` → `.secureCredential`, `.hostKeyQuestion` → `.plainResponse`).
+    enum InputStyle {
+        /// A secret — password / passphrase / MFA / PAM — shown masked.
+        case secureCredential
+        /// A non-secret answer (a host-key yes/no question), shown editable.
+        case plainResponse
+    }
+
     private let prompt: String
-    private let isPassword: Bool
     private let onComplete: Completion
     private let textField: NSTextField
 
-    init(prompt: String, onComplete: @escaping Completion) {
+    init(prompt: String, style: InputStyle, onComplete: @escaping Completion) {
         self.prompt = prompt
-        // Treat as secure entry unless the prompt looks like a yes/no host-key
-        // question (the legacy app sniffs "are you sure" / "authenticity").
-        let lower = prompt.lowercased()
-        self.isPassword = !(lower.contains("authenticity")
-                          || lower.contains("yes/no")
-                          || lower.contains("(yes/no)"))
         self.onComplete = onComplete
-
-        self.textField = isPassword ? NSSecureTextField() : NSTextField()
+        // No prompt sniffing here: the field style is the caller's typed decision
+        // from ConnectPromptClassifier. A secure (masked) field is the fail-safe
+        // default the caller falls back to for anything not a recognized host-key
+        // question.
+        self.textField = style == .secureCredential ? NSSecureTextField() : NSTextField()
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
@@ -51,7 +56,7 @@ final class PasswordSheet: NSWindowController {
         promptLabel.maximumNumberOfLines = 0
 
         textField.translatesAutoresizingMaskIntoConstraints = false
-        textField.placeholderString = isPassword ? "Password" : "Response"
+        textField.placeholderString = (textField is NSSecureTextField) ? "Password" : "Response"
 
         let okButton = NSButton(title: "OK", target: self, action: #selector(okClicked))
         okButton.bezelStyle = .rounded

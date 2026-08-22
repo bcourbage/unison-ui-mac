@@ -80,7 +80,10 @@ enum ConnectPromptClassifier {
             return .retryNotice(trimmed)
         }
 
-        // 3. Host-key yes/no question (matches PasswordSheet's own heuristic).
+        // 3. Host-key yes/no question → an editable, non-secret response. This
+        //    verdict is the single source of truth for the sheet's field style
+        //    (`.hostKeyQuestion` → plain, `.credential` → masked); PasswordSheet
+        //    no longer re-classifies the text.
         if isHostKeyQuestion(lower) {
             return .hostKeyQuestion
         }
@@ -105,10 +108,18 @@ enum ConnectPromptClassifier {
         return lower == retryNotice
     }
 
+    /// The canonical OpenSSH host-key prompt, required in FULL — the question
+    /// itself plus its `(yes/no…)` answer hint. Deliberately narrow: the old
+    /// heuristic matched any occurrence of "authenticity" or "yes/no", which
+    /// mis-classified genuine credential prompts that happen to contain those
+    /// words (e.g. "Enter password to verify authenticity:", "Password (yes/no
+    /// policy):") as a non-secret host-key answer, showing a password in a plain
+    /// field. Requiring the whole canonical question means an unrecognized future
+    /// variant falls through to `.credential` → a masked field, the fail-safe
+    /// default. `(yes/no` also matches the newer `(yes/no/[fingerprint])`.
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
-        return lower.contains("authenticity")
-            || lower.contains("(yes/no")
-            || lower.contains("yes/no)")
+        return lower.contains("are you sure you want to continue connecting")
+            && lower.contains("(yes/no")
     }
 
     /// ssh terminal output that means the transport died or was refused — none
