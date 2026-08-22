@@ -890,17 +890,42 @@ unison-ui-mac never stores or replays your credentials. Every SSH prompt is
 passed straight through from the system `ssh`, and the app cannot tell whether a
 given prompt is a password, a key passphrase, or a one-time code. So the place to
 stop re-entering a password on every reconnect is your SSH configuration, not the
-app: switch the profile to **public-key authentication** with the system
-`/usr/bin/ssh`, and let macOS hold the key's passphrase.
+app: switch the profile to **public-key authentication** with Apple's system
+client at `/usr/bin/ssh`, and let macOS hold the key's passphrase.
 
-**1. Create a key and copy it to the server** (skip if you already have one):
+The steps below call the tools by their explicit `/usr/bin/` paths on purpose:
+`UseKeychain` and `--apple-use-keychain` are features of Apple's OpenSSH, so if a
+Homebrew (or other) OpenSSH is earlier in your `PATH`, a bare `ssh` / `ssh-add`
+would silently ignore them.
+
+**1. Create a key** (skip if you already have one):
 
 ```
-ssh-keygen -t ed25519
-ssh-copy-id my-user@server.example.com
+/usr/bin/ssh-keygen -t ed25519
 ```
 
-**2. Add a host block to `~/.ssh/config`:**
+**2. Verify the server's host key before sending any secret.** Connect once by
+hand and check the fingerprint against one you obtained through a trusted channel
+(the server's administrator, or `ssh-keygen -lf <host-key-file>` run on the
+server itself):
+
+```
+/usr/bin/ssh my-user@server.example.com
+```
+
+ssh prints the host-key fingerprint and waits; answer `yes` only once it matches.
+It then asks for your account password, which now goes to a host you have
+verified. This order matters: never accept an unseen host key and type a password
+in the same breath, or a machine-in-the-middle could capture it.
+
+**3. Install your public key** so future logins use the key, not the password.
+The host is already trusted from step 2, so this does not re-prompt for it:
+
+```
+/usr/bin/ssh-copy-id -i ~/.ssh/id_ed25519.pub my-user@server.example.com
+```
+
+**4. Add a host block to `~/.ssh/config`:**
 
 ```
 Host my-server
@@ -911,17 +936,28 @@ Host my-server
     UseKeychain yes
 ```
 
-**3. Store the key's passphrase in the macOS Keychain, once:**
+**5. Store the key's passphrase in the macOS Keychain, once:**
 
 ```
-ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+/usr/bin/ssh-add --apple-use-keychain ~/.ssh/id_ed25519
 ```
 
-**4. Confirm it works in Terminal before using it in the app.** Run `ssh
-my-server`, accept the host key on the first connection, and check that it logs
-in without asking for the remote account password. Once that works, open the
-matching profile in the app (point its host at `my-server`, or use the same
-`HostName` and `User`).
+**6. Confirm key-based login works, using the alias:**
+
+```
+/usr/bin/ssh my-server
+```
+
+It should log in with no password prompt. (If it still asks for a password,
+you are probably reaching a different `ssh` on your `PATH`; see the note above.)
+
+**7. Point the profile at the alias, not the raw host.** In the app, set the
+remote root to use the `my-server` alias, for example
+`ssh://my-server//Users/me/data`. Using `server.example.com` directly does **not**
+match the `Host my-server` block, so the `IdentityFile` and `UseKeychain` settings
+would not apply and you would be back to password prompts. If the app is using a
+non-Apple `ssh` from your `PATH`, set the profile's `sshcmd` to `/usr/bin/ssh`, or
+rely on the agent from step 5 (any client can use a key already loaded there).
 
 **What is and isn't stored.** The macOS Keychain holds your *private key's
 passphrase*, never the remote account's password. unison-ui-mac itself stores
@@ -945,7 +981,7 @@ Avoid these "shortcuts"; each trades real protection for convenience:
 - Leaving the private key unencrypted (no passphrase): an encrypted key held by
   the agent is just as convenient and far safer.
 - `UserKnownHostsFile=/dev/null`: discards host-key memory entirely, so a
-  man-in-the-middle cannot be detected.
+  machine-in-the-middle cannot be detected.
 - `ControlMaster` purely to avoid re-authenticating: its shared transport
   ownership disables the app's safe in-place **Stop Scan** (that feature tears
   down a direct-SSH transport it must solely own), so it is the wrong trade here.
