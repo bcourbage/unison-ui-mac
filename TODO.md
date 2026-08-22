@@ -13,8 +13,11 @@
       Genuine in-place scan interruption is disabled at the policy gate
       (`ScanInterruptPolicy.stopInPlaceEnabled == false`): every leave takes the
       honest Return-to-Profiles path (abandon presentation, retain the scan
-      lease, close on the scan's own terminal; the 120 s watchdog bounds a wedged
-      op to restart-required). Re-enabling it safely requires a **cause-bound
+      lease, close on the scan's own terminal). Remote-wait wedges are bounded by
+      the 120 s watchdog (→ restart-required); pre-remote-wait silence (local
+      walk / TCC prompt) deliberately stays unbounded because it cannot be safely
+      distinguished from a legitimate local delay, so a stuck local walk is
+      escaped only by quit/relaunch. Re-enabling it safely requires a **cause-bound
       bridge contract** so an interruption terminal can be structurally
       distinguished from an unrelated failure — without it a `scanFailed`/fatal
       racing the SIGKILL would launder a restart-required engine into a reusable

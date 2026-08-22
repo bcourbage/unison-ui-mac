@@ -168,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private typealias SessionID = EngineSessionCoordinator.SessionID
     private typealias OperationID = EngineSessionCoordinator.OperationID
     private typealias OpenRequestID = EngineSessionCoordinator.OpenRequestID
-    private typealias InterruptTerminalCause = EngineSessionCoordinator.InterruptTerminalCause
+    private typealias InterruptTerminalEvent = EngineSessionCoordinator.InterruptTerminalEvent
 
     /// Exact identity of each in-flight bridge op, recorded when the op is
     /// STARTED (in response to a coordinator effect) and read back on its
@@ -1126,7 +1126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // to the coordinator's interruption path as `.cleanCompletion` and
             // SUPPRESS the normal results presentation. A replacement/unrelated
             // scan returns false and presents normally.
-            if self.scanInterruptObserveTerminal(s, op, cause: .cleanCompletion) { return }
+            if self.scanInterruptObserveTerminal(s, op, event: .init2Completed) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             // A scan completed cleanly → the post-interruption reconnect (if any)
@@ -1167,15 +1167,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             guard let (s, op) = self.pendingScan else {
                 self.log.write("dropping scan-failed — no pending scan"); return
             }
-            // Scan interruption (issue #24): a matching scan-failed during an
-            // interruption is an UNSAFE terminal. Its cause cannot be
-            // structurally attributed to our SIGKILL (a scan can fail on its own
-            // mid-emission), so it must NOT be laundered into a reusable engine:
-            // route it to the coordinator as `.unsafe`, which forces
-            // restart-required. Still suppresses the normal restart-required
-            // routing below because the coordinator now owns the transition.
-            if self.scanInterruptObserveTerminal(
-                s, op, cause: .unsafe("scan-failed during interruption")) { return }
+            // Scan interruption (issue #24): report the scan-failed callback as
+            // the `.scanFailed` source event. The coordinator classifies it as
+            // unsafe (its cause cannot be structurally attributed to our SIGKILL
+            // — a scan can fail on its own mid-emission) and enters
+            // restart-required, so it is never laundered into a reusable engine.
+            // Still suppresses the normal restart-required routing below because
+            // the coordinator now owns the transition.
+            if self.scanInterruptObserveTerminal(s, op, event: .scanFailed) { return }
             self.pendingScan = nil
             self.disarmConnectWatchdog()
             self.log.write("scan failed (state emission) \(s)/\(op) — restart required")
@@ -1266,8 +1265,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
 
         // Scan interruption (issue #24): the production fatal interceptor. A
-        // transport-EOF fatal that arrives while the coordinator is interrupting
-        // the in-flight scan is that scan's expected terminal, not a user error.
+        // fatal that arrives while the coordinator is interrupting the in-flight
+        // scan is UNAUTHENTICATED — it cannot be proven to be the SIGKILL's own
+        // transport EOF rather than an unrelated failure — so it is reported as
+        // the `.genericFatal` source event and the coordinator enters
+        // restart-required (never reuse). See lines around the interceptor body.
         installScanInterruptFatalInterceptor()
     }
 
@@ -2846,8 +2848,7 @@ extension AppDelegate {
                case .interruptingScan(s, op, _, _) = self.engine.phase {
                 self.log.write("scan-interrupt: intercepted fatal during interruption for \(s)/\(op) — unsafe terminal, restart required")
                 unison_bridge_fatal_response(opaque)
-                _ = self.scanInterruptObserveTerminal(
-                    s, op, cause: .unsafe("fatal during interruption"))
+                _ = self.scanInterruptObserveTerminal(s, op, event: .genericFatal)
                 return true
             }
             // (2) A TRANSIENT "archives are locked" on a post-interruption
@@ -2925,17 +2926,19 @@ extension AppDelegate {
         scanInterruptRetryWork = nil
     }
 
-    /// Route the interrupted scan's own terminal into the coordinator, tagged
-    /// with its `cause`. Returns true iff the coordinator is interrupting THIS
-    /// op (so the caller suppresses normal presentation). The coordinator is
-    /// fail-closed on `cause`: only `.cleanCompletion` winds the engine down for
-    /// reuse; a `.unsafe` terminal forces restart-required.
+    /// Route the interrupted scan's own terminal into the coordinator, reported
+    /// as the typed source `event` that fired (init2-complete / scan-failed /
+    /// generic fatal). Returns true iff the coordinator is interrupting THIS op
+    /// (so the caller suppresses normal presentation). The coordinator maps the
+    /// event to a cause itself and is fail-closed: only `.init2Completed` winds
+    /// the engine down for reuse; `.scanFailed` / `.genericFatal` force
+    /// restart-required. Callers pass the callback they saw, never a verdict.
     private func scanInterruptObserveTerminal(_ s: SessionID, _ op: OperationID,
-                                              cause: InterruptTerminalCause) -> Bool {
+                                              event: InterruptTerminalEvent) -> Bool {
         guard case .interruptingScan(s, op, _, _) = engine.phase else { return false }
-        log.write("scan-interrupt: interrupted scan terminal observed \(s)/\(op) cause=\(cause)")
+        log.write("scan-interrupt: interrupted scan terminal observed \(s)/\(op) event=\(event)")
         pendingScan = nil            // scan op is terminal (didSet disarms stall)
-        run(engine.interruptTerminalObserved(s, op, cause: cause))
+        run(engine.interruptTerminalObserved(s, op, event: event))
         return true
     }
 

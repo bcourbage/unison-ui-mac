@@ -157,6 +157,19 @@ final class EngineSessionCoordinator {
     /// Polled reap classification of the captured identity.
     enum ReapState: Equatable { case absent, reused, zombie, live, unknown }
 
+    /// A worker-terminal SOURCE EVENT observed while an interruption is in
+    /// flight — the raw bridge callback that fired, NOT a safety verdict.
+    /// Callers pass the event they actually saw; the coordinator maps it to an
+    /// `InterruptTerminalCause` through the single `cause(for:)` authority. So a
+    /// caller can never select "this terminal is safe", and the security-
+    /// critical safe/unsafe decision lives — and is unit-tested — in exactly one
+    /// place (mirrors `PasswordSheet.InputStyle(for:)`).
+    enum InterruptTerminalEvent: Equatable {
+        case init2Completed   // the scan's init2-complete callback fired
+        case scanFailed       // the async scan-state-emission failure callback fired
+        case genericFatal     // a fatal arrived during the interruption teardown
+    }
+
     /// Why the interrupted scan's worker terminal arrived — the ONLY thing that
     /// licenses winding the engine down for reuse afterward.
     ///
@@ -173,6 +186,20 @@ final class EngineSessionCoordinator {
     enum InterruptTerminalCause: Equatable {
         case cleanCompletion
         case unsafe(String)
+    }
+
+    /// The SINGLE event→cause authority — the security-critical mapping that
+    /// protects any future reconsideration of stop-in-place. `init2-complete` is
+    /// the only clean terminal; a scan failure or a generic fatal has no
+    /// structurally authenticated transport-interruption cause, so both are
+    /// `.unsafe` (→ restart-required). Pure and total, so it is exhaustively
+    /// unit-tested; callers pass a typed event and cannot pick the verdict.
+    static func cause(for event: InterruptTerminalEvent) -> InterruptTerminalCause {
+        switch event {
+        case .init2Completed: return .cleanCompletion
+        case .scanFailed:     return .unsafe("scan-failed during interruption")
+        case .genericFatal:   return .unsafe("fatal during interruption")
+        }
     }
 
     /// Side effects for the caller to perform after state is fully mutated.
@@ -534,19 +561,20 @@ final class EngineSessionCoordinator {
         return false
     }
 
-    /// The matching worker terminal for the interrupted op. Recorded exactly
-    /// once; handles the terminal arriving before the signal result
-    /// (`signalling` remembers it).
+    /// The matching worker terminal for the interrupted op, reported as the
+    /// typed source `event` that fired. Recorded exactly once; handles the
+    /// terminal arriving before the signal result (`signalling` remembers it).
     ///
-    /// `cause` is authoritative and fail-closed: only a clean completion may
-    /// advance the teardown toward a reusable engine. A `.unsafe` terminal
-    /// (scan-failed, or a generic fatal with no authenticated transport cause)
-    /// enters restart-required from ANY stage — an interruption must never
-    /// upgrade a normally restart-required terminal into a reusable `.stopped`.
+    /// Fail-closed: the coordinator maps `event` to a cause via `cause(for:)`
+    /// (callers cannot pick the verdict). Only `.cleanCompletion` may advance
+    /// the teardown toward a reusable engine. A `.unsafe` terminal (scan-failed,
+    /// or a generic fatal with no authenticated transport cause) enters
+    /// restart-required from ANY stage — an interruption must never upgrade a
+    /// normally restart-required terminal into a reusable `.stopped`.
     func interruptTerminalObserved(_ session: SessionID, _ op: OperationID,
-                                   cause: InterruptTerminalCause) -> [Effect] {
+                                   event: InterruptTerminalEvent) -> [Effect] {
         guard case .interruptingScan(session, op, let stage, let dest) = phase else { return [] }
-        if case .unsafe(let why) = cause {
+        if case .unsafe(let why) = Self.cause(for: event) {
             return enterRestartRequired("scan-interrupt terminal not provably safe: \(why)")
         }
         switch stage {
