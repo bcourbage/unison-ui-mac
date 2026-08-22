@@ -2,21 +2,14 @@
 
 ## To Do
 
-- [ ] **Sparkle in-app updates — go-live.** The framework, updater UI, EdDSA
-      signing + pre-extraction verification, the real public key, appcast tooling,
-      first-launch consent (profiling opt-out within the prompt), Developer ID
-      signing + notarization, and the full release-phase appcast pipeline —
-      release-notes ("What's New") embedding, `SURequireSignedFeed` + feed
-      signing, structural + cryptographic signature gates, and GitHub Pages
-      publish (all in `release.yml`) — are in place (see `docs/sparkle-updates.md`).
-      The one-time maintainer setup is done: the `SPARKLE_ED_PRIVATE_KEY` secret
-      is set in the `release` environment, and GitHub Pages deploys from the
-      `gh-pages` branch. Remaining before the first tag:
-      - Set `auto_updates true` in the Homebrew cask and drop its
-        quarantine-removing postflight so updates defer to Sparkle. The install
-        docs no longer describe the `xattr`/"Open Anyway" steps, so this cask
-        change and the live feed must land before a release ships.
-      - End-to-end verify a v(N)→v(N+1) update against the live, notarized feed.
+- [ ] **Verify a Sparkle auto-update end to end on the 0.5.1 release.** 0.5.0 was
+      the first Sparkle build, so there was no prior client to update *from*. On
+      0.5.1, confirm an installed 0.5.0 finds, downloads, verifies, and installs
+      0.5.1 through the app. This is also the first real exercise of the appcast
+      seed-authentication and build-monotonicity paths in `release.yml` against a
+      published feed (0.5.0 took the first-release 404 path). While here, remove
+      the now-reversed "App signing / notarization: not pursuing" entry from the
+      Completed → won't-do section (0.5.0 shipped exactly that).
 
 - [ ] **Scan interruption: residual (post-release umbrella, tracked in #53).**
       Two independent, fail-closed tracks remain after the qualified direct-SSH
