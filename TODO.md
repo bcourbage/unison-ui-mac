@@ -9,39 +9,6 @@
       seed-authentication and build-monotonicity paths in `release.yml` against a
       published feed (0.5.0 took the first-release 404 path).
 
-- [ ] **Scan interruption: cause-authenticated re-enable (umbrella, tracked in #53).**
-      Genuine in-place scan interruption is disabled at the policy gate
-      (`ScanInterruptPolicy.stopInPlaceEnabled == false`): every leave takes the
-      honest Return-to-Profiles path (abandon presentation, retain the scan
-      lease, close on the scan's own terminal). Remote-wait wedges are bounded by
-      the 120 s watchdog (→ restart-required); pre-remote-wait silence (local
-      walk / TCC prompt) deliberately stays unbounded because it cannot be safely
-      distinguished from a legitimate local delay, so a stuck local walk is
-      escaped only by quit/relaunch. Re-enabling it safely requires a **cause-bound
-      bridge contract** so an interruption terminal can be structurally
-      distinguished from an unrelated failure — without it a `scanFailed`/fatal
-      racing the SIGKILL would launder a restart-required engine into a reusable
-      one. Prerequisites, all fail-closed:
-      - **Authenticated terminal cause** (the gate for re-enabling): a typed
-        bridge signal proving a terminal was the interruption's own transport
-        teardown, not message-text / timing / "a SIGKILL was issued". Upstream-
-        first (a cooperative scan-cancellation primitive), gated by upstream's
-        LLM-authorship ban.
-      - **Track A, CPU-bound local-replica walk:** a scan hashing locally is not
-        blocked on the transport, so no transport kill unwinds it. Needs
-        scan-specific cooperative cancellation (safe points in `update.ml` +
-        exception-safe unwinding) or per-session process isolation, must **not**
-        reuse the propagation-global `Abort` flag (`Abort` is consulted by
-        propagation, never by `update.ml`).
-      - **Track B, non-direct transports** (ControlMaster / ProxyCommand /
-        custom `sshcmd`): a transport-ownership problem (killing a shared
-        ControlMaster or a proxy with descendant processes is unsafe), stays
-        fail-closed until proven.
-      No dependency on #41 (closed infeasible) or #55 (no implementation).
-      Analysis in #53 and `docs/scan-interruption-design.md`; the retained
-      coordinator machinery is unit-tested for the clean-completion and
-      fail-closed unsafe terminals.
-
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`), as *mitigation* for wedged connections:
       have ssh actively probe and disconnect a dead peer (~45s) instead
@@ -73,6 +40,22 @@
 landed across the bring-up and follow-on sessions.*
 
 ### Resolved as won't-do
+
+- [x] **In-place scan cancellation (issue #53) — NOT PLANNED (2026-08-22).**
+      Downstream in-place scan cancellation is declined on file-integrity
+      grounds: no available downstream path (transport SIGKILL, killing
+      non-direct SSH transports, a vendored `update.ml` cancellation patch, or
+      inferring a terminal from timing/error text) can prove the embedded Unison
+      engine state is consistent for same-process reuse afterward. PR #92
+      disabled the previous stop-in-place mechanism at the policy gate (on
+      `main`, commit `27a1ddb`; ships in v0.5.1 — released v0.5.0 still contains
+      the reachable mechanism, see #94). On `main` the safe Return-to-Profiles
+      fallback is the only path (it abandons presentation only, and does not
+      cancel the scan). Full rationale, rejected approaches, and the
+      upstream contract that reconsideration would require:
+      `docs/scan-interruption-design.md` (decision record). Sync-time Stop
+      (`Abort.all`) is separate and unaffected. A separate follow-up may remove
+      the now-dormant machinery, tracked in #94.
 
 - [x] **App signing / notarization for distribution — SUPERSEDED by 0.5.0
       (2026-08-22).** Originally recorded as "not pursuing" (ad-hoc signature

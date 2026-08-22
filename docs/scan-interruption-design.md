@@ -1,27 +1,182 @@
-# Design Proposal v2.1: Scan-phase interruption (issue #24 follow-up)
+# Scan-phase interruption: decision record (issue #53 / #24 follow-up)
 
-**Repo:** unison-ui-mac  ·  **Status:** consolidated standalone proposal, round 3
-**Supersedes:** v1 and v2 entirely. This is the canonical document; earlier
-versions are historical and are not incorporated by reference.
+**Repo:** unison-ui-mac  ·  **Status:** DECISION RECORD (supersedes the
+implementation proposal preserved below). Pinned upstream: `bcpierce00/unison`
+v2.54.0, commit `91421d0` (see `vendor/README.md`).
 
-> **Superseded conclusion (terminal-causality fix).** The stop-in-place
-> outcome specified below — SIGKILL the scan's transport, wind the engine down,
-> and REUSE it as `.stopped` (Rescan reuses the session) — is **disabled in the
-> shipping app** and must not be treated as supported. Its safety rested on
-> recognizing the interrupted scan's own terminal, but no terminal event
-> carries a structurally authenticated cause: a `scanFailed` or an unrelated
-> fatal racing the SIGKILL is indistinguishable on the wire from the kill's own
-> transport EOF, so accepting it as the expected terminal would launder a
-> normally restart-required engine into a reusable one. The single policy gate
-> `ScanInterruptPolicy.stopInPlaceEnabled` is therefore held **off**: every
-> leave (Stop Scan, Profiles, window-close) routes through the honest
-> Return-to-Profiles path — abandon the presentation, retain the scan lease,
-> and close on the scan's own terminal. The coordinator's interruption state
-> machine is retained (and unit-tested for the clean-completion terminal plus
-> the fail-closed unsafe cases) so a future, separately-reviewed
-> **cause-authenticated bridge contract** could re-enable it. The empirical
-> Phase-1a evidence in PR #51 stands as history; only its *reuse conclusion* is
-> superseded by this finding.
+## Decision
+
+Downstream in-place scan cancellation is **not planned**. The application will
+not stop an in-flight update-detection scan and then reuse the same embedded
+Unison engine, because no available downstream mechanism can prove the engine's
+state is consistent for that reuse. This is a safety decision, not a statement
+that cancellation is impossible or unwanted; the user-visible limitation is
+real and accepted. Sync-time Stop is a separate, supported feature and is
+unaffected (see the last section).
+
+## Safety invariant
+
+An active scan owns the engine lease until the scan's own genuine terminal
+callback fires. Nothing — not a user leave, not a window close, not a queued
+profile — may release or reuse that engine before then. Presentation may be
+abandoned; the engine may not.
+
+## Current application behavior and its limitations
+
+**Version status.** This describes `main` at and after PR #92 (commit
+`27a1ddb`), which is the baseline for this decision record and ships in
+**v0.5.1**. The currently released **v0.5.0 still contains the superseded
+mechanism**: with a qualified direct-SSH scan past remote-wait, v0.5.0 can enter
+`.interruptingScan` from Stop Scan / Profiles / window close, SIGKILL the
+transport, accept any matching terminal, and reuse the embedded engine. Do not
+read the guarantees below as true of v0.5.0. On v0.5.0, if a remote scan hangs,
+quit and relaunch rather than Stop Scan followed by Rescan. See issue #94.
+
+On `main` after PR #92, in-place interruption is disabled at the shared policy
+gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`,
+`ScanInterruptPolicy.swift:45`, folded into `interruptReady` at `:22`). Stop
+Scan, Show/Return to Profiles, and window close therefore cannot enter
+`.interruptingScan`; every leave takes the Return-to-Profiles fallback:
+
+- It abandons **presentation only** — detaches the reconcile window and shows
+  the picker (`AppDelegate.leaveSession` → `engine.abandon` at
+  `AppDelegate.swift:595`, `showProfilePicker` at `:596`) — and marks the op
+  abandoned without claiming the OCaml scan stopped
+  (`EngineSessionCoordinator.abandon`, the `.opening/.scanning/.syncing` case at
+  `EngineSessionCoordinator.swift:465`).
+- The engine lease is retained while the original scan continues; a
+  later-selected profile is **queued**, not started
+  (`requestOpen` queue path, `EngineSessionCoordinator.swift:353`/`365`/`381`).
+- Destructive archive maintenance stays forbidden while the abandoned scan owns
+  the engine (`allowsDestructiveArchiveMutation` is true only for `.idle` /
+  `.stopped`, `EngineSessionCoordinator.swift:326`/`331`).
+- Queued work starts only after the scan's genuine terminal and, **for a remote
+  session, a successful connection close**; a local-only session has no
+  connection to close. Abandoned `scanCompleted` → `beginClose` (`:704`); for a
+  remote (`.open`) connection that closes and `closeCompleted(status: 0)` →
+  `finishToIdle` → queued open (`:751`), while for `.localOnly` / `.disconnected`
+  `beginClose` goes straight to `finishToIdle` (`:832`–`:835`, no close); a
+  failed remote close → restart-required (`:775`).
+
+Accepted costs of this fallback:
+
+- **Leaving does not cancel the scan.** The local traversal or remote wait keeps
+  running (CPU, disk, and for remote the ssh connection and remote
+  `unison -server`) until it finishes on its own.
+- **Another profile may wait** until that scan terminates and its close
+  succeeds.
+- **Archive maintenance stays blocked** meanwhile.
+- **A pre-remote-wait stall may require quit/relaunch.** A wedge *after* Unison
+  reports it is waiting on the remote is bounded by the 120-second watchdog and
+  becomes restart-required (`ScanStallPolicy.actionOnStall`, consumed at
+  `AppDelegate.swift:1975`; the remote-wait branch at `:1987`). Silence
+  *before* the remote-wait phase — local traversal, hashing, or a macOS TCC
+  pause — is deliberately **unbounded** (`.keepWaiting` re-arms, `:1999`),
+  because it cannot be safely distinguished from a legitimate local delay.
+  Quit/relaunch is the escape.
+
+## Why PR #92 disabled the previous mechanism
+
+The earlier design SIGKILLed the scan's transport child and then reused the
+engine as `.stopped`. Its safety depended on recognizing the interrupted scan's
+own terminal, but no terminal event carries a structurally authenticated cause:
+a `scanFailed`, or an unrelated fatal racing the kill, is indistinguishable on
+the wire from the kill's own transport EOF. Accepting such a terminal as the
+expected one laundered a normally restart-required engine into reusable state.
+PR #92 closed that fail-open path with a typed callback→event→cause mapping
+(`EngineSessionCoordinator.cause(for:)`) that **centrally classifies the
+reported callback source and fails closed for `scanFailed` and generic-fatal
+events**, so only a clean completion may wind the engine down. This is
+classification, not causal authentication: it does not prove a terminal was
+*our* interruption (the final bridge-handler → named-registrar-method hop is
+intentionally not covered end-to-end), only that the reported callback kind is
+handled fail-closed.
+
+That classification is **necessary but not sufficient** for safe reuse, and it
+is not a re-enable recipe. Even a terminal proven to be a clean cancellation
+would still not show that Unison's global caches, Fpcache state,
+archive state, RPC channel, update-traversal state, and repeated embedded
+invocation are internally consistent afterward. PR #92 makes the app safe (on
+`main`, shipping in v0.5.1) by *disabling* reuse, not by making it provable.
+
+## Rejected approaches
+
+- **Transport SIGKILL as cancellation.** Killing the ssh child does not
+  cooperatively unwind the OCaml scan; the terminal it produces is
+  unauthenticated (above), and a CPU-bound local walk is not on the transport at
+  all, so the kill does not reach it.
+- **Killing shared / non-direct SSH transports** (ControlMaster, ProxyCommand,
+  ProxyJump, custom `sshcmd`). A transport-ownership problem: killing a shared
+  master or a proxy with descendant processes is unsafe and out of the app's
+  control.
+- **Reusing the propagation-global `Abort` during scanning.** `Abort` is a
+  propagation checkpoint (consulted in `copy.ml` / `files.ml`); update traversal
+  (`update.ml`) does not consult it and has no equivalent supported checkpoint.
+- **Treating terminal causality as proof of complete engine consistency.** The
+  PR #92 cause mapping classifies the reported callback source and fails closed;
+  it neither authenticates that a terminal was our interruption nor speaks to the
+  aggregate engine state.
+- **A downstream OCaml cancellation patch** (safe points + exception-safe
+  unwinding in `update.ml`) without upstream-supported invariants. This would
+  fork engine-internal control flow with no supported contract for archive
+  commit/rollback or global-cache consistency, exactly the guarantees the app
+  cannot provide from outside.
+
+## Upstream requirements for reconsideration
+
+The narrow, defensible reading of the pinned upstream source and the cited
+issues:
+
+- Upstream provides cooperative cancellation during **propagation** via `Abort`
+  (`abort.mli`, checked in `copy.ml`/`files.ml`); **scan / update traversal
+  exposes no equivalent supported cancellation contract** (no `Abort` reference
+  in `update.ml`).
+- Ctrl-C outside supported propagation cancellation **terminates the process**
+  rather than promising the embedded engine remains reusable (upstream
+  [PR #810](https://github.com/bcpierce00/unison/pull/810)). The defensible
+  statement is that safe in-process scan cancellation is **unsupported and its
+  cleanup/reuse guarantees are unspecified** — not that upstream is deliberately
+  protecting a specific invariant, which maintainers have not stated.
+- Upstream [issue #1148](https://github.com/bcpierce00/unison/issues/1148) is
+  **corroborating evidence** that global-state integrity is a real concern in
+  the macOS-GUI (embedded, multi-invocation) class; it is not, on its own, proof
+  of a particular concurrency mechanism absent maintainer analysis.
+
+A bare upstream "cancel requested" primitive would **not** by itself make reuse
+safe. Reconsideration requires an upstream contract that defines and enforces
+**all** of:
+
+1. safe cancellation checkpoints in update detection;
+2. exception-safe unwinding;
+3. archive commit / rollback guarantees;
+4. Fpcache and other global-cache consistency after cancellation;
+5. RPC-channel teardown or reuse guarantees;
+6. worker quiescence;
+7. supported repeated same-process invocation after a cancellation.
+
+If upstream provides that complete contract, the app would still need UI and
+lifecycle coordination, but it could become much smaller — relying on the
+supported primitive instead of transport or process manipulation. Only then
+should this be revisited, in a **new** issue, not by reopening the design below.
+
+## Supported alternative: sync-time `Abort.all`
+
+This decision concerns **scan / update-detection** cancellation only. Cancelling
+an in-flight **propagation** is supported and unchanged: the coordinator routes
+Stop during a running sync to `.abortSync` (`EngineSessionCoordinator.swift:499`),
+which drives Unison's `Abort.all` propagation checkpoints. That path leaves both
+sides consistent (temp files may remain, harmless) and is not affected by
+anything above.
+
+---
+
+# Historical design material (superseded)
+
+Everything below is the original stop-in-place implementation proposal,
+preserved for its empirical evidence (the Phase-1a experiments, the process-
+identity classification work, the live matrix). Its **reuse conclusion is
+superseded** by the decision record above; do not treat the stop-in-place
+outcome it specifies as supported or as a re-enable plan.
 
 **Round-3 changes.** Per the round-2 review: (B1) consolidated into one
 standalone document, v1's incorrect "synchronous blocking init2" statement
@@ -34,14 +189,14 @@ Debug-only, operation- and PID-bound "expected scan interruption" state — the
 existing fatal routing terminates in `.restartRequired` and cannot drive the
 reopen experiment; (B4) quarantine stated as a one-way process state — with the
 verification that the coordinator **already refuses** `requestOpen` in
-`.restartRequired` (`EngineSessionCoordinator.swift:220`), so this is asserted,
-not built; terminology corrected (process exit resolves the zombie via OS
-reparent-and-reap, not the shutdown reaper). Refinements adopted: no premature
-ssh-configuration refusal (if ever needed, derive effective config via
-`ssh -G`); gate reworded to "zero unexplained failures"; honesty copy is
-"Return to Profiles"; keepalive testing isolated to the throwaway test VM.
-New this round: (C1) the expected-interruption state must define precedence
-with the armed `ScanStallTimer` for the same operation.
+`.restartRequired`, so this is asserted, not built; terminology corrected
+(process exit resolves the zombie via OS reparent-and-reap, not the shutdown
+reaper). Refinements adopted: no premature ssh-configuration refusal (if ever
+needed, derive effective config via `ssh -G`); gate reworded to "zero
+unexplained failures"; honesty copy is "Return to Profiles"; keepalive testing
+isolated to the throwaway test VM. New this round: (C1) the expected-
+interruption state must define precedence with the armed `ScanStallTimer` for
+the same operation.
 
 ---
 
@@ -342,51 +497,13 @@ separate, later decision gated on both — never shipped on assumption.
 - Exactly one terminal authority per operation: arming the expected-
   interruption state disarms the stall detector for that op (§7).
 
-## 14. Remaining open questions
+## 14–16. Spike open questions, recommendation, and approval — REMOVED (superseded)
 
-1. Rung-4 classification (§8): agreed as sufficient for the spike, with the
-   patch-requiring OCaml hook as an approval-gated fallback?
-2. The 10 s spike teardown deadline: any reason to prefer a different bound
-   before instrumentation data exists?
-3. Phase 1b copy ("Return to Profiles" / "Returning to profiles…"): approved
-   to proceed as an independent small PR now, ahead of the spike?
-
-## 15. Recommendation
-
-Execute Phase 0 as specified: the §6 primitive with quarantine semantics, the
-§7 harness state with detector precedence, the §8 identity-classification
-ladder, the §9 acceptance checks, and the §10 matrix on the isolated test VM,
-under the §11 gate. Phase 1b may proceed independently at any time. Phase 1a
-remains unapproved pending the spike's evidence.
-
-## 16. Approval and implementation clarifications (locked)
-
-v2.1 approved for Phase 0 after two review rounds; no further architectural
-review before Phase 0. Phase 1a remains evidence-gated. Two implementation
-clarifications accompany the approval and are binding on the Phase 0 harness:
-
-1. **Bypass the fatal modal for the matching Debug interruption.** The
-   production fatal trampoline shows an `NSAlert` before notifying AppDelegate;
-   waiting on user dismissal would corrupt the signal-to-terminal latency
-   measurement (rung 2) and make repeated cycles impractical. The exact
-   operation-bound Debug state (§7) intercepts **only its expected fatal**,
-   timestamps arrival, **auto-acknowledges** it, and continues the harness. All
-   unrelated fatals retain normal modal UI.
-
-2. **Poll rung 4 over a bounded grace period.** Do not classify reap state from
-   a single immediate `sysctl` snapshot (§8). Poll the captured PID + start
-   identity briefly until absent/reused, or until the grace period expires with
-   the identity still zombie/live. Record the observed latency.
-
-**Quarantine coverage.** The quarantine path (§6) is exercised deterministically
-on the H1-success cases; do **not** manufacture a dangerous live failure solely
-to trigger it.
-
-**Resolved open questions (§14).**
-
-1. Rung-4 identity classification is sufficient for the spike; a
-   post-`waitpid` OCaml hook remains the approval-gated fallback.
-2. The 10 s teardown deadline is accepted for the experiment. Keep it
-   **configurable** and record actual latency.
-3. The independent "Return to Profiles" / "Returning to profiles…" copy PR
-   (Phase 1b) is approved to proceed now, ahead of the spike.
+**DO NOT EXECUTE.** The original proposal ended here with Phase 0 spike
+open-questions, a "Recommendation" to *execute Phase 0 as specified*, and a
+"locked / approved after two review rounds / binding" Phase 0 approval block.
+Those authorizations are **void**. In-place scan cancellation is **not planned**
+(see the decision record at the top of this file); nothing in this document
+authorizes implementing it. The imperative sections were removed so that a deep
+link or search hit cannot be read as active authorization. Their original text
+is preserved in git history.
