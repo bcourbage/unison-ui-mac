@@ -80,7 +80,10 @@ enum ConnectPromptClassifier {
             return .retryNotice(trimmed)
         }
 
-        // 3. Host-key yes/no question (matches PasswordSheet's own heuristic).
+        // 3. Host-key yes/no question → an editable, non-secret response. This
+        //    verdict is the single source of truth for the sheet's field style
+        //    (`.hostKeyQuestion` → plain, `.credential` → masked); PasswordSheet
+        //    no longer re-classifies the text.
         if isHostKeyQuestion(lower) {
             return .hostKeyQuestion
         }
@@ -105,10 +108,30 @@ enum ConnectPromptClassifier {
         return lower == retryNotice
     }
 
+    /// The two canonical OpenSSH host-key questions, matched by EQUALITY on the
+    /// FINAL non-empty line (lowercased, trimmed). `/usr/bin/ssh` prints exactly
+    /// one of these as the last thing before it blocks on the answer:
+    ///   "Are you sure you want to continue connecting (yes/no)?"
+    ///   "Are you sure you want to continue connecting (yes/no/[fingerprint])?"
+    /// Anything else — a credential prompt appended after the question on a later
+    /// line ("…(yes/no)?\nPassword:") or the same line ("…(yes/no)? Password?"),
+    /// or an unrecognized future variant — stays `.credential` → a masked field,
+    /// the fail-safe default. (A substring/`hasSuffix` heuristic was fail-open:
+    /// "…(yes/no)? Password?" contains both markers and ends in "?".)
+    private static let hostKeyQuestions: Set<String> = [
+        "are you sure you want to continue connecting (yes/no)?",
+        "are you sure you want to continue connecting (yes/no/[fingerprint])?",
+    ]
+
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
-        return lower.contains("authenticity")
-            || lower.contains("(yes/no")
-            || lower.contains("yes/no)")
+        // Split on `isNewline`, not the Character "\n": Swift treats a CRLF
+        // ("\r\n", as ssh emits) as ONE grapheme, so `split(separator: "\n")`
+        // would not split it and the "last line" would be the whole prompt.
+        let lastLine = lower
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .last { !$0.isEmpty } ?? ""
+        return hostKeyQuestions.contains(lastLine)
     }
 
     /// ssh terminal output that means the transport died or was refused — none

@@ -1363,8 +1363,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 // error dialog (no connection was established, so the engine is
                 // quiescent once the cancel is acknowledged).
                 let transportGone = unison_bridge_transport_child_terminated() != 0
-                switch ConnectPromptClassifier.classify(
-                    prompt: prompt, transportTerminated: transportGone) {
+                let verdict = ConnectPromptClassifier.classify(
+                    prompt: prompt, transportTerminated: transportGone)
+                switch verdict {
                 case .fatal(let reason):
                     self.log.write("connect \(s)/\(op): fatal ssh output surfaced as a prompt "
                         + "(transportGone=\(transportGone)) — not re-prompting; teardown → picker")
@@ -1385,13 +1386,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 case .credential, .hostKeyQuestion:
                     break
                 }
+                // The credential-vs-host-key → secure-vs-plain decision lives in
+                // one tested place (PasswordSheet.InputStyle(for:)), not inline
+                // here. Only .credential / .hostKeyQuestion reach this point
+                // (fatal/retry returned), so this is non-nil; fail closed rather
+                // than force-unwrap if that ever changes.
+                guard let inputStyle = PasswordSheet.InputStyle(for: verdict) else {
+                    self.log.write("connect \(s)/\(op): no field style for verdict \(verdict) — failing closed")
+                    self.failConnectFatal(s, op, message: "Internal error preparing the authentication prompt.")
+                    return
+                }
                 self.disarmConnectWatchdog()
                 self.sheetShownThisConnect = true
                 // Issue #63: fold any held retry notice into the message ON this
                 // (real) prompt, so the user sees the denial and answers once.
                 let sheetPrompt = self.retryNotice.fold(into: prompt, for: s, op)
                 self.log.write("connection prompt: \(sheetPrompt)")
-                let sheet = PasswordSheet(prompt: sheetPrompt) { [weak self] response in
+                let sheet = PasswordSheet(prompt: sheetPrompt, style: inputStyle) { [weak self] response in
                     guard let self else { return }
                     guard self.pendingConnect.map({ $0 == (s, op) }) ?? false else { return }
                     self.pendingPasswordSheet = nil
