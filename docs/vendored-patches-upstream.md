@@ -111,9 +111,10 @@ Group by generality, which is the natural PR split:
 ## Caveats before investing
 
 - **Authorship / contribution policy.** This repo is LLM-assisted and upstream
-  has been wary of LLM-authored contributions. These patches are small,
-  mechanical `Callback`/hook registrations (the vendor README characterizes them
-  as not carrying significant authorship) and 0001 already landed — but confirm
+  has been wary of LLM-authored contributions. These patches are small, but they
+  are downstream-authored and not merely `Callback` registrations: some change
+  shared engine behavior (0003: `remote.ml` / `uicommon.ml`) or the macUI bridge
+  ABI (0005). 0001 already landed — but confirm
   upstream's current stance and present human-reviewed, minimal diffs.
 - **Licensing:** non-issue. Everything is GPLv3-or-later, same as upstream;
   derivative-artifact provenance is documented in `vendor/README.md` §6.

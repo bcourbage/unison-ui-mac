@@ -66,10 +66,13 @@ Install instructions for the remote side:
   page or build from source at <https://github.com/bcpierce00/unison>.
 
 This project's embedded Unison is **v2.54.0** (see README's "Unison
-version" section for the exact upstream commit). The remote Unison must
-be the same major version, `2.54.x` works, `2.51.x` does not. The app
-runs a one-shot `ssh ... unison -version` probe on profile open and
-surfaces a suppressible alert on mismatch (see
+version" section for the exact upstream commit). The compatibility
+boundary is Unison's **2.52.0** wire protocol, not an exact version
+match: any remote at `>= 2.52.0` interoperates (so `2.53.x` and `2.54.x`
+work together), while `2.51.x` and earlier are on the other side of the
+boundary and cannot connect. The app runs a one-shot
+`ssh ... unison -version` probe on profile open and surfaces a
+suppressible alert only when the two sides straddle that boundary (see
 [Version-mismatch warning](#version-mismatch-warning-on-profile-open)
 below).
 
@@ -487,7 +490,13 @@ when idle.
 
 ### Toolbar
 
-- **Profiles**: return to the picker (closes this reconcile window).
+- **Profiles**: return to the picker (closes this reconcile window). During a
+  scan this action reads **Return to Profiles**: it abandons the view and
+  returns to the picker but does **not** cancel the scan, which keeps running in
+  the background until it finishes on its own (for a remote session the app then
+  closes the connection; a local-only session has no connection and simply goes
+  idle). There is no in-place "stop the scan" control; if a remote scan hangs,
+  quit and relaunch.
 - **Rescan**: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
   view.
@@ -563,7 +572,7 @@ text. Pick another row's Diff to recover.
 ## Settings
 
 Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
-(System Settings style) with four tabs that resize the window to fit:
+(System Settings style) with six tabs that resize the window to fit:
 
 - **Saved State**: *implicit* state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
@@ -572,6 +581,13 @@ Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
 - **Sync**: the end-of-sync notification and sound (actual on/off
   preferences you set directly).
 - **Logging**: how log file locations are chosen across profiles.
+- **Maintenance**: Archive Maintenance, a **Clean Stale Archives** scan
+  that moves reconciliation archives no current profile uses to the
+  Trash (recoverable); live archives are left untouched.
+- **Updates**: Software Updates, direct toggles for whether the app
+  checks for updates automatically and whether it sends an anonymous
+  system profile with the check. Shown only when the Sparkle updater is
+  present in the build.
 
 Settings and the profile editor can't be open at the same time. Because a
 logging change here can rewrite `.prf` files, the **Settings** menu item is
@@ -582,8 +598,8 @@ conflicting with unsaved edits.
 
 Most of the Saved State items are reset/clear actions on remembered
 state (you hide a profile by clicking its eye icon, dismiss a
-version-mismatch alert via its checkbox, etc.); the Sync tab is the one
-place that holds preferences you toggle directly.
+version-mismatch alert via its checkbox, etc.); the **Sync** and
+**Updates** tabs are where you toggle preferences directly.
 
 ### Profile picker layout
 
@@ -725,7 +741,9 @@ Unison reads). The matching per-profile controls live in the editor's
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
-accessed via the standard `UserDefaults` API. The keys this app writes:
+accessed via the standard `UserDefaults` API. That domain also holds the
+Sparkle-owned update preferences (the **Updates** tab writes them through
+Sparkle, not as app keys of its own). The keys this app writes:
 
 | Key | Purpose |
 |---|---|
@@ -739,6 +757,12 @@ accessed via the standard `UserDefaults` API. The keys this app writes:
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
 | `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 
+Sparkle also manages update keys in this same domain, set from the **Updates**
+tab and the first-launch prompt: `SUEnableAutomaticChecks` (automatic update
+checks) and `SUSendProfileInfo` (send the anonymous system profile), plus its
+own bookkeeping (e.g. `SULastCheckTime`). These are owned by Sparkle; change
+them through the Updates tab rather than by hand.
+
 You can inspect them directly with `defaults read net.courbage.unison-ui-mac`,
 or wipe everything in one shot with `defaults delete net.courbage.unison-ui-mac`,
 but the Settings window gives you fine-grained control by category.
@@ -749,7 +773,8 @@ but the Settings window gives you fine-grained control by category.
 
 ### `Unison-UI-Mac` menu
 
-Standard macOS app menu: About, Settings… (⌘,), Services, Hide, Quit.
+Standard macOS app menu: About, Check for Updates… (the Sparkle updater),
+Settings… (⌘,), Services, Hide, Quit.
 The menu uses the app's display name (`CFBundleDisplayName =
 "Unison-UI-Mac"`). The About panel shows the embedded Unison version
 (queried via `unison_bridge_get_version`). The Settings entry opens
@@ -805,7 +830,8 @@ Standard: Minimize, Zoom, Bring All to Front.
 
 ### Help menu
 
-- `Unison-UI-Mac Help` (⌘?), opens this repo's README in the browser.
+- `Unison-UI-Mac Help` (⌘?), opens this app's MANUAL (this document) on
+  GitHub in the browser.
 - `Unison File Synchronizer Manual`, opens the full upstream Unison
   reference manual, rendered to HTML and bundled with the app (works
   offline). The HTML is the hevea-rendered output of upstream's
@@ -817,6 +843,7 @@ Standard: Minimize, Zoom, Bring All to Front.
   version, macOS version, architecture). The repo's bug-report
   template provides the rest of the structure. You'll need a GitHub
   account to file the issue itself.
+- `Donate`, opens the project's GitHub Sponsors page in the browser.
 
 No File menu, this isn't a document-based app. ⌘W still closes the
 focused window via the standard responder action.
@@ -991,9 +1018,6 @@ Avoid these "shortcuts"; each trades real protection for convenience:
   the agent is just as convenient and far safer.
 - `UserKnownHostsFile=/dev/null`: discards host-key memory entirely, so a
   machine-in-the-middle cannot be detected.
-- `ControlMaster` purely to avoid re-authenticating: its shared transport
-  ownership disables the app's safe in-place **Stop Scan** (that feature tears
-  down a direct-SSH transport it must solely own), so it is the wrong trade here.
 
 ### A profile won't open from the GUI but works from the CLI
 
@@ -1147,16 +1171,20 @@ incompatible.
   requires password auth, the probe fails silently and no alert
   appears (Unison's own connection will prompt as usual for the
   actual sync).
-- Times out after 5 seconds (`ConnectTimeout=5`).
-- `StrictHostKeyChecking=accept-new`, first-time hosts get added
-  to known_hosts; changed keys are rejected (mirrors typical SSH
-  workflow).
+- Uses `ConnectTimeout=5` for the TCP/SSH connection; the overall probe
+  has a 20-second wall-clock deadline for the remote work, after which it
+  is terminated and reported as a timeout.
+- `StrictHostKeyChecking=yes`: the probe never adds or changes a host key,
+  so it cannot alter your trust state. A first-time or changed host key
+  makes the probe fail (no alert); Unison's own connection then handles
+  host-key acceptance for the actual sync.
 
 **Limitations**:
-- Doesn't honor your `sshcmd` / `sshargs` prefs, invokes
-  `/usr/bin/ssh` directly. If your Unison SSH config differs
-  significantly from your shell SSH config, the probe may use a
-  different path/auth than the actual Unison connection.
+- Honors an **absolute** `sshcmd` and the profile's `sshargs` (so it
+  authenticates like the real sync, including an `-i <key>` in `sshargs`);
+  a bare, non-absolute `sshcmd` falls back to `/usr/bin/ssh`. If your
+  Unison SSH config differs significantly from your shell SSH config, the
+  probe still mirrors the profile's own settings.
 - Doesn't check `socket://` profiles. There's no `-version` probe
   for socket-mode Unison servers without going through the actual
   Unison protocol.
@@ -1169,19 +1197,24 @@ incompatible.
 Two halves of the answer, for the **local** side (the embedded Unison)
 and for the **remote** side (any `ssh://…` peer).
 
-**Local side (the embedded copy).** This app links in `unison-blob.o`,
-which is built from whichever upstream source you have checked out
-under `~/Documents/Sources/unison/` (or wherever `UNISON_SRC` points).
-The embedded version is frozen at build time, the app doesn't
-"auto-update" Unison on its own. To pull a new version:
+**Local side (the embedded copy).** This app links in the committed
+vendored blob (`vendor/unison-blob-<version>-<arch>.o`); the version is
+frozen at build time. An ordinary `make build` uses that committed blob,
+so it does **not** recompile from a local upstream checkout and does
+**not** change the embedded version.
 
-```sh
-cd ~/Documents/Sources/unison && git pull
-cd ~/Documents/Sources/unison-ui-mac && make build
-```
+- **Ordinary users** receive embedded-engine upgrades through app
+  releases (the in-app Sparkle update, or a fresh download). There is
+  nothing to do locally.
+- **Maintainers** bump the embedded engine deliberately: check out a
+  reviewed upstream commit under `UNISON_SRC`, run `make vendor-blob`
+  (and `make vendor-manual` to refresh the bundled Help manual), update
+  the provenance and SHA-256 in `vendor/README.md`, then rebuild and
+  commit the refreshed blob. See `docs/vendored-patches-upstream.md` and
+  the vendor-bump checklist.
 
-Then relaunch the app. The About panel shows the embedded version so
-you can verify.
+The About panel shows the embedded version so you can verify after an
+upgrade.
 
 **Remote side (`ssh://…` profiles).** Unrelated to local rebuilds. You
 update the remote Unison the way you'd update any CLI on that machine
@@ -1217,10 +1250,11 @@ forces a full re-scan to rebuild them. Two consequences for this app:
    tests (using `md5(1)`-verified reference values) will fail loudly
    on a stale constant.
 
-For day-to-day usage: when you run `brew upgrade unison` on a remote
-host and SSH-based syncs start failing with a version mismatch error,
-the answer is to rebuild this app against a matching upstream
-checkout.
+For day-to-day usage: a remote at `>= 2.52.0` interoperates with this
+app's embedded 2.54.0, so upgrading the remote (`brew upgrade unison`,
+etc.) does **not** require rebuilding the app. You would only need a
+newer embedded engine (a maintainer vendor-blob bump, delivered in an
+app release) if a remote is stuck below 2.52.0 and cannot be upgraded.
 
 ### Profile won't sync but CLI `unison <profile>` works
 

@@ -82,10 +82,12 @@ inputs (same source commit, same patch set, same OCaml 5.5.0 toolchain,
 same build command). It is **not** guaranteed byte-for-byte identical:
 the OCaml compiler / `ld -r` output is not deterministic on this
 toolchain (observed differing checksums between two same-source builds),
-which is an upstream/toolchain property, not something we introduce. No
-portion of the blob is original work of this project; the patches are
-minimal `Callback`/hook registrations that don't carry significant
-authorship.
+which is an upstream/toolchain property, not something we introduce. The
+bulk of the blob is upstream Unison's work, but it is a **patched** build,
+not purely upstream: the downstream patches in `patches/` are original to
+this project, and while small, some change shared engine behavior (0003:
+`remote.ml` / `uicommon.ml`) or the macUI bridge ABI (0005). See
+`docs/vendored-patches-upstream.md` for the per-patch detail.
 
 ### `unison-manual-*.html` (rendered manual)
 
