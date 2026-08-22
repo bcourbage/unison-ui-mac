@@ -596,7 +596,8 @@ landed across the bring-up and follow-on sessions.*
 *Not work items: context for future contributors.*
 
 - The bridge's **handoff pattern** (request/response via mutex+condvar
-  on a dedicated OCaml worker) is used in both directions:
+  over a single request slot serviced by a three-worker pool, serialized
+  by the OCaml runtime lock) is used in both directions:
   Swift→OCaml synchronous calls AND OCaml→Swift modal callbacks. The
   same shape fits any future blocking OCaml→Swift call.
 - **Per-row OCaml roots** (`g_ri_roots`) re-registered on each init2

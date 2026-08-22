@@ -126,7 +126,9 @@ feature set:
   testing.
 
 See [TODO.md](TODO.md) for the full prioritized status and what's still
-open (mostly P3 hygiene items at this point).
+open. The top open item is the highest-priority file-integrity hardening
+(#94, structurally removing the dormant scan-interruption machinery); the
+remainder is mostly P3 hygiene.
 
 ## Build and install
 
@@ -171,12 +173,15 @@ so afterwards `make open` (or opening `unison-ui-mac.xcodeproj`
 directly) and a bare `xcodebuild` both build and link correctly with no
 extra flags. A build that somehow runs without those paths set fails
 immediately with a clear error pointing back here, rather than
-producing a bundle that crashes at launch. Prerequisites for a normal
-build: Xcode and `xcodegen` (`brew install xcodegen`). OCaml is **not**
-needed for ordinary builds (they link the committed vendored blob); it
-is required only to regenerate that blob (`make vendor-blob`), and then
-it must be exactly **OCaml 5.5.0** — the build rejects any other version
-(`make check-ocaml-version`).
+producing a bundle that crashes at launch. Prerequisites for any build:
+Xcode, `xcodegen`, and **OCaml 5.5.0**. The vendored blob removes the
+5–10 min upstream *source* compile, **not** the OCaml runtime dependency:
+`make build` still links the app against the OCaml 5.5.0 runtime libraries
+(`libasmrun` etc.) and its headers, and runs `make check-ocaml-version`,
+which rejects any version other than 5.5.0. Install OCaml 5.5.0 via opam
+or a pinned formula (not a bare `brew install ocaml`, which follows the
+latest). OCaml is additionally needed to regenerate the blob itself
+(`make vendor-blob`), a maintainer-only step.
 
 ### Local fork patches
 

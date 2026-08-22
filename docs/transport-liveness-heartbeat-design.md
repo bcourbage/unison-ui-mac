@@ -1,13 +1,22 @@
 # Feasibility spike: transport-liveness heartbeat (issue #41)
 
-Status: **feasibility report, for review.** Supersedes the earlier "authoritative
+> **SUPERSEDED — DO NOT EXECUTE.** Both follow-ups this report recommends are now
+> resolved: **#55 (ssh keepalive) is CLOSED — will not be implemented** (the
+> spike was transport-positive but app-inconclusive; see
+> `docs/ssh-keepalive-spike-results.md`), and **#53 (in-place scan cancellation)
+> is DECLINED, not planned** (see `docs/scan-interruption-design.md`). Treat the
+> "Recommendation" and "open questions" below as historical: nothing here is a
+> live task, and "Start #55" is not an instruction to act on.
+
+Status: **HISTORICAL feasibility report.** Supersedes the earlier "authoritative
 heartbeat" design in this file. No blob rebuild, no `patches/` change, no
-production behavior change was made for this spike. The verdict below narrows
-#41's scope substantially and decouples it from #53.
+production behavior change was made for this spike. The verdict below narrowed
+#41's scope substantially and decoupled it from #53.
 
 Related: #33 (scan-stall status proxy, merged), #34 (sync-stall advisory,
-merged), #53 (in-process interruption residual for non-direct transports), #55
-(ssh keepalive), #24 (closed). See also `docs/scan-interruption-design.md`.
+merged), #53 (in-place scan cancellation — **declined, not planned**), #55 (ssh
+keepalive — **closed, will not implement**), #24 (closed). See also
+`docs/scan-interruption-design.md`.
 
 ---
 
@@ -267,11 +276,12 @@ even at its best, is orthogonal to all three.
 1. **Retire the "authoritative heartbeat" framing of #41.** Reword the issue as an
    infeasible proposal under the current cooperative scheduler and close it with a
    precise disposition, superseded in part by #55.
-2. **Start #55 (ssh keepalive) as its own feasibility spike** with the scope in §6.
-   That is where any real value lies, and its central claim (EOF → clean unwind) is
-   still to be proven.
+2. ~~**Start #55 (ssh keepalive) as its own feasibility spike**~~ — DONE and
+   CLOSED: the spike ran and #55 will not be implemented (transport-positive,
+   app-inconclusive; `docs/ssh-keepalive-spike-results.md`).
 3. **Keep #33 conservative and #34 advisory** (Section 4). No blob change here.
-4. **Leave #53 decoupled** (Section 7).
+4. **Leave #53 decoupled** (Section 7) — since resolved: #53 is declined
+   (not planned), `docs/scan-interruption-design.md`.
 5. No blob rebuild is warranted for #41 as originally scoped. If a future upstream
    bump *already* touches the transport for other reasons, the cheapest honest
    addition is a passive `receivedBytes` age accessor used **only** to help *shorten*

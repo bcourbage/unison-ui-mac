@@ -55,8 +55,13 @@ incompatible hosts rather than producing a bundle that won't launch.
 ### To build from source
 
 - **macOS 15+** (same as runtime).
-- **Xcode 26+**, installed from the App Store, opened at least once so
-  it accepts its license. Older Xcode versions may work; not tested.
+- **Xcode**, installed from the App Store, opened at least once so it
+  accepts its license. Two contexts:
+  - **Building/testing the app**: CI builds and tests on **Xcode 16.4**,
+    so that is the tested lower bound for ordinary development.
+  - **Cutting a release**: requires **Xcode 26.6+**, because the app icon
+    uses the native `.icon` (Icon Composer) format that only `actool` in
+    Xcode 26+ can compile (see the release workflow comments).
 - **Xcode Command Line Tools**:
   ```sh
   xcode-select --install

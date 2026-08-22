@@ -830,8 +830,7 @@ Standard: Minimize, Zoom, Bring All to Front.
 ### Help menu
 
 - `Unison-UI-Mac Help` (⌘?), opens this app's MANUAL (this document) on
-  GitHub in the browser. (The repo is currently private, so non-collaborators
-  get a sign-in prompt until it is made public.)
+  GitHub in the browser.
 - `Unison File Synchronizer Manual`, opens the full upstream Unison
   reference manual, rendered to HTML and bundled with the app (works
   offline). The HTML is the hevea-rendered output of upstream's

@@ -87,10 +87,10 @@ jobs:
 
       - name: Install xcodegen
         # xcodegen regenerates the .xcodeproj from project.yml. The
-        # `unison-ui-mac.xcodeproj` directory IS tracked, but Makefile
-        # regenerates it on every build — easier to just install the
-        # tool than fight Make. (aws/tap is untapped in an earlier step so
-        # this brew call is quiet.)
+        # `unison-ui-mac.xcodeproj` directory is gitignored (`*.xcodeproj/`)
+        # and recreated by XcodeGen on every build, so we install the tool
+        # rather than track a generated project. (aws/tap is untapped in an
+        # earlier step so this brew call is quiet.)
         run: brew install xcodegen
 
       - name: Check signing resolver matrix

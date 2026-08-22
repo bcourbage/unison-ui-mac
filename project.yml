@@ -124,10 +124,13 @@ targets:
         #                            v0.5.0). Local testing uses a local appcast
         #                            without touching it (see docs/sparkle-updates.md).
         #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
-        #                            REAL key (its private half lives only in the
-        #                            maintainer's login keychain, never in the
-        #                            repo). NOT a placeholder — it changes only on
-        #                            a key rotation. Sparkle's validator accepts an
+        #                            REAL key. Its private half's canonical copy
+        #                            is in the maintainer's login keychain, and a
+        #                            copy also exists as the gated `release`
+        #                            environment secret SPARKLE_ED_PRIVATE_KEY;
+        #                            neither belongs in repo contents (rotate BOTH
+        #                            on compromise). NOT a placeholder — it changes
+        #                            only on a key rotation. Sparkle's validator accepts an
         #                            update when EITHER a valid EdDSA archive
         #                            signature OR a matching Apple Developer ID
         #                            signature is present (an OR, not both). The
