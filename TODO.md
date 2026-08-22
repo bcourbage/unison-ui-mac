@@ -9,14 +9,19 @@
       seed-authentication and build-monotonicity paths in `release.yml` against a
       published feed (0.5.0 took the first-release 404 path).
 
-- [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
-      `ServerAliveCountMax`), as *mitigation* for wedged connections:
-      have ssh actively probe and disconnect a dead peer (~45s) instead
-      of a silent indefinite wedge. NOT a rescue of an already-blocked
-      transport; its effect on the blocked bridge is unproven (the
-      kill-ssh experiment suggests ssh's own exit may not wake Unison's
-      `select()`), so any adoption must be *validated against a
-      reproduced wedge*, not assumed. Add via `sshargs`/ssh_config.
+- [ ] **Structurally remove the dormant scan-interruption machinery (#94) —
+      highest-priority file-integrity hardening.** Released v0.5.0 shipped a
+      reachable interrupt-and-reuse path whose safety was never proven; current
+      `main` disables it via `stopInPlaceEnabled == false`, a flag still guarding
+      reachable code. Make reuse impossible by construction: remove the dormant
+      `.interruptingScan`/`.stopped` machinery, transport-SIGKILL effects, reap
+      polling, kill-authorization SSH qualification, post-interruption lock-retry,
+      and `ScanTerminalDispatch`, while preserving Return-to-Profiles/abandon,
+      queued-profile serialization, archive-maintenance gating, the remote-wait
+      watchdog → restart-required, genuine-terminal → connection close, sync-time
+      `Abort.all`, and the general teardown reaper (patch 0004). Own reviewed PR;
+      gated on #53 closing not-planned. Full scope, remove/preserve/regression
+      lists: #94.
 
 - [ ] **Generalize vendored patch 0002 (`closeConnection`) for upstream-readiness.**
       Strip downstream-specific elements so the patch can stand as a fork-neutral
@@ -56,6 +61,16 @@ landed across the bring-up and follow-on sessions.*
       `docs/scan-interruption-design.md` (decision record). Sync-time Stop
       (`Abort.all`) is separate and unaffected. A separate follow-up may remove
       the now-dormant machinery, tracked in #94.
+
+- [x] **SSH keepalive (`ServerAliveInterval` / `ServerAliveCountMax`, issue #55)
+      — WILL NOT IMPLEMENT.** The Phase-0 spike
+      (`docs/ssh-keepalive-spike-results.md`) was **transport-positive,
+      app-inconclusive**: direct `ssh -vvv` evidence confirmed the transport
+      layer behaves as expected, but the spike did **not** establish bounded
+      failure recovery in the application, so a user-facing feature cannot
+      promise behavior the app never demonstrated. Recovery from a wedged
+      connection remains quit + reopen. Retain the distinction if revisited:
+      transport behavior positive, application recovery inconclusive.
 
 - [x] **App signing / notarization for distribution — SUPERSEDED by 0.5.0
       (2026-08-22).** Originally recorded as "not pursuing" (ad-hoc signature

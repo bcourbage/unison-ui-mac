@@ -237,14 +237,12 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. While the scan is running, freeze the server on the remote: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
 3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**. No credential sheet.
-4. During the frozen scan the toolbar action reflects the phase: **"Return to Profiles"** (neutral, back glyph) when the scan is not interruptible in place, or **"Stop Scan"** (red) when it is (a qualified direct-SSH scan past the remote-wait point).
-5. Click that action:
-   - **Return to Profiles** → returns to the picker; the scan winds down in the background; the retained scan-stall detector still drives the abandoned op to **restart-required**.
-   - **Stop Scan** → interrupts in place (kills the transport child); the reconcile window shows **"Scan stopped"** and **Rescan** reuses the clean session.
+4. During the frozen scan the toolbar action is **"Return to Profiles"** (neutral, back glyph). On current `main` (v0.5.1) in-place scan interruption is disabled at the policy gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`), so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe — see issue #53 / #94 and the CHANGELOG. Do not expect it here.)
+5. Click **Return to Profiles** → returns to the picker; the scan winds down in the background; it is **not** cancelled; the retained scan-stall detector still drives the abandoned op to **restart-required**.
 6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
 7. After returning to the picker via **Return to Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
 
-**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Return to Profiles** returns to the picker while the retained detector carries the op to restart-required (or **Stop Scan** stops in place to "Scan stopped" with Rescan reuse); a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
+**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Return to Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; **Stop Scan** is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
 ### TC12 — Interactive auth failure (live)
 
@@ -267,13 +265,15 @@ A real password profile with a wrong/failing password.
   hint (TC10, 45 s) and the scan-phase detector (TC11, 120 s) both detect it and
   point the user to quit + reopen, which is clean now. SSH keepalive prevention
   is deferred.
-- **In-app exits do not unwind a genuinely wedged op.** For a live scan on a
-  qualified direct-SSH transport, **Stop Scan** interrupts in place (0.4.0). But
-  once an op is blocked on a dead round-trip, no UI control can unwind it
-  in-process — **Return to Profiles**, sheet **Cancel**, and **Stop** are all
-  in-app exits (abandonment / cancelling credential entry), and recovery is
-  quit + reopen. In-place cancellation for the other transports is a tracked
-  follow-up.
+- **In-app exits do not unwind a genuinely wedged op.** No UI control unwinds a
+  scan in-process. During scanning the only leave is **Return to Profiles**
+  (abandonment), and **sheet Cancel** / **Stop** cancel credential entry or a
+  running sync; recovery from a wedged scan is quit + reopen. The v0.4.0 in-place
+  **Stop Scan** (kill the transport, then reuse the engine) was withdrawn: on
+  current `main` (v0.5.1) it is disabled at the policy gate because
+  forced-interruption engine reuse was never proven safe. Genuine scan
+  cancellation is declined (issue #53, not planned); the dormant machinery's
+  structural removal is tracked in #94.
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
   later reopen re-prompts. Keychain/ControlMaster caching is a separate
   future item.

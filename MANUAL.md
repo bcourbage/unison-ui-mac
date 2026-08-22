@@ -487,7 +487,12 @@ when idle.
 
 ### Toolbar
 
-- **Profiles**: return to the picker (closes this reconcile window).
+- **Profiles**: return to the picker (closes this reconcile window). During a
+  scan this action reads **Return to Profiles**: it abandons the view and
+  returns to the picker but does **not** cancel the scan, which keeps running in
+  the background until it finishes on its own (the app then closes the
+  connection). There is no in-place "stop the scan" control; if a remote scan
+  hangs, quit and relaunch.
 - **Rescan**: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
   view.
@@ -991,9 +996,6 @@ Avoid these "shortcuts"; each trades real protection for convenience:
   the agent is just as convenient and far safer.
 - `UserKnownHostsFile=/dev/null`: discards host-key memory entirely, so a
   machine-in-the-middle cannot be detected.
-- `ControlMaster` purely to avoid re-authenticating: its shared transport
-  ownership disables the app's safe in-place **Stop Scan** (that feature tears
-  down a direct-SSH transport it must solely own), so it is the wrong trade here.
 
 ### A profile won't open from the GUI but works from the CLI
 
