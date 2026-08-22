@@ -83,61 +83,18 @@ final class StopItemAppearanceTests: XCTestCase {
     }
 
     func test_noEmDashInAnyCopy() {
-        for a in [StopItemAppearance.stopSync, .returnToProfiles, .stopScan] {
+        for a in [StopItemAppearance.stopSync, .returnToProfiles] {
             for s in [a.label, a.toolTip, a.progressSummary] {
                 XCTAssertFalse(s.contains("—"), "em-dash in user-facing copy: \(s)")
             }
         }
     }
 
-    // MARK: - Phase 1a: genuine Stop Scan (issue #24 Wiring)
+    // MARK: - Scan phase is always the honest Return to Profiles (issue #53/#94)
 
-    func test_scanning_qualified_isStopScan() {
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: false,
-                                        scanInterruptAvailable: true),
-            .stopScan)
-    }
-
-    func test_scanning_notQualified_isReturnToProfiles() {
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: false,
-                                        scanInterruptAvailable: false),
-            .returnToProfiles)
-    }
-
-    func test_syncing_ignoresScanInterruptAvailable() {
-        // A running sync is always a sync-abort, even if the (stale) scan-
-        // interrupt flag is still set during the transition.
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: true,
-                                        scanInterruptAvailable: true),
-            .stopSync)
-    }
-
-    func test_stopScan_copy_isHonestAboutInterrupting() {
-        let a = StopItemAppearance.stopScan
-        XCTAssertEqual(a.label, "Stop Scan")
-        XCTAssertEqual(a.progressSummary, "Stopping scan…")
-        // It genuinely interrupts, so unlike returnToProfiles it may say "stop".
-        XCTAssertTrue(a.label.lowercased().contains("stop"))
-    }
-
-    func test_stopScan_icon_isRedStop_destructiveTint() {
-        let a = StopItemAppearance.stopScan
-        XCTAssertEqual(a.systemSymbol, "stop.fill")
-        XCTAssertEqual(a.tint, .destructive)   // stops in-flight engine work
-    }
-
-    func test_stopScan_visuallyDistinctFromReturnToProfiles() {
-        XCTAssertNotEqual(StopItemAppearance.stopScan.tint,
-                          StopItemAppearance.returnToProfiles.tint)
-        XCTAssertNotEqual(StopItemAppearance.stopScan.label,
-                          StopItemAppearance.returnToProfiles.label)
-    }
-
-    func test_forPhase_defaultAvailability_isFalse_returnToProfiles() {
-        // Back-compat: omitting the new parameter keeps the honest fallback.
+    func test_scanning_isReturnToProfiles() {
+        // In-place scan interruption was withdrawn: the scan-phase Stop item is
+        // always the honest Return to Profiles (never a "Stop Scan").
         XCTAssertEqual(
             StopItemAppearance.forPhase(isScanning: true, isSyncing: false),
             .returnToProfiles)

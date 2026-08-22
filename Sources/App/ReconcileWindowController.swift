@@ -19,9 +19,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// lifecycle, so it does the actual abort + teardown.
     typealias CancelScanRequest = @MainActor () -> Void
     /// Genuine in-process scan interruption (issue #24). Distinct from
-    /// `CancelScanRequest`: that returns to the picker; this stops the scan in
-    /// place, keeping the same profile window.
-    typealias StopScanRequest = @MainActor () -> Void
     /// Owner veto for a window-close (issue #24, Finding 1): returns true to
     /// ALLOW the close, false to intercept it (the owner started a coordinator-
     /// driven interruption and will close the window itself on quiescence).
@@ -94,16 +91,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
     private let onCancelScan: CancelScanRequest
-    private let onStopScan: StopScanRequest
     private let onWindowShouldClose: WindowShouldCloseRequest
     private let onProfilesRequested: ProfilesRequest
 
-    /// Whether this session's transport qualified for genuine in-process scan
-    /// interruption (issue #24). Set asynchronously by the AppDelegate once the
-    /// `ssh -G` probe resolves `.supportedDirect`; drives whether the scan-phase
-    /// Stop item reads "Stop Scan" (true) or the honest "Return to Profiles"
-    /// (false, the default until/unless qualified).
-    private(set) var scanInterruptAvailable = false
     /// User pressed Go; see `SyncStartRequest`.
     private let onSyncStart: SyncStartRequest
     /// User chose how to leave a running sync; see `SyncExitRequest`.
@@ -226,7 +216,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest,
          onCancelScan: @escaping CancelScanRequest,
-         onStopScan: @escaping StopScanRequest = {},
          onWindowShouldClose: @escaping WindowShouldCloseRequest = { true },
          onProfilesRequested: @escaping ProfilesRequest = { false },
          onSyncStart: @escaping SyncStartRequest,
@@ -241,7 +230,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
         self.onCancelScan = onCancelScan
-        self.onStopScan = onStopScan
         self.onWindowShouldClose = onWindowShouldClose
         self.onProfilesRequested = onProfilesRequested
         self.onSyncStart = onSyncStart
@@ -649,18 +637,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // picker. Lets the user bail out of a slow/wedged connect without
         // waiting for the watchdog timeout.
         if isScanning && !isSyncing {
-            // Issue #24: when this session's transport qualified for in-process
-            // interruption, the item is a genuine "Stop Scan" — hand off to the
-            // interruption path (stop in place, keep the window). Otherwise it is
-            // the honest "Return to Profiles" (abandons the connect/scan and
-            // returns to the picker; no sync to abort). See StopItemAppearance.
-            if stopItemAppearance == .stopScan {
-                Log.reconcile.notice("user requested Stop Scan (in-process interruption)")
-                TraceLog.shared.write("ReconcileWindow: Stop Scan (in-process interruption)")
-                setSummary(StopItemAppearance.stopScan.progressSummary)
-                onStopScan()
-                return
-            }
+            // The connect/scan-phase Stop item is the honest "Return to
+            // Profiles": it abandons the connect/scan and returns to the picker
+            // (no sync to abort; the scan winds down in the background). In-place
+            // scan interruption was withdrawn (issue #53 / #94). See
+            // StopItemAppearance.
             Log.reconcile.notice("user requested Return to Profiles during connect/scan")
             TraceLog.shared.write("ReconcileWindow: Return to Profiles during connect/scan")
             setSummary(StopItemAppearance.returnToProfiles.progressSummary)
@@ -1816,37 +1797,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// sync) and "Stop" during an actual sync. Pure decision in
     /// `StopItemAppearance`.
     var stopItemAppearance: StopItemAppearance {
-        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing,
-                                    scanInterruptAvailable: scanInterruptAvailable)
-    }
-
-    /// Enable/disable the genuine Stop-Scan affordance for this session (issue
-    /// #24). Called by the AppDelegate when the `ssh -G` qualification resolves.
-    /// Re-validates the toolbar so the Stop item re-skins (Stop Scan ⇄ Return to
-    /// Profiles) immediately.
-    func setScanInterruptAvailable(_ available: Bool) {
-        guard scanInterruptAvailable != available else { return }
-        scanInterruptAvailable = available
-        refreshToolbarEnabled()
-    }
-
-    /// Present the terminal "scan stopped in place" state (issue #24), reached
-    /// when an in-process interruption lands on `.stopped`. The window is
-    /// retained on the same profile; the spinner stops and Rescan stays live so
-    /// the user can try again. Distinct from `showRestartRequired` — the engine
-    /// is quiescent and reusable, not contaminated.
-    func presentScanStopped() {
-        isSyncing = false
-        isScanning = false
-        scanInterruptAvailable = false        // no scan in flight to interrupt now
-        cancelSyncStallDetector()
-        progressBar.stopAnimation(nil)
-        progressBar.isIndeterminate = false
-        progressBar.isHidden = true
-        setSummary("Scan stopped. Choose Rescan to try again.")
-        applyCompletionEmphasis(failures: 0, stopped: true)
-        refreshToolbarEnabled()
-        TraceLog.shared.write("ReconcileWindow: scan stopped in place")
+        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing)
     }
 
     /// True when the current *selection* (ignoring any clicked row) is

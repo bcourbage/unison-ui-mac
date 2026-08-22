@@ -32,11 +32,20 @@ transport, accept any matching terminal, and reuse the embedded engine. Do not
 read the guarantees below as true of v0.5.0. On v0.5.0, if a remote scan hangs,
 quit and relaunch rather than Stop Scan followed by Rescan. See issue #94.
 
-On `main` after PR #92, in-place interruption is disabled at the shared policy
-gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`,
-`ScanInterruptPolicy.swift:45`, folded into `interruptReady` at `:22`). Stop
-Scan, Show/Return to Profiles, and window close therefore cannot enter
-`.interruptingScan`; every leave takes the Return-to-Profiles fallback:
+**Update (#94, 2026-08-22):** the dormant machinery has since been
+**structurally removed** on `main` — the safety property is now "no in-process
+state or effect can interrupt a scan and reuse the engine," not a policy flag
+guarding reachable code. There is no longer an `.interruptingScan`/`.stopped`
+phase, transport-SIGKILL primitive, or `ScanInterruptPolicy`. The
+Return-to-Profiles behavior described below is unchanged; the references to the
+now-deleted flag/phase are retained as the historical account of how the
+interim mitigation worked.
+
+On `main` after PR #92 (and until the #94 removal), in-place interruption was
+disabled at the shared policy gate (`ScanInterruptPolicy.stopInPlaceEnabled ==
+false`, folded into `interruptReady`). Stop Scan, Show/Return to Profiles, and
+window close therefore could not enter `.interruptingScan`; every leave takes
+the Return-to-Profiles fallback:
 
 - It abandons **presentation only** — detaches the reconcile window and shows
   the picker (`AppDelegate.leaveSession` → `engine.abandon` at

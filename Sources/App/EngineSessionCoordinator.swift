@@ -92,114 +92,6 @@ final class EngineSessionCoordinator {
         case syncing(SessionID, OperationID)   // transport
         case closing(SessionID, OperationID, CloseOutcome)
         case restartRequired(String)
-        /// Phase 1a (issue #24): a user-requested in-process interruption of the
-        /// in-flight scan is being torn down. The original scan `(SessionID,
-        /// OperationID)` is retained for the whole cycle; `InterruptStage` tracks
-        /// signal→terminal→reap→close; `Destination` is where quiescence lands.
-        case interruptingScan(SessionID, OperationID, InterruptStage, Destination)
-        /// Stop-in-place terminal: the interrupted scan's window is retained for
-        /// the same session, connection torn down, no op in flight. Rescan reuses
-        /// this session + window; distinct from `.idle` (a window is present).
-        case stopped(SessionID)
-    }
-
-    // MARK: - Phase 1a scan-interruption types (issue #24)
-
-    /// Process start identity captured at signal time, so a later reap check can
-    /// distinguish the original child from a reused PID. Mirrors the C signal
-    /// result's pid + `p_starttime`.
-    struct TransportIdentity: Equatable {
-        let pid: Int32
-        let startSec: Int64
-        let startUsec: Int32
-    }
-
-    /// Stages of an in-flight interruption. `signalling` carries whether the
-    /// worker terminal has already been observed (it can beat the synchronous
-    /// signal result), so nothing is lost across that race.
-    enum InterruptStage: Equatable {
-        case signalling(terminalObserved: Bool)
-        case awaitingTerminal(TransportIdentity)
-        case awaitingReap(TransportIdentity)
-        case closing(OperationID)               // the minted close op
-    }
-
-    /// Where the interruption lands once quiescent. Monotonic (see
-    /// `updateInterruptDestination`): a later Stop never downgrades a
-    /// picker/open request.
-    enum Destination: Equatable {
-        case stopInPlace
-        case returnToPicker
-        case openQueued(OpenRequestID, profile: String)
-        var rank: Int {
-            switch self {
-            case .stopInPlace:   return 0
-            case .returnToPicker: return 1
-            case .openQueued:    return 2
-            }
-        }
-    }
-
-    /// Exactly what the C `signal_scan_transport` primitive can report. Whether a
-    /// terminal was already seen is coordinator state, NOT part of this result.
-    /// `ALREADY_DEAD` is split by the driver on whether a valid start identity
-    /// was captured (see the C→SignalResult mapping).
-    enum SignalResult: Equatable {
-        case signalled(TransportIdentity)
-        case alreadyDeadWithIdentity(TransportIdentity)
-        case alreadyDeadNoIdentity
-        case noChild
-        case multipleChildren
-        case signalFailed
-        case unprovableIdentity
-    }
-
-    /// Polled reap classification of the captured identity.
-    enum ReapState: Equatable { case absent, reused, zombie, live, unknown }
-
-    /// A worker-terminal SOURCE EVENT observed while an interruption is in
-    /// flight — the raw bridge callback that fired, NOT a safety verdict.
-    /// Callers pass the event they actually saw; the coordinator maps it to an
-    /// `InterruptTerminalCause` through the single `cause(for:)` authority. So a
-    /// caller can never select "this terminal is safe", and the security-
-    /// critical safe/unsafe decision lives — and is unit-tested — in exactly one
-    /// place (mirrors `PasswordSheet.InputStyle(for:)`).
-    enum InterruptTerminalEvent: Equatable {
-        case init2Completed   // the scan's init2-complete callback fired
-        case scanFailed       // the async scan-state-emission failure callback fired
-        case genericFatal     // a fatal arrived during the interruption teardown
-    }
-
-    /// Why the interrupted scan's worker terminal arrived — the ONLY thing that
-    /// licenses winding the engine down for reuse afterward.
-    ///
-    /// A clean scan completion (`init2-complete`) leaves the engine quiescent
-    /// and the archive committed, so it is safe to tear the connection down.
-    /// A scan FAILURE, or a generic fatal that cannot be STRUCTURALLY attributed
-    /// to our own transport SIGKILL, leaves the runtime in an unprovable state;
-    /// treating it as the expected interruption terminal would launder a
-    /// normally restart-required terminal into a reusable engine. There is no
-    /// authenticated transport-interruption cause on the wire — the SIGKILL's
-    /// own transport EOF is indistinguishable from an unrelated fatal — so we do
-    /// NOT infer one from message text, timing, or "a SIGKILL was issued": every
-    /// non-clean terminal is `.unsafe` and forces restart-required.
-    enum InterruptTerminalCause: Equatable {
-        case cleanCompletion
-        case unsafe(String)
-    }
-
-    /// The SINGLE event→cause authority — the security-critical mapping that
-    /// protects any future reconsideration of stop-in-place. `init2-complete` is
-    /// the only clean terminal; a scan failure or a generic fatal has no
-    /// structurally authenticated transport-interruption cause, so both are
-    /// `.unsafe` (→ restart-required). Pure and total, so it is exhaustively
-    /// unit-tested; callers pass a typed event and cannot pick the verdict.
-    static func cause(for event: InterruptTerminalEvent) -> InterruptTerminalCause {
-        switch event {
-        case .init2Completed: return .cleanCompletion
-        case .scanFailed:     return .unsafe("scan-failed during interruption")
-        case .genericFatal:   return .unsafe("fatal during interruption")
-        }
     }
 
     /// Side effects for the caller to perform after state is fully mutated.
@@ -223,26 +115,6 @@ final class EngineSessionCoordinator {
         /// go through `restartRequired`.
         case presentSyncUnavailable(SessionID, reason: String)
         case restartRequired(reason: String)
-        // --- Phase 1a scan-interruption effects (issue #24) ---
-        /// SIGKILL the in-flight scan's transport child; the driver reports the
-        /// outcome back via `transportSignalCompleted`.
-        case signalTransportChild(SessionID, OperationID)
-        /// Poll `classify_reap` for the captured identity over a bounded grace,
-        /// then feed `interruptReapClassified`.
-        case pollReap(SessionID, OperationID, TransportIdentity)
-        /// Stop-in-place landed: present the retained window in its Stopped state.
-        case presentStopped(SessionID)
-        /// Close (dispose of) the interrupted session's window before a new
-        /// session or the picker is shown — prevents the orphan-window leak.
-        case closeWindow(SessionID)
-        /// Show the profile picker (returnToPicker destination).
-        case showPicker
-        /// Cancel session-bound auxiliary work (e.g. the SSH version probe) so it
-        /// does not run through teardown or quarantine.
-        case cancelSessionAuxWork(SessionID)
-        /// Disarm the scan-stall detector for the exact op the coordinator now
-        /// owns (exactly one terminal authority).
-        case disarmScanStall(SessionID, OperationID)
     }
 
     /// Outcome of the post-sync completion snapshot, delivered to
@@ -295,8 +167,7 @@ final class EngineSessionCoordinator {
     var currentSession: SessionID? {
         switch phase {
         case .opening(let s, _), .scanning(let s, _), .ready(let s),
-             .syncing(let s, _), .closing(let s, _, _),
-             .interruptingScan(let s, _, _, _), .stopped(let s):
+             .syncing(let s, _), .closing(let s, _, _):
             return s
         case .idle, .restartRequired:
             return nil
@@ -324,13 +195,8 @@ final class EngineSessionCoordinator {
     /// mutation (disabled controls alone can't close the confirm-sheet TOCTOU
     /// window — the engine can become busy while a sheet is up).
     var allowsDestructiveArchiveMutation: Bool {
-        switch phase {
-        // `.stopped` is quiescent (no connection, no op) — the same safety as
-        // `.idle`, just with a window still present. `.interruptingScan` is a
-        // live teardown and must forbid it.
-        case .idle, .stopped: return true
-        default:              return false
-        }
+        if case .idle = phase { return true }
+        return false
     }
 
     /// True only in the terminal `restartRequired` phase. Used by the driver
@@ -365,17 +231,6 @@ final class EngineSessionCoordinator {
             queued = (id, profile)
             phase = .closing(s, op, .toIdle)
             return [.showWaiting(id, profile: profile)]
-        case .stopped(let s):
-            // Close the stopped window and open the chosen profile fresh.
-            let open = startFreshOpen(profile: profile)
-            return [.closeWindow(s)] + open
-        case .interruptingScan(let s, _, _, _):
-            // Picked a profile while an interruption is tearing down: record it
-            // as the (monotonic) openQueued destination, preserving its request
-            // identity; the queued open starts when the teardown close idles.
-            let id = mintRequest()
-            _ = updateInterruptDestination(s, .openQueued(id, profile: profile))
-            return [.showWaiting(id, profile: profile)]
         default:
             let id = mintRequest()
             queued = (id, profile)          // last pick wins
@@ -386,12 +241,6 @@ final class EngineSessionCoordinator {
     /// The user closed a queued waiting window before it started.
     func cancelQueuedOpen(_ id: OpenRequestID) -> [Effect] {
         if queued?.id == id { queued = nil }
-        // During interruption, cancelling the matching queued-open destination
-        // downgrades to returnToPicker; a cancelled request never starts after
-        // teardown. A stale/non-matching cancellation is ignored.
-        if case .interruptingScan(let s, let op, let stage, .openQueued(id, _)) = phase {
-            phase = .interruptingScan(s, op, stage, .returnToPicker)
-        }
         return []
     }
 
@@ -403,17 +252,6 @@ final class EngineSessionCoordinator {
         if case .closing(let s, _, .backToReady) = phase {
             rescanAfterClose = s
             return []
-        }
-        // From a Stop-in-place `.stopped` window: REUSE the same session and
-        // window (mint only a connect op; no `showSession`, no new SessionID) —
-        // the connection was torn down, so reconnect (init1) then scan.
-        if case .stopped(let s) = phase {
-            guard let profile = currentProfile else {
-                return enterRestartRequired("stopped session has no profile")
-            }
-            let op = mintOp()
-            phase = .opening(s, op)
-            return [.beginConnect(s, op, profile: profile)]
         }
         guard case .ready(let s) = phase else { return [] }
         switch connection {
@@ -474,19 +312,6 @@ final class EngineSessionCoordinator {
             return []
         case .closing(_, _, .toIdle), .idle, .restartRequired:
             return []
-        case .interruptingScan(let s, _, _, _):
-            // Generic leave / window dismissal during an in-flight interruption:
-            // upgrade the destination (monotonic) so we never land in a
-            // windowless `.stopped`. Does not restart the teardown. We do NOT set
-            // `abandoned`: the teardown's terminal routing is driven by the
-            // destination, not the visibility flag, and the window is disposed by
-            // the eventual `.closeWindow` effect — so `abandoned` would have no
-            // consumer during interruption and is left untouched deliberately.
-            return updateInterruptDestination(s, .returnToPicker)
-        case .stopped(let s):
-            // Quiescent stopped window: close it and idle (→ picker).
-            let e = finishToIdle()
-            return [.closeWindow(s), .showPicker] + e
         }
     }
 
@@ -504,181 +329,6 @@ final class EngineSessionCoordinator {
         case .closeAndLetRun:
             abandoned = true
             return []
-        }
-    }
-
-    // MARK: - Phase 1a scan interruption (issue #24)
-
-    /// User requested a real interruption of the in-flight scan. The driver
-    /// supplies only `session`; the coordinator reads its OWN `.scanning`
-    /// operation (user intent never touches a pending slot). Valid only from
-    /// `.scanning(session, op)`. Emits disarm + aux-cancel + signal.
-    func requestScanInterruption(_ session: SessionID, destination: Destination) -> [Effect] {
-        guard case .scanning(session, let op) = phase else { return [] }
-        // Condition 3: only a live REMOTE connection has a transport child to
-        // signal. A `.localOnly` (or `.disconnected`) scan has no child, so
-        // proceeding would drive `signal` → `NO_CHILD` → a spurious
-        // restart-required. The authority itself refuses (defence in depth with
-        // the Wiring layer's remote-ness gate); a local Stop uses the honest
-        // abandon/return-to-picker path instead. No-op here.
-        guard case .open = connection else { return [] }
-        // Blocker 1: a profile picked *during the scan* took `requestOpen`'s
-        // default branch and set `queued`. If left in that standalone slot it is
-        // stranded on stop-in-place (its waiting window never resolves) and can
-        // later detonate when an unrelated `finishToIdle` consumes it. Fold it
-        // into the interruption destination up front: a pending open outranks
-        // stop/picker (rank 2), so `openQueued` is the correct monotonic landing
-        // and `queued` is cleared. Nothing re-sets `queued` during interruption,
-        // so every downstream exit (routeInterruptDestination, the `.stopped`
-        // exits) is now provably queued-free.
-        var initial = destination
-        if let q = queued {
-            queued = nil
-            let folded = Destination.openQueued(q.id, profile: q.profile)
-            if folded.rank >= destination.rank { initial = folded }
-        }
-        phase = .interruptingScan(session, op, .signalling(terminalObserved: false), initial)
-        return [.disarmScanStall(session, op),
-                .cancelSessionAuxWork(session),
-                .signalTransportChild(session, op)]
-    }
-
-    /// A later user intent during interruption updates the destination
-    /// MONOTONICALLY (never restarts the cycle, never ignored): a later Stop
-    /// cannot downgrade a picker/open; window-dismissal during a pending
-    /// stopInPlace upgrades to returnToPicker; a newer openQueued replaces the
-    /// latest (preserving its own `OpenRequestID`).
-    func updateInterruptDestination(_ session: SessionID, _ dest: Destination) -> [Effect] {
-        guard case .interruptingScan(session, let op, let stage, let cur) = phase else { return [] }
-        let upgrade = dest.rank > cur.rank
-            || (dest.rank == cur.rank && isOpenQueued(dest))   // newer openQueued wins
-        if upgrade { phase = .interruptingScan(session, op, stage, dest) }
-        return []
-    }
-
-    private func isOpenQueued(_ d: Destination) -> Bool {
-        if case .openQueued = d { return true }
-        return false
-    }
-
-    /// The matching worker terminal for the interrupted op, reported as the
-    /// typed source `event` that fired. Recorded exactly once; handles the
-    /// terminal arriving before the signal result (`signalling` remembers it).
-    ///
-    /// Fail-closed: the coordinator maps `event` to a cause via `cause(for:)`
-    /// (callers cannot pick the verdict). Only `.cleanCompletion` may advance
-    /// the teardown toward a reusable engine. A `.unsafe` terminal (scan-failed,
-    /// or a generic fatal with no authenticated transport cause) enters
-    /// restart-required from ANY stage — an interruption must never upgrade a
-    /// normally restart-required terminal into a reusable `.stopped`.
-    func interruptTerminalObserved(_ session: SessionID, _ op: OperationID,
-                                   event: InterruptTerminalEvent) -> [Effect] {
-        guard case .interruptingScan(session, op, let stage, let dest) = phase else { return [] }
-        if case .unsafe(let why) = Self.cause(for: event) {
-            return enterRestartRequired("scan-interrupt terminal not provably safe: \(why)")
-        }
-        switch stage {
-        case .signalling(false):
-            phase = .interruptingScan(session, op, .signalling(terminalObserved: true), dest)
-            return []
-        case .awaitingTerminal(let id):
-            phase = .interruptingScan(session, op, .awaitingReap(id), dest)
-            return [.pollReap(session, op, id)]
-        case .signalling(true), .awaitingReap, .closing:
-            return []   // already recorded / past terminal
-        }
-    }
-
-    /// The signal primitive's structured result. Conservative: only a captured
-    /// identity permits reap classification; `NO_CHILD` (no identity) is
-    /// restart-required even if a terminal raced, since registry absence is not
-    /// proof of reap.
-    func transportSignalCompleted(_ session: SessionID, _ op: OperationID,
-                                  _ result: SignalResult) -> [Effect] {
-        guard case .interruptingScan(session, op, .signalling(let terminalSeen), let dest) = phase
-        else { return [] }
-        switch result {
-        case .signalled(let id), .alreadyDeadWithIdentity(let id):
-            if terminalSeen {
-                phase = .interruptingScan(session, op, .awaitingReap(id), dest)
-                return [.pollReap(session, op, id)]
-            }
-            phase = .interruptingScan(session, op, .awaitingTerminal(id), dest)
-            return []
-        case .alreadyDeadNoIdentity, .noChild, .multipleChildren,
-             .signalFailed, .unprovableIdentity:
-            return enterRestartRequired("scan interruption not provably safe (\(result))")
-        }
-    }
-
-    /// Polled reap classification. ABSENT/REUSED prove the child is gone →
-    /// close; anything else is ambiguous → restart-required.
-    func interruptReapClassified(_ session: SessionID, _ op: OperationID,
-                                 _ reap: ReapState) -> [Effect] {
-        guard case .interruptingScan(session, op, .awaitingReap, let dest) = phase else { return [] }
-        switch reap {
-        case .absent, .reused:
-            let closeOp = mintOp()
-            phase = .interruptingScan(session, op, .closing(closeOp), dest)
-            return [.closeConnection(session, closeOp)]
-        case .zombie, .live, .unknown:
-            return enterRestartRequired("scan interruption: ambiguous reap (\(reap))")
-        }
-    }
-
-    /// A phase-and-stage interruption deadline elapsed. Bound to `(session, op,
-    /// stage)` so a stale timer from a prior cycle — or from a stage we have
-    /// already progressed past — no-ops. Any non-terminal interrupt stage
-    /// exceeding its bound → restart-required.
-    func interruptDeadlineElapsed(_ session: SessionID, _ op: OperationID,
-                                  _ stage: InterruptStage) -> [Effect] {
-        guard case .interruptingScan(session, op, let cur, _) = phase,
-              Self.deadlineStageMatches(armed: stage, current: cur)
-        else { return [] }
-        return enterRestartRequired("scan interruption timed out")
-    }
-
-    /// Whether a deadline armed for `armed` still bounds the `current` stage.
-    ///
-    /// Blocker 2: `signalling` is matched as a CLASS — both `terminalObserved`
-    /// values are the same deadline. The driver arms ONE signalling deadline at
-    /// `.signalling(false)`; an early worker terminal flips the flag to
-    /// `.signalling(true)` *in place* (see `interruptTerminalObserved`), without
-    /// re-arming. If the flag value were matched exactly, that flip would strand
-    /// the pending timer as "stale" and — should the signal result then never
-    /// arrive (a driver/callback failure, exactly what the deadline exists to
-    /// bound) — the coordinator would hang in `.interruptingScan` forever,
-    /// violating the design's promise that every non-terminal stage is bounded.
-    /// All other stages carry stable payloads (identity / close op) and are
-    /// matched by exact value, so progressing OUT of `signalling` (to
-    /// `awaitingTerminal` etc.) correctly no-ops the old signalling timer.
-    private static func deadlineStageMatches(armed: InterruptStage,
-                                             current: InterruptStage) -> Bool {
-        switch (armed, current) {
-        case (.signalling, .signalling): return true
-        default:                         return armed == current
-        }
-    }
-
-    /// Route a status-0 interruption close to its destination.
-    private func routeInterruptDestination(_ session: SessionID, _ dest: Destination) -> [Effect] {
-        connection = .disconnected
-        switch dest {
-        case .stopInPlace:
-            // Retain the window + profile for this session; Rescan reopens.
-            abandoned = false
-            phase = .stopped(session)
-            return [.presentStopped(session)]
-        case .returnToPicker:
-            // `queued` is provably nil during interruption (folded into the
-            // destination at request time; never re-set thereafter), so
-            // `finishToIdle()` returns [] and cannot start a surprise open here.
-            let idleEffects = finishToIdle()
-            return [.closeWindow(session), .showPicker] + idleEffects
-        case .openQueued(let id, let profile):
-            queued = (id, profile)
-            let started = finishToIdle()        // consumes queued → startFreshOpen
-            return [.closeWindow(session)] + started
         }
     }
 
@@ -734,14 +384,6 @@ final class EngineSessionCoordinator {
     /// so a delayed close from an older operation can't touch the current
     /// connection.
     func closeCompleted(_ session: SessionID, _ op: OperationID, status: Int32) -> [Effect] {
-        // Phase 1a: the interruption close (its minted op lives in the
-        // `.closing` interrupt stage). Status 0 → route to destination; a
-        // non-zero close is unsafe → restart-required.
-        if case .interruptingScan(session, _, .closing(op), let dest) = phase {
-            if status == 0 { return routeInterruptDestination(session, dest) }
-            connection = .failed("status \(status)")
-            return enterRestartRequired("scan-interrupt close failed (status \(status))")
-        }
         guard case .closing(session, op, let outcome) = phase else { return [] }
         if status == 0 {
             connection = .disconnected

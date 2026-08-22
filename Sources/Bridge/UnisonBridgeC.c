@@ -1076,71 +1076,6 @@ int unison_bridge_transport_child_terminated(void) {
     return all_terminated ? 1 : 0;
 }
 
-/* === Phase 1a scan-interruption primitives (issue #24) — PRODUCTION ===
- * Built on the transport-child registry above. See UnisonBridgeC.h. */
-
-/* Read pid's start identity via sysctl. Returns 1 present (fills stat +
- * starttime), 0 gone (ESRCH/ENOENT/no record), -1 other error (inconclusive). */
-static int proc_identity(pid_t pid, int *out_stat, int64_t *out_sec, int32_t *out_usec) {
-    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
-    struct kinfo_proc kp;
-    size_t len = sizeof(kp);
-    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0)
-        return (errno == ESRCH || errno == ENOENT) ? 0 : -1;
-    if (len == 0) return 0;
-    if (out_stat) *out_stat = kp.kp_proc.p_stat;
-    if (out_sec)  *out_sec  = (int64_t)kp.kp_proc.p_starttime.tv_sec;
-    if (out_usec) *out_usec = (int32_t)kp.kp_proc.p_starttime.tv_usec;
-    return 1;
-}
-
-/* SIGKILL the single tracked transport child, capturing its identity first.
- * Refuses unless exactly one child is tracked. Leaves the pid REGISTERED and
- * does NOT waitpid — OCaml owns retirement/reap; the killed-but-unremoved pid
- * cannot be reused before OCaml reaps it. `identity_valid` is set iff a live or
- * zombie process was found at capture (so ALREADY_DEAD can be split by the
- * caller into with/without-identity). */
-unison_scan_signal_result_t unison_bridge_signal_scan_transport(void) {
-    unison_scan_signal_result_t r = { UNISON_SIGNAL_NO_CHILD, 0, 0, 0, 0 };
-    pthread_mutex_lock(&g_child_mutex);
-    if (g_child_count == 0) {
-        r.outcome = UNISON_SIGNAL_NO_CHILD;
-    } else if (g_child_count > 1) {
-        r.outcome = UNISON_SIGNAL_MULTIPLE_CHILDREN;   /* never guess which */
-    } else {
-        pid_t pid = g_children[0];
-        int stat = 0; int64_t sec = 0; int32_t usec = 0;
-        int present = proc_identity(pid, &stat, &sec, &usec);
-        r.pid = (int32_t)pid; r.start_sec = sec; r.start_usec = usec;
-        r.identity_valid = (present == 1) ? 1 : 0;
-        if (present < 0) {
-            r.outcome = UNISON_SIGNAL_FAILED;          /* sysctl error — inconclusive */
-        } else if (present == 0 || stat == SZOMB) {
-            r.outcome = UNISON_SIGNAL_ALREADY_DEAD;     /* gone or zombie */
-        } else if (kill(pid, SIGKILL) == 0) {
-            r.outcome = UNISON_SIGNAL_SIGNALLED;
-        } else {
-            r.outcome = UNISON_SIGNAL_FAILED;
-        }
-    }
-    pthread_mutex_unlock(&g_child_mutex);
-    return r;
-}
-
-/* Classify whether the captured identity was reaped. Poll over a bounded grace
- * rather than trusting one snapshot. */
-unison_reap_state_t unison_bridge_classify_reap(int32_t pid, int64_t start_sec,
-                                                int32_t start_usec) {
-    int stat = 0; int64_t sec = 0; int32_t usec = 0;
-    int present = proc_identity((pid_t)pid, &stat, &sec, &usec);
-    if (present < 0) return UNISON_REAP_UNKNOWN;
-    if (present == 0) return UNISON_REAP_ABSENT;                 /* reaped */
-    if (sec != start_sec || usec != start_usec)
-        return UNISON_REAP_REUSED;                              /* pid recycled */
-    if (stat == SZOMB) return UNISON_REAP_ZOMBIE;               /* original, unreaped */
-    return UNISON_REAP_LIVE;                                    /* original, running */
-}
-
 /* Pure-C shutdown reaper. Enters the `closing` state and SIGKILLs every
  * still-registered pid WHILE HOLDING the mutex (so no concurrent retire+waitpid
  * can free a pid out from under a signal), then clears the set and unlocks.
@@ -1186,12 +1121,6 @@ void unison_bridge_reset_child_registry_for_test(void) {
     pthread_mutex_unlock(&g_child_mutex);
 }
 
-/* Test-only: capture pid's start identity without signalling (production has no
- * caller — the signal result already carries the identity). */
-bool unison_bridge_capture_identity(int32_t pid, int64_t *out_sec, int32_t *out_usec) {
-    int stat = 0;
-    return proc_identity((pid_t)pid, &stat, out_sec, out_usec) == 1;
-}
 
 /* Test-only (Blocker 3): install/clear a dummy preconnection so the credential
  * prompt/reply entry points pass their g_has_preconn guard and reach the exn

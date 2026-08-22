@@ -766,6 +766,26 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(c.allowsDestructiveArchiveMutation)
     }
 
+    /// #94: a local-only abandoned scan with a queued replacement. There is no
+    /// connection to close, so on the abandoned scan's terminal the coordinator
+    /// goes straight to idle and the queued profile starts — no closeConnection
+    /// step (contrast the remote gate in `test_abandonedScan_gatesQueuedOpen`).
+    /// Archive maintenance stays forbidden while the abandoned local scan owns
+    /// the engine, and is allowed only once it has terminated.
+    func test_abandonedLocalOnlyScan_gatesQueuedOpen_startsWithoutClose() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "L"))!
+        let scanOp = beginScan(c.connectFinished(s, connectOp, result: .local))!.1
+        XCTAssertEqual(c.abandon(reason: "left"), [])            // deferred, no effect
+        XCTAssertNotNil(waitingID(c.requestOpen(profile: "B")))  // queued behind the abandoned scan
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)       // abandoned scan still owns the engine
+        // Abandoned local scan terminates → no connection to close → straight to
+        // idle → the queued profile B starts immediately (no closeConnection).
+        let e = c.scanCompleted(s, scanOp)
+        XCTAssertFalse(e.contains { if case .closeConnection = $0 { return true }; return false })
+        XCTAssertNotNil(beginConnect(e))                         // B started
+    }
+
     // MARK: - Issue #24: scan-stall terminal contract (detector → coordinator)
 
     private func hasPresentScan(_ e: [Effect]) -> Bool {

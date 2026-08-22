@@ -41,53 +41,11 @@ int  unison_bridge_reap_transport_children(void);
  * configs (runtime code, unlike the Debug-only test helpers below). */
 int  unison_bridge_transport_child_terminated(void);
 
-/* === Phase 1a scan-interruption primitives (issue #24) — PRODUCTION ===
- * Signal the single tracked scan transport child and classify its reap, so the
- * coordinator can interrupt a wedged/slow init2 in-process. Built on the
- * transport-child registry above. See docs/scan-interruption-phase1a. */
-typedef enum {
-    UNISON_SIGNAL_SIGNALLED         = 0, /* exactly one live child; SIGKILL issued */
-    UNISON_SIGNAL_NO_CHILD          = 1, /* nothing tracked */
-    UNISON_SIGNAL_MULTIPLE_CHILDREN = 2, /* >1 tracked — refuse (never guess) */
-    UNISON_SIGNAL_ALREADY_DEAD      = 3, /* the one tracked child is gone/zombie */
-    UNISON_SIGNAL_FAILED            = 4, /* kill(2) or sysctl failed unexpectedly */
-} unison_signal_outcome_t;
-
-/* Result of signalling. `identity_valid` is 1 iff a pid + start identity was
- * captured (a live child for SIGNALLED, or a still-present zombie for
- * ALREADY_DEAD); 0 when the child was already gone (no identity to classify). */
-typedef struct {
-    unison_signal_outcome_t outcome;
-    int32_t pid;
-    int64_t start_sec;   /* p_starttime.tv_sec  */
-    int32_t start_usec;  /* p_starttime.tv_usec */
-    int32_t identity_valid;
-} unison_scan_signal_result_t;
-
-typedef enum {
-    UNISON_REAP_ABSENT  = 0, /* pid gone → reaped */
-    UNISON_REAP_REUSED  = 1, /* pid present, different start identity → reaped + reused */
-    UNISON_REAP_ZOMBIE  = 2, /* same identity, SZOMB → not yet reaped */
-    UNISON_REAP_LIVE    = 3, /* same identity, running → teardown did not kill it */
-    UNISON_REAP_UNKNOWN = 4, /* sysctl error other than not-found → inconclusive */
-} unison_reap_state_t;
-
-/* SIGKILL the single tracked transport child under the registry mutex WITHOUT
- * removing it and WITHOUT waitpid (OCaml stays the owner of retirement/reap).
- * Refuses unless exactly one child is tracked. Captures pid + start identity. */
-unison_scan_signal_result_t unison_bridge_signal_scan_transport(void);
-
-/* Re-query the captured identity and classify whether it was reaped. Polled
- * over a bounded grace by the caller rather than trusted from one shot. */
-unison_reap_state_t unison_bridge_classify_reap(int32_t pid, int64_t start_sec, int32_t start_usec);
-/* Declared unconditionally so every target/config sees the prototype; only
- * DEFINED in Debug (UNISON_DEBUG_HOOKS) — the production app never calls them,
- * so a Release build links fine with no definition and the symbols are absent. */
+/* Test-only registry reset (shared transport-child reaper tests). Declared
+ * unconditionally so every target/config sees the prototype; only DEFINED in
+ * Debug (UNISON_DEBUG_HOOKS) — the production app never calls it, so a Release
+ * build links fine with no definition and the symbol is absent. */
 void unison_bridge_reset_child_registry_for_test(void);
-/* Test-only: capture pid's start identity without signalling — lets tests build
- * known-good / deliberately-mismatched identities for classify_reap. Declared
- * unconditionally; DEFINED only in Debug (UNISON_DEBUG_HOOKS). */
-bool unison_bridge_capture_identity(int32_t pid, int64_t *out_sec, int32_t *out_usec);
 /* Test-only fault injection (Finding #6): force the next `n` OCaml bridge
  * callbacks dispatched through the worker to be treated as if they raised, so
  * the exception-handling / completion / status contract can be exercised
