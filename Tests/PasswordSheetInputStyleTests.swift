@@ -39,4 +39,19 @@ final class PasswordSheetInputStyleTests: XCTestCase {
         XCTAssertFalse(hasSecureField(sheet),
                        ".plainResponse must NOT render a masked field")
     }
+
+    // MARK: the verdict -> style mapping (the security-critical decision itself)
+
+    func test_inputStyle_forCredential_isSecure() {
+        XCTAssertEqual(PasswordSheet.InputStyle(for: .credential), .secureCredential)
+    }
+
+    func test_inputStyle_forHostKeyQuestion_isPlain() {
+        XCTAssertEqual(PasswordSheet.InputStyle(for: .hostKeyQuestion), .plainResponse)
+    }
+
+    func test_inputStyle_forFatalAndRetry_isNil() {
+        XCTAssertNil(PasswordSheet.InputStyle(for: .fatal(reason: "boom")))
+        XCTAssertNil(PasswordSheet.InputStyle(for: .retryNotice("Permission denied, please try again.")))
+    }
 }

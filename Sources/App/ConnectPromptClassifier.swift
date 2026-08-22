@@ -108,18 +108,25 @@ enum ConnectPromptClassifier {
         return lower == retryNotice
     }
 
-    /// The canonical OpenSSH host-key prompt, required in FULL — the question
-    /// itself plus its `(yes/no…)` answer hint. Deliberately narrow: the old
-    /// heuristic matched any occurrence of "authenticity" or "yes/no", which
-    /// mis-classified genuine credential prompts that happen to contain those
-    /// words (e.g. "Enter password to verify authenticity:", "Password (yes/no
-    /// policy):") as a non-secret host-key answer, showing a password in a plain
-    /// field. Requiring the whole canonical question means an unrecognized future
-    /// variant falls through to `.credential` → a masked field, the fail-safe
-    /// default. `(yes/no` also matches the newer `(yes/no/[fingerprint])`.
+    /// The canonical OpenSSH host-key prompt, recognized on the FINAL non-empty
+    /// line only. ssh prints "Are you sure you want to continue connecting
+    /// (yes/no…)?" as the last thing before it blocks on the answer, so a
+    /// credential prompt appended after it — on a later line
+    /// ("…(yes/no)?\nPassword:") or the same line ("…(yes/no)? Password:") —
+    /// must NOT be read as a host-key question, or that password field would be
+    /// left unmasked. Matching `contains` anywhere was fail-open for exactly that.
+    /// We instead require the last line to BE the question: it holds the canonical
+    /// phrase and its "(yes/no…)" hint and ENDS at the "?" with no trailing prompt
+    /// content. An unrecognized variant falls through to `.credential` → a masked
+    /// field (fail-safe). `(yes/no` also matches the newer `(yes/no/[fingerprint])`.
     private static func isHostKeyQuestion(_ lower: String) -> Bool {
-        return lower.contains("are you sure you want to continue connecting")
-            && lower.contains("(yes/no")
+        let lastLine = lower
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .last { !$0.isEmpty } ?? ""
+        return lastLine.contains("are you sure you want to continue connecting")
+            && lastLine.contains("(yes/no")
+            && lastLine.hasSuffix("?")
     }
 
     /// ssh terminal output that means the transport died or was refused — none

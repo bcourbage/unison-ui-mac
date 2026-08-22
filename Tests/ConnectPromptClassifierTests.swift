@@ -169,6 +169,25 @@ final class ConnectPromptClassifierTests: XCTestCase {
             .credential)
     }
 
+    /// The host-key question is recognized only as the FINAL line. A credential
+    /// prompt appended after it — a later line, or the same line — must classify
+    /// as .credential so the field is MASKED (the review's fail-open case).
+    func test_hostKeyQuestionThenPasswordPrompt_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Are you sure you want to continue connecting (yes/no)?\r\nPassword:",
+                transportTerminated: false),
+            .credential)
+    }
+
+    func test_hostKeyQuestionWithTrailingPasswordSameLine_isCredential() {
+        XCTAssertEqual(
+            ConnectPromptClassifier.classify(
+                prompt: "Are you sure you want to continue connecting (yes/no)? Password:",
+                transportTerminated: false),
+            .credential)
+    }
+
     // MARK: supplemental fatal-string classification (child not yet terminated)
 
     func test_brokenPipe_isFatal_evenIfNotYetTerminated() {

@@ -13,13 +13,25 @@ final class PasswordSheet: NSWindowController {
 
     typealias Completion = (_ response: String?) -> Void
 
-    /// How the response field is presented. Set from the classifier verdict
-    /// (`.credential` → `.secureCredential`, `.hostKeyQuestion` → `.plainResponse`).
-    enum InputStyle {
+    /// How the response field is presented.
+    enum InputStyle: Equatable {
         /// A secret — password / passphrase / MFA / PAM — shown masked.
         case secureCredential
         /// A non-secret answer (a host-key yes/no question), shown editable.
         case plainResponse
+
+        /// The one place the security-critical mapping lives: a classifier verdict
+        /// that produces a prompt sheet becomes a field style. `nil` for verdicts
+        /// that never build a sheet (`.fatal` / `.retryNotice`), so a caller can't
+        /// accidentally show a field for them. Tested directly, because the
+        /// mapping — not just the rendering — is what must not silently invert.
+        init?(for verdict: ConnectPromptClassifier.Verdict) {
+            switch verdict {
+            case .credential:      self = .secureCredential
+            case .hostKeyQuestion: self = .plainResponse
+            case .fatal, .retryNotice: return nil
+            }
+        }
     }
 
     private let prompt: String
