@@ -29,19 +29,18 @@
       to restart-required). No dependency on #41 (closed infeasible) or #55 (no
       implementation). Analysis in #53 and `docs/scan-interruption-design.md`.
 
-- [ ] **AppKit view-controller test coverage (deferred).** Pure-logic modules
-      are well covered; the window/view-controllers
-      (`ReconcileWindowController`, `ProfileEditorWindowController`,
-      `ProfileFormWindowController`, `AppDelegate`, `DiffWindowController`,
-      `PasswordSheet`) remain the low-coverage surface, because meaningful tests
-      there would need an `NSApplication`-hosted UI harness driving synthetic
-      events, a multi-day effort, fragile against AppKit changes. **Posture:**
-      keep extracting testable pure-logic out of the controllers as the
-      opportunity arises (as `RowSelectionRules`, `ProfileDocument`,
-      `ProfileRootResolver`, `SyncCompletionModel`, and `DiffRequestBroker` were),
-      rather than building a UI harness. Deferred unless a regression pattern
-      emerges that pure-logic tests can't catch. UI-path behaviors that only a
-      hands-on run can confirm live in `docs/manual-test-step2b.md`.
+- [ ] **Extract and unit-test `PasswordSheet`'s secure-field decision.** The
+      sheet is thin AppKit glue except for the `isPassword` logic in `init`: a
+      denylist that defaults to a secure (masked) field and drops to a plain
+      field only for host-key `authenticity` / `yes/no` prompts. Pull that
+      classification into a small pure helper and cover it (default-secure; the
+      yes/no exceptions) so a misclassification can't render a password prompt in
+      a cleartext field. This is the standing "extract testable logic when you
+      touch a controller" posture — formerly the open-ended AppKit-coverage item
+      (issue #54, now closed as a documented posture rather than a task) — applied
+      to the one security-relevant piece. Broad controller coverage via a
+      synthetic-event UI harness stays out of scope; UI-only paths live in
+      `docs/manual-test-step2b.md`.
 
 - [ ] **SSH keepalive investigation** (`ServerAliveInterval` /
       `ServerAliveCountMax`), as *mitigation* for wedged connections:
