@@ -53,7 +53,7 @@ landed across the bring-up and follow-on sessions.*
       upstream contract that reconsideration would require:
       `docs/scan-interruption-design.md` (decision record). Sync-time Stop
       (`Abort.all`) is separate and unaffected. A separate follow-up may remove
-      the now-dormant machinery; it will be linked here when opened.
+      the now-dormant machinery, tracked in #94.
 
 - [x] **App signing / notarization for distribution — SUPERSEDED by 0.5.0
       (2026-08-22).** Originally recorded as "not pursuing" (ad-hoc signature
