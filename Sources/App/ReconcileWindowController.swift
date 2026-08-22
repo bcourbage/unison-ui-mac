@@ -14,20 +14,21 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     typealias CloseHandler = @MainActor () -> Void
     typealias RescanRequest = @MainActor () -> Void
-    /// Invoked when the user presses Stop while a connect/scan (not a
-    /// sync) is in flight. The owner (AppDelegate) owns the connect
-    /// lifecycle, so it does the actual abort + teardown.
+    /// Invoked when the user presses "Return to Profiles" while a connect/scan
+    /// (not a sync) is in flight. The owner (AppDelegate) abandons the
+    /// presentation and returns to the picker; it does NOT cancel the scan,
+    /// which continues in the background until its own terminal (the coordinator
+    /// retains the engine lease and closes on that terminal).
     typealias CancelScanRequest = @MainActor () -> Void
-    /// Genuine in-process scan interruption (issue #24). Distinct from
-    /// Owner veto for a window-close (issue #24, Finding 1): returns true to
-    /// ALLOW the close, false to intercept it (the owner started a coordinator-
-    /// driven interruption and will close the window itself on quiescence).
+    /// Owner veto for a window-close: returns true to ALLOW the close, false to
+    /// intercept it. In-place scan interruption was withdrawn (issue #53 / #94),
+    /// so the owner allows the close during a connect/scan and handles it via the
+    /// leave path (abandon presentation, retain the scan lease).
     typealias WindowShouldCloseRequest = @MainActor () -> Bool
-    /// The Profiles toolbar action, routed to the owner so a qualified scan
-    /// becomes a `.returnToPicker` interruption instead of a bare close. Returns
-    /// true if the owner HANDLED it (interruption started); false → the
-    /// controller falls back to `performClose` so a running sync still gets its
-    /// three-way confirmation via `windowShouldClose`.
+    /// The Profiles toolbar action, routed to the owner. Returns true if the
+    /// owner HANDLED it, false → the controller falls back to `performClose` so a
+    /// running sync still gets its three-way confirmation via `windowShouldClose`.
+    /// Post-#94 the owner never "handles" it, so this always returns false.
     typealias ProfilesRequest = @MainActor () -> Bool
     /// Invoked when the user presses Go. The window never calls the sync
     /// bridge itself — it asks the engine coordinator (via AppDelegate) to
@@ -295,11 +296,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     ///     going but reclaim screen space.
     nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
         MainActor.assumeIsolated {
-            // Issue #24 (Finding 1): a qualified scan / in-flight interruption
-            // is intercepted by the owner, which starts a coordinator-driven
-            // `.returnToPicker` interruption and vetoes the close (the window is
-            // retained until the coordinator's `.closeWindow` effect fires on
-            // quiescence). false here → do not close.
+            // The owner's veto hook. In-place scan interruption was withdrawn
+            // (issue #53 / #94), so this always allows the close during a
+            // connect/scan; the close then routes through the owner's leave path
+            // (abandon presentation, retain the scan lease). false here → do not
+            // close.
             if !onWindowShouldClose() { return false }
             guard isSyncing else { return true }
             let alert = NSAlert()
@@ -605,13 +606,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         syncStall.start()   // arm the advisory no-progress detector for the transfer
     }
 
-    /// Toolbar "Profiles" action — return to the picker. Routed to the owner
-    /// (issue #24): a qualified scan / in-flight interruption is HANDLED as a
-    /// `.returnToPicker` interruption (window retained, coordinator closes it on
-    /// quiescence). Otherwise the owner did NOT handle it, so we fall back to
-    /// `performClose(nil)`, which routes through `windowShouldClose` — this is
-    /// what preserves the three-way confirmation when a sync is running (round 3
-    /// correction 1).
+    /// Toolbar "Profiles" action — return to the picker. Routed to the owner,
+    /// which does not "handle" it (in-place scan interruption was withdrawn,
+    /// issue #53 / #94), so we fall back to `performClose(nil)`, which routes
+    /// through `windowShouldClose` — this is what preserves the three-way
+    /// confirmation when a sync is running (round 3 correction 1). During a
+    /// connect/scan the close then abandons the presentation (the scan winds
+    /// down in the background).
     func returnToPicker() {
         if !onProfilesRequested() {
             window?.performClose(nil)
@@ -1834,9 +1835,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         case DirectionAction.stopIdentifier:
             // Stop is meaningful while a sync is in flight OR while the
-            // connect/scan is running — the latter lets the user abort a
-            // slow/wedged connection rather than wait for the watchdog.
-            // Disabled once the engine needs a restart (nothing to abort).
+            // connect/scan is running — during a sync it aborts; during a
+            // connect/scan it is "Return to Profiles" (abandon the presentation
+            // and go back to the picker; the scan winds down in the background).
+            // Disabled once the engine needs a restart (nothing to act on).
             return !restartRequired && (syncing || isScanning)
         case DirectionAction.rescanIdentifier:
             // Rescan is the way out of `.done` back to `.ready` — explicitly

@@ -316,9 +316,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         profileWindowController?.close()
 
         runVersionCheckIfNeeded(profile: profile, session: s)
-        // Scan-interrupt qualification is CONNECTION-bound (Finding 3): it is
-        // kicked off in driveBeginConnect (which runs for the first open AND
-        // every reconnect/Rescan), not here.
     }
 
     private func makeReconcileWindow(session s: SessionID, profile: String,

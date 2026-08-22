@@ -41,31 +41,30 @@ Return-to-Profiles behavior described below is unchanged; the references to the
 now-deleted flag/phase are retained as the historical account of how the
 interim mitigation worked.
 
-On `main` after PR #92 (and until the #94 removal), in-place interruption was
-disabled at the shared policy gate (`ScanInterruptPolicy.stopInPlaceEnabled ==
-false`, folded into `interruptReady`). Stop Scan, Show/Return to Profiles, and
-window close therefore could not enter `.interruptingScan`; every leave takes
-the Return-to-Profiles fallback:
+Every leave takes the Return-to-Profiles fallback (this is the current, post-#94
+behavior; symbols are named rather than line-anchored, since exact lines drift):
 
-- It abandons **presentation only** — detaches the reconcile window and shows
-  the picker (`AppDelegate.leaveSession` → `engine.abandon` at
-  `AppDelegate.swift:595`, `showProfilePicker` at `:596`) — and marks the op
-  abandoned without claiming the OCaml scan stopped
-  (`EngineSessionCoordinator.abandon`, the `.opening/.scanning/.syncing` case at
-  `EngineSessionCoordinator.swift:465`).
+- It abandons **presentation only** — `AppDelegate.leaveSession` detaches the
+  reconcile window and shows the picker, then calls
+  `EngineSessionCoordinator.abandon`, which for `.opening`/`.scanning`/`.syncing`
+  marks the op abandoned without claiming the OCaml scan stopped.
 - The engine lease is retained while the original scan continues; a
-  later-selected profile is **queued**, not started
-  (`requestOpen` queue path, `EngineSessionCoordinator.swift:353`/`365`/`381`).
+  later-selected profile is **queued**, not started (`requestOpen`'s default
+  queue branch).
 - Destructive archive maintenance stays forbidden while the abandoned scan owns
-  the engine (`allowsDestructiveArchiveMutation` is true only for `.idle` /
-  `.stopped`, `EngineSessionCoordinator.swift:326`/`331`).
+  the engine: `allowsDestructiveArchiveMutation` is true **only for `.idle`**
+  (post-#94 there is no `.stopped` phase).
 - Queued work starts only after the scan's genuine terminal and, **for a remote
   session, a successful connection close**; a local-only session has no
-  connection to close. Abandoned `scanCompleted` → `beginClose` (`:704`); for a
-  remote (`.open`) connection that closes and `closeCompleted(status: 0)` →
-  `finishToIdle` → queued open (`:751`), while for `.localOnly` / `.disconnected`
-  `beginClose` goes straight to `finishToIdle` (`:832`–`:835`, no close); a
-  failed remote close → restart-required (`:775`).
+  connection to close. Abandoned `scanCompleted` → `beginClose`; for a remote
+  (`.open`) connection, `closeCompleted(status: 0)` → `finishToIdle` → the queued
+  open, while for `.localOnly` / `.disconnected` `beginClose` goes straight to
+  `finishToIdle` (no close); a failed remote close → restart-required.
+
+Historical note: during the interim between PR #92 and #94, this same
+Return-to-Profiles behavior was reached by *disabling* the interruption machinery
+at the policy gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`) rather
+than removing it; #94 deleted the machinery outright.
 
 Accepted costs of this fallback:
 
