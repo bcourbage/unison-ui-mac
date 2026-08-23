@@ -337,8 +337,8 @@ followed by a password prompt is masked, never plain.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
-| TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
 | TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
+| TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
 
 ---
 

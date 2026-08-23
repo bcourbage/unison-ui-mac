@@ -1,9 +1,11 @@
 # Release checklist
 
-Steps to validate before tagging a release. The mechanical cut (version bump,
-CHANGELOG, `release-notes/<version>.md`, tag → workflow → Homebrew cask bump) is
-in the release runbook; this file is the **validation** gate — things that must
-be confirmed against the actual built artifact, not just CI.
+Validation steps for a release — some **before** tagging (pre-publication gates,
+confirmed against the built artifact, not just CI) and some **after** publication
+(canaries that run once the release + live appcast are already public; a failure
+is handled by rollback, not by blocking publication). Each item below says which
+it is. The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`,
+tag → workflow → Homebrew cask bump) is in the release runbook.
 
 ## Every release
 
@@ -29,16 +31,28 @@ GitHub Release, publishes the live appcast to Pages, and verifies the served fee
 blocked merge.
 
 **If the canary fails (installer/Gatekeeper/update problem):** withdraw the
-release promptly —
-1. **Restore the previous signed appcast** so clients stop being offered 0.5.1:
-   revert `appcast.xml` on the `gh-pages` branch to the last-good (v0.5.0)
-   signed copy and push (the served feed is what clients poll).
-2. **Withdraw the GitHub Release** (delete it or mark it a pre-release / remove
-   its asset) so the download link no longer serves 0.5.1.
-3. Fix forward, then cut **v0.5.2** (build 21) — never re-tag v0.5.1.
+release, in this exact order (the order matters — restoring the feed before
+removing the asset avoids leaving clients a signed 0.5.1 enclosure that points at
+a deleted archive):
+
+1. **Restore the exact last-good signed feed.** Put the last-good (v0.5.0) signed
+   `appcast.xml` back on the `gh-pages` branch verbatim (its trailing
+   `<!-- sparkle-signatures -->` block must be intact) and push. The *served*
+   feed is what clients poll.
+2. **Verify propagation before touching the asset.** Poll the live
+   `https://bcourbage.github.io/unison-ui-mac/appcast.xml` until the served bytes
+   are byte-identical to the restored file (Pages deploys asynchronously), then
+   cryptographically verify it (`scripts/verify-appcast.py --feed-only`). Only
+   once the restored feed is actually being served do clients stop being offered
+   0.5.1.
+3. **Then remove the 0.5.1 download.** `gh release delete-asset` the 0.5.1
+   archive (or `gh release delete` the whole release). **Marking it a prerelease
+   is NOT sufficient** — prerelease assets stay downloadable.
+4. **Fix forward as v0.5.2** (build 21). Never delete or reuse the `v0.5.1` tag.
 
 If a true pre-publication gate is ever required, add a staged-feed / manual-
-promotion step to `release.yml` (publish to a staging feed, verify, then promote).
+promotion step to `release.yml` (publish to a staging feed, verify, then promote
+to the production feed).
 
 - [ ] The `v0.5.1` release job authenticated the published `appcast.xml` (feed
       signature) and passed the build-monotonicity check (build **20** > 19),
