@@ -25,9 +25,11 @@ workflow → Homebrew cask bump) is in the release runbook.
 
 ## Every release
 
-- [ ] **(pre-tag)** `main` is green; the release build (`release.yml`, Release
-      configuration) is built from the exact tagged commit.
+- [ ] **(pre-tag)** `main` is green.
 - [ ] **(pre-tag)** Vendored blob checksum matches `vendor/README.md`.
+- [ ] **(pre-publication gate — in-job)** The release build (`release.yml`,
+      Release configuration) is built from the exact tagged commit. (Cannot be
+      confirmed before the tag exists; it is the job's checkout/build guarantee.)
 - [ ] **(post-publication canary)** The built artifact reports the right
       `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer ID
       signature with a hardened runtime, a stapled notarization ticket, and no
@@ -86,9 +88,14 @@ to the production feed).
       build-monotonicity check (build **20** > 19), rather than taking any
       first-release/404 path. (If this fails, the job fails and nothing is
       published.)
-- [ ] **(pre-publication gate — in-job)** The published appcast validates:
-      `scripts/verify-appcast.py` (feed + the new archive by exact URL) is green
-      in the job, and the served feed is byte-identical to the signed one.
+- [ ] **(pre-publication gate — in-job)** The appcast validates locally in the
+      job, before publication: `scripts/verify-appcast.py` (feed signature + the
+      new archive by exact URL) is green.
+- [ ] **(automated post-publication canary)** The served feed is byte-identical
+      to the signed one. The job's post-publish re-verification (release.yml
+      "Verify the published appcast") runs **after** the Release and appcast are
+      already public, so a failure there is a published-state incident (apply the
+      rollback), not a pre-publication block.
 - [ ] **(post-publication canary)** On a machine running an **installed 0.5.0**:
       App menu ▸ Check for Updates finds 0.5.1, downloads it, verifies the EdDSA
       signature, and installs it through the app (no Gatekeeper prompt on the
