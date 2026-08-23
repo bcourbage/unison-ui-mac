@@ -121,27 +121,90 @@ final class ArchiveStaleScannerTests: XCTestCase {
     }
 
     func test_attribution_uncertainWhenOwningProfileUnreliable() {
-        let roots = ["/Volumes/FlightSim",
-                     "ssh://bcourbage@192.168.2.35//Volumes/Media/FlightSim"]
+        // LOCAL↔LOCAL fixture so the reliability dimension is isolated from SF3
+        // (a remote side would make it uncertain regardless). A former-hostname
+        // (superseded) copy under a single host.
+        let roots = ["/Users/bcourbage/A", "/Users/bcourbage/B"]
         let index = [
-            entry("fs", thisRoot: "//Heracles.local//Volumes/FlightSim",
-                  roots: "//Demeter.local//Volumes/Media/FlightSim, //Heracles.local//Volumes/FlightSim")
+            entry("ll", thisRoot: "//Heracles.local//Users/bcourbage/A",
+                  roots: "//Heracles.local//Users/bcourbage/A, //Heracles.local//Users/bcourbage/B")
         ]
-        XCTAssertEqual(find(index, [profile("Sync-FlightSim", roots)]).first?.uncertain, false)
+        XCTAssertEqual(find(index, [profile("Sync-AB", roots)]).first?.uncertain, false)
         let unreliable = ArchiveStaleScanner.Profile(
-            name: "Sync-FlightSim", roots: roots, attributionReliable: false)
+            name: "Sync-AB", roots: roots, attributionReliable: false)
         XCTAssertEqual(find(index, [unreliable]).first?.uncertain, true)
     }
 
     func test_orphan_uncertainOnlyWhenAnUnreliableProfileExists() {
+        // LOCAL↔LOCAL orphan (single host) so SF3 doesn't dominate.
         let index = [
             entry("gone", thisRoot: "//Heracles//Users/bcourbage/OldProject",
-                  roots: "//Demeter//data/OldProject, //Heracles//Users/bcourbage/OldProject")
+                  roots: "//Heracles//Users/bcourbage/OldData, //Heracles//Users/bcourbage/OldProject")
         ]
         let otherRoots = ["/Users/bcourbage/Pictures", "/Users/bcourbage/Documents"]
         XCTAssertEqual(find(index, [profile("X", otherRoots)]).first?.uncertain, false)
         let unreliable = ArchiveStaleScanner.Profile(
             name: "X", roots: otherRoots, attributionReliable: false)
         XCTAssertEqual(find(index, [unreliable]).first?.uncertain, true)
+    }
+
+    // MARK: SF3 — a remote side is always report-only (uncertain, non-actionable)
+
+    func test_remoteSide_isUncertainAndNonActionable_evenWithReliableProfile() {
+        let roots = ["/Volumes/FlightSim", "ssh://bcourbage@192.168.2.35//Volumes/Media/FlightSim"]
+        // Two distinct hosts → a genuine remote side.
+        let index = [
+            entry("fs", thisRoot: "//Heracles.local//Volumes/FlightSim",
+                  roots: "//Demeter.local//Volumes/Media/FlightSim, //Heracles.local//Volumes/FlightSim")
+        ]
+        let f = find(index, [profile("Sync-FlightSim", roots)]).first
+        XCTAssertEqual(f?.uncertain, true, "a remote replica is unverifiable offline → uncertain")
+        XCTAssertEqual(f?.actionable, false, "remote rows are report-only")
+    }
+
+    // MARK: B1 — a comma-containing (ambiguous) rootsName is uncertain
+
+    func test_commaInRoot_ambiguousRootsName_isUncertainAndNonActionable() {
+        // A local root literally containing ", " makes upstream's unescaped
+        // ", "-join ambiguous; it must never be confidently classified.
+        let index = [
+            entry("amb", thisRoot: "//Heracles//Users/bcourbage/Docs, Old",
+                  roots: "//Heracles//Backup, //Heracles//Users/bcourbage/Docs, Old")
+        ]
+        let f = find(index, []).first
+        XCTAssertEqual(f?.uncertain, true, "ambiguous rootsName → uncertain (B1)")
+        XCTAssertEqual(f?.actionable, false)
+    }
+
+    // MARK: proven-superseded is the ONLY actionable disposition
+
+    func test_actionable_onlyWhenProvablySuperseded_liveArchiveExists() {
+        let roots = ["/Users/bcourbage/A", "/Users/bcourbage/B"]
+        let cur = "//Heracles//Users/bcourbage/A, //Heracles//Users/bcourbage/B"
+        let stale = "//Heracles.local//Users/bcourbage/A, //Heracles.local//Users/bcourbage/B"
+        // With a live (current-host) archive present, the older copy is provably
+        // superseded → actionable.
+        let withLive = [
+            entry("live", thisRoot: "//Heracles//Users/bcourbage/A", roots: cur),
+            entry("old", thisRoot: "//Heracles.local//Users/bcourbage/A", roots: stale),
+        ]
+        let a = find(withLive, [profile("Sync-AB", roots)])
+        XCTAssertEqual(a.map(\.entry.hash), ["old"])
+        XCTAssertEqual(a.first?.actionable, true, "older copy replaced by a live archive → actionable")
+
+        // Without a live archive, the SAME old copy is the profile's only
+        // archive: superseded-by-nothing → NOT actionable (report-only).
+        let noLive = [entry("old", thisRoot: "//Heracles.local//Users/bcourbage/A", roots: stale)]
+        let b = find(noLive, [profile("Sync-AB", roots)])
+        XCTAssertEqual(b.first?.reason, .superseded)
+        XCTAssertEqual(b.first?.actionable, false,
+                       "no live archive to supersede it → not provably superseded")
+    }
+
+    func test_orphan_isNeverActionable() {
+        let index = [entry("orph", thisRoot: "//Heracles//x", roots: "//Heracles//x, //Heracles//y")]
+        let f = find(index, []).first
+        XCTAssertEqual(f?.reason, .orphan)
+        XCTAssertEqual(f?.actionable, false, "an orphan is never actionable (not provably superseded)")
     }
 }

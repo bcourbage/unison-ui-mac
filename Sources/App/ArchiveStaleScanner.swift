@@ -49,9 +49,17 @@ enum ArchiveStaleScanner {
         let reason: Reason
         /// Profiles this archive is attributable to (empty when orphaned).
         let profileNames: [String]
-        /// True when this attribution can't be fully trusted (it involves,
-        /// or could involve, an attribution-unreliable profile).
+        /// True when this attribution can't be fully trusted — an
+        /// attribution-unreliable profile, an ambiguous (comma-containing)
+        /// rootsName (B1), or a remote side unverifiable offline (SF3).
         let uncertain: Bool
+        /// True ONLY when this is a *provably superseded* generation that is
+        /// safe to remove: attributed to a current profile that HAS a live
+        /// archive (so this older copy is genuinely replaced), certain, and
+        /// local-only. Deletion authority derives from THIS, never from
+        /// attribution or "orphan"/"probably old" alone. Everything else is
+        /// report-only (non-actionable).
+        let actionable: Bool
     }
 
     /// Archives that are not the live generation of any profile.
@@ -72,12 +80,14 @@ enum ArchiveStaleScanner {
         let unreliableNames = Set(profiles.filter { !$0.attributionReliable }.map(\.name))
         var liveHashes = Set<String>()
         var hashToNames: [String: Set<String>] = [:]
+        var profilesWithLiveArchive = Set<String>()
         for profile in profiles {
             for entry in ArchiveMatcher.archives(forProfileRoots: profile.roots,
                                                  in: index, localHostname: localHostname) {
                 hashToNames[entry.hash, default: []].insert(profile.name)
                 if ArchiveMatcher.host(ofComponent: entry.thisRoot)?.lowercased() == current {
                     liveHashes.insert(entry.hash)
+                    profilesWithLiveArchive.insert(profile.name)
                 }
             }
         }
@@ -85,17 +95,26 @@ enum ArchiveStaleScanner {
             .filter { !liveHashes.contains($0.hash) }
             .map { entry in
                 let names = (hashToNames[entry.hash] ?? []).sorted()
-                // Attributed → uncertain if any owning profile is
-                // unreliable. Orphan → uncertain if any unreliable profile
-                // exists at all, since it could secretly own this archive
-                // (rootalias/symlink would hide the match).
-                let uncertain = names.isEmpty
+                // Fail-closed uncertainty (never confidently classify these):
+                //  - an owning/possibly-owning attribution-unreliable profile;
+                //  - an ambiguous (comma-containing) rootsName (B1);
+                //  - a remote side, unverifiable offline (SF3).
+                let ambiguous = ArchiveMatcher.rootsNameIsAmbiguous(entry.rootsName)
+                let involvesRemote = ArchiveMatcher.involvesRemoteHost(rootsName: entry.rootsName)
+                let attributionUncertain = names.isEmpty
                     ? !unreliableNames.isEmpty
                     : !Set(names).isDisjoint(with: unreliableNames)
-                return Finding(entry: entry,
-                               reason: names.isEmpty ? .orphan : .superseded,
-                               profileNames: names,
-                               uncertain: uncertain)
+                let uncertain = attributionUncertain || ambiguous || involvesRemote
+                let reason: Reason = names.isEmpty ? .orphan : .superseded
+                // Actionable ONLY when provably superseded: attributed to a
+                // profile that HAS a live archive (this older copy is genuinely
+                // replaced), and certain. Orphans / "probably old" / remote /
+                // ambiguous are report-only.
+                let provenSuperseded = reason == .superseded
+                    && names.contains { profilesWithLiveArchive.contains($0) }
+                let actionable = provenSuperseded && !uncertain
+                return Finding(entry: entry, reason: reason, profileNames: names,
+                               uncertain: uncertain, actionable: actionable)
             }
     }
 }
