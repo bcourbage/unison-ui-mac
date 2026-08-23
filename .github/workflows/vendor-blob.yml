@@ -132,10 +132,15 @@ jobs:
             || { echo "::error::_caml_program not defined in blob"; exit 1; }
           nm "$BLOB" | grep -qE ' U _unison_bridge_register_child$' \
             || { echo "::error::patch 0004 reaper symbol reference missing"; exit 1; }
+          # Dump once to a file, then grep the file — piping `strings` into
+          # `grep -q` makes grep close the pipe early, sending strings SIGPIPE
+          # (harmless but logs "failed to flush output" noise).
+          syms="$(mktemp)"; strings "$BLOB" > "$syms"
           for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
-            strings "$BLOB" | grep -qx "$cb" \
+            grep -qx "$cb" "$syms" \
               || { echo "::error::0006 callback string $cb absent from blob"; exit 1; }
           done
+          rm -f "$syms"
           bytes="$(stat -f%z "$BLOB")"; echo "size: $bytes bytes"
           [ "$bytes" -gt 500000 ] && [ "$bytes" -lt 104857600 ] \
             || { echo "::error::blob size $bytes outside sane band"; exit 1; }
