@@ -1,0 +1,49 @@
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index 1dcef90..d7f6c03 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -755,6 +755,44 @@ let unisonCloseConnection () =
+ ;;
+ Callback.register "closeConnection" unisonCloseConnection;;
+ 
++(* unison-ui-mac extension (patch 0006): expose the upstream Lock module so the
++ * app's archive-mutation transaction can acquire the SAME per-archive locks a
++ * live Unison uses, excluding concurrent access before it deletes or resets any
++ * archive state. This is the RAW Lock primitive (an empty hard-link lockfile
++ * with no PID/host/stale metadata) exactly as in src/lock.ml -- NOT
++ * lockArchiveLocal, which wraps Remote connection-cleanup machinery irrelevant
++ * to a standalone GUI transaction. The lock NAME is the full path to lk<hash>,
++ * constructed app-side from the co-located ar<hash> (archiveName uses one hash
++ * for both). acquire returns true only if WE now hold it; an existing lock (a
++ * live Unison, or a stale lock) makes it return false -- the caller fails closed
++ * and mutates nothing. Stale-lock recovery is a separate, explicit path, never
++ * ordinary cleanup (upstream's ignorelocks is likewise deliberately manual).
++ *
++ * Int return codes so C can distinguish outcomes: acquire/is_locked return
++ * 0/1 for the two boolean states and 2 on exception; release returns unit.
++ * NOT in upstream uimac -- local patch in this fork (patch 0006). *)
++let unisonLockAcquire path =
++  try if Lock.acquire path then 0 else 1
++  with e ->
++    Printf.eprintf "lockAcquire: %s\n%!" (Printexc.to_string e);
++    2
++;;
++Callback.register "unisonLockAcquire" unisonLockAcquire;;
++
++let unisonLockRelease path =
++  try Lock.release path
++  with e -> Printf.eprintf "lockRelease: %s\n%!" (Printexc.to_string e)
++;;
++Callback.register "unisonLockRelease" unisonLockRelease;;
++
++let unisonLockIsLocked path =
++  try if Lock.is_locked path then 1 else 0
++  with e ->
++    Printf.eprintf "lockIsLocked: %s\n%!" (Printexc.to_string e);
++    2
++;;
++Callback.register "unisonLockIsLocked" unisonLockIsLocked;;
++
+ let unisonIgnorePath pathString =
+   Uicommon.addIgnorePattern (Uicommon.ignorePath (Path.fromString pathString));;
+ let unisonIgnoreExt pathString =
