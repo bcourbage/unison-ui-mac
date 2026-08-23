@@ -9,6 +9,27 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [0.5.1] — 2026-08-22
+
+A safety and documentation release on top of 0.5.0. (Build 20.) Existing profiles
+and settings continue to work without migration.
+
+### Changed
+- **Leaving during a scan is now always "Return to Profiles".** While a scan is
+  running, the toolbar's Stop control returns to the profile list but does **not**
+  cancel the scan, which continues in the background until it finishes on its own.
+  (Earlier builds could offer an in-place "Stop Scan" for some SSH scans.)
+
+### Fixed
+- **File-integrity safeguard for interrupted scans.** Removed a scan-interruption
+  path that could reuse the embedded sync engine in an unverified state after a
+  forced interruption. If a remote scan hangs, quit and relaunch (rather than
+  Stop Scan followed by Rescan). Recovery from a wedged scan remains
+  quit/relaunch; ordinary Sync Stop is unaffected.
+- Corrected user-facing documentation (the in-app Manual and README) to describe
+  the Return-to-Profiles behavior, the Settings tabs and menus, the SSH
+  version-probe and compatibility boundary, and the update process accurately.
+
 ## [0.5.0] — 2026-08-21
 
 Adds in-app updates and moves to a Developer ID-signed, notarized build, on top
@@ -710,7 +731,10 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.2.2...v0.3.0
