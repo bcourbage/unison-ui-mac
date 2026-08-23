@@ -9,13 +9,20 @@
       seed-authentication and build-monotonicity paths in `release.yml` against a
       published feed (0.5.0 took the first-release 404 path).
 
-- [ ] **Generalize vendored patch 0002 (`closeConnection`) for upstream-readiness.**
-      Strip downstream-specific elements so the patch can stand as a fork-neutral
-      contribution offered on its own, independent of the macUI wiring. Author
-      the OCaml changes by hand: upstream is wary of LLM-authored diffs (see
-      `docs/vendored-patches-upstream.md` "Caveats before investing"). Per-patch
-      state and upstream verdicts live in `docs/vendored-patches-upstream.md`
-      §0002.
+- [ ] **Upstream the connection close/reopen support in dependency order.**
+      First rebase vendored patch 0003 (`remote-close-and-drain`) onto current
+      upstream master and propose it as the general engine contribution, retaining
+      its deterministic close/reopen regression test. Verify upstream tests and
+      the in-tree macOS UI.
+
+      Only after 0003 is accepted, rebase patch 0002 (`closeConnection`), remove
+      fork-specific commentary, and propose it as a small additive macUI callback
+      for external GUIs, explicitly dependent on 0003. Verify both the in-tree
+      Unison.app and unison-ui-mac's repeated close/reopen lifecycle.
+
+      The maintainer must independently review, understand, test, and take
+      responsibility for every submitted change; follow upstream's current
+      contribution requirements.
 
 
 ---
