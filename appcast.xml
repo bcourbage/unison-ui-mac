@@ -1,8 +1,42 @@
-<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+<?xml version="1.0" standalone="yes"?>
+<!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
---><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+-->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>unison-ui-mac</title>
+        <item>
+            <title>0.5.1</title>
+            <pubDate>Sun, 23 Aug 2026 01:44:39 +0000</pubDate>
+            <sparkle:version>20</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison-UI-Mac 0.5.1</h1>
+<p>Version 0.5.1 is a safety and documentation release on top of 0.5.0. Its main change is how the app behaves when you leave a profile while it is still scanning. Existing profiles and settings continue to work without migration.</p>
+<h2>Changed</h2>
+<ul>
+<li><strong>Leaving during a scan returns to the profile list without cancelling the scan.</strong> While a scan is running, the toolbar's Stop control is <strong>Return to Profiles</strong>: it takes you back to the profile list but does not stop the scan itself, which finishes in the background. There is no in-place "stop the scan" action. If a remote scan hangs, quit and relaunch the app.</li>
+</ul>
+<h2>Fixed</h2>
+<ul>
+<li><strong>File-integrity safeguard for interrupted scans.</strong> Earlier builds could, in some cases, interrupt a running scan and then keep using the same synchronization engine. Because that engine's internal state could not be verified after a forced interruption, the app no longer does this — protecting your files and Unison's archives is the priority. Ordinary <strong>Sync Stop</strong> (during an actual file transfer) is unchanged and fully supported.</li>
+<li>Corrected the built-in <strong>Manual</strong> and the README so they accurately describe the current behavior — the Settings tabs and menus, the SSH version check and compatibility boundary, and how the app updates itself.</li>
+</ul>
+<h2>Security</h2>
+<ul>
+<li><strong>Credential prompts default to masked entry.</strong> When SSH asks for a password, key passphrase, or verification code, the app now always shows a masked (secure) field; only the exact host-key "are you sure you want to continue connecting (yes/no)?" question uses a plain field. A prompt that merely mentions "authenticity" or <code>yes/no</code>, or a host-key line immediately followed by a password prompt, is treated as a secret and masked — where an earlier build could have shown it in a plain, readable field.</li>
+</ul>
+<h2>If you are still on 0.5.0</h2>
+<p>Until you have updated to 0.5.1: if a remote scan hangs, <strong>quit and relaunch</strong> rather than using Stop Scan followed by Rescan.</p>
+<h2>Compatibility</h2>
+<ul>
+<li>No profile or settings migration is required. Same system requirements as 0.5.0 (macOS 15 or later, Apple Silicon).</li>
+<li>If automatic update *checking* is enabled, Sparkle notifies you when 0.5.1 is available; whether the download and install then happen automatically or only after you confirm depends on the separate automatic-download choice from the first-launch prompt. You can also update any time from App menu ▸ Check for Updates.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.5.1/unison-ui-mac-0.5.1.app.zip" length="5072252" type="application/octet-stream" sparkle:edSignature="ocTijlx9j/Gj0LHjVdp8HIn+pME48fTwV4iiIom0PZ+HId23Lp73uIBctcVye1SE2mkO27IKhzHZTYLZdKuDDw=="/>
+        </item>
         <item>
             <title>0.5.0</title>
             <pubDate>Fri, 21 Aug 2026 23:57:05 +0000</pubDate>
@@ -29,10 +63,11 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 <li>If you installed an earlier version by hand, install 0.5.0 once (via Homebrew or the download); after that the app updates itself, automatically if you enable automatic checks or any time from App menu ▸ Check for Updates.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.5.0/unison-ui-mac-0.5.0.app.zip" length="5124923" type="application/octet-stream" sparkle:edSignature="jX7828uMsaymqtzWuC4aPLsxHf9bcyHFj/DOrfv4tpNCkxC3D+Oid2K4cCeaENyQYLYMoa89ayHymOs57kjyAA=="></enclosure>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.5.0/unison-ui-mac-0.5.0.app.zip" length="5124923" type="application/octet-stream" sparkle:edSignature="jX7828uMsaymqtzWuC4aPLsxHf9bcyHFj/DOrfv4tpNCkxC3D+Oid2K4cCeaENyQYLYMoa89ayHymOs57kjyAA=="/>
         </item>
     </channel>
-</rss><!-- sparkle-signatures:
-edSignature: j1dG+C0FwrEPfH9r7QC4sj+8dS5qAXMfCEKvKYsWuO7CeAYlGlwsxUjLYK3Bx1ULrl41ToBMvRQhvIPvEt40CQ==
-length: 2823
+</rss>
+<!-- sparkle-signatures:
+edSignature: NmHOuFSY1C9+KCkSWS+BL65hRUYxHsvkFHhuNue5hJHt2BPQ2bsiFYIZlKNg71a/M0SHMQYytvUM+aloxlxeAA==
+length: 6226
 -->
