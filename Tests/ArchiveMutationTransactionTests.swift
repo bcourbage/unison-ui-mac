@@ -1,19 +1,16 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// Transaction integrity for the single archive-mutation authority. Covers the
-/// review's required invariants: exactly-one-acquirer contention, lock-failure
-/// and revalidation-failure release-and-touch-nothing, failure before/during/
-/// after staging, rollback restores every staged file, multi-hash atomicity,
-/// pre-existing locks untouched, `lk` never in payloads, and only-owned-locks
-/// released. Logic is tested with fakes; one case uses the REAL lock bridge for
-/// genuine on-disk contention.
+/// Transaction integrity for the single archive-mutation authority (phase model:
+/// acquire → durable manifest → stage via rename → rollback-on-failure →
+/// whole-dir Trash, retain on cleanup failure). Logic is tested with fakes; one
+/// case uses the REAL lock bridge for genuine on-disk contention. Crash-safe
+/// production behavior (real rename, whole-dir Trash, restart detection) is in
+/// ArchiveStagingStoreTests.
 final class ArchiveMutationTransactionTests: XCTestCase {
 
-    // MARK: fakes
-
     private final class FakeLocking: ArchiveLocking {
-        var heldByOthers: Set<String> = []   // simulate foreign/contended locks
+        var heldByOthers: Set<String> = []
         private(set) var acquired: [String] = []
         private(set) var released: [String] = []
         func acquire(hash: String) -> ArchiveLock.AcquireResult {
@@ -23,34 +20,41 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         func release(hash: String) { released.append(hash) }
     }
 
-    private enum StoreErr: Error { case stage, commit, missing }
+    private enum StoreErr: Error { case begin, stage, commit, missing }
 
-    /// Models the on-disk state: `present` = at original location, `staged` =
-    /// renamed into staging, `trashed` = committed to Trash.
     private final class FakeStore: ArchivePayloadStore {
         private(set) var present: Set<String>
         private(set) var staged: Set<String> = []
-        private(set) var trashed: [String] = []
-        var stageFailAt: Int?    // fail the Nth stage() call (1-based)
-        var commitFailAt: Int?   // fail the Nth commit() call (1-based)
+        private(set) var committedWholeDir = false
+        private(set) var rolledBack = false
+        private(set) var manifest: StagingManifest?
+        var quarantinePath: String? = "/fake/quarantine"
+        var beginFail = false
+        var stageFailAt: Int?
+        var commitFail = false
         private var nStage = 0
-        private var nCommit = 0
         init(present: Set<String>) { self.present = present }
+        func beginStaging(_ m: StagingManifest) throws {
+            if beginFail { throw StoreErr.begin }
+            manifest = m
+        }
         func stage(_ name: String) throws {
             nStage += 1
             if stageFailAt == nStage { throw StoreErr.stage }
             guard present.remove(name) != nil else { throw StoreErr.missing }
             staged.insert(name)
         }
-        func unstage(_ name: String) throws {
-            guard staged.remove(name) != nil else { throw StoreErr.missing }
-            present.insert(name)
+        func rollback() throws {
+            rolledBack = true
+            for n in staged { present.insert(n) }
+            staged.removeAll()
+            manifest = nil
         }
-        func commit(_ name: String) throws {
-            nCommit += 1
-            if commitFailAt == nCommit { throw StoreErr.commit }
-            guard staged.remove(name) != nil else { throw StoreErr.missing }
-            trashed.append(name)
+        func commit() throws {
+            if commitFail { throw StoreErr.commit }   // retain quarantine; keep staged
+            committedWholeDir = true
+            staged.removeAll()
+            manifest = nil
         }
     }
 
@@ -58,167 +62,146 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         ArchiveMutationPlan(hashes: hashes, payloadFiles: files)
     }
 
+    private func run(_ plan: ArchiveMutationPlan, idle: Bool = true, revalidate: Bool = true,
+                     locking: ArchiveLocking, store: ArchivePayloadStore) throws -> ArchiveMutationOutcome {
+        try ArchiveMutation.execute(operation: "test", plan: plan,
+                                    nowISO8601: "2026-08-23T00:00:00Z",
+                                    isEngineIdle: { idle }, revalidate: { revalidate },
+                                    locking: locking, store: store)
+    }
+
     // MARK: happy path
 
-    func test_success_stagesThenTrashesAll_releasesOwnedOnly() throws {
-        let h = String(repeating: "a", count: 32)
-        let files = ["ar"+h, "fp"+h]
-        let store = FakeStore(present: Set(files))
-        let lock = FakeLocking()
-        let out = try ArchiveMutation.execute(
-            plan: plan([h], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store)
-        XCTAssertEqual(Set(out.trashed), Set(files))
-        XCTAssertEqual(out.commitFailures, [])
+    func test_success_stagesThenWholeDirTrash_releasesOwnedOnly() throws {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h, "fp"+h]
+        let store = FakeStore(present: Set(files)); let lock = FakeLocking()
+        let out = try run(plan([h], files), locking: lock, store: store)
+        XCTAssertNil(out.quarantineRetained)
+        XCTAssertTrue(store.committedWholeDir, "whole staging dir committed as one unit")
         XCTAssertTrue(store.present.isEmpty, "original location cleared")
-        XCTAssertEqual(Set(store.trashed), Set(files))
-        XCTAssertEqual(lock.acquired, [h])
-        XCTAssertEqual(lock.released, [h], "released exactly the owned lock")
+        XCTAssertEqual(lock.acquired, [h]); XCTAssertEqual(lock.released, [h])
     }
 
-    // MARK: guards touch nothing
+    // MARK: guards — nothing staged, no manifest
 
-    func test_notIdle_throws_touchesNothing() {
+    func test_notIdle_touchesNothing_noManifest() {
         let h = String(repeating: "a", count: 32)
         let store = FakeStore(present: ["ar"+h]); let lock = FakeLocking()
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h], ["ar"+h]), isEngineIdle: { false }, revalidate: { true },
-            locking: lock, store: store)) { XCTAssertEqual($0 as? ArchiveMutationError, .engineNotIdle) }
-        XCTAssertEqual(lock.acquired, []); XCTAssertEqual(store.present, ["ar"+h]); XCTAssertEqual(store.trashed, [])
+        XCTAssertThrowsError(try run(plan([h], ["ar"+h]), idle: false, locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError, .engineNotIdle)
+        }
+        XCTAssertEqual(lock.acquired, []); XCTAssertNil(store.manifest); XCTAssertEqual(store.present, ["ar"+h])
     }
 
-    func test_lockAcquisitionFailure_releasesEarlier_touchesNoPayload() {
+    func test_lockAcquisitionFailure_releasesEarlier_noManifest_noPayloadTouch() {
         let h1 = String(repeating: "1", count: 32), h2 = String(repeating: "2", count: 32)
         let files = ["ar"+h1, "ar"+h2]
         let store = FakeStore(present: Set(files))
-        let lock = FakeLocking(); lock.heldByOthers = [h2]     // second lock contended
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h1, h2], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store)) {
+        let lock = FakeLocking(); lock.heldByOthers = [h2]
+        XCTAssertThrowsError(try run(plan([h1, h2], files), locking: lock, store: store)) {
             XCTAssertEqual($0 as? ArchiveMutationError, .lockUnavailable(hash: h2, reason: .alreadyHeld))
         }
-        XCTAssertEqual(lock.acquired, [h1])
-        XCTAssertEqual(lock.released, [h1], "the earlier lock is released")
-        XCTAssertEqual(store.present, Set(files), "no payload touched")
-        XCTAssertEqual(store.trashed, [])
+        XCTAssertEqual(lock.acquired, [h1]); XCTAssertEqual(lock.released, [h1])
+        XCTAssertNil(store.manifest, "manifest is written only after locks + revalidate")
+        XCTAssertEqual(store.present, Set(files))
     }
 
-    func test_revalidationFailure_releasesLocks_touchesNothing() {
-        let h = String(repeating: "a", count: 32); let files = ["ar"+h, "fp"+h]
+    func test_revalidationFailure_releases_noManifest_touchesNothing() {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h]
         let store = FakeStore(present: Set(files)); let lock = FakeLocking()
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h], files), isEngineIdle: { true }, revalidate: { false },
-            locking: lock, store: store)) { XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed) }
-        XCTAssertEqual(lock.acquired, [h]); XCTAssertEqual(lock.released, [h])
-        XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(store.trashed, [])
+        XCTAssertThrowsError(try run(plan([h], files), revalidate: false, locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed)
+        }
+        XCTAssertNil(store.manifest); XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
+    }
+
+    func test_beginStagingFailure_releasesLocks_touchesNothing() {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h]
+        let store = FakeStore(present: Set(files)); store.beginFail = true
+        let lock = FakeLocking()
+        XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError, .beginStagingFailed)
+        }
+        XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
     }
 
     // MARK: staging failure + rollback
 
-    func test_stagingFailure_beforeAnyStage_touchesNothing() {
-        let h = String(repeating: "a", count: 32); let files = ["ar"+h, "fp"+h]
-        let store = FakeStore(present: Set(files)); store.stageFailAt = 1
-        let lock = FakeLocking()
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store)) {
-            guard case .stagingFailed = ($0 as? ArchiveMutationError) else { return XCTFail("wrong error") }
-        }
-        XCTAssertEqual(store.present, Set(files), "nothing staged remains removed")
-        XCTAssertEqual(store.trashed, []); XCTAssertEqual(lock.released, [h])
-    }
-
-    func test_stagingFailure_midway_rollsBackEveryStagedFile() {
-        let h = String(repeating: "a", count: 32)
-        let files = ["ar"+h, "fp"+h, "sc"+h]           // 3 files
-        let store = FakeStore(present: Set(files)); store.stageFailAt = 2   // file 1 staged, file 2 fails
-        let lock = FakeLocking()
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store))
-        XCTAssertEqual(store.present, Set(files), "rollback restored EVERY already-staged file")
-        XCTAssertTrue(store.staged.isEmpty, "nothing left in staging after rollback")
-        XCTAssertEqual(store.trashed, [])
-        XCTAssertEqual(lock.released, [h])
-    }
-
-    // MARK: commit failure — no partial family at the ORIGINAL location
-
-    func test_commitFailure_leavesFileInStaging_notAtOriginal_noPartialFamily() throws {
+    func test_stagingFailure_midway_rollsBackAll_removesManifest() {
         let h = String(repeating: "a", count: 32)
         let files = ["ar"+h, "fp"+h, "sc"+h]
-        let store = FakeStore(present: Set(files)); store.commitFailAt = 2   // 2nd commit fails
+        let store = FakeStore(present: Set(files)); store.stageFailAt = 2
         let lock = FakeLocking()
-        let out = try ArchiveMutation.execute(
-            plan: plan([h], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store)
-        XCTAssertEqual(out.commitFailures.count, 1, "one file failed to reach Trash")
-        XCTAssertTrue(store.present.isEmpty, "the ORIGINAL location has no partial family")
-        XCTAssertEqual(store.staged.count, 1, "the un-trashed file is recoverable in staging")
-        XCTAssertEqual(store.trashed.count, 2)
+        XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
+            guard case .stagingFailed = ($0 as? ArchiveMutationError) else { return XCTFail("wrong error") }
+        }
+        XCTAssertTrue(store.rolledBack)
+        XCTAssertEqual(store.present, Set(files), "rollback restored every already-staged file")
+        XCTAssertTrue(store.staged.isEmpty); XCTAssertNil(store.manifest)
         XCTAssertEqual(lock.released, [h])
     }
 
-    // MARK: multi-hash atomicity + only-owned + lk-exclusion
+    // MARK: commit (Trash) failure — no partial family at origin, retained quarantine
 
-    func test_localToLocal_multiHashReset_isOnePlan_allOrNothing() {
-        // Two hashes (as a local↔local reset produces); the 2nd lock contended.
+    func test_commitCleanupFailure_retainsQuarantine_noPartialFamilyAtOrigin() throws {
+        let h = String(repeating: "a", count: 32)
+        let files = ["ar"+h, "fp"+h, "sc"+h]
+        let store = FakeStore(present: Set(files)); store.commitFail = true
+        let lock = FakeLocking()
+        let out = try run(plan([h], files), locking: lock, store: store)
+        XCTAssertEqual(out.quarantineRetained, "/fake/quarantine", "retained quarantine reported")
+        XCTAssertFalse(store.committedWholeDir)
+        XCTAssertTrue(store.present.isEmpty, "the ORIGINAL location has no partial family")
+        XCTAssertEqual(store.staged, Set(files), "the whole family is safe in the retained quarantine")
+        XCTAssertEqual(lock.released, [h])
+    }
+
+    // MARK: multi-hash atomicity, foreign-lock, lk-exclusion, ordering
+
+    func test_localToLocal_multiHash_isOnePlan_allOrNothing() {
         let h1 = String(repeating: "1", count: 32), h2 = String(repeating: "2", count: 32)
         let files = ["ar"+h1, "fp"+h1, "ar"+h2, "fp"+h2]
         let store = FakeStore(present: Set(files))
         let lock = FakeLocking(); lock.heldByOthers = [h2]
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h1, h2], files), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store))
-        XCTAssertEqual(store.present, Set(files), "no hash's family removed — the plan is atomic")
-        XCTAssertEqual(store.trashed, [])
+        XCTAssertThrowsError(try run(plan([h1, h2], files), locking: lock, store: store))
+        XCTAssertEqual(store.present, Set(files), "no hash's family removed — atomic plan")
         XCTAssertEqual(lock.released, lock.acquired, "released == acquired (owned only)")
     }
 
-    func test_preExistingForeignLock_notInPlan_isNeverReleased() {
-        let h = String(repeating: "a", count: 32)
-        let foreign = String(repeating: "f", count: 32)
+    func test_foreignLock_notInPlan_isNeverReleased() {
+        let h = String(repeating: "a", count: 32); let foreign = String(repeating: "f", count: 32)
         let store = FakeStore(present: ["ar"+h])
-        let lock = FakeLocking(); lock.heldByOthers = [foreign]   // foreign lock, not in plan
-        _ = try? ArchiveMutation.execute(
-            plan: plan([h], ["ar"+h]), isEngineIdle: { true }, revalidate: { true },
-            locking: lock, store: store)
-        XCTAssertFalse(lock.released.contains(foreign), "a foreign lock is never released")
-        XCTAssertEqual(lock.released, [h])
+        let lock = FakeLocking(); lock.heldByOthers = [foreign]
+        _ = try? run(plan([h], ["ar"+h]), locking: lock, store: store)
+        XCTAssertFalse(lock.released.contains(foreign)); XCTAssertEqual(lock.released, [h])
     }
 
-    func test_planExcludesLk_evenWhenLkFileExists() {
+    func test_planExcludesLk_evenWhenLkExists() {
         let h = String(repeating: "a", count: 32)
-        // fileExists says every prefix (including lk) is present.
         let p = ArchiveMutationPlan(hashes: [h], fileExists: { _ in true })
-        XCTAssertFalse(p.payloadFiles.contains("lk"+h), "lk is never a payload")
+        XCTAssertFalse(p.payloadFiles.contains("lk"+h))
         XCTAssertEqual(Set(p.payloadFiles), Set(["ar"+h, "fp"+h, "sc"+h, "tm"+h]))
     }
 
-    func test_planIsDeterministicallyOrdered() {
+    func test_planDeterministicOrder() {
         let hi = "ffffffffffffffffffffffffffffffff", lo = "00000000000000000000000000000000"
         let p = ArchiveMutationPlan(hashes: [hi, lo], fileExists: { $0.hasPrefix("ar") })
-        XCTAssertEqual(p.hashes, [lo, hi])
-        XCTAssertEqual(p.payloadFiles, ["ar"+lo, "ar"+hi])
+        XCTAssertEqual(p.hashes, [lo, hi]); XCTAssertEqual(p.payloadFiles, ["ar"+lo, "ar"+hi])
     }
 
-    // MARK: real-lock contention (two holders, exactly one acquires)
+    // MARK: real-lock contention — exactly one acquires
 
-    func test_realLock_contention_exactlyOneAcquires_andTouchesNoPayload() {
-        // Seed a foreign lock on disk (as another process's acquire would).
+    func test_realLock_contention_loserTouchesNoPayload() {
         let h = "c0ffee00c0ffee00c0ffee00c0ffee00"
         let dir = String(cString: unison_bridge_unison_directory())
         let lk = dir + "/lk" + h
         FileManager.default.createFile(atPath: lk, contents: Data())
         defer { try? FileManager.default.removeItem(atPath: lk) }
-
-        let store = FakeStore(present: ["ar"+h])   // if touched, the assert below fails
-        XCTAssertThrowsError(try ArchiveMutation.execute(
-            plan: plan([h], ["ar"+h]), isEngineIdle: { true }, revalidate: { true },
-            locking: SystemArchiveLocking(), store: store)) {
+        let store = FakeStore(present: ["ar"+h])
+        XCTAssertThrowsError(try run(plan([h], ["ar"+h]), locking: SystemArchiveLocking(), store: store)) {
             XCTAssertEqual($0 as? ArchiveMutationError, .lockUnavailable(hash: h, reason: .alreadyHeld))
         }
-        XCTAssertEqual(store.present, ["ar"+h], "the transaction that lost the race touched no payload")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: lk), "the foreign lock was not removed")
+        XCTAssertEqual(store.present, ["ar"+h]); XCTAssertNil(store.manifest)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lk), "foreign lock not removed")
     }
 }
