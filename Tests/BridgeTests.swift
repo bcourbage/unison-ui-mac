@@ -895,6 +895,52 @@ final class BridgeTests: XCTestCase {
         UnisonBridge.installSyncCompleteHandler { _, _ in }
     }
 
+    /// Run the production array snapshot path (deliver_sync_snapshot_array —
+    /// the exact syncComplete boundary) once, over a fresh array built from the
+    /// rooted scan rows.
+    private func runSyncSnapshotFromArrayOnce() -> (ok: Bool, rows: [SyncSnapshotRow]) {
+        let exp = expectation(description: "array snapshot delivered")
+        var result: (Bool, [SyncSnapshotRow]) = (false, [])
+        UnisonBridge.installSyncCompleteHandler { ok, rows in result = (ok, rows); exp.fulfill() }
+        unison_bridge_test_run_sync_snapshot_from_array()
+        wait(for: [exp], timeout: 5.0)
+        return result
+    }
+
+    /// **Blocker B6 — GC rooting in the sync-completion snapshot.** The array
+    /// path must survive a minor collection that relocates the young stateItem
+    /// array mid-iteration. Verified red on `4359c7a`: `syncComplete` captured
+    /// `state` by value in the marshaller block, so forcing a GC between rows
+    /// read the pre-move array address (garbage row data / crash). Fixed by
+    /// capturing `&state` and dereferencing per row.
+    func test_g_syncSnapshot_arrayPath_survivesForcedMinorGCBetweenRows() throws {
+        let fixture = try IntegrationFixture(name: "syncsnapgc")
+        // Need more than one row so a collection actually fires BETWEEN rows.
+        try fixture.populate(
+            aFiles: ["a1.txt": "x\n", "a2.txt": "y\n", "both.txt": "a\n"],
+            bFiles: ["b1.txt": "p\n", "both.txt": "b\n"])
+        let items = scanFixtureItems(fixture)
+        XCTAssertGreaterThan(items.count, 1, "need >1 row to GC between rows")
+
+        // Baseline through the production array path, no forced GC.
+        let baseline = runSyncSnapshotFromArrayOnce()
+        XCTAssertTrue(baseline.ok)
+        XCTAssertEqual(baseline.rows.count, items.count)
+
+        // Force a minor collection between every row: the rooted array relocates,
+        // yet the marshaller must still read correct data.
+        unison_bridge_test_force_gc_between_snapshot_rows(true)
+        defer { unison_bridge_test_force_gc_between_snapshot_rows(false) }
+        let underGC = runSyncSnapshotFromArrayOnce()
+        XCTAssertTrue(underGC.ok, "snapshot ok under forced relocation")
+        XCTAssertEqual(underGC.rows.count, items.count, "exact rows under forced GC")
+        XCTAssertEqual(underGC.rows.map(\.details), baseline.rows.map(\.details),
+                       "row details identical under forced relocation")
+        XCTAssertEqual(underGC.rows.map(\.progress), baseline.rows.map(\.progress),
+                       "row progress identical under forced relocation")
+        UnisonBridge.installSyncCompleteHandler { _, _ in }   // restore benign
+    }
+
     /// The REAL public completion path end-to-end: `unison_bridge_synchronize()`
     /// → vendored `unisonSynchronize` → `do_unisonSynchronize` → `syncComplete
     /// !theState` (patch 0005) → C marshaller → Swift handler. Uses conflict-free

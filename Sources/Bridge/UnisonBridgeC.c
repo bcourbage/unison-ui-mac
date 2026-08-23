@@ -440,6 +440,16 @@ static bool test_snapshot_should_fail(size_t row, int field) {
     atomic_store(&g_test_snapshot_fail_row, -1);   /* one-shot */
     return true;
 }
+
+/* Finding B6 regression probe: when set, the snapshot marshaller forces a minor
+ * collection BETWEEN rows so a (young) stateItem array is evacuated to the major
+ * heap mid-iteration. With correct rooting the marshaller reads the relocated
+ * array and returns identical data; the pre-fix capture-by-value read a stale
+ * pre-GC array address (use-after-move). */
+static atomic_bool g_test_force_gc_between_rows = false;
+void unison_bridge_test_force_gc_between_snapshot_rows(bool on) {
+    atomic_store(&g_test_force_gc_between_rows, on);
+}
 #endif
 
 /* Shared snapshot marshaller (Finding #10). `row_at(i)` returns the i-th
@@ -496,6 +506,15 @@ static void deliver_sync_snapshot(size_t n, value (^row_at)(size_t)) {
 #endif
         v = bridge_call1_exn(fn_bytes, item, &raised);    if (raised) break;
         out[i].bytes_transferred = (int64_t)Double_val(v);
+#if UNISON_DEBUG_HOOKS
+        /* Finding B6: relocate the young snapshot array between rows so the next
+         * row_at() must read the post-GC address. Churn the minor heap, then
+         * force the collection (same idiom as the rooting probe above). */
+        if (atomic_load(&g_test_force_gc_between_rows)) {
+            for (int k = 0; k < 256; k++) { (void)caml_alloc_string(512); }
+            caml_minor_collection();
+        }
+#endif
     }
 
     if (raised || oom) {
@@ -509,6 +528,20 @@ static void deliver_sync_snapshot(size_t n, value (^row_at)(size_t)) {
 
     g_sync_complete_handler(true, (int)n, out);
     free_sync_rows(out, n);
+    CAMLreturn0;
+}
+
+/* Marshal an OCaml `stateItem array` snapshot, GC-safely (Finding B6). `state`
+ * is CAMLparam-rooted here, so the local-roots stack keeps `&state` updated
+ * across any minor collection the per-row accessors trigger. The block captures
+ * the ADDRESS and reads `*statep` on each call, always seeing the current
+ * (post-GC) array pointer — capturing `state` by value would freeze a pre-GC
+ * address and read relocated memory. */
+static void deliver_sync_snapshot_array(value state) {
+    CAMLparam1(state);
+    value *statep = &state;
+    deliver_sync_snapshot((size_t)Wosize_val(state),
+                          ^(size_t i){ return Field(*statep, i); });
     CAMLreturn0;
 }
 
@@ -529,7 +562,7 @@ CAMLprim value syncComplete(value state) {
         if (g_sync_complete_handler) g_sync_complete_handler(false, 0, NULL);
         CAMLreturn(Val_unit);
     }
-    deliver_sync_snapshot(n, ^(size_t i){ return Field(state, i); });
+    deliver_sync_snapshot_array(state);
     CAMLreturn(Val_unit);
 }
 
@@ -546,6 +579,25 @@ static void _ocaml_run_sync_snapshot(void *user) {
 }
 void unison_bridge_test_run_sync_snapshot(void) {
     run_on_ocaml_thread(_ocaml_run_sync_snapshot, NULL);
+}
+
+/* Build a fresh YOUNG `stateItem array` from the rooted scan rows and run it
+ * through the PRODUCTION array path (deliver_sync_snapshot_array) — the exact
+ * syncComplete boundary, including the block's array access. Combined with
+ * unison_bridge_test_force_gc_between_snapshot_rows this exercises Finding B6:
+ * the array is evacuated mid-iteration and the marshaller must still read it. */
+static void _ocaml_run_sync_snapshot_from_array(void *user) {
+    CAMLparam0();
+    CAMLlocal1(arr);
+    (void)user;
+    size_t n = (size_t)g_ri_count;
+    arr = caml_alloc(n, 0);                 /* young; tag 0 (array of values) */
+    for (size_t i = 0; i < n; i++) { Store_field(arr, i, g_ri_roots[i]); }
+    deliver_sync_snapshot_array(arr);
+    CAMLreturn0;
+}
+void unison_bridge_test_run_sync_snapshot_from_array(void) {
+    run_on_ocaml_thread(_ocaml_run_sync_snapshot_from_array, NULL);
 }
 #endif
 
