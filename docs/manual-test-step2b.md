@@ -239,7 +239,7 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. While the scan is running, freeze the server on the remote: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
 3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**. No credential sheet.
-4. During the frozen scan the toolbar action is **"Return to Profiles"** (neutral, back glyph). On current `main` (v0.5.1) in-place scan interruption is disabled at the policy gate (`ScanInterruptPolicy.stopInPlaceEnabled == false`), so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe — see issue #53 / #94 and the CHANGELOG. Do not expect it here.)
+4. During the frozen scan the toolbar action is **"Return to Profiles"** (neutral, back glyph). In v0.5.1 the in-place scan-interruption machinery has been **removed entirely** (#94) — there is no policy gate or `.interruptingScan` state left, so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe — see issue #53 / #94 and the CHANGELOG. Do not expect it here.)
 5. Click **Return to Profiles** → returns to the picker; the scan winds down in the background; it is **not** cancelled; the retained scan-stall detector still drives the abandoned op to **restart-required**.
 6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
 7. After returning to the picker via **Return to Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
@@ -255,6 +255,40 @@ A real password profile with a wrong/failing password.
 3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11.
 
 **PASS =** a wrong password re-prompts exactly once (no phantom extra prompt), the correct password then authenticates, **Cancel** returns cleanly to the picker, and any post-auth scan wedge reaches restart-required. A credential-sheet wait is expected, not a failure.
+
+### TC13 — Auth prompt field style: host-key plain, secrets masked (issue #35)
+
+Verifies, in the live UI, that the credential sheet renders a **plain** field for
+a non-secret host-key question and a **masked** field for secrets — the
+`ConnectPromptClassifier` → `PasswordSheet.InputStyle` decision (unit-tested in
+`ConnectPromptClassifierTests` / `PasswordSheetInputStyleTests`), confirmed
+end-to-end. The response field is masked iff it is an `NSSecureTextField` (dots
+instead of characters).
+
+**Setup.** Use a profile to a host **not yet in `~/.ssh/known_hosts`** (or
+temporarily remove its line) so the first connect asks the host-key question,
+followed by a password profile (no key / `sshargs = -i /nonexistent`) so a
+password prompt follows.
+
+1. **Host-key question → plain field.** On first connect the sheet shows
+   *"The authenticity of host '…' can't be established… Are you sure you want to
+   continue connecting (yes/no/[fingerprint])?"*. **Expect:** the response field
+   is **plain** (you can read what you type); type `yes` and it is accepted.
+2. **Password / passphrase / OTP → masked field.** The next prompt is the
+   password (or key passphrase, or an MFA/verification code). **Expect:** the
+   response field is a **masked** secure field (dots). Entering the correct
+   secret authenticates.
+3. **Host-key line then a password prompt in one chunk → masked.** Harder to
+   elicit live; if you can drive a peer that emits the host-key line immediately
+   followed by `Password:` in the same read, **Expect:** the field is **masked**
+   (the combined chunk classifies as a credential, not a host-key question — the
+   fail-safe). If you cannot reproduce it live, the equality-based classifier
+   cases `test_hostKeyQuestionThenPasswordPrompt_isCredential` and
+   `test_hostKeyQuestionWithTrailingPasswordSameLine_isCredential` cover it.
+
+**PASS =** the host-key yes/no question uses a plain field; every secret
+(password/passphrase/OTP) uses a masked secure field; and a host-key line
+followed by a password prompt is masked, never plain.
 
 ---
 
@@ -272,11 +306,11 @@ A real password profile with a wrong/failing password.
   scan in-process. During scanning the only leave is **Return to Profiles**
   (abandonment), and **sheet Cancel** / **Stop** cancel credential entry or a
   running sync; recovery from a wedged scan is quit + reopen. The v0.4.0 in-place
-  **Stop Scan** (kill the transport, then reuse the engine) was withdrawn: on
-  current `main` (v0.5.1) it is disabled at the policy gate because
-  forced-interruption engine reuse was never proven safe. Genuine scan
-  cancellation is declined (issue #53, not planned); the dormant machinery's
-  structural removal is tracked in #94.
+  **Stop Scan** (kill the transport, then reuse the engine) was withdrawn because
+  forced-interruption engine reuse was never proven safe; in v0.5.1 the machinery
+  has been **removed entirely** (#94, merged) — there is no `ScanInterruptPolicy`
+  gate or `.interruptingScan` state left. Genuine scan cancellation is declined
+  (issue #53, not planned).
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
   later reopen re-prompts. The app does not cache passwords; the recommended way
   to avoid re-prompts is SSH key authentication with the key held by `ssh-agent`
@@ -304,6 +338,7 @@ A real password profile with a wrong/failing password.
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
 | TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
+| TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
 
 ---
 
@@ -324,7 +359,9 @@ Results above come from three evidence classes:
   scan was not constructed.
 - **Live — interactive (Release build, → .241 VM; password typed by hand, never
   captured or stored):** TC3, TC4, TC5, and TC12 (retry-recovery and
-  cancellation runs).
+  cancellation runs). **TC13** (auth field style) is interactive and **required
+  on the signed v0.5.1 RC** — its host-key-plain and password-masked portions
+  are reproducible live; the combined host-key+password chunk stays unit-tested.
 
-Not yet re-run this pass: TC6a/b/c and TC9a/b (older step-2/step-3 cases outside
-the issue #24 scope).
+Not yet re-run this pass: TC6a/b/c, TC9a/b, and TC13 (the last required on the
+signed v0.5.1 RC — see the release checklist).
