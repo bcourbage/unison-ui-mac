@@ -1,20 +1,39 @@
 # Release checklist
 
-Validation steps for a release — some **before** tagging (pre-publication gates,
-confirmed against the built artifact, not just CI) and some **after** publication
-(canaries that run once the release + live appcast are already public; a failure
-is handled by rollback, not by blocking publication). Each item below says which
-it is. The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`,
-tag → workflow → Homebrew cask bump) is in the release runbook.
+Validation steps for a release, grouped by **when** they can actually run under
+the current single-job `release.yml` (tag → build → sign → notarize → create
+public Release → publish live feed, with **no pause or artifact hand-off** for
+manual testing):
+
+- **Pre-tag checks** (repo state, before you tag): `main` is green; the vendored
+  blob checksum matches `vendor/README.md`.
+- **Pre-publication gates** (automated, *inside* the release job — a failure
+  fails the job, so nothing is published): Developer ID signing, notarization +
+  stapling, appcast **seed-authentication**, **build-monotonicity**, and the
+  in-job `verify-appcast.py`.
+- **Post-publication canaries** (require the built, signed, notarized artifact,
+  which exists only as the job's **output** — by the time you can inspect it, the
+  Release and live feed are already public): every manual check against the
+  artifact — version/signature/notarization inspection, the symbol/string
+  assertions, the TC9b/TC11/TC13 lifecycle runs, and the installed-0.5.0 update
+  test. A failure here is an **incident handled by rollback**, not a blocked
+  publication. Making any of these a true gate would require splitting the
+  workflow with a protected manual-promotion stage.
+
+The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`, tag →
+workflow → Homebrew cask bump) is in the release runbook.
 
 ## Every release
 
-- [ ] `main` is green; the release build (`release.yml`, Release configuration)
-      is built from the exact tagged commit.
-- [ ] Artifact reports the right `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`,
-      minimum macOS, a Developer ID signature with a hardened runtime, a stapled
-      notarization ticket, and no Debug/autotest symbols.
-- [ ] Vendored blob checksum matches `vendor/README.md`.
+- [ ] **(pre-tag)** `main` is green; the release build (`release.yml`, Release
+      configuration) is built from the exact tagged commit.
+- [ ] **(pre-tag)** Vendored blob checksum matches `vendor/README.md`.
+- [ ] **(post-publication canary)** The built artifact reports the right
+      `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer ID
+      signature with a hardened runtime, a stapled notarization ticket, and no
+      Debug/autotest symbols. (The signing/notarization steps that PRODUCE this
+      are pre-publication gates in the job; inspecting the finished artifact
+      happens after it is published.)
 
 ## 0.5.1
 
@@ -39,12 +58,20 @@ a deleted archive):
    `appcast.xml` back on the `gh-pages` branch verbatim (its trailing
    `<!-- sparkle-signatures -->` block must be intact) and push. The *served*
    feed is what clients poll.
-2. **Verify propagation before touching the asset.** Poll the live
-   `https://bcourbage.github.io/unison-ui-mac/appcast.xml` until the served bytes
-   are byte-identical to the restored file (Pages deploys asynchronously), then
-   cryptographically verify it (`scripts/verify-appcast.py --feed-only`). Only
-   once the restored feed is actually being served do clients stop being offered
-   0.5.1.
+2. **Verify propagation before touching the asset.** Pages deploys
+   asynchronously, so poll the live feed until it is byte-identical to the
+   restored file, then cryptographically verify the served bytes. `SPARKLE_BIN`
+   is the checksum-pinned Sparkle tools dir (see `docs/sparkle-updates.md`);
+   `sign_update --verify` reads the maintainer key from the login Keychain, so no
+   key needs to be piped in:
+   ```sh
+   feed=https://bcourbage.github.io/unison-ui-mac/appcast.xml
+   good=/path/to/last-good/appcast.xml        # the exact bytes pushed in step 1
+   until curl -fsS "$feed" -o served.xml && cmp -s served.xml "$good"; do sleep 5; done
+   "$SPARKLE_BIN/sign_update" --verify served.xml   # must report a valid feed signature
+   ```
+   Only once the restored feed is actually being served do clients stop being
+   offered 0.5.1.
 3. **Then remove the 0.5.1 download.** `gh release delete-asset` the 0.5.1
    archive (or `gh release delete` the whole release). **Marking it a prerelease
    is NOT sufficient** — prerelease assets stay downloadable.
@@ -54,18 +81,22 @@ If a true pre-publication gate is ever required, add a staged-feed / manual-
 promotion step to `release.yml` (publish to a staging feed, verify, then promote
 to the production feed).
 
-- [ ] The `v0.5.1` release job authenticated the published `appcast.xml` (feed
-      signature) and passed the build-monotonicity check (build **20** > 19),
-      rather than taking any first-release/404 path.
-- [ ] The published appcast validates: `scripts/verify-appcast.py` (feed +
-      the new archive by exact URL) is green in the job, and the served feed is
-      byte-identical to the signed one.
-- [ ] On a machine running an **installed 0.5.0**: App menu ▸ Check for Updates
-      finds 0.5.1, downloads it, verifies the EdDSA signature, and installs it
-      through the app (no Gatekeeper prompt on the Sparkle-delivered update).
-- [ ] After the update, the About panel shows **0.5.1 (build 20)**.
+- [ ] **(pre-publication gate — in-job)** The `v0.5.1` release job authenticated
+      the published `appcast.xml` (feed signature) and passed the
+      build-monotonicity check (build **20** > 19), rather than taking any
+      first-release/404 path. (If this fails, the job fails and nothing is
+      published.)
+- [ ] **(pre-publication gate — in-job)** The published appcast validates:
+      `scripts/verify-appcast.py` (feed + the new archive by exact URL) is green
+      in the job, and the served feed is byte-identical to the signed one.
+- [ ] **(post-publication canary)** On a machine running an **installed 0.5.0**:
+      App menu ▸ Check for Updates finds 0.5.1, downloads it, verifies the EdDSA
+      signature, and installs it through the app (no Gatekeeper prompt on the
+      Sparkle-delivered update).
+- [ ] **(post-publication canary)** After the update, the About panel shows
+      **0.5.1 (build 20)**.
 
-### Scan-interruption withdrawal — actual-artifact assertions (issues #53 / #94)
+### Scan-interruption withdrawal — actual-artifact assertions (post-publication canaries; issues #53 / #94)
 Run against the **final signed Release** `.app` binary
 (`…/Release/unison-ui-mac.app/Contents/MacOS/unison-ui-mac`):
 
@@ -84,7 +115,7 @@ Run against the **final signed Release** `.app` binary
       aborts the running transfer via `Abort.all` (unwinds at the next
       checkpoint), unchanged.
 
-### Lifecycle re-runs on the signed Release candidate
+### Lifecycle re-runs on the signed Release candidate (post-publication canaries)
 Behavior changed around scan-leave (#94) and TC11 was rewritten, so re-run these
 against the **final signed RC** (not just a Debug build):
 
