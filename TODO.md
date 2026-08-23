@@ -2,13 +2,6 @@
 
 ## To Do
 
-- [ ] **Verify a Sparkle auto-update end to end on the 0.5.1 release.** 0.5.0 was
-      the first Sparkle build, so there was no prior client to update *from*. On
-      0.5.1, confirm an installed 0.5.0 finds, downloads, verifies, and installs
-      0.5.1 through the app. This is also the first real exercise of the appcast
-      seed-authentication and build-monotonicity paths in `release.yml` against a
-      published feed (0.5.0 took the first-release 404 path).
-
 - [ ] **Upstream the connection close/reopen support in dependency order.**
       First rebase vendored patch 0003 (`remote-close-and-drain`) onto current
       upstream master and propose it as the general engine contribution, retaining
@@ -36,6 +29,16 @@
 
 *Historical log of finished work, preserved for context. 40+ items
 landed across the bring-up and follow-on sessions.*
+
+### Release validation
+
+- [x] **First 0.5.0 → 0.5.1 Sparkle auto-update verified end to end (2026-08-22).**
+      On a machine running the installed 0.5.0, the app found, downloaded, EdDSA-
+      verified, and installed 0.5.1 on launch, with no Gatekeeper prompt on the
+      Sparkle-delivered update. This was also the first live exercise of the
+      appcast seed-authentication and build-monotonicity paths in `release.yml`
+      against a published feed: the release job passed and the served appcast
+      carries both 0.5.1 (build 20) and 0.5.0 (build 19), each signed.
 
 ### File-integrity hardening
 
