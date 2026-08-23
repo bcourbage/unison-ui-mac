@@ -88,31 +88,29 @@ jobs:
           echo "xcodegen: $got"
           [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
 
-      - name: Verify + apply the patch set in deterministic order
-        # apply-unison-patches.sh fails loudly if any REQUIRED patch is missing
-        # and uses strict all-or-nothing git-apply (no fuzz). It is the single
-        # source of truth for the patch set and its order.
-        run: |
-          cd gui
-          scripts/apply-unison-patches.sh "$GITHUB_WORKSPACE/unison" "$GITHUB_WORKSPACE/gui/patches"
-
-      - name: Assert the lock patch (0006) is baked into the source
-        run: |
-          for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
-            grep -q "Callback.register \"$cb\"" unison/src/uimacbridge.ml \
-              || { echo "::error::0006 callback $cb missing from patched source"; exit 1; }
-          done
-          echo "patch 0006 lock callbacks present in source"
-
       - name: Build the vendored blob (OCaml core only)
         env:
           UNISON_SRC: ${{ github.workspace }}/unison/src
         run: |
           cd gui
           eval "$(opam env)"
-          # vendor-blob re-runs apply-patches (idempotent), builds unison-blob.o
-          # at MACOSX_DEPLOYMENT_TARGET, and copies it to vendor/.
+          # vendor-blob applies the patch set exactly ONCE via
+          # apply-unison-patches.sh (deterministic order, fail-loud on a
+          # missing/partial patch — the single source of truth for the set),
+          # builds unison-blob.o at MACOSX_DEPLOYMENT_TARGET, and copies it to
+          # vendor/. Do NOT apply patches in a separate prior step: a second
+          # apply pass cannot reverse-detect already-applied hunks when patches
+          # share context (0006 inserts within 0002's trailing context), which
+          # makes the idempotency check report a false "partially applied".
           make vendor-blob UNISON_SRC="$UNISON_SRC"
+
+      - name: Assert the applied source carries the lock patch (0006)
+        run: |
+          for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
+            grep -q "Callback.register \"$cb\"" unison/src/uimacbridge.ml \
+              || { echo "::error::0006 callback $cb missing from patched source"; exit 1; }
+          done
+          echo "patch 0006 lock callbacks present in applied source"
 
       - name: Locate the built blob
         id: blob
