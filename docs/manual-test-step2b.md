@@ -306,11 +306,11 @@ followed by a password prompt is masked, never plain.
   scan in-process. During scanning the only leave is **Return to Profiles**
   (abandonment), and **sheet Cancel** / **Stop** cancel credential entry or a
   running sync; recovery from a wedged scan is quit + reopen. The v0.4.0 in-place
-  **Stop Scan** (kill the transport, then reuse the engine) was withdrawn: on
-  current `main` (v0.5.1) it is disabled at the policy gate because
-  forced-interruption engine reuse was never proven safe. Genuine scan
-  cancellation is declined (issue #53, not planned); the dormant machinery's
-  structural removal is tracked in #94.
+  **Stop Scan** (kill the transport, then reuse the engine) was withdrawn because
+  forced-interruption engine reuse was never proven safe; in v0.5.1 the machinery
+  has been **removed entirely** (#94, merged) — there is no `ScanInterruptPolicy`
+  gate or `.interruptingScan` state left. Genuine scan cancellation is declined
+  (issue #53, not planned).
 - **Password re-prompt after sleep:** a held connection dies on sleep, so a
   later reopen re-prompts. The app does not cache passwords; the recommended way
   to avoid re-prompts is SSH key authentication with the key held by `ssh-agent`
@@ -337,6 +337,7 @@ followed by a password prompt is masked, never plain.
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
 | TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
+| TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
 | TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
 
 ---
@@ -358,7 +359,9 @@ Results above come from three evidence classes:
   scan was not constructed.
 - **Live — interactive (Release build, → .241 VM; password typed by hand, never
   captured or stored):** TC3, TC4, TC5, and TC12 (retry-recovery and
-  cancellation runs).
+  cancellation runs). **TC13** (auth field style) is interactive and **required
+  on the signed v0.5.1 RC** — its host-key-plain and password-masked portions
+  are reproducible live; the combined host-key+password chunk stays unit-tested.
 
-Not yet re-run this pass: TC6a/b/c and TC9a/b (older step-2/step-3 cases outside
-the issue #24 scope).
+Not yet re-run this pass: TC6a/b/c, TC9a/b, and TC13 (the last required on the
+signed v0.5.1 RC — see the release checklist).

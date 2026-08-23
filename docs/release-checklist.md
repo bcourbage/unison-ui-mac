@@ -16,12 +16,29 @@ be confirmed against the actual built artifact, not just CI.
 
 ## 0.5.1
 
-### First real 0.5.0 → 0.5.1 Sparkle auto-update (TODO #1)
+### First real 0.5.0 → 0.5.1 Sparkle auto-update (TODO #1) — POST-PUBLICATION CANARY
 0.5.0 was the first Sparkle build, so there was no prior client to update *from*;
 0.5.1 is the first end-to-end exercise of the update path AND the first time
 `release.yml` runs the appcast **seed-authentication + build-monotonicity** paths
-against a **published** feed (0.5.0 took the first-release 404 path). This is a
-real gate, not a formality — do it on a real machine, after tagging.
+against a **published** feed (0.5.0 took the first-release 404 path).
+
+**This is a canary, not a pre-publication gate.** The workflow creates the public
+GitHub Release, publishes the live appcast to Pages, and verifies the served feed
+*before* the installed-0.5.0 manual test can run — so by the time this test runs,
+0.5.1 is already being offered to users. Treat a failure as an incident, not a
+blocked merge.
+
+**If the canary fails (installer/Gatekeeper/update problem):** withdraw the
+release promptly —
+1. **Restore the previous signed appcast** so clients stop being offered 0.5.1:
+   revert `appcast.xml` on the `gh-pages` branch to the last-good (v0.5.0)
+   signed copy and push (the served feed is what clients poll).
+2. **Withdraw the GitHub Release** (delete it or mark it a pre-release / remove
+   its asset) so the download link no longer serves 0.5.1.
+3. Fix forward, then cut **v0.5.2** (build 21) — never re-tag v0.5.1.
+
+If a true pre-publication gate is ever required, add a staged-feed / manual-
+promotion step to `release.yml` (publish to a staging feed, verify, then promote).
 
 - [ ] The `v0.5.1` release job authenticated the published `appcast.xml` (feed
       signature) and passed the build-monotonicity check (build **20** > 19),
@@ -64,6 +81,10 @@ against the **final signed RC** (not just a Debug build):
       a scan: reaches restart-required within the scan timeout; the toolbar shows
       **Return to Profiles** only (no "Stop Scan"); a waiting replacement profile
       is carried to restart-required; quit + reopen recovers cleanly.
+- [ ] **TC13** (`docs/manual-test-step2b.md`) — auth prompt field style: the
+      host-key yes/no question renders a **plain** field and every secret
+      (password/passphrase/OTP) renders a **masked** secure field. (The combined
+      host-key+password-chunk case stays unit-tested.)
 
 ## 0.4.2
 

@@ -30,6 +30,15 @@ and settings continue to work without migration.
   the Return-to-Profiles behavior, the Settings tabs and menus, the SSH
   version-probe and compatibility boundary, and the update process accurately.
 
+### Security
+- **Credential prompts now default to masked entry.** The authentication sheet
+  classifies each SSH prompt and shows a masked (secure) field for every
+  secret — password, passphrase, or verification code — reserving the plain
+  field for the exact host-key yes/no question only. A prompt that merely
+  mentions "authenticity" or `yes/no`, or a host-key line followed by a password
+  prompt, is now treated as a credential and masked (previously it could render
+  in a plain, readable field).
+
 ## [0.5.0] — 2026-08-21
 
 Adds in-app updates and moves to a Developer ID-signed, notarized build, on top
