@@ -407,15 +407,20 @@ const char *unison_bridge_ri_get_details(int row);
  * files with differing CONTENT (not just metadata). Drives Diff
  * menu/button enabled state — Unison's own `canDiff` predicate.
  *
- * `unison_bridge_run_show_diffs` kicks off a diff. The result arrives
- * asynchronously via the registered diff handler (success) or diff-err
- * handler (failure, e.g. "Can't diff: path doesn't refer to a file in
- * both replicas"). Both handlers fire on the OCaml worker thread; the
- * Swift trampolines copy strings and async-dispatch to the main queue
- * before invoking user handlers.
+ * `unison_bridge_run_show_diffs` runs a diff. The diff TEXT arrives via the
+ * registered diff handler (success) or diff-err handler (failure, e.g. "Can't
+ * diff: path doesn't refer to a file in both replicas"). Both handlers fire on
+ * the OCaml worker thread; the Swift trampolines copy strings and async-dispatch
+ * to the main queue before invoking user handlers.
  *
- * Returns immediately; the diff itself runs through Unison's configured
- * `diff` pref (default `diff -u`) on the OCaml side. */
+ * IMPORTANT: this does NOT return immediately. Unison's `runShowDiffs` runs the
+ * whole diff — a REMOTE FILE FETCH plus the external `diff` pref (default
+ * `diff -u`) — SYNCHRONOUSLY inside the single OCaml worker, so this call blocks
+ * its CALLING thread (via `run_on_ocaml_thread`) for the entire transfer+exec. The
+ * caller MUST therefore invoke it off the main thread (the app dispatches it on
+ * its serial engine lane); calling it on the main thread beachballs the UI on a
+ * slow or wedged remote transport. The bool it returns is whether the OCaml call
+ * completed without raising; the diff text is delivered separately by the handlers. */
 bool unison_bridge_can_diff(int row);
 bool unison_bridge_run_show_diffs(int row);
 

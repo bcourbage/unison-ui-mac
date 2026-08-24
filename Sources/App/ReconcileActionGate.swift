@@ -19,6 +19,13 @@ struct ReconcileActionGate: Equatable {
     var isScanning: Bool
     var phase: Phase
     var hasItems: Bool
+    /// PR-4: a diff is running on the single OCaml worker. Every engine-reaching
+    /// action (Direction/Revert, Ignore, Diff incl. canDiff, Details/ri_get_details,
+    /// Go/Sync, Rescan) would call the bridge on the MAIN thread and block behind
+    /// the wedged diff — so all are refused at their method boundary while diffing.
+    /// Only navigation (Profiles/close) and Quit remain; Stop is naturally false
+    /// (no sync/scan runs during a diff), matching "no safe cancellation exists".
+    var diffInFlight: Bool = false
     /// Finding #10: sync completed but its per-file results couldn't be shown
     /// (snapshot marshalling failure / row-count mismatch). The engine is
     /// quiescent (so NOT `restartRequired`), but the displayed rows are not
@@ -43,7 +50,7 @@ struct ReconcileActionGate: Equatable {
     /// The row set is stable and the engine is idle-ready — the precondition for
     /// any per-row or start-sync action.
     var isActionable: Bool {
-        !restartRequired && !mutationInFlight && !resultsUnavailable
+        !restartRequired && !mutationInFlight && !resultsUnavailable && !diffInFlight
             && hasItems && phase == .ready
     }
 
@@ -67,17 +74,18 @@ struct ReconcileActionGate: Equatable {
             // Also blocked when results are unavailable: the displayed rows are
             // stale, so an Ignore by row index would address the wrong root.
             return !restartRequired && !mutationInFlight && !resultsUnavailable
-                && !isSyncing && hasItems
+                && !diffInFlight && !isSyncing && hasItems
         case .details:
             // Read-only, but reads ri_get_details BY ROW INDEX against the
             // published roots, so it must not run while rows are stale against
             // new roots. No items/phase requirement (a placeholder is shown).
-            // Blocked when results are unavailable for the same stale-row reason.
-            return !restartRequired && !mutationInFlight && !resultsUnavailable
+            // Blocked when results are unavailable for the same stale-row reason,
+            // and while diffing (the bridge call would block the main thread).
+            return !restartRequired && !mutationInFlight && !resultsUnavailable && !diffInFlight
         case .rescan:
             // Allowed post-sync (.done) too, but never during a sync, a restart,
-            // or an Ignore publication gap.
-            return !restartRequired && !mutationInFlight && !isSyncing
+            // an Ignore publication gap, or a diff.
+            return !restartRequired && !mutationInFlight && !isSyncing && !diffInFlight
         }
     }
 }

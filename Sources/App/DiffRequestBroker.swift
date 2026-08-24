@@ -2,14 +2,12 @@ import Foundation
 
 /// Outcome of asking the broker to start a diff.
 enum DiffRequestResult: Equatable {
-    /// The diff was issued to the engine; its result will arrive asynchronously.
+    /// The diff was issued to the engine off-main; its result (text, a no-output
+    /// notice, or an error) arrives asynchronously via the driver's completion.
     case issued
-    /// Refused: a diff is already outstanding, or an abandoned one is still
-    /// draining. The UI gives brief feedback and does nothing else.
+    /// Refused: the engine is busy with another operation, a diff is already
+    /// outstanding, or an abandoned one is still draining. Brief UI feedback only.
     case refused
-    /// `run_show_diffs` returned false (the dispatch raised in OCaml). No async
-    /// result will arrive; the caller surfaces a narrow diff error.
-    case raised
 }
 
 /// APP-GLOBAL serializer/owner for asynchronous per-row diff requests.
@@ -33,16 +31,20 @@ enum DiffRequestResult: Equatable {
 ///   session's request is never issued while an older result is in flight, and
 ///   an abandoned result can never be delivered as a newer session's result.
 ///
-/// DESIGN CONTRACT (required for draining to terminate): every diff request
-/// that was ISSUED (i.e. `run_show_diffs` returned true) must eventually
-/// produce EXACTLY ONE terminal callback — a diff result (`displayDiff`) or a
-/// diff error (`displayDiffErr`) — which drives `deliver()`. Drain-gating
-/// depends on this: an abandoned request's single terminal callback is what
-/// returns the broker from `draining` to `idle`, so if a successful
-/// `run_show_diffs` could ever produce zero terminal callbacks, an abandoned
-/// request would block all future diffs forever. The synchronous FALSE return
-/// (the OCaml dispatch raised) is the ONLY non-callback outcome, and it is
-/// handled separately by `requestRaised` (no terminal callback is awaited).
+/// DESIGN CONTRACT (required for draining to terminate): every ISSUED diff
+/// request must eventually be resolved EXACTLY ONCE. Upstream `Files.diff` calls a
+/// diff callback (`displayDiff`/`displayDiffErr` → `deliver()`) only when the diff
+/// produced output, so a successful diff with NO output (e.g. `diff = true`, or a
+/// GUI diff tool) produces ZERO callbacks. The synchronous return of
+/// `run_show_diffs` is therefore the terminal handshake: on EITHER a true or a
+/// false return the driver resolves the request through `deliver()` — the same
+/// state machine as a callback — so it always returns to `idle` from `.outstanding`
+/// (present the outcome) or `.draining` (an abandoned/timed-out diff — drop
+/// presentation), and is a no-op if a callback already resolved it (idle →
+/// `.dropStale`). An abandoned request therefore ALWAYS drains back to `idle` —
+/// with a callback, a no-output success, OR a failure — so it can never block all
+/// future diffs. (`requestRaised` remains a valid lower-level primitive, exercised
+/// directly against the real bridge in BridgeTests.)
 ///
 /// Pure and synchronous — mutated on the main actor; no threading here, which
 /// is what makes the invariant unit-testable against the exact dangerous
@@ -105,6 +107,15 @@ struct DiffRequestBroker: Equatable {
     /// (only if this owner still holds the outstanding request). A read-only
     /// diff query raising does not corrupt engine state, so nothing escalates.
     mutating func requestRaised(owner: Owner) {
+        if case .outstanding(let o) = state, o == owner { state = .idle }
+    }
+
+    /// Cancel a request that was ISSUED to the broker but never dispatched to the
+    /// engine (the coordinator refused ownership after `request`). Returns the
+    /// broker straight to `idle` for the owner — NOT to `draining`: no bridge call
+    /// exists, so nothing will ever arrive to drain it. Using `abandon` here would
+    /// strand the broker draining forever (review round 4, SF2).
+    mutating func cancelUnissued(owner: Owner) {
         if case .outstanding(let o) = state, o == owner { state = .idle }
     }
 

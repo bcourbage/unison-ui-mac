@@ -38,14 +38,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var activeVersionProbe: VersionCheck.Handle?
     private var versionProbeSession: SessionID?
 
-    /// APP-GLOBAL diff-request broker. The OCaml diff result carries no request
-    /// id and is delivered through a single permanent handler, so at most one
-    /// diff is outstanding across the whole app and its result is routed to the
-    /// session that OWNS it (`diffRequestOwner`) — never to whatever session is
-    /// merely current. A session abandoned while its diff is in flight drains
-    /// before any new diff can be issued (see `DiffRequestBroker`).
-    private var diffBroker = DiffRequestBroker()
-    private var diffRequestOwner: SessionID?
+    /// The asynchronous per-diff lifecycle (PR-4): the app-global broker, the
+    /// off-main bridge dispatch, the wedged-diff watchdog, and the completion
+    /// handshake. The scheduler/bridge/sink are injected so the production sequence
+    /// is unit-tested (`DiffLifecycle`). AppDelegate is the sink; engine ownership
+    /// (`.diffing`) is taken/released through the coordinator.
+    private lazy var diffLifecycle: DiffLifecycle = DiffLifecycle(
+        sink: self,
+        runBridge: { [weak self] row, completion in
+            self?.connectQueue.async {
+                let can = unison_bridge_can_diff(Int32(row))
+                let ok = can && unison_bridge_run_show_diffs(Int32(row))
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(can, ok) } }
+            }
+        },
+        scheduleWatchdog: { delay, fire in
+            let work = DispatchWorkItem { MainActor.assumeIsolated { fire() } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return { work.cancel() }
+        },
+        stallTimeout: 45)
 
     /// Pending restore for a one-shot `-ignorearchives` rescan: the `.prf`
     /// we temporarily appended the injected suffix to. Cleaned up the moment
@@ -272,6 +284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             driveBeginScan(s, op)
         case .beginSync(let s, let op):
             driveBeginSync(s, op)
+        case .beginDiff(let s, let op, let row):
+            driveBeginDiff(s, op, row: row)
         case .closeConnection(let s, let op):
             driveCloseConnection(s, op)
         case .abortSync(let s, let op):
@@ -376,33 +390,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         )
     }
 
-    /// Issue a diff for `row` on behalf of `session` through the app-global
-    /// broker. Records the owner so the async result is routed back to THIS
-    /// session's window, never to whatever session is current when it lands.
+    /// Issue a diff for `row` on behalf of `session`. Engine ownership is taken
+    /// through the coordinator (`.diffing`) so a diff can neither overlap nor be
+    /// misordered against scan/sync/rescan/mutation (PR-4); the app-global broker
+    /// routes the async result back to THIS session's window and drains an
+    /// abandoned one. The bridge call runs OFF the main thread (`driveBeginDiff`),
+    /// so a slow/wedged remote transfer never beachballs the app.
     private func requestDiff(session s: SessionID, row: Int) -> DiffRequestResult {
-        switch diffBroker.request(owner: s.raw) {
-        case .refuseInFlight, .refuseDraining:
+        // Broker first (cheap, revertible): sets up result routing for this owner.
+        guard diffLifecycle.request(owner: s.raw) else { return .refused }
+        // Coordinator gate: a diff runs only from `.ready`. If the engine is busy
+        // (opening/scanning/syncing/diffing/…), refuse and undo the broker request.
+        let effects = engine.requestDiff(row: row)
+        guard !effects.isEmpty else {
+            diffLifecycle.undoRequest(owner: s.raw)
             return .refused
-        case .issue:
-            diffRequestOwner = s
-            // Synchronous dispatch; the result (if any) arrives async via the
-            // diff/diff-err handler. A false return means the OCaml dispatch
-            // raised: no result will arrive, so clear the pending request.
-            if unison_bridge_run_show_diffs(Int32(row)) {
-                return .issued
-            }
-            diffBroker.requestRaised(owner: s.raw)
-            diffRequestOwner = nil
-            return .raised
         }
+        run(effects)                    // → driveBeginDiff (off-main)
+        return .issued
     }
 
-    /// The session's diff window closed, or the session itself is being torn
-    /// down. If it owns the outstanding diff, the broker enters draining so the
-    /// still-in-flight result is discarded before any new diff can be issued.
+    /// Run the coordinator-authorized diff off-main via the lifecycle (broker +
+    /// dispatch + watchdog + completion handshake). All presentation and the engine
+    /// release route back through `DiffLifecycleSink` below.
+    private func driveBeginDiff(_ s: SessionID, _ op: OperationID, row: Int) {
+        diffLifecycle.begin(owner: s.raw, op: op.raw, row: row)
+    }
+
+    /// The session's diff window closed, or the session itself is being torn down.
+    /// The broker enters draining so a still-in-flight result is discarded; the diff
+    /// keeps engine ownership until its bridge call actually returns.
     private func abandonDiff(session s: SessionID) {
-        diffBroker.abandon(owner: s.raw)
-        if diffRequestOwner == s { diffRequestOwner = nil }
+        diffLifecycle.abandon(owner: s.raw)
     }
 
     /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
@@ -937,33 +956,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installDiffHandler { [weak self] title, text in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                // Route to the OWNER of the outstanding request (not the current
-                // session). The broker drops a result whose owning session was
-                // abandoned (draining) or that nothing is awaiting.
-                switch self.diffBroker.deliver() {
-                case .apply(let owner):
-                    if let s = self.diffRequestOwner, s.raw == owner {
-                        self.windowBySession[s]?.showDiff(title: title, text: text)
-                    }
-                    self.diffRequestOwner = nil
-                case .dropStale:
-                    self.diffRequestOwner = nil
-                }
+                // The lifecycle routes to the OWNER of the outstanding request via
+                // the broker (dropping a result whose session was abandoned).
+                self?.diffLifecycle.deliverResult(title: title, text: text)
             }
         }
         UnisonBridge.installDiffErrHandler { [weak self] err in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                switch self.diffBroker.deliver() {
-                case .apply(let owner):
-                    if let s = self.diffRequestOwner, s.raw == owner {
-                        self.windowBySession[s]?.showDiffError(err)
-                    }
-                    self.diffRequestOwner = nil
-                case .dropStale:
-                    self.diffRequestOwner = nil
-                }
+                self?.diffLifecycle.deliverError(err)
             }
         }
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
@@ -2704,5 +2704,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             .credits: credits,
             .applicationName: appName,
         ])
+    }
+}
+
+// MARK: - DiffLifecycle sink (PR-4)
+
+extension AppDelegate: DiffLifecycleSink {
+    func diffSetInFlight(_ inFlight: Bool, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.setDiffInFlight(inFlight)
+    }
+    func diffShowResult(title: String, text: String, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.showDiff(title: title, text: text)
+    }
+    func diffShowError(_ message: String, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.showDiffError(message)
+    }
+    func diffOwnerWindowExists(_ owner: UInt64) -> Bool {
+        windowBySession[SessionID(raw: owner)] != nil
+    }
+    func diffPresentAppStall(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "A file comparison is stuck"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+    func diffReleaseEngineOwnership(owner: UInt64, op: UInt64) {
+        run(engine.diffCompleted(session: SessionID(raw: owner), op: OperationID(raw: op)))
     }
 }

@@ -101,4 +101,28 @@ final class ReconcileActionGateTests: XCTestCase {
         g.mutationInFlight = true
         XCTAssertFalse(g.allows(.details))
     }
+
+    // PR-4 round 2 (blocker): while a diff occupies the OCaml worker, EVERY
+    // engine-reaching action is refused — each would call the bridge on the main
+    // thread and block behind the wedged diff. Only navigation/Quit stay; Stop is
+    // naturally false (no sync/scan runs during a diff).
+    func test_diffInFlight_blocksEveryEngineAction_keepsNavAndQuit() {
+        var g = ready()
+        g.diffInFlight = true
+        for a in engineActions {
+            XCTAssertFalse(g.allows(a), "\(a) must be refused while a diff is in flight")
+        }
+        XCTAssertFalse(g.isActionable)
+        XCTAssertTrue(g.allows(.profiles), "navigation stays available during a diff")
+        XCTAssertTrue(g.allows(.quit), "Quit stays available during a diff")
+        XCTAssertFalse(g.allows(.stop), "Stop is off — no safe cancellation of a diff")
+    }
+
+    func test_diffInFlight_blocksDetails_evenWithNoItems() {
+        var g = ready()
+        g.hasItems = false
+        g.diffInFlight = true
+        XCTAssertFalse(g.allows(.details),
+                       "no ri_get_details bridge call may run while diffing")
+    }
 }

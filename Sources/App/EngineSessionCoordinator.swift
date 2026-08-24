@@ -89,6 +89,7 @@ final class EngineSessionCoordinator {
         case opening(SessionID, OperationID)   // init1 + credential prompt
         case scanning(SessionID, OperationID)  // init2
         case ready(SessionID)                  // no op in flight; awaiting user
+        case diffing(SessionID, OperationID)   // a file diff owns the engine (PR-4)
         case syncing(SessionID, OperationID)   // transport
         case closing(SessionID, OperationID, CloseOutcome)
         case restartRequired(String)
@@ -103,6 +104,7 @@ final class EngineSessionCoordinator {
         case beginConnect(SessionID, OperationID, profile: String)  // init1
         case beginScan(SessionID, OperationID)               // init2 over live connection
         case beginSync(SessionID, OperationID)               // synchronize
+        case beginDiff(SessionID, OperationID, row: Int)     // off-main diff → diffCompleted (PR-4)
         case closeConnection(SessionID, OperationID)         // off-main close → closeCompleted
         case abortSync(SessionID, OperationID)               // cooperative Abort.all on the running sync
         case showWaiting(OpenRequestID, profile: String)     // queued behind a busy op
@@ -167,7 +169,7 @@ final class EngineSessionCoordinator {
     var currentSession: SessionID? {
         switch phase {
         case .opening(let s, _), .scanning(let s, _), .ready(let s),
-             .syncing(let s, _), .closing(let s, _, _):
+             .diffing(let s, _), .syncing(let s, _), .closing(let s, _, _):
             return s
         case .idle, .restartRequired:
             return nil
@@ -275,6 +277,34 @@ final class EngineSessionCoordinator {
         }
     }
 
+    /// User asked to diff a reconcile row. A diff runs the OCaml engine (remote
+    /// fetch + external diff), so it TAKES engine ownership: only from `.ready`,
+    /// and while `.diffing` every other engine intent (sync/rescan/mutation) is
+    /// refused — a diff can neither overlap nor be misordered against them (PR-4).
+    /// The driver runs `.beginDiff` off-main and reports back via `diffCompleted`.
+    func requestDiff(row: Int) -> [Effect] {
+        guard case .ready(let s) = phase else { return [] }
+        let op = mintOp()
+        phase = .diffing(s, op)
+        return [.beginDiff(s, op, row: row)]
+    }
+
+    /// The diff bridge call returned (success, no-output, error, or a wedged diff
+    /// that finally completed). Releases engine ownership back to `.ready` for the
+    /// SAME session+op; a
+    /// stale/duplicate delivery is a no-op. If the session was abandoned while the
+    /// diff ran, the deferred close is started here instead of returning to a
+    /// now-gone results window.
+    func diffCompleted(session: SessionID, op: OperationID) -> [Effect] {
+        guard case .diffing(let s, let o) = phase, s == session, o == op else { return [] }
+        if abandoned {
+            abandoned = false
+            return beginClose(s, outcome: .toIdle)
+        }
+        phase = .ready(s)
+        return []
+    }
+
     /// User pressed Go. Authorizes the sync via `.beginSync`; the driver
     /// must call the bridge only in response to that effect.
     func requestSync() -> [Effect] {
@@ -300,7 +330,10 @@ final class EngineSessionCoordinator {
         switch phase {
         case .ready(let s):
             return beginClose(s, outcome: .toIdle)
-        case .opening, .scanning, .syncing:
+        case .opening, .scanning, .syncing, .diffing:
+            // An op is in flight (a diff still owns the serialized engine lane
+            // even after its window closes). Defer the close to the terminal
+            // event so the engine is never idled while a bridge call runs.
             abandoned = true
             return []
         case .closing(let s, let op, .backToReady):
