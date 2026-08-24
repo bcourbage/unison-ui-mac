@@ -1091,7 +1091,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // tree (so the widening doesn't persist beyond this
         // sync-complete view).
         if !failedRowSet.isEmpty {
-            let toReveal = tree.nodesToRevealFailedRows(failedRowSet)
+            let toReveal = tree.nodesToRevealRows(failedRowSet)
             for node in toReveal {
                 outlineView.expandItem(node, expandChildren: false)
             }
@@ -1322,40 +1322,52 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// carry an IgnoreAction tag.
     @objc private func ignoreMenuAction(_ sender: NSMenuItem) {
         guard let action = IgnoreAction.from(tag: sender.tag) else { return }
-        // Edit-menu invocations operate on the table's selection. Context-menu
-        // invocations should operate on the right-clicked row if it isn't
-        // part of the current selection — matching Finder's behavior.
-        let row = rowForPendingMenuAction()
+        // A CONTEXT-menu invocation operates on the freshly right-clicked row; an
+        // Edit-menu (menu-bar) invocation operates on the current selection and must
+        // ignore the now-stale `clickedRow` (SF2).
+        let row = rowForPendingMenuAction(preferClicked: isContextMenuItem(sender))
         applyIgnore(action, row: row)
     }
 
-    /// Resolves which leaf row a menu action targets. Prefers the
-    /// outline view's `clickedRow` (set on right-click), falling back to
-    /// the first leaf in the current selection. Returns nil when neither
-    /// resolves to a leaf — caller should beep.
-    ///
-    /// Used by per-row actions that meaningfully apply to multiple leaves
-    /// (Ignore Path/Ext/Name — though they only need one path, the
-    /// pattern they install affects all matches).
-    private func rowForPendingMenuAction() -> Int? {
-        let clicked = outlineView.clickedRow
-        if clicked >= 0,
-           let node = outlineView.item(atRow: clicked) as? ReconcileNode,
-           let row = node.row {
-            return row
+    /// True iff `item` belongs to the outline view's RIGHT-CLICK context menu
+    /// (whose items were captured against a fresh `clickedRow`) rather than a
+    /// menu-bar menu. `outlineView.clickedRow` persists after a context menu
+    /// dismisses, so a later menu-bar Ignore/Diff must NOT honor it — it would
+    /// target a stale (or, after a rescan, a different) row (SF2).
+    private func isContextMenuItem(_ item: NSMenuItem?) -> Bool {
+        item?.menu === outlineView.menu
+    }
+
+    /// Resolves which leaf row a menu action targets. Only a CONTEXT-menu
+    /// invocation (`preferClicked`) honors the right-clicked row; every other
+    /// entry point (Edit menu, menu bar) uses the current selection, so a stale
+    /// `clickedRow` can't be targeted. Returns nil when neither resolves to a leaf.
+    private func rowForPendingMenuAction(preferClicked: Bool) -> Int? {
+        if preferClicked {
+            let clicked = outlineView.clickedRow
+            if clicked >= 0,
+               let node = outlineView.item(atRow: clicked) as? ReconcileNode,
+               let row = node.row {
+                return row
+            }
         }
         return leafRowsInSelection().first
     }
 
-    /// Stricter row resolver for Diff (delegates to
-    /// `RowSelectionRules.diffTarget` so the rule is unit-tested).
-    /// Diff is single-leaf only — folders / multi-row / empty
-    /// selections return nil.
-    private func rowForDiff() -> Int? {
-        let clicked = outlineView.clickedRow
-        let rightClickedNode: ReconcileNode? = (clicked >= 0)
-            ? (outlineView.item(atRow: clicked) as? ReconcileNode)
-            : nil
+    /// Stricter row resolver for Diff (delegates to `RowSelectionRules.diffTarget`
+    /// so the rule is unit-tested). Diff is single-leaf only. Only a CONTEXT-menu
+    /// invocation honors the right-clicked row (SF2); otherwise the target is the
+    /// selection alone — matching the toolbar Diff, which already ignores `clickedRow`.
+    private func rowForDiff(preferClicked: Bool) -> Int? {
+        let rightClickedNode: ReconcileNode?
+        if preferClicked {
+            let clicked = outlineView.clickedRow
+            rightClickedNode = (clicked >= 0)
+                ? (outlineView.item(atRow: clicked) as? ReconcileNode)
+                : nil
+        } else {
+            rightClickedNode = nil
+        }
         return RowSelectionRules.diffTarget(
             rightClickedNode: rightClickedNode,
             selectedNodes: selectedNodes()
@@ -1431,7 +1443,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// doesn't block the UI; the result (or an error) arrives via the diff handlers
     /// installed in `configure`.
     @objc private func diffMenuAction(_ sender: Any?) {
-        applyDiff()
+        applyDiff(preferClicked: isContextMenuItem(sender as? NSMenuItem))
     }
 
     /// Diff entry point for the toolbar button. Resolves the target
@@ -1448,12 +1460,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         performDiff(row: row)
     }
 
-    /// Public so the context menu can call this directly. Returns
-    /// silently when the action isn't applicable (no selection, sync
-    /// in flight, can't-diff row) — `validateMenuItem` should have
-    /// already greyed the entry point.
-    func applyDiff() {
-        guard let row = rowForDiff(),
+    /// Menu-driven Diff. `preferClicked` is true only for the right-click context
+    /// menu; menu-bar/Edit invocations use the selection alone (SF2). Returns
+    /// silently when the action isn't applicable (`validateMenuItem` greys it).
+    func applyDiff(preferClicked: Bool) {
+        guard let row = rowForDiff(preferClicked: preferClicked),
               row >= 0, row < items.count else { NSSound.beep(); return }
         performDiff(row: row)
     }
@@ -1516,15 +1527,23 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             NSSound.beep()
             return
         }
+        // SF14: reveal any conflict rows buried under COLLAPSED folders BEFORE
+        // mapping. Without this, `row(forItem:)` returns -1 for a hidden node and
+        // the conflict is silently dropped — and if EVERY conflict is hidden, the
+        // selection below would clear the user's existing selection for nothing.
+        for node in tree.nodesToRevealRows(conflictRows) {
+            outlineView.expandItem(node, expandChildren: false)
+        }
         // Map row indices → outline-view row indices via the leaf nodes.
-        // Easier than going through the tree: we already have the rows
-        // and the outline view lets us select by item.
         var outlineRowsToSelect = IndexSet()
         for node in tree.allNodes where node.row != nil {
             guard let row = node.row, conflictRows.contains(row) else { continue }
             let outlineRow = outlineView.row(forItem: node)
             if outlineRow >= 0 { outlineRowsToSelect.insert(outlineRow) }
         }
+        // Belt-and-suspenders: after revealing, every conflict maps to a real row.
+        // If (defensively) none did, don't wipe the existing selection.
+        guard !outlineRowsToSelect.isEmpty else { NSSound.beep(); return }
         outlineView.selectRowIndexes(outlineRowsToSelect, byExtendingSelection: false)
         if let first = outlineRowsToSelect.first {
             outlineView.scrollRowToVisible(first)
@@ -1636,7 +1655,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(ignoreMenuAction(_:)) {
             guard isActionable else { return false }
-            return rowForPendingMenuAction() != nil
+            return rowForPendingMenuAction(preferClicked: isContextMenuItem(menuItem)) != nil
         }
         if menuItem.action == #selector(diffMenuAction(_:)) {
             guard isActionable else { return false }
@@ -1645,8 +1664,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // right-clicks on folders. The bridge's canDiff layer
             // then excludes one-sided files (typ=ABSENT on either
             // replica), symlinks, problem rows, and props-only-on-
-            // both-sides changes. Both gates must pass.
-            guard let row = rowForDiff(),
+            // both-sides changes. Both gates must pass. Validation honors the
+            // clicked row only for the context menu (SF2).
+            guard let row = rowForDiff(preferClicked: isContextMenuItem(menuItem)),
                   row >= 0, row < items.count else { return false }
             return unison_bridge_can_diff(Int32(row))
         }
@@ -1927,6 +1947,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     /// Test seam: the gate the action methods and menu/toolbar validation consult.
     var actionGateForTesting: ReconcileActionGate { actionGate }
+
+    // MARK: - PR-5 test seams
+    var outlineViewForTesting: NSOutlineView { outlineView }
+    var contextMenuForTesting: NSMenu? { outlineView.menu }
+    func isContextMenuItemForTesting(_ item: NSMenuItem?) -> Bool { isContextMenuItem(item) }
+    func selectConflictsForTesting() { selectConflictsAction(nil) }
 }
 
 // MARK: - Direction-cell view (the only colored cell in the row)
