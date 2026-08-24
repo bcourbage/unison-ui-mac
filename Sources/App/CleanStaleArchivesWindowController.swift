@@ -645,7 +645,8 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     /// True when a mutation failure left a lock that blocks the affected profiles,
     /// so the caller must refresh the in-session profile block at once (rather than
     /// only on the next launch). Delegates to the error's own classification.
-    static func mutationRequiresBlockRefresh(_ error: Error) -> Bool {
+    /// Pure (`nonisolated`) so it is callable and testable off the main actor.
+    nonisolated static func mutationRequiresBlockRefresh(_ error: Error) -> Bool {
         (error as? ArchiveMutationError)?.requiresArchiveBlockRefresh ?? false
     }
 
@@ -653,7 +654,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     /// switches to the critical, block-refresh path). The caller's own "nothing
     /// moved" framing is wrong for `rollbackIncomplete` (a move did happen), so a
     /// per-error title is used instead.
-    static func mutationBlockingTitle(_ error: Error) -> String {
+    nonisolated static func mutationBlockingTitle(_ error: Error) -> String {
         switch error as? ArchiveMutationError {
         case .rollbackIncomplete:      return "An archive move couldn’t be fully undone"
         case .lockUnavailable:         return "Another Unison is using these archives"
