@@ -1899,6 +1899,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     @objc func rescanIgnoringArchivesMenu(_ sender: Any?) {
         guard currentReconcileWindow != nil,
               let profile = lastAttemptedProfile else { NSSound.beep(); return }
+        // B7 authority boundary: menu validation is advisory (a key equivalent
+        // or programmatic send can reach here), so re-check that the engine is
+        // quiescent. reopenCurrentProfileFresh asserts engineIsQuiescent: true,
+        // which is sound only when no op is in flight (.ready).
+        guard RescanIgnoringArchivesGate.isAllowed(
+            phase: engine.phase,
+            hasReconcileWindow: currentReconcileWindow != nil,
+            hasProfile: lastAttemptedProfile != nil) else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Rescan ignoring archives?"
@@ -1956,8 +1964,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return showProfilePickerMenuTarget() != .unavailable
         }
         if menuItem.action == #selector(rescanIgnoringArchivesMenu(_:)) {
-            // Only meaningful with a reconcile window open on the live session.
-            return currentReconcileWindow != nil && lastAttemptedProfile != nil
+            // B7: only meaningful — and only SAFE — with a reconcile window open
+            // on a live session that is quiescent (.ready, no op in flight).
+            // Enabling it during .opening/.scanning/.syncing would let it assert
+            // engineIsQuiescent over a live worker. See RescanIgnoringArchivesGate.
+            return RescanIgnoringArchivesGate.isAllowed(
+                phase: engine.phase,
+                hasReconcileWindow: currentReconcileWindow != nil,
+                hasProfile: lastAttemptedProfile != nil)
         }
         if menuItem.action == #selector(showSettings(_:)) {
             // Grey out Settings while a profile is being edited (they're

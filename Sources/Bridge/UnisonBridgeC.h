@@ -92,6 +92,14 @@ void unison_bridge_test_run_sync_snapshot(void);
  * One-shot. Pairs with `unison_bridge_test_fail_strdup_at` for allocation
  * failure after N rows. Debug-only symbols — absent from Release. */
 void unison_bridge_test_fail_snapshot_accessor_at(int row, int field);
+/* Test-only (Finding B6): run the REAL array snapshot path
+ * (deliver_sync_snapshot_array) over a fresh young stateItem array built from
+ * the rooted scan rows — the exact syncComplete boundary. */
+void unison_bridge_test_run_sync_snapshot_from_array(void);
+/* Test-only (Finding B6): force a minor collection between snapshot rows so the
+ * young array relocates mid-iteration. Correct rooting survives it; the pre-fix
+ * capture-by-value read a stale array address. Debug-only — absent from Release. */
+void unison_bridge_test_force_gc_between_snapshot_rows(bool on);
 
 /* Bridge phase/close return codes (shared by init1/init2/synchronize/close). */
 #define UNISON_BRIDGE_OK          0    /* dispatched / completed without raising */
