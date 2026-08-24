@@ -375,10 +375,46 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
             if response == .alertFirstButtonReturn {
                 retryIgnoringArchives = true
             } else if hasDelete, response == .alertSecondButtonReturn {
-                let deleted = recovery.deleteLocalOrphans()
-                TraceLog.shared.write("ArchiveRecovery: deleted \(deleted.count) file(s):")
-                for p in deleted { TraceLog.shared.write("  \(p)") }
-                shouldRetry = true
+                // Route through the single mutation authority: the failed op has
+                // already unwound (the embedded engine isn't using these
+                // archives), so isEngineIdle is true here; the per-archive lock
+                // still blocks an EXTERNAL Unison, and staging keeps the removal
+                // atomic (never a partial family, lk never trashed).
+                let result = ArchiveMaintenance.mutate(
+                    operation: "fatal-recovery",
+                    hashes: recovery.localOrphanHashes,
+                    unisonDirectory: unisonDir,
+                    isEngineIdle: { true },
+                    revalidate: { _ in true })
+                switch result {
+                case .success(let out):
+                    TraceLog.shared.write("ArchiveRecovery: removed \(out.hashes.count) archive(s)"
+                        + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
+                    switch out.disposition {
+                    case .clean, .lockFreeLeftover:
+                        // Removal succeeded and no lock survives — safe to retry.
+                        shouldRetry = true
+                    case .blockedByLock:
+                        // A lock could not be released: the committed record is
+                        // retained and those archives stay blocked. Retrying would
+                        // re-enter the same inconsistency — leave it for explicit
+                        // recovery on next launch.
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        TraceLog.shared.write("ArchiveRecovery: lock not released — not retrying")
+                        shouldRetry = false
+                    }
+                case .failure(let error):
+                    // A pre-existing lock (another process) blocked it — don't
+                    // retry into the same inconsistency; leave it for the user.
+                    if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
+                        // A lock is still held (our abort, a split family, or a
+                        // foreign lock) — refresh the in-session block so the
+                        // profile is gated immediately.
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                    }
+                    TraceLog.shared.write("ArchiveRecovery: mutation refused — \(error)")
+                    shouldRetry = false
+                }
             }
         } else {
             alert.addButton(withTitle: "OK")

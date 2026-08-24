@@ -5,31 +5,29 @@
 #
 # Needed by PR-2 (patch 0006 lock bridge) and PR-6 (macOS 15 deployment target).
 # Run it from the branch that carries the patch set you want baked in.
+#
+# Trust ordering (supply-chain): the blob is built, asserted, provenance-recorded,
+# and UPLOADED before any third-party tool (XcodeGen) is fetched — and XcodeGen
+# is SHA-256-verified before extraction — so a compromised XcodeGen release can
+# affect only the later smoke test, never the blob or its provenance.
 name: Vendor blob (maintainer)
 
 on:
-  workflow_dispatch:
-    inputs:
-      unison_commit:
-        description: "Exact upstream Unison commit to build from (must match vendor/README)."
-        required: true
-        default: "91421d0617b0fb543c0eee51bcb4d4791d8b0631"
-      macos_deployment_target:
-        description: "MACOSX_DEPLOYMENT_TARGET for the blob and the OCaml runtime it links."
-        required: true
-        default: "15.0"
+  # No free inputs: the upstream commit and deployment target come from the
+  # committed source of truth (vendor/README.md, project.yml) so a dispatcher
+  # cannot vary them.
+  workflow_dispatch: {}
 
-# Least privilege: this job only reads the repo and uploads artifacts. It must
-# NOT be able to push the blob — inclusion is a deliberate human step.
+# Least privilege: read the repo and upload artifacts only. It must NOT be able
+# to push the blob — inclusion is a deliberate human step.
 permissions:
   contents: read
 
 env:
-  MACOSX_DEPLOYMENT_TARGET: ${{ inputs.macos_deployment_target }}
-  UNISON_COMMIT: ${{ inputs.unison_commit }}
-  # Pinned tool versions (assert-verified below).
   OCAML_VERSION: "5.5.0"
   XCODEGEN_VERSION: "2.44.1"
+  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
+  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
 
 jobs:
   vendor-blob:
@@ -39,20 +37,34 @@ jobs:
     steps:
       - name: Assert arm64 runner
         run: |
-          arch="$(uname -m)"
-          echo "runner arch: $arch"
+          arch="$(uname -m)"; echo "runner arch: $arch"
           [ "$arch" = "arm64" ] || { echo "::error::expected an arm64 runner, got $arch"; exit 1; }
 
       - name: Check out unison-ui-mac (patches + scripts + Makefile)
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: gui
+          persist-credentials: false
 
-      - name: Check out upstream Unison at the exact pinned commit
+      - name: Resolve source-of-truth upstream commit + deployment target
+        id: src
+        run: |
+          cd gui
+          commit="$(grep -m1 'Upstream commit' vendor/README.md | grep -oE '[0-9a-f]{40}' | head -1)"
+          target="$(awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[" ]/,""); split($0,a,":"); print a[2]; exit}' project.yml)"
+          [ -n "$commit" ] || { echo "::error::could not read upstream commit from vendor/README.md"; exit 1; }
+          [ -n "$target" ] || { echo "::error::could not read deploymentTarget macOS from project.yml"; exit 1; }
+          echo "unison_commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "deploy_target=$target" >> "$GITHUB_OUTPUT"
+          # Exported so setup-ocaml and the blob build both target it.
+          echo "MACOSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
+          echo "source of truth: upstream_commit=$commit deploy_target=$target"
+
+      - name: Check out upstream Unison at the source-of-truth commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: bcpierce00/unison
-          ref: ${{ inputs.unison_commit }}
+          ref: ${{ steps.src.outputs.unison_commit }}
           path: unison
           persist-credentials: false
 
@@ -61,7 +73,8 @@ jobs:
           cd unison
           got="$(git rev-parse HEAD)"
           echo "upstream HEAD: $got"
-          [ "$got" = "$UNISON_COMMIT" ] || { echo "::error::commit mismatch: $got != $UNISON_COMMIT"; exit 1; }
+          [ "$got" = "${{ steps.src.outputs.unison_commit }}" ] \
+            || { echo "::error::commit mismatch: $got != ${{ steps.src.outputs.unison_commit }}"; exit 1; }
 
       - name: Set up OCaml ${{ env.OCAML_VERSION }} (pinned)
         uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
@@ -76,33 +89,6 @@ jobs:
           got="$(ocaml -vnum)"
           [ "$got" = "$OCAML_VERSION" ] || { echo "::error::OCaml $got != pinned $OCAML_VERSION"; exit 1; }
           echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
-          clang --version | head -1
-
-      - name: Install pinned XcodeGen (for the blob smoke test)
-        run: |
-          curl -fsSL -o xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q xcodegen.zip
-          sudo ./xcodegen/install.sh
-          got="$(xcodegen --version | awk '{print $2}')"
-          echo "xcodegen: $got"
-          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
-
-      - name: Verify + apply the patch set in deterministic order
-        # apply-unison-patches.sh fails loudly if any REQUIRED patch is missing
-        # and uses strict all-or-nothing git-apply (no fuzz). It is the single
-        # source of truth for the patch set and its order.
-        run: |
-          cd gui
-          scripts/apply-unison-patches.sh "$GITHUB_WORKSPACE/unison" "$GITHUB_WORKSPACE/gui/patches"
-
-      - name: Assert the lock patch (0006) is baked into the source
-        run: |
-          for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
-            grep -q "Callback.register \"$cb\"" unison/src/uimacbridge.ml \
-              || { echo "::error::0006 callback $cb missing from patched source"; exit 1; }
-          done
-          echo "patch 0006 lock callbacks present in source"
 
       - name: Build the vendored blob (OCaml core only)
         env:
@@ -110,9 +96,22 @@ jobs:
         run: |
           cd gui
           eval "$(opam env)"
-          # vendor-blob re-runs apply-patches (idempotent), builds unison-blob.o
-          # at MACOSX_DEPLOYMENT_TARGET, and copies it to vendor/.
+          # vendor-blob applies the patch set exactly ONCE via
+          # apply-unison-patches.sh (deterministic order, fail-loud on a
+          # missing/partial patch — the single source of truth for the set),
+          # builds unison-blob.o at MACOSX_DEPLOYMENT_TARGET, and copies it to
+          # vendor/. Do NOT apply patches in a separate prior step: a second
+          # apply pass cannot reverse-detect already-applied hunks when patches
+          # share context (0006 inserts within 0002's trailing context).
           make vendor-blob UNISON_SRC="$UNISON_SRC"
+
+      - name: Assert the applied source carries the lock patch (0006)
+        run: |
+          for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
+            grep -q "Callback.register \"$cb\"" unison/src/uimacbridge.ml \
+              || { echo "::error::0006 callback $cb missing from patched source"; exit 1; }
+          done
+          echo "patch 0006 lock callbacks present in applied source"
 
       - name: Locate the built blob
         id: blob
@@ -129,35 +128,36 @@ jobs:
           echo "== file =="; file "$BLOB"
           file "$BLOB" | grep -q 'Mach-O 64-bit object arm64' \
             || { echo "::error::blob is not a Mach-O arm64 object"; exit 1; }
-          echo "== arch =="; lipo -archs "$BLOB" || true
-          # OCaml program entry must be defined (T).
           nm "$BLOB" | grep -qE ' T _caml_program$' \
             || { echo "::error::_caml_program not defined in blob"; exit 1; }
-          # Patch 0004 app-side C symbols must be UNDEFINED references (resolved
-          # when OUR app links) — proves the patched bridge compiled in.
           nm "$BLOB" | grep -qE ' U _unison_bridge_register_child$' \
             || { echo "::error::patch 0004 reaper symbol reference missing"; exit 1; }
-          # Patch 0006 callback name strings must be embedded (Callback.register
-          # literals) — proves the lock bridge compiled into the blob.
+          # Dump once to a file, then grep the file — piping `strings` into
+          # `grep -q` makes grep close the pipe early, sending strings SIGPIPE
+          # (harmless but logs "failed to flush output" noise).
+          syms="$(mktemp)"; strings "$BLOB" > "$syms"
           for cb in unisonLockAcquire unisonLockRelease unisonLockIsLocked; do
-            strings "$BLOB" | grep -qx "$cb" \
+            grep -qx "$cb" "$syms" \
               || { echo "::error::0006 callback string $cb absent from blob"; exit 1; }
           done
-          # Size sanity band (record exact below).
-          bytes="$(stat -f%z "$BLOB")"
-          echo "size: $bytes bytes"
+          rm -f "$syms"
+          bytes="$(stat -f%z "$BLOB")"; echo "size: $bytes bytes"
           [ "$bytes" -gt 500000 ] && [ "$bytes" -lt 104857600 ] \
             || { echo "::error::blob size $bytes outside sane band"; exit 1; }
 
-      - name: Build + test the app against the freshly built blob
-        # The strongest end-to-end check that the blob is good: build the real
-        # app against it and run the full XCTest suite (exercises the bridge
-        # boundary). CI signing falls back to ad-hoc via select-signing.sh.
+      - name: Assert observed deployment target (minos) equals source-of-truth
+        # Fail-closed: a compiler/build regression could emit a different minos
+        # while the requested env said 15.0 (the committed blob shows minos 26.0
+        # — this class is real). Inspect the actual load command.
+        env:
+          BLOB: ${{ steps.blob.outputs.abs }}
+          EXPECT: ${{ steps.src.outputs.deploy_target }}
         run: |
-          cd gui
-          eval "$(opam env)"
-          make build
-          make test
+          minos="$(otool -l "$BLOB" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+          echo "observed minos: '$minos' ; expected: '$EXPECT'"
+          [ -n "$minos" ] || { echo "::error::no LC_BUILD_VERSION/minos in blob"; exit 1; }
+          [ "$minos" = "$EXPECT" ] || { echo "::error::blob minos $minos != $EXPECT"; exit 1; }
+          echo "OBSERVED_MINOS=$minos" >> "$GITHUB_ENV"
 
       - name: Emit provenance manifest
         id: prov
@@ -171,14 +171,22 @@ jobs:
           {
             echo "vendored-blob provenance"
             echo "generated:            $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "builder_repo:         ${{ github.repository }}"
+            echo "builder_commit:       ${{ github.sha }}"
+            echo "builder_ref:          ${{ github.ref }}"
+            echo "workflow_run:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "upstream_repo:        bcpierce00/unison"
-            echo "upstream_commit:      $UNISON_COMMIT"
+            echo "upstream_commit:      ${{ steps.src.outputs.unison_commit }}"
             echo "ocaml_version:        $(ocaml -vnum)"
-            echo "xcodegen_version:     $XCODEGEN_VERSION"
-            echo "macos_deployment:     $MACOSX_DEPLOYMENT_TARGET"
+            echo "xcode_version:        $(xcodebuild -version | tr '\n' ' ')"
+            echo "sdk_version:          $(xcrun --show-sdk-version 2>/dev/null || echo '?')"
+            echo "clang:                $(clang --version | head -1)"
+            echo "requested_deploy:     ${{ steps.src.outputs.deploy_target }}"
+            echo "observed_minos:       $OBSERVED_MINOS"
             echo "runner_image:         $ImageOS ($(sw_vers -productVersion))"
             echo "runner_arch:          $(uname -m)"
-            echo "clang:                $(clang --version | head -1)"
+            echo "makefile_sha256:      $(shasum -a 256 Makefile | awk '{print $1}')"
+            echo "apply_script_sha256:  $(shasum -a 256 scripts/apply-unison-patches.sh | awk '{print $1}')"
             echo "blob_path:            ${{ steps.blob.outputs.path }}"
             echo "blob_size_bytes:      $bytes"
             echo "blob_sha256:          $sha"
@@ -190,12 +198,34 @@ jobs:
           } | tee "$manifest"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # ---- Blob is now built, asserted, and provenance-recorded. Upload it
+      #      BEFORE fetching any third-party tool, so the trust-critical artifact
+      #      cannot be influenced by anything below. ----
       - name: Upload blob + provenance for human review
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: vendored-blob-${{ inputs.unison_commit }}-deploy${{ inputs.macos_deployment_target }}
+          name: vendored-blob-${{ steps.src.outputs.unison_commit }}-deploy${{ steps.src.outputs.deploy_target }}
           path: |
             ${{ steps.blob.outputs.path }}
             blob-provenance.txt
           if-no-files-found: error
           retention-days: 14
+
+      - name: Install pinned + SHA-256-verified XcodeGen (after upload)
+        run: |
+          curl -fsSL -o xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
+            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
+          unzip -q xcodegen.zip
+          sudo ./xcodegen/install.sh
+          got="$(xcodegen --version | awk '{print $2}')"
+          echo "xcodegen: $got"
+          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
+
+      - name: Smoke-test — build + test the app against the freshly built blob
+        run: |
+          cd gui
+          eval "$(opam env)"
+          make build
+          make test

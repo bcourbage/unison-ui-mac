@@ -2,7 +2,7 @@ import AppKit
 import Darwin   // utsname / uname for arch detection in reportIssue body
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding {
+final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding, ArchiveBlockCoordinating {
 
     private var profileWindowController: ProfileWindowController?
     /// "Profile Editor" manager window (lists every .prf, supports
@@ -14,6 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// reopening just brings the existing instance to front.
     private var settingsWindowController: SettingsWindowController?
     private var unisonDirectory: String = ""
+    /// Archive hashes locked by a PRE-COMMIT abandoned staging (an interrupted
+    /// mutation) found at launch. A profile whose archive matches one of these
+    /// must not be opened until explicit recovery. See checkForAbandonedArchiveStaging.
+    private var blockedArchiveHashes: Set<String> = []
+    private var abandonedStagings: [AbandonedStaging] = []
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
     /// updater), in which case the Settings window omits the Updates tab.
     var updater: (any UpdatePreferences)?
@@ -1591,6 +1596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // picker is up first and the alert doesn't compete with launch.
         DispatchQueue.main.async { [weak self] in
             self?.checkForPriorCrashReport()
+            self?.checkForAbandonedArchiveStaging()
         }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
@@ -1684,6 +1690,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// (window creation + connect, or a waiting window) we run.
     private func profileSelected(_ profile: String) {
         log.write("AppDelegate: profile '\(profile)' picked")
+        // Fail closed: a profile whose archive is held by an interrupted
+        // (pre-commit) mutation must not be opened until recovery.
+        if let blocking = abandonedStagingBlocking(profile) {
+            log.write("AppDelegate: '\(profile)' blocked by abandoned staging — offering recovery")
+            presentAndRecoverAbandonedStaging(requested: blocking,
+                context: "This profile's archives are being recovered from an interrupted maintenance operation.")
+            // If recovery cleared the block, open now; otherwise stay in the picker.
+            if abandonedStagingBlocking(profile) == nil {
+                run(engine.requestOpen(profile: profile))
+            }
+            return
+        }
         run(engine.requestOpen(profile: profile))
     }
 
@@ -2310,6 +2328,159 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Offer (once) to send a crash report if the app crashed since we last
     /// asked. First run seeds the marker to "now" so reports predating this
     /// feature are never surfaced.
+    /// Fail-closed restart handling for an interrupted archive mutation
+    /// (issue: crash-safe staging). This installs an APP-LEVEL profile block; it is
+    /// NOT the same as a confirmed on-disk `lk`. A record blocks when it is
+    /// pre-commit (the operation died while archives were being moved — the family
+    /// may be split; its `lk` is usually still present but we never assume so), when
+    /// it is committed/acquiring/aborted with a surviving `lk`, or when it is
+    /// unrecognized (unknown version/phase, fail closed). Ownership of the raw locks
+    /// cannot be proven across a crash, so we NEVER auto-remove them or auto-recover.
+    /// A committed leftover with NO surviving lock (removal finished, only
+    /// Trash-cleanup failed) does not block and is not alerted here.
+    private func checkForAbandonedArchiveStaging() {
+        guard refreshBlockedArchiveState() else { return }
+        log.write("abandoned archive staging detected: \(abandonedStagings.count) dir(s), "
+            + "blocked hashes=\(blockedArchiveHashes.sorted().joined(separator: ","))")
+        presentAndRecoverAbandonedStaging(requested: abandonedStagings, context:
+            "An archive maintenance operation was interrupted the last time the app ran.")
+    }
+
+    /// Re-scan the unison dir for blocking stagings and update `blockedArchiveHashes`
+    /// + `abandonedStagings`, WITHOUT presenting any dialog. Returns whether any
+    /// staging blocks. Called on launch and again after a mutation that left a
+    /// surviving lock, so the profile-open gate is live within the same session.
+    @discardableResult
+    func refreshBlockedArchiveState() -> Bool {
+        guard !unisonDirectory.isEmpty else { return false }
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
+        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: unisonDirectory)
+        abandonedStagings = abandoned.filter {
+            !Set($0.manifest.hashes).isDisjoint(with: blockedArchiveHashes)
+        }
+        return !abandonedStagings.isEmpty
+    }
+
+    /// The abandoned stagings (if any) that block opening `profile`. nil when
+    /// nothing blocks it.
+    private func abandonedStagingBlocking(_ profile: String) -> [AbandonedStaging]? {
+        guard !blockedArchiveHashes.isEmpty else { return nil }
+        guard case .success(let computed) = ArchiveHash.computeAll(
+            unisonDirectory: unisonDirectory, profile: profile) else { return nil }
+        guard ArchiveStagingRecovery.isProfileBlocked(
+            profileHashes: computed.hashes, blocked: blockedArchiveHashes) else { return nil }
+        let mine = Set(computed.hashes)
+        return abandonedStagings.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) }
+    }
+
+    /// Terminal-state recovery for an interrupted archive mutation. `requested` is
+    /// the presentation subset (e.g. a profile's blocking records), but overlap
+    /// authorization is ALWAYS computed against the complete on-disk universe (see
+    /// below) so a filtered request can never authorize recovering a record whose
+    /// lock protects an omitted, overlapping one (Blocker).
+    ///
+    /// The block is an APP-LEVEL profile block; the on-disk `lk` may be present or
+    /// missing, so we never assert a physical lock is in place. Authorization is
+    /// obtained FIRST (the user attests no other Unison is running). Recovery then
+    /// runs as one transaction per record: retain an existing lock as the barrier
+    /// or atomically acquire a missing one, and only then restore (staging) or
+    /// finish the removal (committed); if it can't establish that barrier it stops
+    /// without touching files. A record that stays locked keeps its record and
+    /// stays blocked; a fully unlocked one whose only failure is quarantine cleanup
+    /// is cleared. State is recomputed from disk afterward.
+    private func presentAndRecoverAbandonedStaging(requested: [AbandonedStaging],
+                                                   context: String) {
+        let dirs = requested.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "An archive maintenance operation was interrupted"
+        alert.informativeText =
+            context + " The app has blocked the affected profile(s) and kept the recovery "
+            + "records. Some archive files may be quarantined, and the on-disk lock may be "
+            + "present or missing. Until recovery finishes, do not run any other Unison and "
+            + "do not delete the quarantine folders or lk files.\n\n"
+            + "Recover Now retains an existing lock, or atomically acquires a missing one, "
+            + "before touching any archive file. If it cannot establish that barrier it "
+            + "stops without modifying the files.\n\n\(dirs)"
+        alert.addButton(withTitle: "Recover Now")
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Authorization FIRST: recovery works under (and finally clears) the locks.
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Is any other Unison running?"
+        confirm.informativeText =
+            "Recovery works under the interrupted operation's lock and clears it only when "
+            + "finished. Only continue if NO other Unison (on this Mac or another) is "
+            + "currently syncing these archives."
+        confirm.addButton(withTitle: "No other Unison is running — recover")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        var problems: [String] = []      // still locked / refused → stay blocked
+        var cleanupNotes: [String] = []  // unlocked, only a leftover folder to delete
+
+        // Blocker: overlap authorization is computed against the COMPLETE, freshly
+        // re-scanned on-disk universe — never the (possibly profile-filtered)
+        // `requested` subset. A group is recovered only when its GLOBAL size is 1,
+        // so a shared `lk<hash>` can never be attributed to (and unlinked for) the
+        // wrong record even if the other record wasn't part of this request.
+        let universe = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
+        let requestedDirs = Set(requested.map(\.quarantineDir))
+        for group in ArchiveStagingRecovery.recoveryGroups(
+            universe: universe, requestedDirectories: requestedDirs) {
+            guard group.count == 1, let a = group.first else {
+                let dirs = group.map { "    – \($0.quarantineDir)" }.joined(separator: "\n")
+                problems.append("  • \(group.count) interrupted operations share the same "
+                    + "archive(s); they can't be recovered automatically without risking "
+                    + "another's lock. Resolve manually:\n\(dirs)")
+                continue
+            }
+            let outcome = ArchiveStagingRecovery.recover(
+                a, activeDir: unisonDirectory, locking: SystemArchiveLocking())
+            log.write("recovery: \(a.quarantineDir) -> \(outcome)")
+            switch outcome {
+            case .recovered:
+                break
+            case .cleanupOnly(let note):
+                cleanupNotes.append("  • \(note)")
+            case .aborted(let why), .needsManualReview(let why):
+                problems.append("  • \(why)")
+            }
+        }
+
+        // Recompute the block state from DISK — authoritative — rather than
+        // subtracting a union of "cleared" hashes (which could wrongly unblock a
+        // hash a second, still-blocked record also owns).
+        refreshBlockedArchiveState()
+
+        if !problems.isEmpty {
+            let a2 = NSAlert()
+            a2.alertStyle = .warning
+            a2.messageText = "Some archives still need attention"
+            a2.informativeText =
+                "These could not be recovered automatically (another process is using them, "
+                + "or a file with the same name already exists). Nothing was deleted; they "
+                + "stay blocked and can be recovered later:\n\n"
+                + problems.joined(separator: "\n")
+            a2.addButton(withTitle: "OK")
+            a2.runModal()
+        }
+        if !cleanupNotes.isEmpty {
+            let a3 = NSAlert()
+            a3.alertStyle = .informational
+            a3.messageText = "Recovered — a leftover folder can be deleted"
+            a3.informativeText =
+                "The maintenance operation completed and no archive lock remains. Only a "
+                + "leftover quarantine folder could not be removed; delete it manually when "
+                + "convenient:\n\n"
+                + cleanupNotes.joined(separator: "\n")
+            a3.addButton(withTitle: "OK")
+            a3.runModal()
+        }
+    }
+
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {
         guard let marker = defaults.object(forKey: Self.crashReportMarkerKey) as? Date else {
             defaults.set(Date(), forKey: Self.crashReportMarkerKey)

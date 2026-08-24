@@ -15,28 +15,17 @@ import XCTest
 final class ArchiveCleanupTests: XCTestCase {
 
     private var tempDir: String!
-    private var trashedFromTests: [URL] = []
 
     override func setUpWithError() throws {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ArchiveCleanupTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         tempDir = url.path
-        trashedFromTests = []
     }
 
     override func tearDownWithError() throws {
-        // Clean up the temp directory if anything is left.
         if let tempDir {
             try? FileManager.default.removeItem(atPath: tempDir)
-        }
-        // Best-effort cleanup of items we moved to Trash. Trash items
-        // live at ~/.Trash/<name> on the boot volume; we delete the
-        // ones we created here rather than leaving them to clutter.
-        let homeTrash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        for url in trashedFromTests {
-            let candidate = homeTrash.appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.removeItem(at: candidate)
         }
     }
 
@@ -64,20 +53,22 @@ final class ArchiveCleanupTests: XCTestCase {
                        ["ar\(hash)", "fp\(hash)"])
     }
 
-    func test_findFiles_returnsAllFivePrefixesInUpstreamOrder() throws {
+    func test_findFiles_returnsPayloadPrefixesInOrder_excludingLock() throws {
         let hash = "353b9f4733233a1f4d7a58143fa1480d"
-        // Create them in shuffled order to prove the result order
-        // comes from `archivePrefixes`, not from the filesystem.
+        // Create them in shuffled order to prove the result order comes from
+        // `archivePrefixes`, not the filesystem.
         _ = try touch("sc\(hash)")
         _ = try touch("ar\(hash)")
         _ = try touch("tm\(hash)")
         _ = try touch("fp\(hash)")
-        _ = try touch("lk\(hash)")
+        _ = try touch("lk\(hash)")   // the lock must NOT be listed (B3)
         let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
         let found = cleanup.findFiles(matching: hash)
         XCTAssertEqual(found.map { $0.lastPathComponent },
-                       ["ar\(hash)", "fp\(hash)", "lk\(hash)",
-                        "tm\(hash)", "sc\(hash)"])
+                       ["ar\(hash)", "fp\(hash)", "tm\(hash)", "sc\(hash)"],
+                       "lk is the lock, never a payload file to trash")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir + "/lk\(hash)"),
+                      "findFiles never touches the lock")
     }
 
     func test_findFiles_ignoresFilesForDifferentHashes() throws {
@@ -102,12 +93,11 @@ final class ArchiveCleanupTests: XCTestCase {
                        ["ar\(hash)"])
     }
 
-    func test_archivePrefixes_matchesUpstreamArchiveVersionOrder() {
-        // Order is significant — the UI may rely on it when grouping
-        // matches by kind. If upstream's Update.archiveName ever
-        // re-orders or extends this list, mirror the change here.
-        XCTAssertEqual(ArchiveCleanup.archivePrefixes,
-                       ["ar", "fp", "lk", "tm", "sc"])
+    func test_archivePrefixes_arePayloadOnly_excludingLock() {
+        // Payload prefixes only — `lk` is the interprocess lock, never trashed
+        // (B3). Mirrors ArchiveMutationPlan.payloadPrefixes.
+        XCTAssertEqual(ArchiveCleanup.archivePrefixes, ["ar", "fp", "tm", "sc"])
+        XCTAssertFalse(ArchiveCleanup.archivePrefixes.contains("lk"))
     }
 
     func test_findFiles_handlesNonExistentDirectoryGracefully() {
@@ -115,42 +105,10 @@ final class ArchiveCleanupTests: XCTestCase {
         XCTAssertEqual(cleanup.findFiles(matching: "abc"), [])
     }
 
-    // MARK: - trash
-
-    func test_trash_movesAllProvidedURLs() throws {
-        let hash = "1111111111111111111111111111aaaa"
-        let urls = [try touch("ar\(hash)"), try touch("fp\(hash)")]
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash(urls)
-        XCTAssertEqual(result.trashed.count, 2)
-        XCTAssertTrue(result.failed.isEmpty)
-        // Source files are gone from the Unison directory.
-        for url in urls {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
-                           "expected \(url.lastPathComponent) to be moved out")
-        }
-        trashedFromTests.append(contentsOf: urls)
-    }
-
-    func test_trash_reportsFailuresWithoutAbortingTheRest() throws {
-        let hash = "2222222222222222222222222222bbbb"
-        let real = try touch("ar\(hash)")
-        let phantom = URL(fileURLWithPath: "\(tempDir!)/does-not-exist-\(hash)")
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash([real, phantom])
-        XCTAssertEqual(result.trashed.count, 1)
-        XCTAssertEqual(result.failed.count, 1)
-        XCTAssertEqual(result.trashed.first, real)
-        XCTAssertEqual(result.failed.first?.0, phantom)
-        trashedFromTests.append(real)
-    }
-
-    func test_trash_emptyInputReturnsEmptyResult() {
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash([])
-        XCTAssertTrue(result.trashed.isEmpty)
-        XCTAssertTrue(result.failed.isEmpty)
-    }
+    // NOTE: ArchiveCleanup no longer has a `trash(_:)` — destructive mutation is
+    // the sole responsibility of the ArchiveMutation transaction (see
+    // ArchiveMutationTransactionTests / ArchiveStagingStoreTests). ArchiveCleanup
+    // only finds/indexes archives now.
 
     // MARK: - Header parsing / indexing
 

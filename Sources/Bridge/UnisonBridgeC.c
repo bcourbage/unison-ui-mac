@@ -1535,6 +1535,86 @@ static void _ocaml_init0(void *user) {
     io->status = UNISON_BRIDGE_OK;
 }
 
+/* === Archive lock bridge (patch 0006) ======================================
+ *
+ * Acquire/release/test the per-archive lock via the vendored blob's narrow
+ * callbacks. Pass ONLY the 32-char hash; OCaml validates it and builds
+ * Util.fileInUnisonDir ("lk" ^ hash). All three dispatch to the OCaml worker
+ * (the callbacks need the runtime lock), mirroring the credential loop. A
+ * missing callback (old blob) or an OCaml exception maps to a fail-closed code;
+ * a successful acquire (0) is the only mutation authority. */
+
+struct lock_io {
+    const char *hash;   /* caller-owned, valid for the call */
+    int result;
+};
+
+static void _ocaml_lock_acquire(void *user) {
+    CAMLparam0();
+    CAMLlocal1(h);
+    struct lock_io *io = user;
+    io->result = UNISON_LOCK_MISSING;
+    const value *fn = caml_named_value("unisonLockAcquire");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonLockAcquire not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    h = caml_copy_string(io->hash);
+    bool raised = false;
+    value r = bridge_call1_exn(fn, h, &raised);
+    io->result = raised ? UNISON_LOCK_EXN : Int_val(r);
+    CAMLreturn0;
+}
+
+int unison_bridge_lock_acquire(const char *hash) {
+    struct lock_io io = { .hash = hash ? hash : "", .result = UNISON_LOCK_MISSING };
+    run_on_ocaml_thread(_ocaml_lock_acquire, &io);
+    return io.result;
+}
+
+static void _ocaml_lock_release(void *user) {
+    CAMLparam0();
+    CAMLlocal1(h);
+    struct lock_io *io = user;
+    const value *fn = caml_named_value("unisonLockRelease");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonLockRelease not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    h = caml_copy_string(io->hash);
+    bool raised = false;
+    (void)bridge_call1_exn(fn, h, &raised);   /* unit; release is best-effort */
+    CAMLreturn0;
+}
+
+void unison_bridge_lock_release(const char *hash) {
+    struct lock_io io = { .hash = hash ? hash : "", .result = 0 };
+    run_on_ocaml_thread(_ocaml_lock_release, &io);
+}
+
+static void _ocaml_lock_is_locked(void *user) {
+    CAMLparam0();
+    CAMLlocal1(h);
+    struct lock_io *io = user;
+    io->result = UNISON_LOCK_MISSING;
+    const value *fn = caml_named_value("unisonLockIsLocked");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonLockIsLocked not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    h = caml_copy_string(io->hash);
+    bool raised = false;
+    value r = bridge_call1_exn(fn, h, &raised);
+    io->result = raised ? 2 : Int_val(r);   /* 2 = exception/invalid (diagnostic only) */
+    CAMLreturn0;
+}
+
+int unison_bridge_lock_is_locked(const char *hash) {
+    struct lock_io io = { .hash = hash ? hash : "", .result = UNISON_LOCK_MISSING };
+    run_on_ocaml_thread(_ocaml_lock_is_locked, &io);
+    return io.result;
+}
+
 int unison_bridge_init0(void) {
     struct status_io io = { .status = UNISON_BRIDGE_ERR_MISSING };
     run_on_ocaml_thread(_ocaml_init0, &io);

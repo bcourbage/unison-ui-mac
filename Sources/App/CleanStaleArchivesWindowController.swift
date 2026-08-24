@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 final class CleanStaleArchivesWindowController: NSWindowController,
     NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
 
-    /// One stale archive (an `ar<hash>` plus its `fp/lk/tm/sc` siblings).
+    /// One stale archive (an `ar<hash>` plus its `fp/tm/sc` siblings (never the lock lk)).
     struct Row {
         let hash: String
         let reason: ArchiveStaleScanner.Reason
@@ -30,6 +30,12 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         /// because this Mac could be the *remote* for another machine's
         /// (possibly infrequent) sync.
         let defaultChecked: Bool
+        /// Whether this row may be acted on at all. False for anything not
+        /// provably safe to remove — uncertain, remote, ambiguous, orphan, or a
+        /// "probably old" copy with no live archive to supersede it. A
+        /// non-actionable row's checkbox is disabled, Select All skips it, and
+        /// the mutation authority rejects it even if stale UI state says checked.
+        let actionable: Bool
         var bytes: Int64 { files.reduce(0) { $0 + $1.bytes } }
         var fileNames: String { files.map { $0.url.lastPathComponent }.joined(separator: ", ") }
         var profileText: String {
@@ -37,21 +43,11 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         }
     }
 
-    /// Default-check only archives that are provably this machine's own
-    /// dead state. `owned` (a superseded copy of an existing local profile)
-    /// or `localOnly` (both roots are this Mac) qualify; cross-machine
-    /// orphans and anything uncertain do not — they might be a sync another
-    /// machine runs against this Mac, regardless of how rarely it runs.
-    static func defaultsToChecked(owned: Bool, uncertain: Bool, localOnly: Bool) -> Bool {
-        !uncertain && (owned || localOnly)
-    }
-
-    /// True when every root is this Mac's current hostname lineage (so no
-    /// other machine could own the archive). A former machine name (e.g.
-    /// `MacBookPro`) counts as NOT local-only — the safe side.
-    static func isLocalOnly(roots: [String], currentLabel: String) -> Bool {
-        roots.allSatisfy { ArchiveMatcher.host(ofComponent: $0).map(ArchiveMatcher.shortLabel) == currentLabel }
-    }
+    // Preselection is now driven solely by `ArchiveStaleScanner.Finding.actionable`
+    // (a provably-superseded, certain, local disposition) folded with global
+    // enumeration success — see `scan()`. The former `defaultsToChecked` /
+    // `isLocalOnly` heuristics (which preselected local-only orphans) are gone:
+    // orphans and "probably old" copies are non-actionable, never preselected.
 
     /// Called when the window closes so the opener can drop its reference.
     var onClose: (() -> Void)?
@@ -178,12 +174,12 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         guard let content = window?.contentView else { return }
 
         let header = NSTextField(wrappingLabelWithString:
-            "These archives are not used by any current profile. Checked " +
-            "rows move to the Trash (recoverable). Unchecked rows reference " +
-            "another machine and may belong to a sync that machine runs " +
-            "against this Mac (where this Mac is the remote side), so verify " +
-            "before removing them. Live archives (what each profile's next " +
-            "sync uses) are never listed here.")
+            "These archives are not used by any current profile. Only rows that " +
+            "are provably a superseded copy (replaced by a current profile's live " +
+            "archive) can be selected; they move to the Trash (recoverable). " +
+            "Everything else — orphans, possible other-machine syncs, remote or " +
+            "ambiguous archives — is shown for review only and cannot be selected. " +
+            "Live archives (what each profile's next sync uses) are never listed.")
         header.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         header.textColor = .secondaryLabelColor
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -371,7 +367,6 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let findings = ArchiveStaleScanner.findings(
             in: index, profiles: ps.profiles, localHostname: ArchiveHash.systemHostname)
         let fm = FileManager.default
-        let currentLabel = ArchiveMatcher.shortLabel(ArchiveHash.systemHostname)
         return findings
             .sorted { a, b in
                 let aOrphan = a.reason == .orphan, bOrphan = b.reason == .orphan
@@ -390,23 +385,23 @@ final class CleanStaleArchivesWindowController: NSWindowController,
                     return (url, (attrs?[.size] as? NSNumber)?.int64Value ?? 0)
                 }
                 let modified = (try? fm.attributesOfItem(atPath: finding.entry.url.path))?[.modificationDate] as? Date
-                let localOnly = Self.isLocalOnly(roots: [r1, r2], currentLabel: currentLabel)
                 // Fold in global uncertainty: if the directory couldn't be
                 // enumerated we don't know the true profile set, so no archive
                 // may be treated as a confident orphan or preselected.
                 let uncertain = Self.rowUncertain(
                     findingUncertain: finding.uncertain,
                     globalUncertain: ps.enumerationFailed)
-                let defaultChecked = Self.defaultsToChecked(
-                    owned: !finding.profileNames.isEmpty,
-                    uncertain: uncertain,
-                    localOnly: localOnly)
+                // Actionable ONLY when the scanner proved it superseded AND the
+                // profile set is fully known. Everything else is report-only:
+                // non-actionable in the UI and rejected by the mutation authority.
+                let actionable = finding.actionable && !ps.enumerationFailed
                 return Row(hash: finding.entry.hash,
                            reason: finding.reason,
                            profileNames: finding.profileNames,
                            uncertain: uncertain,
                            root1: r1, root2: r2, files: files,
-                           modified: modified, defaultChecked: defaultChecked)
+                           modified: modified, defaultChecked: actionable,
+                           actionable: actionable)
             }
     }
 
@@ -494,15 +489,20 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     // MARK: - Selection
 
     @objc private func toggleSelectAll(_ sender: NSButton) {
-        let target = !checked.allSatisfy { $0 }   // any unchecked → check all
-        for i in checked.indices { checked[i] = target }
+        // Select All operates ONLY on actionable rows; non-actionable rows can
+        // never be selected (report-only). See CleanStalePolicy.
+        let actionableIdx = CleanStalePolicy.selectableIndices(actionable: rows.map(\.actionable))
+        let target = !actionableIdx.allSatisfy { checked[$0] }   // any actionable unchecked → check all
+        for i in actionableIdx { checked[i] = target }
         tableView.reloadData()
         refreshSelectionUI()
     }
 
     @objc private func toggleRow(_ sender: NSButton) {
         let row = sender.tag
-        guard checked.indices.contains(row) else { return }
+        // Authority: a non-actionable row can never become checked, even via a
+        // programmatic/keyboard path.
+        guard checked.indices.contains(row), rows[row].actionable else { return }
         checked[row] = (sender.state == .on)
         refreshSelectionUI()
     }
@@ -519,67 +519,160 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let engineIdle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
         trashButton.isEnabled = checkedFiles > 0 && snapshotGuard.mayTrash(engineIdle: engineIdle)
         trashButton.toolTip = engineIdle ? nil : ArchiveMutationGate.busyMessage
-        if rows.isEmpty || checked.allSatisfy({ !$0 }) {
+        // Select-All state reflects only actionable rows (the only selectable set).
+        let actionableIdx = CleanStalePolicy.selectableIndices(actionable: rows.map(\.actionable))
+        if actionableIdx.isEmpty || actionableIdx.allSatisfy({ !checked[$0] }) {
             selectAllCheckbox.state = .off
-        } else if checked.allSatisfy({ $0 }) {
+        } else if actionableIdx.allSatisfy({ checked[$0] }) {
             selectAllCheckbox.state = .on
         } else {
             selectAllCheckbox.state = .mixed
         }
+        selectAllCheckbox.isEnabled = !actionableIdx.isEmpty
     }
 
     // MARK: - Actions
 
     @objc private func trashAction(_ sender: Any?) {
-        var files: [URL] = []
-        for i in rows.indices where checked[i] { files.append(contentsOf: rows[i].files.map(\.url)) }
-        guard !files.isEmpty else { NSSound.beep(); return }
+        // Only actionable + checked rows are eligible; a non-actionable row is
+        // rejected here even if stale UI state marked it checked (authority).
+        let hashes = CleanStalePolicy.mutationHashes(
+            hashes: rows.map(\.hash), actionable: rows.map(\.actionable), checked: checked)
+        guard !hashes.isEmpty else { NSSound.beep(); return }
+
         // Recheck the engine-idle policy AND the snapshot guard immediately
-        // before mutating: a background sync/scan may have started (or run and
-        // finished, changing the classification) since this window opened.
+        // before mutating (UI-level gate; the transaction re-checks under lock).
         let idle = ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding)
         guard snapshotGuard.mayTrash(engineIdle: idle) else {
-            // Dirty snapshot or busy engine: re-scan if we're idle again so the
-            // user sees the current classification, and refuse this action.
             if snapshotGuard.shouldReload(engineIdle: idle) { reload() } else { refreshSelectionUI() }
             ArchiveMutationGate.presentBusyRefusal(
                 title: "Can’t clean archives right now", on: window)
             return
         }
-        // Belt-and-suspenders: verify every selected file is STILL classified
-        // as stale in a fresh scan. If the classification changed out from
-        // under us, re-scan and refuse rather than trashing a file that may no
-        // longer be an orphan.
-        let currentStale = Set(scan().flatMap { $0.files.map(\.url.path) })
-        guard files.allSatisfy({ currentStale.contains($0.path) }) else {
-            reload()
-            let alert = NSAlert()
-            alert.alertStyle = .informational
-            alert.messageText = "Archive list changed"
-            alert.informativeText =
-                "The set of stale archives changed since you reviewed it, so " +
-                "nothing was moved. The list has been refreshed; please review " +
-                "and try again."
-            alert.addButton(withTitle: "OK")
-            if let window { alert.beginSheetModal(for: window) { _ in } } else { alert.runModal() }
-            return
-        }
-        let outcome = ArchiveCleanup(unisonDirectory: unisonDirectory).trash(files)
-        TraceLog.shared.write(
-            "CleanStale: trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)")
+
+        // The exact payload family the user reviewed (basenames of the checked,
+        // actionable rows). The transaction derives the family again UNDER the
+        // locks; if it differs from this — e.g. an external Unison added a
+        // sibling in the meantime — we refuse and refresh (Blocker 2).
+        let reviewedPayloads = Set(rows.indices
+            .filter { checked.indices.contains($0) && checked[$0] && rows[$0].actionable }
+            .flatMap { rows[$0].files.map(\.url.lastPathComponent) })
+
+        // Route through the SINGLE mutation authority: acquire each archive's
+        // real interprocess lock, derive + stage the family (never lk) via
+        // rename(2) UNDER the locks, then Trash the staged set as one unit.
+        // `revalidate` confirms every planned hash is still actionable AND the
+        // under-lock family matches what was reviewed; otherwise nothing is touched.
+        let result = ArchiveMaintenance.mutate(
+            operation: "clean-stale", hashes: hashes, unisonDirectory: unisonDirectory,
+            isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
+            revalidate: { [weak self] plan in
+                guard let self else { return false }
+                let stillActionable = Set(self.scan().filter { $0.actionable }.map(\.hash))
+                return Set(hashes).isSubset(of: stillActionable)
+                    && Set(plan.payloadFiles) == reviewedPayloads
+            })
         reload()
-        guard !outcome.failed.isEmpty else { return }
-        let failedList = outcome.failed
-            .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
-            .joined(separator: "\n")
-        let fail = NSAlert()
-        fail.alertStyle = .critical
-        fail.messageText = "Some archive files couldn't be moved to Trash"
-        fail.informativeText =
-            "\(outcome.trashed.count) of \(files.count) succeeded.\n" +
-            "Failures:\n\(failedList)"
-        fail.addButton(withTitle: "OK")
-        if let window { fail.beginSheetModal(for: window) { _ in } } else { fail.runModal() }
+
+        switch result {
+        case .success(let outcome):
+            TraceLog.shared.write("CleanStale: mutated \(outcome.hashes.count) archive(s)"
+                + (outcome.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
+            let a = NSAlert()
+            switch outcome.disposition {
+            case .clean:
+                return
+            case .lockFreeLeftover(let q):
+                a.alertStyle = .warning
+                a.messageText = "Archives removed, but the quarantine couldn’t be emptied"
+                a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+            case .blockedByLock(let q, _):
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Archives removed, but a lock is still held"
+                a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+            }
+            a.addButton(withTitle: "OK")
+            if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
+        case .failure(let error):
+            TraceLog.shared.write("CleanStale: mutation refused — \(error)")
+            let a = NSAlert()
+            if Self.mutationRequiresBlockRefresh(error) {
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = Self.mutationBlockingTitle(error)
+            } else {
+                a.alertStyle = .informational
+                a.messageText = "Nothing was moved"
+            }
+            a.informativeText = Self.mutationRefusalText(error)
+            a.addButton(withTitle: "OK")
+            if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
+        }
+    }
+
+    /// Human-readable reason a mutation refused. Every case is fail-closed —
+    /// nothing was removed and the originals are intact. Pure (`nonisolated`) so it
+    /// is callable and testable off the main actor.
+    nonisolated static func mutationRefusalText(_ error: Error) -> String {
+        guard let e = error as? ArchiveMutationError else {
+            return "The archives were left untouched; the originals are intact."
+        }
+        switch e {
+        case .engineNotIdle:
+            return "Unison became busy, so the archives were left untouched. Try again when it’s idle."
+        case .lockUnavailable(_, let reason):
+            switch reason {
+            case .alreadyHeld:
+                return "Another Unison process holds a lock on one of these archives, so nothing was removed. Close other Unison instances and try again."
+            case .exception:
+                return "Preparing an archive lock failed unexpectedly, so nothing was removed. The originals are intact. Try again; if it persists, quit and reopen the app."
+            case .invalidHash:
+                return "An internal error (an invalid archive identifier) stopped the operation, so nothing was removed. The originals are intact."
+            case .bridgeMissing:
+                return "The archive-lock component isn’t available, so nothing was removed for safety. Quit and reopen the app, then try again."
+            case .acquired:
+                return "The archives were left untouched; the originals are intact."
+            }
+        case .revalidationFailed:
+            return "The set of stale archives changed since you reviewed it, so nothing was moved. The list has been refreshed; review and try again."
+        case .beginStagingFailed, .stagingFailed:
+            return "Preparing to move the archives failed, so nothing was removed. The originals are intact."
+        case .rollbackIncomplete(let quarantine):
+            return "An archive move was interrupted and could not be fully undone. "
+                + "Nothing was deleted and the archives' locks are still held (so "
+                + "Unison stays blocked). Quit any other Unison, then recover the "
+                + "files here without deleting the locks:\n\n\(quarantine)"
+        case .lockRetainedAfterAbort(_, let quarantine):
+            return "Nothing was moved, but one of the archive locks this app set "
+                + "could not be released, so the affected profile(s) stay blocked "
+                + "until recovery. Quit and reopen the app to recover:\n\n\(quarantine)"
+        case .abortedCleanupIncomplete(let quarantine):
+            return "Nothing was moved and the archives are intact and unlocked. Only "
+                + "an empty working folder could not be removed — delete it manually "
+                + "when convenient:\n\n\(quarantine)"
+        }
+    }
+
+    /// True when a mutation failure left a lock that blocks the affected profiles,
+    /// so the caller must refresh the in-session profile block at once (rather than
+    /// only on the next launch). Delegates to the error's own classification.
+    /// Pure (`nonisolated`) so it is callable and testable off the main actor.
+    nonisolated static func mutationRequiresBlockRefresh(_ error: Error) -> Bool {
+        (error as? ArchiveMutationError)?.requiresArchiveBlockRefresh ?? false
+    }
+
+    /// Accurate headline for a blocking mutation failure (used when the caller
+    /// switches to the critical, block-refresh path). The caller's own "nothing
+    /// moved" framing is wrong for `rollbackIncomplete` (a move did happen), so a
+    /// per-error title is used instead.
+    nonisolated static func mutationBlockingTitle(_ error: Error) -> String {
+        switch error as? ArchiveMutationError {
+        case .rollbackIncomplete:                        return "An archive move couldn’t be fully undone"
+        case .lockUnavailable(_, .alreadyHeld):          return "Another Unison is using these archives"
+        case .lockRetainedAfterAbort:                    return "An archive lock is still held"
+        default:                                         return "Archive maintenance needs attention"
+        }
     }
 
     @objc private func exportCSVAction(_ sender: Any?) {
@@ -684,6 +777,14 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let cell = NSTableCellView()
         let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleRow(_:)))
         box.tag = row
+        // Non-actionable (report-only) rows are visibly disabled — they can't be
+        // checked at all — and carry a tooltip explaining why.
+        box.isEnabled = rows.indices.contains(row) && rows[row].actionable
+        if rows.indices.contains(row) {
+            box.toolTip = CleanStalePolicy.refusalReason(
+                actionable: rows[row].actionable, uncertain: rows[row].uncertain,
+                reason: rows[row].reason)
+        }
         box.state = (checked.indices.contains(row) && checked[row]) ? .on : .off
         box.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(box)

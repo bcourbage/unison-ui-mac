@@ -9,6 +9,31 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
+## [Unreleased]
+
+### Security / Safety
+- **Archive maintenance is crash-safe and protects live and in-use archives.**
+  Every destructive archive operation — Clean Stale Archives, Reset Archives,
+  delete-with-archives, and archive-inconsistency recovery — runs through one
+  transaction that acquires the same per-archive lock a live Unison uses (so a
+  running sync, in this app or another process, blocks it), stages each file
+  with an atomic same-filesystem move, and only then moves the removed set to
+  the Trash as one unit. If any step fails it restores what it staged; if even
+  that restore can't complete, it retains everything and keeps the locks held
+  rather than deleting. A crash mid-operation leaves the locks in place (safely
+  stopping Unison), blocks the affected profiles, and is detected on next
+  launch, which offers to restore the files — never to delete them — and removes
+  the locks only after you confirm no other Unison is running.
+- **Clean Stale Archives only offers provably superseded copies.** An archive is
+  removable only when it is attributed to a current profile that has a newer
+  live archive replacing it. Orphans, "probably old" copies, anything involving
+  a remote replica, and any archive whose roots can't be unambiguously read are
+  now report-only: shown but not selectable, and never preselected. Profile roots
+  are resolved through symlinks so a profile's own live archive is never mistaken
+  for an orphan.
+- The lock file (`lk…`) is never listed for deletion or trashed; it is
+  synchronization state, held across the operation, not a payload.
+
 ## [0.5.1] — 2026-08-22
 
 A safety and documentation release on top of 0.5.0. (Build 20.) Existing profiles

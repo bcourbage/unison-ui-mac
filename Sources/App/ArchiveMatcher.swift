@@ -50,11 +50,73 @@ enum ArchiveMatcher {
         }
     }
 
-    /// Expand `~`, strip a trailing slash so `/a/b` and `/a/b/` are equal.
-    static func localPath(of root: String) -> String {
-        var s = (root as NSString).expandingTildeInPath
+    /// Expand `~`, resolve symlinks along the WHOLE path via `realpath(3)`
+    /// (Blocker B2), and strip a trailing slash. Unison records the canonical
+    /// (symlink-resolved) fspath in an archive's roots — e.g. a profile root
+    /// `/tmp/sync` is stored as `/private/tmp/sync` because `/tmp` is a symlink.
+    /// Matching the un-resolved profile path against that canonical archive path
+    /// would miss the profile's own LIVE archive and misclassify it as a
+    /// confident orphan. Resolving both sides the same way fixes that.
+    ///
+    /// When the path can't be resolved (it doesn't exist), fall back to the
+    /// lexically cleaned path; the caller treats such a root as
+    /// attribution-unreliable (fail closed) rather than confidently matching.
+    static func localPath(of root: String,
+                          resolve: (String) -> String? = ArchiveMatcher.realpathResolve) -> String {
+        let expanded = (root as NSString).expandingTildeInPath
+        var s = resolve(expanded) ?? expanded
         while s.count > 1 && s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+
+    /// True iff the local `root` resolves to a canonical path different from its
+    /// lexical form OR cannot be resolved — i.e. `realpath` matters here (an
+    /// ancestor/leaf symlink, or a missing path). Used to mark a profile's
+    /// attribution as needing the resolved path, and to fail closed when the
+    /// path can't be resolved at all.
+    static func localRootNeedsResolution(_ root: String,
+                                         resolve: (String) -> String? = ArchiveMatcher.realpathResolve)
+        -> (resolvable: Bool, differs: Bool) {
+        let expanded = (root as NSString).expandingTildeInPath
+        var lexical = expanded
+        while lexical.count > 1 && lexical.hasSuffix("/") { lexical.removeLast() }
+        guard let resolved0 = resolve(expanded) else { return (false, false) }
+        var resolved = resolved0
+        while resolved.count > 1 && resolved.hasSuffix("/") { resolved.removeLast() }
+        return (true, resolved != lexical)
+    }
+
+    /// `realpath(3)` wrapper: absolute, symlink-resolved path, or nil if it
+    /// can't be resolved (e.g. the path does not exist).
+    static func realpathResolve(_ path: String) -> String? {
+        return path.withCString { c -> String? in
+            guard let r = realpath(c, nil) else { return nil }
+            defer { free(r) }
+            return String(cString: r)
+        }
+    }
+
+    /// True when an archive's `rootsName` cannot be unambiguously parsed into
+    /// canonical `//host//path` components (Blocker B1): upstream joins roots
+    /// with `", "` and does NOT escape, so a root path containing `", "` splits
+    /// into extra fragments that don't parse as canonical components. Any
+    /// unparseable component makes the whole entry ambiguous — it must be marked
+    /// uncertain (non-actionable), never confidently classified or preselected.
+    static func rootsNameIsAmbiguous(_ rootsName: String) -> Bool {
+        componentPaths(ofRootsName: rootsName).contains(where: { $0 == nil })
+    }
+
+    /// True when the archive's root-pair spans TWO distinct hosts — i.e. it has
+    /// a genuine remote side (Should-fix SF3), whose canonical path is unknowable
+    /// offline, so the archive must stay report-only (uncertain). A pair whose
+    /// components all share ONE host is local↔local — even under a former machine
+    /// name (`//MacBookPro//… , //MacBookPro//…`), whose local paths ARE
+    /// verifiable — so it is not treated as remote. An unparseable component is
+    /// treated as remote (fail closed).
+    static func involvesRemoteHost(rootsName: String) -> Bool {
+        let hosts = rootsName.components(separatedBy: ", ").map { host(ofComponent: $0).map(shortLabel) }
+        if hosts.contains(where: { $0 == nil }) { return true }
+        return Set(hosts.compactMap { $0 }).count > 1
     }
 
     /// Absolute remote path from a `scheme://[user@]host[:port][/…]` root,

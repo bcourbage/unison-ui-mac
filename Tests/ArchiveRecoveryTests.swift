@@ -76,24 +76,28 @@ final class ArchiveRecoveryTests: XCTestCase {
                        ["are9813a3ba5a967b85e02e6604ff71799"])
     }
 
-    func test_deleteLocalOrphans_removesEveryListedFile() throws {
+    func test_parse_excludesLockFromOrphans_andExposesHash() throws {
         try touch("are9813a3ba5a967b85e02e6604ff71799")
         try touch("fpe9813a3ba5a967b85e02e6604ff71799")
-        try touch("lke9813a3ba5a967b85e02e6604ff71799")  // stale lock file
+        try touch("lke9813a3ba5a967b85e02e6604ff71799")  // a lock must NOT be an orphan (B3)
 
         guard let recovery = ArchiveRecovery.parse(message: realMessage,
                                                    unisonDirectory: tempDir) else {
             XCTFail("expected a recovery result")
             return
         }
-        XCTAssertEqual(recovery.localOrphans.count, 3,
-                       "should include matching ar/fp/lk siblings")
-        let deleted = recovery.deleteLocalOrphans()
-        XCTAssertEqual(deleted.count, 3)
-        for path in deleted {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: path),
-                           "file at \(path) was reported deleted but still exists")
-        }
+        // lk is the interprocess lock, never a payload to delete — the mutation
+        // transaction acquires and holds it. Recovery deletion routes through
+        // ArchiveMaintenance by hash (covered by the transaction/store tests).
+        let localNames = Set(recovery.localOrphans.map(\.lastPathComponent))
+        XCTAssertEqual(localNames,
+                       ["are9813a3ba5a967b85e02e6604ff71799",
+                        "fpe9813a3ba5a967b85e02e6604ff71799"],
+                       "lk is excluded from the orphan file list")
+        XCTAssertEqual(recovery.localOrphanHashes, ["e9813a3ba5a967b85e02e6604ff71799"])
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tempDir + "/lke9813a3ba5a967b85e02e6604ff71799"),
+            "parsing/attribution never touches the lock")
     }
 
     func test_parse_multipleHosts_separatesLocalFromRemote() throws {

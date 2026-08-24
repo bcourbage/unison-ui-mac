@@ -50,10 +50,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     // Avoids two ways to do the same thing.
     private let editButton = NSButton(title: "Edit…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
-    /// "Reset Archives" trashes the Unison archive files (ar*/fp*/lk*/
-    /// tm*/sc*) for the selected profile, forcing the next sync to
-    /// rebuild reconciliation state from scratch. Useful when archives
-    /// get corrupted (rare but possible — crash mid-write, etc.).
+    /// "Reset Archives" removes the Unison archive payload files
+    /// (ar*/fp*/tm*/sc* — never the lock lk*) for the selected profile via the
+    /// crash-safe mutation transaction (acquire lk, stage, whole-dir Trash),
+    /// forcing the next sync to rebuild reconciliation state from scratch.
+    /// Useful when archives get corrupted (rare — crash mid-write, etc.).
     /// See `ArchiveHash` for how we identify which files belong to the
     /// profile without going through OCaml.
     private let resetArchivesButton = NSButton(title: "Reset Archives…", target: nil, action: nil)
@@ -482,9 +483,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    /// Proactive Reset Archives — wipes the local archive files
-    /// (ar*/fp*/lk*/tm*/sc*) for the selected profile's roots, so the
-    /// next sync rebuilds reconciliation state from scratch. Useful
+    /// Proactive Reset Archives — removes the local archive payload files
+    /// (ar*/fp*/tm*/sc*; never the lock lk*) for the selected profile's roots,
+    /// so the next sync rebuilds reconciliation state from scratch. Useful
     /// when the archive is corrupted (rare but possible — typically
     /// from a sync crash mid-write) without having to wait for the
     /// reactive recovery to surface the "inconsistent state" fatal.
@@ -511,10 +512,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             case .profileFileMissing:
                 alert.informativeText =
                     "Couldn't read \(unisonDirectory)/\(profile).prf. " +
-                    "If you deleted the .prf manually, you can still " +
-                    "clean up its archives by looking up the name with " +
-                    "`unison -ui text -showArchiveName` and removing the " +
-                    "matching ar*/fp*/lk* files from the Unison directory."
+                    "If you deleted the .prf manually, you can still clean up its " +
+                    "archives with Settings, Maintenance, Clean Stale Archives, " +
+                    "which removes only the archive payload safely and never the " +
+                    "lock file (leave any lk* file in place — it is Unison's " +
+                    "concurrency lock, not an archive)."
             case .noRoots:
                 alert.informativeText =
                     "The profile has no `root = …` lines, so we can't " +
@@ -538,8 +540,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// Result of locating a profile's local archive files.
     private struct ArchiveLocation {
-        /// Files to trash (ar + any fp/lk/tm/sc siblings), deduped.
+        /// Files (ar + fp/tm/sc siblings; NEVER lk), deduped — for display/
+        /// summary only. Mutation goes through the transaction by `hashes`.
         let files: [URL]
+        /// Archive hashes to mutate. The transaction trashes ar/fp/tm/sc for
+        /// each and holds lk across the operation.
+        let hashes: [String]
         /// The roots Unison recorded for each distinct matched archive,
         /// for display so the user verifies the right pair. Read from
         /// the archive headers (ground truth), NOT recomputed — our
@@ -575,7 +581,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                                                   in: cleanup.indexArchives(),
                                                   localHostname: ArchiveHash.systemHostname)
 
-        // Collapse to distinct archive files (ar + fp/lk/tm/sc siblings),
+        // Collapse to distinct archive files (ar + fp/tm/sc siblings (never lk)),
         // deduped, in a stable order.
         var byHash: [String: ArchiveCleanup.ArchiveEntry] = [:]
         for entry in matched where byHash[entry.hash] == nil { byHash[entry.hash] = entry }
@@ -594,6 +600,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         })
         let rootsNames = Set(byHash.values.map(\.rootsName)).sorted()
         return ArchiveLocation(files: files,
+                               hashes: byHash.keys.sorted(),
                                rootsNames: rootsNames,
                                ambiguous: signatures.count > 1)
     }
@@ -619,7 +626,6 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // Clear any stale keyboard first-responder state on the table so a
         // single Escape reliably cancels the alert (see the helper).
         refreshTableFirstResponder()
-        let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
         let location = locateArchives(profile: profile, computed: computed)
         let files = location.files
 
@@ -676,17 +682,15 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         performArchiveReset(profile: profile,
-                            files: files,
-                            ambiguous: location.ambiguous,
-                            cleanup: cleanup)
+                            hashes: location.hashes,
+                            ambiguous: location.ambiguous)
     }
 
-    /// Trash the matched archive files (after the reset sheet is
-    /// confirmed) and surface any partial failure.
+    /// Reset the matched live archives (after the sheet is confirmed) through
+    /// the mutation transaction, surfacing any refusal or retained quarantine.
     private func performArchiveReset(profile: String,
-                                     files: [URL],
-                                     ambiguous: Bool,
-                                     cleanup: ArchiveCleanup) {
+                                     hashes: [String],
+                                     ambiguous: Bool) {
         // Recheck the engine-idle policy immediately before mutating: the
         // confirmation sheet may have been open while a background sync/scan
         // started (TOCTOU). Refuse safely — the archives are untouched.
@@ -696,31 +700,55 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 title: "Can’t reset archives right now", on: window)
             return
         }
-        let outcome = cleanup.trash(files)
-        TraceLog.shared.write(
-            "ProfileEditor: reset archives for '\(profile)' " +
-            "files=\(files.map(\.lastPathComponent).joined(separator: ",")) " +
-            "ambiguous=\(ambiguous) " +
-            "trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)"
-        )
-        for (url, err) in outcome.failed {
-            TraceLog.shared.write("  failed: \(url.lastPathComponent) — \(err)")
+        // Route through the single mutation authority: acquire each live
+        // archive's lock, stage its payload (never lk) via rename, whole-dir
+        // Trash. revalidate re-confirms the archives still exist under the lock.
+        let result = ArchiveMaintenance.mutate(
+            operation: "reset", hashes: hashes, unisonDirectory: unisonDirectory,
+            isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
+            revalidate: { [unisonDirectory] _ in
+                hashes.allSatisfy {
+                    FileManager.default.fileExists(
+                        atPath: (unisonDirectory as NSString).appendingPathComponent("ar" + $0))
+                }
+            })
+        switch result {
+        case .success(let out):
+            TraceLog.shared.write(
+                "ProfileEditor: reset archives for '\(profile)' hashes="
+                + hashes.joined(separator: ",") + " ambiguous=\(ambiguous)"
+                + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
+            let a = NSAlert()
+            switch out.disposition {
+            case .clean:
+                return
+            case .lockFreeLeftover(let q):
+                a.alertStyle = .warning
+                a.messageText = "Archives reset, but the quarantine couldn’t be emptied"
+                a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+            case .blockedByLock(let q, _):
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Archives reset, but a lock is still held"
+                a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+            }
+            a.addButton(withTitle: "OK")
+            a.runModal()
+        case .failure(let error):
+            TraceLog.shared.write("ProfileEditor: reset refused for '\(profile)' — \(error)")
+            let a = NSAlert()
+            if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = CleanStaleArchivesWindowController.mutationBlockingTitle(error)
+            } else {
+                a.alertStyle = .informational
+                a.messageText = "Archives were not reset"
+            }
+            a.informativeText = CleanStaleArchivesWindowController.mutationRefusalText(error)
+            a.addButton(withTitle: "OK")
+            a.runModal()
         }
-
-        guard !outcome.failed.isEmpty else { return }
-        // Partial failure — surface so the user knows manual cleanup is
-        // needed for the rest.
-        let failedList = outcome.failed
-            .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
-            .joined(separator: "\n")
-        let fail = NSAlert()
-        fail.alertStyle = .critical
-        fail.messageText = "Some archive files couldn't be moved to Trash"
-        fail.informativeText =
-            "\(outcome.trashed.count) of \(files.count) succeeded.\n" +
-            "Failures:\n\(failedList)"
-        fail.addButton(withTitle: "OK")
-        fail.runModal()
     }
 
     @objc private func deleteAction(_ sender: Any?) {
@@ -737,11 +765,13 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // archive cleanup just isn't offered — the user can still hit
         // Reset Archives separately if needed.
         var archiveFiles: [URL] = []
+        var archiveHashes: [String] = []
         var archivesAmbiguous = false
         if case .success(let computed) = ArchiveHash.computeAll(
             unisonDirectory: unisonDirectory, profile: profile) {
             let location = locateArchives(profile: profile, computed: computed)
             archiveFiles = location.files
+            archiveHashes = location.hashes
             archivesAmbiguous = location.ambiguous
         }
 
@@ -833,29 +863,63 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     "Clean Stale Archives."
                 busy.addButton(withTitle: "OK")
                 busy.runModal()
-            } else if shouldCleanArchives && !archiveFiles.isEmpty {
-                let outcome = ArchiveCleanup(unisonDirectory: unisonDirectory)
-                    .trash(archiveFiles)
-                TraceLog.shared.write(
-                    "ProfileEditor: archive cleanup on delete '\(profile)' " +
-                    "trashed=\(outcome.trashed.count) failed=\(outcome.failed.count)"
-                )
-                for (failedURL, err) in outcome.failed {
-                    TraceLog.shared.write("  failed: \(failedURL.lastPathComponent) — \(err)")
-                }
-                if !outcome.failed.isEmpty {
-                    let failedList = outcome.failed
-                        .map { "  • \($0.0.lastPathComponent): \($0.1.localizedDescription)" }
-                        .joined(separator: "\n")
-                    let fail = NSAlert()
-                    fail.alertStyle = .warning
-                    fail.messageText = "Some archive files couldn't be moved to Trash"
-                    fail.informativeText =
-                        "The profile was deleted, but \(outcome.failed.count) of " +
-                        "\(archiveFiles.count) archive file\(archiveFiles.count == 1 ? " was" : "s were") " +
-                        "left in place.\nFailures:\n\(failedList)"
-                    fail.addButton(withTitle: "OK")
-                    fail.runModal()
+            } else if shouldCleanArchives && !archiveHashes.isEmpty {
+                // Route through the single mutation authority (lock, stage via
+                // rename, whole-dir Trash). The .prf is already gone; archives
+                // are removed under their locks.
+                let result = ArchiveMaintenance.mutate(
+                    operation: "delete-with-archives", hashes: archiveHashes,
+                    unisonDirectory: unisonDirectory,
+                    isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
+                    revalidate: { _ in true })
+                switch result {
+                case .success(let out):
+                    TraceLog.shared.write(
+                        "ProfileEditor: archive cleanup on delete '\(profile)' hashes="
+                        + archiveHashes.joined(separator: ",")
+                        + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
+                    let a = NSAlert()
+                    var present = true
+                    switch out.disposition {
+                    case .clean:
+                        present = false
+                    case .lockFreeLeftover(let q):
+                        a.alertStyle = .warning
+                        a.messageText = "Profile deleted; archive quarantine couldn’t be emptied"
+                        a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+                    case .blockedByLock(let q, _):
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        a.alertStyle = .critical
+                        a.messageText = "Profile deleted; an archive lock is still held"
+                        a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+                    }
+                    if present {
+                        a.addButton(withTitle: "OK")
+                        a.runModal()
+                    }
+                case .failure(let error):
+                    TraceLog.shared.write("ProfileEditor: archive cleanup on delete refused '\(profile)' — \(error)")
+                    let a = NSAlert()
+                    if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
+                        // A lock is still held (split family, retained abort lock,
+                        // or a foreign lock) — "left in place" would be false here,
+                        // since some files may be in quarantine. Use the accurate
+                        // per-error blocking title + explanation.
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        a.alertStyle = .critical
+                        a.messageText = "Profile deleted; archive maintenance needs attention"
+                        a.informativeText = "The profile was moved to the Trash. "
+                            + CleanStaleArchivesWindowController.mutationRefusalText(error)
+                    } else {
+                        a.alertStyle = .warning
+                        a.messageText = "Profile deleted; archive files left in place"
+                        a.informativeText =
+                            "The profile was moved to the Trash, but its archive files were left "
+                            + "in place. " + CleanStaleArchivesWindowController.mutationRefusalText(error)
+                            + " You can remove them later with Settings, Maintenance, Clean Stale Archives."
+                    }
+                    a.addButton(withTitle: "OK")
+                    a.runModal()
                 }
             }
 

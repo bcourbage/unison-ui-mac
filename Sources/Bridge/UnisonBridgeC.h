@@ -106,6 +106,32 @@ void unison_bridge_test_force_gc_between_snapshot_rows(bool on);
 #define UNISON_BRIDGE_ERR_EXN     2    /* the OCaml callback raised (logged) */
 #define UNISON_BRIDGE_ERR_MISSING (-1) /* callback not registered (old blob) */
 
+/* === Archive lock bridge (patch 0006) ======================================
+ *
+ * Acquire/release/test the SAME per-archive lock a live Unison uses, so the
+ * app's archive-mutation transaction can exclude concurrent access before it
+ * deletes/resets archive state. Pass ONLY the 32-char lowercase-hex archive
+ * hash (the hash in ar<hash>/lk<hash>); the OCaml side validates it and builds
+ * the lockfile path itself (Util.fileInUnisonDir "lk"^hash) — the caller never
+ * passes a path. Raw upstream Lock (an empty hard-link file, no metadata): any
+ * pre-existing lock (a live Unison OR a stale lock) makes acquire return HELD,
+ * and the caller MUST fail closed. A successful acquire is the ONLY mutation
+ * authority; is_locked is diagnostic-only and must never gate a mutation. */
+#define UNISON_LOCK_ACQUIRED      0   /* we now hold the lock */
+#define UNISON_LOCK_HELD          1   /* already held by someone else — fail closed */
+#define UNISON_LOCK_EXN           2   /* OCaml raised (Unix error) — fail closed */
+#define UNISON_LOCK_INVALID_HASH  3   /* not a 32-char lowercase-hex hash — refused */
+#define UNISON_LOCK_MISSING     (-1)  /* callback not registered (old blob) — fail closed */
+/* acquire: one of the UNISON_LOCK_* codes above. */
+int  unison_bridge_lock_acquire(const char *hash);
+/* release: unlink the lockfile if we constructed a valid path. No-op on an
+ * invalid hash or a missing callback. Only release a lock this process acquired. */
+void unison_bridge_lock_release(const char *hash);
+/* is_locked (DIAGNOSTIC ONLY — never gate a mutation on this; a concurrent
+ * Unison can lock between a check and a mutate): 0 = not locked, 1 = locked,
+ * 2 = exception or invalid hash, -1 = callback missing. */
+int  unison_bridge_lock_is_locked(const char *hash);
+
 const char *unison_bridge_get_version(void);
 
 /* Returns the path to the Unison preferences directory

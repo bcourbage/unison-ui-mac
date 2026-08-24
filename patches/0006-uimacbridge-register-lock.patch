@@ -1,0 +1,70 @@
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index 1dcef90..99704a7 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -755,6 +755,65 @@ let unisonCloseConnection () =
+ ;;
+ Callback.register "closeConnection" unisonCloseConnection;;
+ 
++(* unison-ui-mac extension (patch 0006): a NARROW archive-lock capability for the
++ * app's archive-mutation transaction. Each callback takes ONLY a validated
++ * 32-char lowercase-hex archive hash (the hash in ar<hash>/lk<hash>, shared by
++ * construction) and builds the lockfile path INSIDE OCaml via
++ * [Util.fileInUnisonDir ("lk" ^ hash)] -- so the C/Swift side can never pass an
++ * arbitrary path or a wrong prefix, and [unisonLockRelease] can never become a
++ * raw unlink of a caller-chosen file. Uses the RAW Lock primitive from
++ * src/lock.ml (an empty hard-link lockfile, no PID/host/stale metadata) exactly
++ * as a live Unison does -- NOT [lockArchiveLocal], which wraps Remote
++ * connection-cleanup irrelevant to a standalone GUI transaction.
++ *
++ * Atomic [acquire] is the ONLY mutation authority. [is_locked] is DIAGNOSTIC
++ * ONLY: a concurrent Unison can take the lock between a check and a mutation, so
++ * a check must never gate a mutation -- only a successful [acquire] may.
++ *
++ * Return codes (so C can distinguish outcomes):
++ *   acquire:   0 = acquired (we hold it) | 1 = already held (fail closed)
++ *            | 2 = exception | 3 = invalid hash (refused)
++ *   is_locked: 0 = not locked | 1 = locked | 2 = exception or invalid hash
++ *              (never a mutation gate)
++ *   release:   unit; a no-op on an invalid hash.
++ * NOT in upstream uimac -- local patch in this fork (patch 0006). *)
++let unisonValidArchiveHash h =
++  String.length h = 32 &&
++  (let ok = ref true in
++   String.iter
++     (fun c ->
++        if not ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) then ok := false)
++     h;
++   !ok)
++;;
++let unisonLockFileForHash h = Util.fileInUnisonDir ("lk" ^ h);;
++let unisonLockAcquire hash =
++  if not (unisonValidArchiveHash hash) then 3
++  else
++    try if Lock.acquire (unisonLockFileForHash hash) then 0 else 1
++    with e ->
++      Printf.eprintf "lockAcquire: %s\n%!" (Printexc.to_string e);
++      2
++;;
++Callback.register "unisonLockAcquire" unisonLockAcquire;;
++
++let unisonLockRelease hash =
++  if unisonValidArchiveHash hash then
++    (try Lock.release (unisonLockFileForHash hash)
++     with e -> Printf.eprintf "lockRelease: %s\n%!" (Printexc.to_string e))
++;;
++Callback.register "unisonLockRelease" unisonLockRelease;;
++
++let unisonLockIsLocked hash =
++  if not (unisonValidArchiveHash hash) then 2
++  else
++    try if Lock.is_locked (unisonLockFileForHash hash) then 1 else 0
++    with e ->
++      Printf.eprintf "lockIsLocked: %s\n%!" (Printexc.to_string e);
++      2
++;;
++Callback.register "unisonLockIsLocked" unisonLockIsLocked;;
++
+ let unisonIgnorePath pathString =
+   Uicommon.addIgnorePattern (Uicommon.ignorePath (Path.fromString pathString));;
+ let unisonIgnoreExt pathString =
