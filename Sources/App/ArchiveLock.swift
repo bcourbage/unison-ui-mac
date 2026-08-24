@@ -24,20 +24,20 @@ enum ArchiveLock {
         /// True only for `.acquired`. Every other outcome must block mutation.
         var didAcquire: Bool { self == .acquired }
 
-        /// What this result establishes about the lock file on disk. Crucially,
-        /// a failure to acquire is NOT proof the lock is absent: `.exception`
-        /// (OCaml raised — patch 0006 returns code 2 without checking state) and
-        /// `.bridgeMissing`/`.invalidHash` (can't check at all) are UNKNOWN, not
-        /// unlocked. Only `.alreadyHeld` proves a lock exists.
-        enum LockEvidence: Equatable {
-            case held      // a lock file exists (foreign or stale)
-            case absent    // the lock is known not to exist (we just acquired it)
-            case unknown   // could not be established — treat conservatively
+        /// What an acquisition attempt established. Crucially, a failure to acquire
+        /// is NOT proof the lock is absent: `.exception` (OCaml raised — patch 0006
+        /// returns code 2 without checking state) and `.bridgeMissing`/`.invalidHash`
+        /// (can't check at all) are UNKNOWN, not unlocked. Only `.acquired` means we
+        /// now own the lock; only `.alreadyHeld` proves another holder.
+        enum AcquisitionDisposition: Equatable {
+            case acquiredByUs   // we now own the lock (it exists, held by this process)
+            case heldByAnother  // a lock file exists (a live Unison or a stale lock)
+            case unknown        // could not be established — treat conservatively
         }
-        var lockEvidence: LockEvidence {
+        var acquisitionDisposition: AcquisitionDisposition {
             switch self {
-            case .acquired:                                return .absent
-            case .alreadyHeld:                             return .held
+            case .acquired:                                return .acquiredByUs
+            case .alreadyHeld:                             return .heldByAnother
             case .exception, .invalidHash, .bridgeMissing: return .unknown
             }
         }

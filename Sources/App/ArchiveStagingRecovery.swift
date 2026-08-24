@@ -24,9 +24,11 @@ import Foundation
 /// All three take the cleanup branch: release the lock and retire the leftover
 /// folder, restoring nothing. In BOTH branches locks are released only after the
 /// operation (or the no-op) succeeds and every release is confirmed, and the
-/// record is retired only then (mirrors `ArchiveMutation.execute`, SF2). Any
-/// unsuccessful recovery leaves every affected family PHYSICALLY LOCKED and the
-/// record intact.
+/// record is retired only then (mirrors `ArchiveMutation.execute`, SF2). An
+/// unsuccessful recovery keeps the record intact (so it stays blocked). Barriers
+/// already established stay held; but a hash whose acquisition FAILED with an
+/// unknown result may be physically unprotected — the outcome says so rather than
+/// claiming every family is locked.
 /// The caller must obtain the user's stale-lock authorization before calling.
 enum ArchiveStagingRecovery {
 
@@ -76,10 +78,27 @@ enum ArchiveStagingRecovery {
         return Array(groups.values)
     }
 
+    /// The overlap groups (from the COMPLETE on-disk `universe`) that a request
+    /// touches — a group is relevant when any of its members is a requested record
+    /// (identified by its stable quarantine directory). Grouping is ALWAYS over the
+    /// whole universe, never a filtered subset, so a record that overlaps a
+    /// requested one on a hash the caller didn't ask about is still in the group
+    /// and its lock can never be mistaken for the requested record's (Blocker).
+    /// The caller auto-recovers a returned group only when its size is 1.
+    static func recoveryGroups(universe: [AbandonedStaging],
+                               requestedDirectories: Set<String>) -> [[AbandonedStaging]] {
+        overlapGroups(universe).filter { group in
+            group.contains { requestedDirectories.contains($0.quarantineDir) }
+        }
+    }
+
     enum RecoverOutcome: Equatable {
         case recovered                    // fully resolved; record retired; locks released
-        case aborted(String)              // a lock couldn't be secured; nothing touched; all locked
-        case needsManualReview(String)    // collision/move/release issue; record retained; STILL LOCKED
+        case aborted(String)              // a lock couldn't be secured; nothing touched. Any
+                                          // barriers already established stay in place, but the
+                                          // hash whose acquisition failed may be UNPROTECTED.
+        case needsManualReview(String)    // collision/move/release issue, or unrecognized record;
+                                          // record retained and its hashes stay blocked
         case cleanupOnly(String)          // file op done AND all locks released; only quarantine
                                           // cleanup failed → NOT blocking, safe to delete by hand
     }
@@ -112,7 +131,9 @@ enum ArchiveStagingRecovery {
         // 1. Secure EVERY affected archive without ever unlinking an existing
         //    barrier. Retain a recorded lock as-is; acquire a missing one FRESH
         //    (atomic). If any hash cannot be secured, abort WITHOUT touching files
-        //    and WITHOUT releasing anything — every family stays physically locked.
+        //    and WITHOUT releasing anything: barriers already established stay in
+        //    place, but the hash that failed may be unprotected (a `.unknown`
+        //    acquisition) — the abort message says so rather than claiming a lock.
         var barrier: [String: Barrier] = [:]
         for h in hashes {
             if fm.fileExists(atPath: lkPath(h)) {
@@ -120,14 +141,14 @@ enum ArchiveStagingRecovery {
                 continue
             }
             let r = locking.acquire(hash: h)
-            switch r.lockEvidence {
-            case .absent:   // .acquired — we established a fresh barrier
+            switch r.acquisitionDisposition {
+            case .acquiredByUs:   // we established a fresh barrier
                 barrier[h] = .fresh
-            case .held:     // another Unison grabbed it since our check
+            case .heldByAnother:  // a live Unison (or stale lock) grabbed it since our check
                 return .aborted("another Unison holds archive \(h); recovery deferred — "
                     + "that archive stays locked. Quit every Unison and try again")
-            case .unknown:  // acquire raised or the bridge is unavailable — we could
-                            // NOT establish a barrier, and the lock file was absent
+            case .unknown:        // acquire raised or the bridge is unavailable — we could
+                                  // NOT establish a barrier, and the lock file was absent
                 return .aborted("could NOT establish a lock on archive \(h) (\(r)); recovery "
                     + "stopped. WARNING: this archive may be UNPROTECTED — quit every Unison "
                     + "and try recovery again")

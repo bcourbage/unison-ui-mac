@@ -1694,7 +1694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // (pre-commit) mutation must not be opened until recovery.
         if let blocking = abandonedStagingBlocking(profile) {
             log.write("AppDelegate: '\(profile)' blocked by abandoned staging — offering recovery")
-            presentAndRecoverAbandonedStaging(blocking,
+            presentAndRecoverAbandonedStaging(requested: blocking,
                 context: "This profile's archives are being recovered from an interrupted maintenance operation.")
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
@@ -2329,19 +2329,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// asked. First run seeds the marker to "now" so reports predating this
     /// feature are never surfaced.
     /// Fail-closed restart handling for an interrupted archive mutation
-    /// (issue: crash-safe staging). An abandoned staging BLOCKS when it is
-    /// pre-commit (the operation died while archives were being moved: its `lk`
-    /// locks are still held — safe — and ownership of those raw locks cannot be
-    /// proven across a crash, so we NEVER auto-remove them or auto-recover), OR
-    /// when it is committed but a lock could not be released (surviving `lk`
-    /// present). Both require explicit, manual recovery. A committed leftover with
-    /// NO surviving lock (removal finished, only Trash-cleanup failed) does not
-    /// block and is not alerted here.
+    /// (issue: crash-safe staging). This installs an APP-LEVEL profile block; it is
+    /// NOT the same as a confirmed on-disk `lk`. A record blocks when it is
+    /// pre-commit (the operation died while archives were being moved — the family
+    /// may be split; its `lk` is usually still present but we never assume so), when
+    /// it is committed/acquiring/aborted with a surviving `lk`, or when it is
+    /// unrecognized (unknown version/phase, fail closed). Ownership of the raw locks
+    /// cannot be proven across a crash, so we NEVER auto-remove them or auto-recover.
+    /// A committed leftover with NO surviving lock (removal finished, only
+    /// Trash-cleanup failed) does not block and is not alerted here.
     private func checkForAbandonedArchiveStaging() {
         guard refreshBlockedArchiveState() else { return }
         log.write("abandoned archive staging detected: \(abandonedStagings.count) dir(s), "
             + "blocked hashes=\(blockedArchiveHashes.sorted().joined(separator: ","))")
-        presentAndRecoverAbandonedStaging(abandonedStagings, context:
+        presentAndRecoverAbandonedStaging(requested: abandonedStagings, context:
             "An archive maintenance operation was interrupted the last time the app ran.")
     }
 
@@ -2372,27 +2373,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return abandonedStagings.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) }
     }
 
-    /// Terminal-state recovery for an interrupted archive mutation. Never
-    /// suggests trashing the quarantine (pre-commit it holds the only copy of
-    /// some files). Authorization is obtained FIRST (the user attests no other
-    /// Unison is running), then each staging is recovered as one transaction:
-    /// an existing lock is RETAINED as the exclusion barrier (a missing one is
-    /// acquired fresh atomically), the family is restored (pre-commit) or the
-    /// intended removal completed (committed), and only then is the barrier
-    /// released. A staging that stays locked keeps its record and stays blocked;
-    /// a fully unlocked one whose only failure is quarantine cleanup is cleared.
-    private func presentAndRecoverAbandonedStaging(_ abandoned: [AbandonedStaging],
+    /// Terminal-state recovery for an interrupted archive mutation. `requested` is
+    /// the presentation subset (e.g. a profile's blocking records), but overlap
+    /// authorization is ALWAYS computed against the complete on-disk universe (see
+    /// below) so a filtered request can never authorize recovering a record whose
+    /// lock protects an omitted, overlapping one (Blocker).
+    ///
+    /// The block is an APP-LEVEL profile block; the on-disk `lk` may be present or
+    /// missing, so we never assert a physical lock is in place. Authorization is
+    /// obtained FIRST (the user attests no other Unison is running). Recovery then
+    /// runs as one transaction per record: retain an existing lock as the barrier
+    /// or atomically acquire a missing one, and only then restore (staging) or
+    /// finish the removal (committed); if it can't establish that barrier it stops
+    /// without touching files. A record that stays locked keeps its record and
+    /// stays blocked; a fully unlocked one whose only failure is quarantine cleanup
+    /// is cleared. State is recomputed from disk afterward.
+    private func presentAndRecoverAbandonedStaging(requested: [AbandonedStaging],
                                                    context: String) {
-        let dirs = abandoned.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
+        let dirs = requested.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "An archive maintenance operation was interrupted"
         alert.informativeText =
-            context + " Some archive files are quarantined and their locks are still in "
-            + "place, which safely blocks the affected profile(s) until you recover. "
-            + "Nothing was lost.\n\n"
-            + "Recover Now restores or finishes clearing the files while holding the "
-            + "existing lock as a barrier — but only if no other Unison holds them.\n\n\(dirs)"
+            context + " The app has blocked the affected profile(s) and kept the recovery "
+            + "records. Some archive files may be quarantined, and the on-disk lock may be "
+            + "present or missing. Until recovery finishes, do not run any other Unison and "
+            + "do not delete the quarantine folders or lk files.\n\n"
+            + "Recover Now retains an existing lock, or atomically acquires a missing one, "
+            + "before touching any archive file. If it cannot establish that barrier it "
+            + "stops without modifying the files.\n\n\(dirs)"
         alert.addButton(withTitle: "Recover Now")
         alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -2402,9 +2411,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         confirm.alertStyle = .warning
         confirm.messageText = "Is any other Unison running?"
         confirm.informativeText =
-            "Recovery works under the interrupted operation's existing lock and clears it "
-            + "only when finished. Only continue if NO other Unison (on this Mac or "
-            + "another) is currently syncing these archives."
+            "Recovery works under the interrupted operation's lock and clears it only when "
+            + "finished. Only continue if NO other Unison (on this Mac or another) is "
+            + "currently syncing these archives."
         confirm.addButton(withTitle: "No other Unison is running — recover")
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
@@ -2412,11 +2421,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         var problems: [String] = []      // still locked / refused → stay blocked
         var cleanupNotes: [String] = []  // unlocked, only a leftover folder to delete
 
-        // Blocker: when several records share a hash, an `lk<hash>` on disk cannot
-        // be attributed to any one of them — recovering one could unlink a lock that
-        // protects another's split family. Refuse automatic recovery of any
-        // overlapping group; recover only records that share hashes with no other.
-        for group in ArchiveStagingRecovery.overlapGroups(abandoned) {
+        // Blocker: overlap authorization is computed against the COMPLETE, freshly
+        // re-scanned on-disk universe — never the (possibly profile-filtered)
+        // `requested` subset. A group is recovered only when its GLOBAL size is 1,
+        // so a shared `lk<hash>` can never be attributed to (and unlinked for) the
+        // wrong record even if the other record wasn't part of this request.
+        let universe = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
+        let requestedDirs = Set(requested.map(\.quarantineDir))
+        for group in ArchiveStagingRecovery.recoveryGroups(
+            universe: universe, requestedDirectories: requestedDirs) {
             guard group.count == 1, let a = group.first else {
                 let dirs = group.map { "    – \($0.quarantineDir)" }.joined(separator: "\n")
                 problems.append("  • \(group.count) interrupted operations share the same "
@@ -2459,9 +2472,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             a3.alertStyle = .informational
             a3.messageText = "Recovered — a leftover folder can be deleted"
             a3.informativeText =
-                "The archives are restored and unlocked, so the affected profiles are "
-                + "available again. Only an empty quarantine folder is left over; delete it "
-                + "manually when convenient:\n\n"
+                "The maintenance operation completed and no archive lock remains. Only a "
+                + "leftover quarantine folder could not be removed; delete it manually when "
+                + "convenient:\n\n"
                 + cleanupNotes.joined(separator: "\n")
             a3.addButton(withTitle: "OK")
             a3.runModal()

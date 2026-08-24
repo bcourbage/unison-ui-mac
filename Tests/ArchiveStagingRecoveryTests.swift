@@ -290,6 +290,37 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         XCTAssertTrue(groups.contains { $0.count == 1 && $0.first?.quarantineDir == "/q3" })
     }
 
+    /// Round-10 Blocker: a profile-filtered request must still be grouped against
+    /// the COMPLETE universe. A = staging{h1,h2}, B = staging{h2}; the profile only
+    /// intersects h1 so only A is requested — but A and B share h2, so the relevant
+    /// global group is {A,B} (size 2) and auto-recovery is refused, leaving B's
+    /// lk<h2> untouched. Grouping the requested subset alone would wrongly authorize A.
+    func test_recoveryGroups_profileFilteredRequest_groupsAgainstGlobalUniverse() {
+        let a = preCommit("/qA", hashes: [h1, h2], payloads: [])
+        let b = preCommit("/qB", hashes: [h2], payloads: [])
+        let groups = ArchiveStagingRecovery.recoveryGroups(
+            universe: [a, b], requestedDirectories: ["/qA"])   // only A requested
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.count, 2,
+                       "A and B share h2 → relevant group includes the omitted B; size 2 → refuse")
+        // The mutation this guards against: grouping only the requested subset would
+        // yield a singleton and wrongly authorize A (and unlink B's lk<h2>).
+        XCTAssertEqual(ArchiveStagingRecovery.overlapGroups([a]).first?.count, 1,
+                       "requested-only grouping is the DEFECT — a singleton — this test rejects")
+    }
+
+    /// A truly independent requested record (no global overlap) is a singleton and
+    /// remains auto-recoverable.
+    func test_recoveryGroups_independentRequest_isSingleton() {
+        let a = preCommit("/qA", hashes: [h1], payloads: [])
+        let b = preCommit("/qB", hashes: [h2], payloads: [])   // disjoint
+        let groups = ArchiveStagingRecovery.recoveryGroups(
+            universe: [a, b], requestedDirectories: ["/qA"])
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.count, 1)
+        XCTAssertEqual(groups.first?.first?.quarantineDir, "/qA")
+    }
+
     /// The exact Blocker scenario: an aborted lock-free leftover and a LATER staging
     /// record share a hash whose `lk` protects the staging record's split family.
     /// Recovering the aborted record must NOT run — its cleanup branch would unlink

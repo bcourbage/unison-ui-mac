@@ -201,7 +201,7 @@ enum ArchiveMutationError: Error, Equatable {
     var requiresArchiveBlockRefresh: Bool {
         switch self {
         case .rollbackIncomplete, .lockRetainedAfterAbort: return true
-        case .lockUnavailable(_, let reason): return reason.lockEvidence != .absent
+        case .lockUnavailable(_, let reason): return reason.acquisitionDisposition != .acquiredByUs
         default: return false
         }
     }
