@@ -2,84 +2,41 @@ import Foundation
 
 /// Explicit recovery for an abandoned staging (an interrupted archive mutation,
 /// detected by `AbandonedStagingScan`). `recover(_:activeDir:locking:)` is the
-/// authoritative entry point; the other functions are its building blocks.
+/// authoritative entry point; `finalize` and `isProfileBlocked` are helpers.
 ///
-/// Recovery direction depends on phase. PRE-COMMIT, the quarantine holds the
-/// only copy of some files, so the safe direction is to RESTORE them back into
-/// the active directory (never overwriting a collision, never deleting). COMMITTED,
-/// the removal was intended and the family is already staged out, so recovery
-/// completes it by Trashing the whole quarantine. In both cases the recorded
-/// stale locks are removed and re-acquired FRESH first, so no file is touched
-/// unless this process holds exclusive ownership (Blocker 1). The caller must
-/// obtain the user's stale-lock authorization before calling `recover`.
+/// The exclusion barrier is NEVER dropped and re-taken. An abandoned mutation
+/// leaves an `lk<hash>` file that already excludes every other Unison; recovery
+/// RETAINS that file as its barrier for the whole operation (Blocker 1 — deleting
+/// it first, even under user authorization, opens a window for a CLI/cron/incoming
+/// Unison to grab the freed lock and operate on the still-split family). Only a
+/// hash whose lock is somehow absent is acquired FRESH — atomically, before any
+/// file is touched. The two kinds are tracked so the final step is correct:
+/// an existing (authorized) lock is unlinked, a freshly-acquired one is released.
+///
+/// Recovery direction depends on phase. PRE-COMMIT, the quarantine holds the only
+/// copy of some files, so the safe direction is to RESTORE them into the active
+/// directory — after a full preflight, so nothing moves unless every file can be
+/// restored, and with rollback if a move still fails. COMMITTED, the removal was
+/// intended and the family is already staged out, so recovery completes it by
+/// Trashing the whole quarantine. In BOTH phases: locks are released only after
+/// the file operation succeeds and every release is confirmed, and the manifest
+/// is retired only then (mirrors `ArchiveMutation.execute`, SF2). Any unsuccessful
+/// recovery leaves every affected family PHYSICALLY LOCKED and the record intact.
+/// The caller must obtain the user's stale-lock authorization before calling.
 enum ArchiveStagingRecovery {
 
-    struct RestoreResult: Equatable {
-        /// Files moved back from the quarantine to the active directory.
-        let restored: [String]
-        /// Files NOT restored because the active directory already has that name
-        /// (a collision) — left in the quarantine, untouched, for manual review.
-        let collided: [String]
-        /// Files whose restore move failed for another reason — left in the
-        /// quarantine, untouched.
-        let failed: [String]
-
-        var isComplete: Bool { collided.isEmpty && failed.isEmpty }
-    }
-
-    /// Restore every staged payload file back into `activeDir`, skipping any that
-    /// would overwrite an existing file. Never deletes anything.
-    @discardableResult
-    static func restore(_ abandoned: AbandonedStaging,
-                        activeDir: String,
-                        fileManager fm: FileManager = .default) -> RestoreResult {
-        var restored: [String] = []
-        var collided: [String] = []
-        var failed: [String] = []
-        for name in abandoned.manifest.payloadFiles.sorted() {
-            let src = (abandoned.quarantineDir as NSString).appendingPathComponent(name)
-            guard fm.fileExists(atPath: src) else { continue }  // already restored / absent
-            let dst = (activeDir as NSString).appendingPathComponent(name)
-            if fm.fileExists(atPath: dst) { collided.append(name); continue }
-            do { try fm.moveItem(atPath: src, toPath: dst); restored.append(name) }
-            catch { failed.append(name) }
-        }
-        return RestoreResult(restored: restored, collided: collided, failed: failed)
-    }
-
-    /// After a COMPLETE restore (no collisions/failures) and no remaining payload
-    /// files, remove the quarantine directory + manifest. Returns whether it was
-    /// removed. Refuses if any payload file still remains in the quarantine.
+    /// After a COMPLETE restore (no payload files remain) remove the quarantine
+    /// directory + manifest. Returns whether it was removed. Refuses if any
+    /// payload file still remains (an incomplete restore — keep for review).
     @discardableResult
     static func finalize(_ abandoned: AbandonedStaging,
                          fileManager fm: FileManager = .default) -> Bool {
-        // Only remove the quarantine if it holds no payload files any more (the
-        // manifest itself may remain). A lingering payload means an incomplete
-        // restore — keep everything for manual review.
         let remaining = abandoned.manifest.payloadFiles.filter {
             fm.fileExists(atPath: (abandoned.quarantineDir as NSString).appendingPathComponent($0))
         }
         guard remaining.isEmpty else { return false }
         do { try fm.removeItem(atPath: abandoned.quarantineDir); return true }
         catch { return false }
-    }
-
-    /// Remove the recorded `lk` locks. Call ONLY after exclusive ownership is
-    /// established (the user has confirmed no other Unison is running) — the raw
-    /// upstream lock carries no owner metadata, so it can never be removed
-    /// automatically. Returns the hashes whose lock was removed.
-    @discardableResult
-    static func removeLocks(_ abandoned: AbandonedStaging,
-                            activeDir: String,
-                            fileManager fm: FileManager = .default) -> [String] {
-        var removed: [String] = []
-        for hash in abandoned.manifest.hashes {
-            let lk = (activeDir as NSString).appendingPathComponent("lk" + hash)
-            if fm.fileExists(atPath: lk) {
-                if (try? fm.removeItem(atPath: lk)) != nil { removed.append(hash) }
-            }
-        }
-        return removed
     }
 
     /// Profile-open gate: a profile whose any archive hash is blocked by an
@@ -89,64 +46,124 @@ enum ArchiveStagingRecovery {
     }
 
     enum RecoverOutcome: Equatable {
-        case recovered                    // fully resolved; record removed; locks released
-        case aborted(String)              // could not take exclusive ownership; record retained
-        case needsManualReview(String)    // collisions/failures; record retained
+        case recovered                    // fully resolved; record retired; locks released
+        case aborted(String)              // a lock couldn't be secured; nothing touched; all locked
+        case needsManualReview(String)    // collision/move/release issue; record retained; all locked
     }
 
+    /// How this recovery came to hold each hash's lock — decides the final step.
+    private enum Barrier { case existing, fresh }
+
     /// Recover ONE abandoned staging as an authority-controlled transaction. The
-    /// CALLER must have the user's authorization first (they attested no other
-    /// Unison is running), because this removes and re-acquires locks. Order
-    /// (Blocker 1): remove the recorded stale locks → acquire every affected
-    /// archive lock FRESH → abort without touching files if any acquisition fails
-    /// → only then, under our own locks, restore (pre-commit) or complete the
-    /// intended removal (committed) → release our locks. The manifest is removed
-    /// ONLY on full success, so a failure leaves the staging detectable and
-    /// recoverable (SF2).
+    /// CALLER must have obtained the user's authorization first (they attested no
+    /// other Unison is running). See the type doc for the ordering rationale.
     static func recover(_ a: AbandonedStaging,
                         activeDir: String,
                         locking: ArchiveLocking,
                         fileManager fm: FileManager = .default) -> RecoverOutcome {
-        // 1. Remove the recorded (authorized) stale locks so we can re-acquire.
-        _ = removeLocks(a, activeDir: activeDir, fileManager: fm)
+        let hashes = a.manifest.hashes.sorted()
+        func lkPath(_ h: String) -> String {
+            (activeDir as NSString).appendingPathComponent("lk" + h)
+        }
 
-        // 2. Acquire exclusive ownership of every affected archive, FRESH.
-        var owned: [String] = []
-        func releaseOwned() { for h in owned.reversed() { _ = locking.release(hash: h) } }
-        for hash in a.manifest.hashes.sorted() {
-            if locking.acquire(hash: hash) == .acquired {
-                owned.append(hash)
+        // 1. Secure EVERY affected archive without ever unlinking an existing
+        //    barrier. Retain a recorded lock as-is; acquire a missing one FRESH
+        //    (atomic). If any hash cannot be secured, abort WITHOUT touching files
+        //    and WITHOUT releasing anything — every family stays physically locked.
+        var barrier: [String: Barrier] = [:]
+        for h in hashes {
+            if fm.fileExists(atPath: lkPath(h)) {
+                barrier[h] = .existing
+            } else if locking.acquire(hash: h) == .acquired {
+                barrier[h] = .fresh
             } else {
-                // 4. Abort WITHOUT touching files. Release any we grabbed; leave
-                //    the manifest so this is detected and retried next time.
-                releaseOwned()
-                return .aborted("another Unison is using archive \(hash); recovery deferred")
+                return .aborted("another Unison holds archive \(h); recovery deferred — "
+                    + "all affected archives remain locked")
             }
         }
-        // 6. Release our acquired locks on exit (archive usable again).
-        defer { releaseOwned() }
 
-        // 5. Handle files under our locks, by phase.
+        // 2. The file operation, under the held locks.
         if a.manifest.isPreCommit {
-            let r = restore(a, activeDir: activeDir, fileManager: fm)
-            guard r.isComplete else {
-                return .needsManualReview(
-                    "\(a.quarantineDir): \(r.collided.count) already present, "
-                    + "\(r.failed.count) could not be moved")
+            let payloads = a.manifest.payloadFiles.sorted().filter {
+                fm.fileExists(atPath: (a.quarantineDir as NSString).appendingPathComponent($0))
+            }
+            // 2a. Preflight: nothing moves unless EVERY payload can be restored.
+            let collisions = payloads.filter {
+                fm.fileExists(atPath: (activeDir as NSString).appendingPathComponent($0))
+            }
+            guard collisions.isEmpty else {
+                return .needsManualReview("\(a.quarantineDir): \(collisions.count) file(s) "
+                    + "already present in the active directory; nothing moved, archives remain locked")
+            }
+            // 2b. Move every payload; on any failure, roll back what we restored.
+            var restored: [String] = []
+            for name in payloads {
+                let src = (a.quarantineDir as NSString).appendingPathComponent(name)
+                let dst = (activeDir as NSString).appendingPathComponent(name)
+                do { try fm.moveItem(atPath: src, toPath: dst); restored.append(name) }
+                catch {
+                    var rollbackComplete = true
+                    for n in restored.reversed() {
+                        let rsrc = (activeDir as NSString).appendingPathComponent(n)
+                        let rdst = (a.quarantineDir as NSString).appendingPathComponent(n)
+                        if (try? fm.moveItem(atPath: rsrc, toPath: rdst)) == nil { rollbackComplete = false }
+                    }
+                    return .needsManualReview("\(a.quarantineDir): a file could not be restored; "
+                        + (rollbackComplete ? "rolled back" : "rollback INCOMPLETE") + ", archives remain locked")
+                }
+            }
+            // 2c. Full restore done. Confirm releases BEFORE retiring the manifest.
+            let unreleased = releaseAll(hashes: hashes, barrier: barrier,
+                                        activeDir: activeDir, locking: locking, fm: fm)
+            guard unreleased.isEmpty else {
+                return .needsManualReview("\(a.quarantineDir): restored, but \(unreleased.count) "
+                    + "lock(s) could not be released; record retained and archives remain locked")
             }
             guard finalize(a, fileManager: fm) else {
-                return .needsManualReview("\(a.quarantineDir): could not remove the quarantine")
+                return .needsManualReview("\(a.quarantineDir): could not remove the quarantine after restore")
             }
+            return .recovered
         } else {
-            // Committed: the removal was intended and completed (family already
-            // staged out); complete it by Trashing the whole quarantine.
+            // Committed: the removal is the intended final state. Confirm releases
+            // first (mirror ArchiveMutation.execute), then Trash the quarantine.
+            let unreleased = releaseAll(hashes: hashes, barrier: barrier,
+                                        activeDir: activeDir, locking: locking, fm: fm)
+            guard unreleased.isEmpty else {
+                return .needsManualReview("\(a.quarantineDir): \(unreleased.count) lock(s) could "
+                    + "not be released; record retained and archives remain locked")
+            }
             do {
                 var out: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: a.quarantineDir), resultingItemURL: &out)
             } catch {
                 return .needsManualReview("\(a.quarantineDir): could not move to Trash")
             }
+            return .recovered
         }
-        return .recovered
+    }
+
+    /// Release/remove every established lock and CONFIRM each is gone. An existing
+    /// (authorized) barrier is unlinked; a freshly-acquired one goes through
+    /// `locking.release`. Returns, sorted, the hashes whose lock could NOT be
+    /// confirmed gone — the caller must then retain the record and stay blocked.
+    private static func releaseAll(hashes: [String],
+                                   barrier: [String: Barrier],
+                                   activeDir: String,
+                                   locking: ArchiveLocking,
+                                   fm: FileManager) -> [String] {
+        var unreleased: [String] = []
+        for h in hashes.reversed() {
+            switch barrier[h] {
+            case .existing:
+                let lk = (activeDir as NSString).appendingPathComponent("lk" + h)
+                try? fm.removeItem(atPath: lk)
+                if fm.fileExists(atPath: lk) { unreleased.append(h) }
+            case .fresh:
+                if !locking.release(hash: h) { unreleased.append(h) }
+            case .none:
+                break
+            }
+        }
+        return unreleased.sorted()
     }
 }

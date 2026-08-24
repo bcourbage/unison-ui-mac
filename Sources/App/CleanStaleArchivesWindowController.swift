@@ -578,14 +578,20 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         case .success(let outcome):
             TraceLog.shared.write("CleanStale: mutated \(outcome.hashes.count) archive(s)"
                 + (outcome.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
-            guard let q = outcome.quarantineRetained else { return }
             let a = NSAlert()
-            a.alertStyle = .warning
-            a.messageText = "Archives removed, but the quarantine couldn’t be emptied"
-            a.informativeText =
-                "The archives were removed from Unison’s active directory, but moving "
-                + "the quarantine folder to the Trash failed. The files are complete and "
-                + "safe here — delete this folder manually when convenient:\n\n\(q)"
+            switch outcome.disposition {
+            case .clean:
+                return
+            case .lockFreeLeftover(let q):
+                a.alertStyle = .warning
+                a.messageText = "Archives removed, but the quarantine couldn’t be emptied"
+                a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+            case .blockedByLock(let q, _):
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Archives removed, but a lock is still held"
+                a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+            }
             a.addButton(withTitle: "OK")
             if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
         case .failure(let error):

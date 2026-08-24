@@ -282,4 +282,18 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertEqual(store.present, ["ar"+h]); XCTAssertNil(store.manifest)
         XCTAssertTrue(FileManager.default.fileExists(atPath: lk), "foreign lock not removed")
     }
+
+    // SF3: production branches on `disposition`, so lock in the mapping. The two
+    // retained states are NOT the same — only the lock-free one may be deleted.
+    func test_disposition_distinguishesRetainedStates() {
+        XCTAssertEqual(ArchiveMutationOutcome(hashes: ["a"], quarantineRetained: nil).disposition,
+                       .clean)
+        XCTAssertEqual(ArchiveMutationOutcome(hashes: ["a"], quarantineRetained: "/q").disposition,
+                       .lockFreeLeftover(quarantine: "/q"),
+                       "retained with every lock released → safe-to-delete leftover")
+        XCTAssertEqual(ArchiveMutationOutcome(hashes: ["a"], quarantineRetained: "/q",
+                                              locksNotReleased: ["a"]).disposition,
+                       .blockedByLock(quarantine: "/q", hashes: ["a"]),
+                       "retained with a surviving lock → blocking record, never delete")
+    }
 }

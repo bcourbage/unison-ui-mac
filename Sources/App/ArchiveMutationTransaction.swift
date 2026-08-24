@@ -61,7 +61,7 @@ struct ArchiveMutationPlan: Equatable {
 struct StagingManifest: Codable, Equatable {
     static let currentVersion = 1
     static let phaseStaging = "staging"      // pre-commit: locks held, fail closed
-    static let phaseCommitted = "committed"  // post-commit: removal done, locks released
+    static let phaseCommitted = "committed"  // post-commit: removal done; release may still be pending
 
     var version: Int = StagingManifest.currentVersion
     let operation: String          // human label, e.g. "clean-stale", "reset"
@@ -69,9 +69,12 @@ struct StagingManifest: Codable, Equatable {
     let payloadFiles: [String]     // payload basenames being staged
     let createdAtISO8601: String   // for reporting only
     /// `phaseStaging` until the logical-commit point; `phaseCommitted` once the
-    /// whole family is staged (removed from the active dir) and only the Trash
-    /// cleanup remains. Distinguishes a pre-commit crash (fail closed) from a
-    /// post-commit retained quarantine (leftover to report, not a block).
+    /// whole family is staged (removed from the active dir). `markCommitted()`
+    /// intentionally PRECEDES lock release, so a committed record may still have a
+    /// surviving lock: after commit, either the locks are released and only the
+    /// Trash cleanup remains, or a release could not be confirmed and the record
+    /// is retained as a BLOCK until explicit recovery. A committed leftover thus
+    /// blocks iff its `lk<hash>` is still present.
     var phase: String = StagingManifest.phaseStaging
 
     var isPreCommit: Bool { phase == StagingManifest.phaseStaging }
@@ -140,6 +143,42 @@ struct ArchiveMutationOutcome: Equatable {
     /// committed-manifest quarantine is retained and these profiles stay blocked
     /// (lock present) until explicit recovery. Empty on the normal path.
     var locksNotReleased: [String] = []
+
+    /// The two retained states are NOT the same and must be surfaced differently.
+    enum Disposition: Equatable {
+        /// Quarantine Trashed, locks released — nothing left to do.
+        case clean
+        /// Committed, lock-free leftover: Trash cleanup failed but every lock was
+        /// released. Safe to delete manually; does NOT block any profile.
+        case lockFreeLeftover(quarantine: String)
+        /// Committed record RETAINED because a lock could not be confirmed
+        /// released. These hashes stay blocked; the record is the only recovery
+        /// handle and must NOT be deleted; fatal recovery must not retry.
+        case blockedByLock(quarantine: String, hashes: [String])
+    }
+
+    var disposition: Disposition {
+        guard let q = quarantineRetained else { return .clean }
+        return locksNotReleased.isEmpty
+            ? .lockFreeLeftover(quarantine: q)
+            : .blockedByLock(quarantine: q, hashes: locksNotReleased)
+    }
+
+    /// Body text for a lock-free leftover: the removal succeeded and no lock
+    /// remains, so the folder is safe to delete by hand whenever convenient.
+    static func lockFreeLeftoverBody(_ q: String) -> String {
+        "The archives were removed from Unison's active directory and no lock remains. "
+        + "Moving the leftover quarantine folder to the Trash failed, but the files are "
+        + "safe here — delete this folder manually when convenient:\n\n\(q)"
+    }
+
+    /// Body text for a retained, still-locked record: it is the only recovery
+    /// handle, so the user must NOT delete it; recovery happens on next launch.
+    static func blockedByLockBody(_ q: String) -> String {
+        "The archives were removed, but a lock could not be released, so the affected "
+        + "profile(s) stay blocked until recovery. Do NOT delete this folder — it is the "
+        + "record needed to recover safely. Quit and reopen the app to recover:\n\n\(q)"
+    }
 }
 
 enum ArchiveMutation {

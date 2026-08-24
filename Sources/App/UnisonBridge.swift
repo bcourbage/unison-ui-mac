@@ -390,7 +390,19 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
                 case .success(let out):
                     TraceLog.shared.write("ArchiveRecovery: removed \(out.hashes.count) archive(s)"
                         + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
-                    shouldRetry = true
+                    switch out.disposition {
+                    case .clean, .lockFreeLeftover:
+                        // Removal succeeded and no lock survives — safe to retry.
+                        shouldRetry = true
+                    case .blockedByLock:
+                        // A lock could not be released: the committed record is
+                        // retained and those archives stay blocked. Retrying would
+                        // re-enter the same inconsistency — leave it for explicit
+                        // recovery on next launch.
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        TraceLog.shared.write("ArchiveRecovery: lock not released — not retrying")
+                        shouldRetry = false
+                    }
                 case .failure(let error):
                     // A pre-existing lock (another process) blocked it — don't
                     // retry into the same inconsistency; leave it for the user.

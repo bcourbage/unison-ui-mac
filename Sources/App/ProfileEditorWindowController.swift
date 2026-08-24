@@ -718,14 +718,20 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 "ProfileEditor: reset archives for '\(profile)' hashes="
                 + hashes.joined(separator: ",") + " ambiguous=\(ambiguous)"
                 + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
-            guard let q = out.quarantineRetained else { return }
             let a = NSAlert()
-            a.alertStyle = .warning
-            a.messageText = "Archives reset, but the quarantine couldn’t be emptied"
-            a.informativeText =
-                "The archives were removed from Unison’s active directory, but moving the "
-                + "quarantine folder to the Trash failed. The files are complete and safe "
-                + "here — delete this folder manually when convenient:\n\n\(q)"
+            switch out.disposition {
+            case .clean:
+                return
+            case .lockFreeLeftover(let q):
+                a.alertStyle = .warning
+                a.messageText = "Archives reset, but the quarantine couldn’t be emptied"
+                a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+            case .blockedByLock(let q, _):
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Archives reset, but a lock is still held"
+                a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+            }
             a.addButton(withTitle: "OK")
             a.runModal()
         case .failure(let error):
@@ -866,13 +872,22 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                         "ProfileEditor: archive cleanup on delete '\(profile)' hashes="
                         + archiveHashes.joined(separator: ",")
                         + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
-                    if let q = out.quarantineRetained {
-                        let a = NSAlert()
+                    let a = NSAlert()
+                    var present = true
+                    switch out.disposition {
+                    case .clean:
+                        present = false
+                    case .lockFreeLeftover(let q):
                         a.alertStyle = .warning
                         a.messageText = "Profile deleted; archive quarantine couldn’t be emptied"
-                        a.informativeText =
-                            "The archives were removed, but moving the quarantine to the Trash "
-                            + "failed. The files are safe here — delete this folder manually:\n\n\(q)"
+                        a.informativeText = ArchiveMutationOutcome.lockFreeLeftoverBody(q)
+                    case .blockedByLock(let q, _):
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        a.alertStyle = .critical
+                        a.messageText = "Profile deleted; an archive lock is still held"
+                        a.informativeText = ArchiveMutationOutcome.blockedByLockBody(q)
+                    }
+                    if present {
                         a.addButton(withTitle: "OK")
                         a.runModal()
                     }

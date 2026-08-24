@@ -2,7 +2,7 @@ import AppKit
 import Darwin   // utsname / uname for arch detection in reportIssue body
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding {
+final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding, ArchiveBlockCoordinating {
 
     private var profileWindowController: ProfileWindowController?
     /// "Profile Editor" manager window (lists every .prf, supports
@@ -2329,27 +2329,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// asked. First run seeds the marker to "now" so reports predating this
     /// feature are never surfaced.
     /// Fail-closed restart handling for an interrupted archive mutation
-    /// (issue: crash-safe staging). A PRE-COMMIT abandoned staging means the
-    /// operation died while archives were being moved: its `lk` locks are still
-    /// held (stopping Unison — safe) and ownership of those raw locks cannot be
-    /// proven across a crash, so we NEVER auto-remove them or auto-recover.
-    /// Surface it and require explicit, manual recovery. A committed leftover
-    /// (removal finished, only Trash-cleanup failed) does not block and is not
-    /// alerted here.
+    /// (issue: crash-safe staging). An abandoned staging BLOCKS when it is
+    /// pre-commit (the operation died while archives were being moved: its `lk`
+    /// locks are still held — safe — and ownership of those raw locks cannot be
+    /// proven across a crash, so we NEVER auto-remove them or auto-recover), OR
+    /// when it is committed but a lock could not be released (surviving `lk`
+    /// present). Both require explicit, manual recovery. A committed leftover with
+    /// NO surviving lock (removal finished, only Trash-cleanup failed) does not
+    /// block and is not alerted here.
     private func checkForAbandonedArchiveStaging() {
-        guard !unisonDirectory.isEmpty else { return }
-        let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
-        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: unisonDirectory)
-        // The stagings that actually block (pre-commit, or committed with a
-        // surviving lock) are the ones needing recovery.
-        abandonedStagings = abandoned.filter {
-            !Set($0.manifest.hashes).isDisjoint(with: blockedArchiveHashes)
-        }
-        guard !abandonedStagings.isEmpty else { return }
+        guard refreshBlockedArchiveState() else { return }
         log.write("abandoned archive staging detected: \(abandonedStagings.count) dir(s), "
             + "blocked hashes=\(blockedArchiveHashes.sorted().joined(separator: ","))")
         presentAndRecoverAbandonedStaging(abandonedStagings, context:
             "An archive maintenance operation was interrupted the last time the app ran.")
+    }
+
+    /// Re-scan the unison dir for blocking stagings and update `blockedArchiveHashes`
+    /// + `abandonedStagings`, WITHOUT presenting any dialog. Returns whether any
+    /// staging blocks. Called on launch and again after a mutation that left a
+    /// surviving lock, so the profile-open gate is live within the same session.
+    @discardableResult
+    func refreshBlockedArchiveState() -> Bool {
+        guard !unisonDirectory.isEmpty else { return false }
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
+        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: unisonDirectory)
+        abandonedStagings = abandoned.filter {
+            !Set($0.manifest.hashes).isDisjoint(with: blockedArchiveHashes)
+        }
+        return !abandonedStagings.isEmpty
     }
 
     /// The abandoned stagings (if any) that block opening `profile`. nil when

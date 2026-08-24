@@ -23,6 +23,17 @@ protocol EngineActivityProviding: AnyObject {
     var allowsDestructiveArchiveMutation: Bool { get }
 }
 
+/// After a destructive mutation RETAINS a committed record because a lock could
+/// not be confirmed released (`ArchiveMutationOutcome.Disposition.blockedByLock`),
+/// the affected profiles must stay blocked IMMEDIATELY — within the same session,
+/// not only after the next launch. Callers report it to the coordinator (the
+/// `AppDelegate`), which re-scans so the profile-open gate is live at once.
+@MainActor
+protocol ArchiveBlockCoordinating: AnyObject {
+    @discardableResult
+    func refreshBlockedArchiveState() -> Bool
+}
+
 /// Tracks whether a stale-archive row snapshot is still trustworthy across
 /// engine-activity transitions. The Clean Stale window classifies archives as
 /// stale by reading the Unison directory; a sync/scan that runs afterward can
