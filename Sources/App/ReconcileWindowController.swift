@@ -1343,13 +1343,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// entry point (Edit menu, menu bar) uses the current selection, so a stale
     /// `clickedRow` can't be targeted. Returns nil when neither resolves to a leaf.
     private func rowForPendingMenuAction(preferClicked: Bool) -> Int? {
-        if preferClicked {
-            let clicked = outlineView.clickedRow
-            if clicked >= 0,
-               let node = outlineView.item(atRow: clicked) as? ReconcileNode,
-               let row = node.row {
-                return row
-            }
+        if preferClicked, let node = clickedNode(), let row = node.row {
+            return row
         }
         return leafRowsInSelection().first
     }
@@ -1359,17 +1354,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// invocation honors the right-clicked row (SF2); otherwise the target is the
     /// selection alone — matching the toolbar Diff, which already ignores `clickedRow`.
     private func rowForDiff(preferClicked: Bool) -> Int? {
-        let rightClickedNode: ReconcileNode?
-        if preferClicked {
-            let clicked = outlineView.clickedRow
-            rightClickedNode = (clicked >= 0)
-                ? (outlineView.item(atRow: clicked) as? ReconcileNode)
-                : nil
-        } else {
-            rightClickedNode = nil
-        }
-        return RowSelectionRules.diffTarget(
-            rightClickedNode: rightClickedNode,
+        RowSelectionRules.diffTarget(
+            rightClickedNode: preferClicked ? clickedNode() : nil,
             selectedNodes: selectedNodes()
         )
     }
@@ -1470,7 +1456,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     }
 
     /// Shared Diff core for both entry points (menu/context via
-    /// `applyDiff()`, toolbar button via `diffSelectedRow()`). Runs the
+    /// `applyDiff(preferClicked:)`, toolbar button via `diffSelectedRow()`). Runs the
     /// sync-in-flight + defensive `canDiff` re-checks, surfaces the
     /// loading window, and kicks off the async OCaml diff. `row` is
     /// assumed in-bounds.
@@ -1527,26 +1513,29 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             NSSound.beep()
             return
         }
+        // The outline operations are injectable so this whole path is testable
+        // without a real (headless-unreliable) outline view.
+        let ops = outlineOps
         // SF14: reveal any conflict rows buried under COLLAPSED folders BEFORE
         // mapping. Without this, `row(forItem:)` returns -1 for a hidden node and
         // the conflict is silently dropped — and if EVERY conflict is hidden, the
         // selection below would clear the user's existing selection for nothing.
         for node in tree.nodesToRevealRows(conflictRows) {
-            outlineView.expandItem(node, expandChildren: false)
+            ops.expand(node)
         }
         // Map row indices → outline-view row indices via the leaf nodes.
         var outlineRowsToSelect = IndexSet()
         for node in tree.allNodes where node.row != nil {
             guard let row = node.row, conflictRows.contains(row) else { continue }
-            let outlineRow = outlineView.row(forItem: node)
+            let outlineRow = ops.outlineRow(node)
             if outlineRow >= 0 { outlineRowsToSelect.insert(outlineRow) }
         }
         // Belt-and-suspenders: after revealing, every conflict maps to a real row.
         // If (defensively) none did, don't wipe the existing selection.
         guard !outlineRowsToSelect.isEmpty else { NSSound.beep(); return }
-        outlineView.selectRowIndexes(outlineRowsToSelect, byExtendingSelection: false)
+        ops.select(outlineRowsToSelect)
         if let first = outlineRowsToSelect.first {
-            outlineView.scrollRowToVisible(first)
+            ops.scrollToVisible(first)
         }
         TraceLog.shared.write(
             "ReconcileWindow: Select Conflicts → \(conflictRows.count) row(s)"
@@ -1757,9 +1746,19 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Currently-selected nodes (folders + leaves), in NSOutlineView's
     /// row order.
     private func selectedNodes() -> [ReconcileNode] {
-        outlineView.selectedRowIndexes.compactMap {
+        if let p = selectedNodesProviderForTesting { return p() }
+        return outlineView.selectedRowIndexes.compactMap {
             outlineView.item(atRow: $0) as? ReconcileNode
         }
+    }
+
+    /// The node under the outline view's right-click (`clickedRow`), or nil. A test
+    /// seam replaces the source so the production menu handlers can be exercised
+    /// without a real click (headless `clickedRow` can't be set).
+    private func clickedNode() -> ReconcileNode? {
+        if let p = clickedNodeProviderForTesting { return p() }
+        let clicked = outlineView.clickedRow
+        return clicked >= 0 ? (outlineView.item(atRow: clicked) as? ReconcileNode) : nil
     }
 
     /// Walks the toolbar's direction group and enables/disables each
@@ -1948,11 +1947,38 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Test seam: the gate the action methods and menu/toolbar validation consult.
     var actionGateForTesting: ReconcileActionGate { actionGate }
 
-    // MARK: - PR-5 test seams
+    // MARK: - PR-5 injection seams (production reads the outline view; tests inject)
+
+    /// Outline operations used by Select Conflicts, injectable so the
+    /// reveal→map→select path runs without a real outline view (headless collapse
+    /// is unreliable).
+    struct OutlineOps {
+        var expand: (ReconcileNode) -> Void
+        var outlineRow: (ReconcileNode) -> Int
+        var select: (IndexSet) -> Void
+        var scrollToVisible: (Int) -> Void
+    }
+    var outlineOpsForTesting: OutlineOps?
+    private var outlineOps: OutlineOps {
+        outlineOpsForTesting ?? OutlineOps(
+            expand: { [outlineView] in outlineView.expandItem($0, expandChildren: false) },
+            outlineRow: { [outlineView] in outlineView.row(forItem: $0) },
+            select: { [outlineView] in outlineView.selectRowIndexes($0, byExtendingSelection: false) },
+            scrollToVisible: { [outlineView] in outlineView.scrollRowToVisible($0) })
+    }
+    /// Override the right-click source and the selection source, so the production
+    /// menu handlers can be driven without a real click/selection.
+    var clickedNodeProviderForTesting: (() -> ReconcileNode?)?
+    var selectedNodesProviderForTesting: (() -> [ReconcileNode])?
+
     var outlineViewForTesting: NSOutlineView { outlineView }
+    var treeForTesting: ReconcileTree { tree }
     var contextMenuForTesting: NSMenu? { outlineView.menu }
     func isContextMenuItemForTesting(_ item: NSMenuItem?) -> Bool { isContextMenuItem(item) }
     func selectConflictsForTesting() { selectConflictsAction(nil) }
+    /// Invoke the real menu handlers with a context-menu vs a menu-bar sender.
+    func ignoreMenuActionForTesting(_ sender: NSMenuItem) { ignoreMenuAction(sender) }
+    func diffMenuActionForTesting(_ sender: NSMenuItem) { diffMenuAction(sender) }
 }
 
 // MARK: - Direction-cell view (the only colored cell in the row)
