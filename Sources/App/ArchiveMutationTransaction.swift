@@ -123,18 +123,28 @@ struct ArchiveMutationOutcome: Equatable {
 
 enum ArchiveMutation {
 
+    /// Execute a mutation over `hashes`. The payload set is derived UNDER the
+    /// acquired locks (Blocker 2): the caller passes only the hashes and a
+    /// `fileExists` probe, and the exact ar/fp/tm/sc family is frozen only after
+    /// every lock is held, so an external Unison that added a sibling between the
+    /// caller's review and lock acquisition cannot cause a partial-family move.
+    /// `revalidate` receives that under-lock plan and can refuse (e.g. Clean
+    /// Stale refuses if the family differs from what the user reviewed).
     @discardableResult
     static func execute(
         operation: String,
-        plan: ArchiveMutationPlan,
+        hashes: [String],
         nowISO8601: String,
         isEngineIdle: () -> Bool,
-        revalidate: () -> Bool,
+        fileExists: (String) -> Bool,
+        revalidate: (ArchiveMutationPlan) -> Bool,
         locking: ArchiveLocking,
         store: ArchivePayloadStore
     ) throws -> ArchiveMutationOutcome {
 
         guard isEngineIdle() else { throw ArchiveMutationError.engineNotIdle }
+
+        let sortedHashes = hashes.sorted()
 
         // Release ONLY acquired locks, reverse order, on EVERY exit.
         var owned: [String] = []
@@ -145,7 +155,7 @@ enum ArchiveMutation {
         defer { if releaseLocks { for h in owned.reversed() { locking.release(hash: h) } } }
 
         // 1. Acquire all locks in deterministic order, before any payload touch.
-        for h in plan.hashes {
+        for h in sortedHashes {
             let r = locking.acquire(hash: h)
             guard r == .acquired else {
                 throw ArchiveMutationError.lockUnavailable(hash: h, reason: r)
@@ -153,10 +163,13 @@ enum ArchiveMutation {
             owned.append(h)
         }
 
-        // 2. Revalidate under the locks; still nothing touched.
-        guard revalidate() else { throw ArchiveMutationError.revalidationFailed }
+        // 2. Derive + freeze the exact payload set UNDER the locks (Blocker 2).
+        let plan = ArchiveMutationPlan(hashes: sortedHashes, fileExists: fileExists)
 
-        // 1b. Durable manifest BEFORE moving any payload (crash detectable now).
+        // 3. Revalidate the under-lock plan; still nothing touched.
+        guard revalidate(plan) else { throw ArchiveMutationError.revalidationFailed }
+
+        // 3b. Durable manifest BEFORE moving any payload (crash detectable now).
         let manifest = StagingManifest(operation: operation, hashes: plan.hashes,
                                        payloadFiles: plan.payloadFiles,
                                        createdAtISO8601: nowISO8601)

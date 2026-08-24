@@ -179,12 +179,11 @@ final class ArchiveStagingStoreTests: XCTestCase {
             func acquire(hash: String) -> ArchiveLock.AcquireResult { .acquired }
             func release(hash: String) {}
         }
-        let plan = ArchiveMutationPlan(hashes: [h],
-                                       fileExists: { self.exists(active, $0) })
-        XCTAssertEqual(Set(plan.payloadFiles), Set(["ar"+h, "fp"+h]))
         let out = try ArchiveMutation.execute(
-            operation: "clean-stale", plan: plan, nowISO8601: "2026-08-23T00:00:00Z",
-            isEngineIdle: { true }, revalidate: { true },
+            operation: "clean-stale", hashes: [h], nowISO8601: "2026-08-23T00:00:00Z",
+            isEngineIdle: { true },
+            fileExists: { self.exists(active, $0) },
+            revalidate: { XCTAssertEqual(Set($0.payloadFiles), Set(["ar"+h, "fp"+h])); return true },
             locking: NoopLocking(), store: store)
 
         XCTAssertNil(out.quarantineRetained)

@@ -68,11 +68,17 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         ArchiveMutationPlan(hashes: hashes, payloadFiles: files)
     }
 
-    private func run(_ plan: ArchiveMutationPlan, idle: Bool = true, revalidate: Bool = true,
+    private func run(_ plan: ArchiveMutationPlan, idle: Bool = true,
+                     revalidate: @escaping (ArchiveMutationPlan) -> Bool = { _ in true },
                      locking: ArchiveLocking, store: ArchivePayloadStore) throws -> ArchiveMutationOutcome {
-        try ArchiveMutation.execute(operation: "test", plan: plan,
+        // The transaction now derives the payload set UNDER the locks from a
+        // `fileExists` probe; feed the fixture plan's payloadFiles as "what
+        // exists", so the re-derived plan matches.
+        try ArchiveMutation.execute(operation: "test", hashes: plan.hashes,
                                     nowISO8601: "2026-08-23T00:00:00Z",
-                                    isEngineIdle: { idle }, revalidate: { revalidate },
+                                    isEngineIdle: { idle },
+                                    fileExists: { plan.payloadFiles.contains($0) },
+                                    revalidate: revalidate,
                                     locking: locking, store: store)
     }
 
@@ -115,7 +121,7 @@ final class ArchiveMutationTransactionTests: XCTestCase {
     func test_revalidationFailure_releases_noManifest_touchesNothing() {
         let h = String(repeating: "a", count: 32); let files = ["ar"+h]
         let store = FakeStore(present: Set(files)); let lock = FakeLocking()
-        XCTAssertThrowsError(try run(plan([h], files), revalidate: false, locking: lock, store: store)) {
+        XCTAssertThrowsError(try run(plan([h], files), revalidate: { _ in false }, locking: lock, store: store)) {
             XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed)
         }
         XCTAssertNil(store.manifest); XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
@@ -178,6 +184,32 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertTrue(store.present.isEmpty, "the ORIGINAL location has no partial family")
         XCTAssertEqual(store.staged, Set(files), "the whole family is safe in the retained quarantine")
         XCTAssertEqual(lock.released, [h])
+    }
+
+    // MARK: Blocker 2 — payload set derived UNDER the locks
+
+    func test_payloadSet_derivedUnderLocks_capturesSiblingAddedAtAcquire() throws {
+        let h = String(repeating: "a", count: 32)
+        // Pre-lock, only ar exists; an external Unison creates fp at the moment
+        // we acquire the lock. Deriving the plan AFTER acquisition must see fp.
+        final class SideEffectLocking: ArchiveLocking {
+            let onAcquire: () -> Void
+            init(_ f: @escaping () -> Void) { onAcquire = f }
+            func acquire(hash: String) -> ArchiveLock.AcquireResult { onAcquire(); return .acquired }
+            func release(hash: String) {}
+        }
+        var existing: Set<String> = ["ar"+h]
+        let store = FakeStore(present: ["ar"+h, "fp"+h])
+        var derived: [String] = []
+        _ = try ArchiveMutation.execute(
+            operation: "test", hashes: [h], nowISO8601: "t",
+            isEngineIdle: { true },
+            fileExists: { existing.contains($0) },
+            revalidate: { derived = $0.payloadFiles; return true },
+            locking: SideEffectLocking { existing.insert("fp"+h) },
+            store: store)
+        XCTAssertEqual(Set(derived), Set(["ar"+h, "fp"+h]),
+                       "payload set is frozen only after locks — captures the added sibling")
     }
 
     // MARK: multi-hash atomicity, foreign-lock, lk-exclusion, ordering

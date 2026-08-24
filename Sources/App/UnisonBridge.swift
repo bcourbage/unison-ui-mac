@@ -385,7 +385,7 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
                     hashes: recovery.localOrphanHashes,
                     unisonDirectory: unisonDir,
                     isEngineIdle: { true },
-                    revalidate: { true })
+                    revalidate: { _ in true })
                 switch result {
                 case .success(let out):
                     TraceLog.shared.write("ArchiveRecovery: removed \(out.hashes.count) archive(s)"

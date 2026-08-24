@@ -551,18 +551,27 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             return
         }
 
+        // The exact payload family the user reviewed (basenames of the checked,
+        // actionable rows). The transaction derives the family again UNDER the
+        // locks; if it differs from this — e.g. an external Unison added a
+        // sibling in the meantime — we refuse and refresh (Blocker 2).
+        let reviewedPayloads = Set(rows.indices
+            .filter { checked.indices.contains($0) && checked[$0] && rows[$0].actionable }
+            .flatMap { rows[$0].files.map(\.url.lastPathComponent) })
+
         // Route through the SINGLE mutation authority: acquire each archive's
-        // real interprocess lock, stage every payload (never lk) via rename(2),
-        // then Trash the staged set as one unit. `revalidate` re-derives the
-        // classification UNDER the locks and confirms every planned hash is
-        // still actionable; if anything changed, nothing is touched.
+        // real interprocess lock, derive + stage the family (never lk) via
+        // rename(2) UNDER the locks, then Trash the staged set as one unit.
+        // `revalidate` confirms every planned hash is still actionable AND the
+        // under-lock family matches what was reviewed; otherwise nothing is touched.
         let result = ArchiveMaintenance.mutate(
             operation: "clean-stale", hashes: hashes, unisonDirectory: unisonDirectory,
             isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
-            revalidate: { [weak self] in
+            revalidate: { [weak self] plan in
                 guard let self else { return false }
                 let stillActionable = Set(self.scan().filter { $0.actionable }.map(\.hash))
                 return Set(hashes).isSubset(of: stillActionable)
+                    && Set(plan.payloadFiles) == reviewedPayloads
             })
         reload()
 

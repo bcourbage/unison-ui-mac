@@ -705,7 +705,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         let result = ArchiveMaintenance.mutate(
             operation: "reset", hashes: hashes, unisonDirectory: unisonDirectory,
             isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
-            revalidate: { [unisonDirectory] in
+            revalidate: { [unisonDirectory] _ in
                 hashes.allSatisfy {
                     FileManager.default.fileExists(
                         atPath: (unisonDirectory as NSString).appendingPathComponent("ar" + $0))
@@ -858,7 +858,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     operation: "delete-with-archives", hashes: archiveHashes,
                     unisonDirectory: unisonDirectory,
                     isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
-                    revalidate: { true })
+                    revalidate: { _ in true })
                 switch result {
                 case .success(let out):
                     TraceLog.shared.write(
