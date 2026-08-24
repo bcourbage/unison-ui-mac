@@ -52,6 +52,45 @@ final class ProfileSymlinkSaveTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "b\n")
     }
 
+    /// Round-2 SF4: a multi-hop chain whose terminal target does NOT exist
+    /// (`profile → middle → missing`) must resolve to the TERMINAL path and create
+    /// it — never replace the intermediate `middle` link with a regular file.
+    func test_writeAtomic_multiHopChain_danglingTerminal_writesTerminal_notIntermediate() throws {
+        let fm = FileManager.default
+        let dir = try tempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let missing = (dir as NSString).appendingPathComponent("target.prf")   // does not exist
+        let middle = (dir as NSString).appendingPathComponent("middle.prf")
+        try fm.createSymbolicLink(atPath: middle, withDestinationPath: missing)
+        let profile = (dir as NSString).appendingPathComponent("profile.prf")
+        try fm.createSymbolicLink(atPath: profile, withDestinationPath: middle)
+
+        try SystemFileOps().writeAtomic("root = /new\n", to: profile)
+
+        // The terminal target was created with the content...
+        XCTAssertEqual(try String(contentsOfFile: missing, encoding: .utf8), "root = /new\n")
+        // ...and BOTH links are intact (the intermediate was not replaced).
+        XCTAssertEqual(try fm.attributesOfItem(atPath: middle)[.type] as? FileAttributeType, .typeSymbolicLink)
+        XCTAssertEqual(try fm.attributesOfItem(atPath: profile)[.type] as? FileAttributeType, .typeSymbolicLink)
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: middle), missing)
+    }
+
+    func test_writeAtomic_symlinkCycle_failsClosed_touchesNothing() throws {
+        let fm = FileManager.default
+        let dir = try tempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let a = (dir as NSString).appendingPathComponent("a.prf")
+        let b = (dir as NSString).appendingPathComponent("b.prf")
+        try fm.createSymbolicLink(atPath: a, withDestinationPath: b)
+        try fm.createSymbolicLink(atPath: b, withDestinationPath: a)
+
+        XCTAssertThrowsError(try SystemFileOps().writeAtomic("x\n", to: a),
+                             "a symlink cycle must fail closed, not replace a link")
+        // Both links remain symlinks.
+        XCTAssertEqual(try fm.attributesOfItem(atPath: a)[.type] as? FileAttributeType, .typeSymbolicLink)
+        XCTAssertEqual(try fm.attributesOfItem(atPath: b)[.type] as? FileAttributeType, .typeSymbolicLink)
+    }
+
     func test_copy_throughSymlink_backsUpContentNotLink() throws {
         let fm = FileManager.default
         let dir = try tempDir()

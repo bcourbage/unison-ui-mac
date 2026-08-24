@@ -324,20 +324,31 @@ struct SystemFileOps: ProfileFileOps {
         try content.write(toFile: realTarget(path), atomically: true, encoding: .utf8)
     }
 
-    /// Fully resolve a leaf symlink to the real file it points at (following the
-    /// whole chain). A non-symlink is returned unchanged. A dangling link resolves
-    /// to its intended target (so a write creates it and the link stops dangling).
-    private func realTarget(_ path: String) -> String {
-        var st = stat()
-        guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK else { return path }
-        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
-        if realpath(path, &buf) != nil { return String(cString: buf) }
-        if let dest = try? fm.destinationOfSymbolicLink(atPath: path) {
-            return (dest as NSString).isAbsolutePath
+    /// Fully resolve a symlink CHAIN to the terminal real path it points at,
+    /// following every hop by hand so a dangling terminal (`a → b → missing`)
+    /// resolves to `missing` — NEVER to an intermediate link `b`, which a write
+    /// would wrongly replace (review round 2). A non-symlink (existing or not) is
+    /// the terminal. Throws on a cycle (or an unreadable link) rather than fall
+    /// back to replacing a link — fail closed.
+    private func realTarget(_ path: String) throws -> String {
+        var current = path
+        var seen = Set<String>()
+        while true {
+            var st = stat()
+            guard lstat(current, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK else {
+                return current   // terminal: a non-symlink path (may not exist yet)
+            }
+            guard seen.insert(current).inserted else {
+                throw ProfileFileOpsError(operation: "resolve symlink cycle",
+                                          from: path, to: current, code: ELOOP)
+            }
+            guard let dest = try? fm.destinationOfSymbolicLink(atPath: current) else {
+                throw ProfileFileOpsError(operation: "readlink", from: current, to: path, code: errno)
+            }
+            current = (dest as NSString).isAbsolutePath
                 ? dest
-                : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(dest)
+                : ((current as NSString).deletingLastPathComponent as NSString).appendingPathComponent(dest)
         }
-        return path
     }
 
     func installExclusive(_ content: String, to path: String) throws {
@@ -419,7 +430,7 @@ struct SystemFileOps: ProfileFileOps {
         // SF15: back up the real CONTENT, not the symlink — `copyItem` would
         // otherwise copy a link, giving a ".bak" that tracks the target instead of
         // preserving the pre-save bytes. Resolving a non-symlink is a no-op.
-        try fm.copyItem(atPath: realTarget(from), toPath: to)
+        try fm.copyItem(atPath: try realTarget(from), toPath: to)
     }
 
     func move(from: String, to: String) throws {

@@ -316,17 +316,22 @@ struct ProfileDocument: Equatable {
     /// The freeform box distinguishes a comment line (`# …`) from a value only by
     /// the leading `#`. A legal value that itself begins with `#` (e.g. a Synology
     /// `path = #recycle`) would be read back as a comment and silently dropped
-    /// (B5). Escape it with a leading backslash so the box round-trips it as a
-    /// VALUE, not a comment. Any other value is emitted verbatim.
+    /// (B5). The escape MUST be bijective, because Unison treats a backslash inside
+    /// an ordinary value literally — a value that begins with `\` is legal too, so
+    /// escaping only `#` would misread `\#recycle` as `#recycle`. Rule: a value
+    /// beginning with `#` OR `\` is prefixed with one `\`; the decoder strips one
+    /// leading `\`. So `#x → \#x`, `\#x → \\#x`, `\x → \\x`, `x → x` — and the
+    /// decoder inverts each exactly.
     static func boxLineForValue(_ v: String) -> String {
-        v.hasPrefix("#") ? "\\" + v : v
+        (v.hasPrefix("#") || v.hasPrefix("\\")) ? "\\" + v : v
     }
 
     /// Inverse of `boxLineForValue` for one already-trimmed box line: returns the
-    /// value if the line is a value (including an escaped `\#…`), or nil if it is a
-    /// comment. `\#…` → the literal value `#…`; a bare `#…` → nil (comment).
+    /// value if the line is a value, or nil if it is a comment. A line beginning
+    /// with `\` is an escaped value (drop exactly one leading `\`); a bare `#…` is
+    /// a comment; anything else is a verbatim value.
     static func valueFromBoxLine(_ trimmed: String) -> String? {
-        if trimmed.hasPrefix("\\#") { return String(trimmed.dropFirst()) }
+        if trimmed.hasPrefix("\\") { return String(trimmed.dropFirst()) }
         if trimmed.hasPrefix("#") { return nil }
         return trimmed
     }

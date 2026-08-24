@@ -1078,9 +1078,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 sharedDirectory: SettingsModel.sharedLogDirectory(),
                 perProfileFolder: perProfileFolder), forKey: "logfile")
         } else {
-            // Off: write `false` only if it was previously on; otherwise
-            // preserve the original (absent stays absent, false stays false).
-            doc.setValue(originalLog == "true" ? "false" : originalLog, forKey: "log")
+            // Off: write `log = false` unconditionally. Unison's default is TRUE,
+            // so leaving `log` ABSENT (or any non-false value) would keep logging
+            // ENABLED — the user explicitly turned it off, so it must be recorded
+            // as false (SF6, review round 2).
+            doc.setValue("false", forKey: "log")
             doc.setValue(nil, forKey: "logfile")
         }
 
@@ -1244,10 +1246,19 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                           : (start as NSString).expandingTildeInPath)
         let runIt: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
             guard resp == .OK, let url = panel.url else { return }
-            self?.logFolderField.stringValue = url.path
+            self?.applyChosenLogFolder(url.path)
         }
         if let window { panel.beginSheetModal(for: window, completionHandler: runIt) }
         else { runIt(panel.runModal()) }
+    }
+
+    /// Apply a Browse-chosen log folder. Programmatic assignment doesn't fire
+    /// controlTextDidChange, so this marks the logging controls dirty — otherwise
+    /// the chosen folder is discarded on save (SF6, review round 2). Internal so
+    /// the action-to-save path is testable without an NSOpenPanel.
+    func applyChosenLogFolder(_ path: String) {
+        logFolderField.stringValue = path
+        loggingDirty = true
     }
 
     @objc private func browseFirstRoot(_ sender: NSButton) {
@@ -1490,12 +1501,27 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showAlert(text: String, info: String, style: NSAlert.Style) {
+        // Tests drive save/guard paths headlessly; a modal alert would block the
+        // hosted run. Record the last alert instead of presenting it.
+        if suppressAlertsForTesting { lastAlertForTesting = (text, info); return }
         let alert = NSAlert()
         alert.messageText = text
         alert.informativeText = info
         alert.alertStyle = style
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    // MARK: - Test seams (internal; only used by the hosted-AppKit regressions)
+
+    var suppressAlertsForTesting = false
+    private(set) var lastAlertForTesting: (text: String, info: String)?
+    var isSaveEnabledForTesting: Bool { saveButton.isEnabled }
+    var notEditableReasonForTesting: String? { notEditableReason }
+    func invokeSaveForTesting() { saveAction(saveButton) }
+    func setLogCheckboxForTesting(on: Bool) {
+        logCheckbox.state = on ? .on : .off
+        logToggled(logCheckbox)
     }
 
     // (The rename-warning alert + NSTextFieldDelegate that gated it

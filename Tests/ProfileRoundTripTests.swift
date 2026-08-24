@@ -46,6 +46,48 @@ final class ProfileRoundTripTests: XCTestCase {
         XCTAssertTrue(s.contains("path = #recycle"))
     }
 
+    /// Round-2 blocker: the box encoding must be BIJECTIVE. A backslash inside a
+    /// value is literal on Unix, so a value beginning with `\` is legal too — the
+    /// decoder must not misread `\#recycle` (value) as `#recycle`.
+    func test_b5_boxEncoding_isBijective_overLeadingHashAndBackslash() {
+        let cases = [
+            "#recycle",       // leading #
+            "\\#recycle",     // leading backslash-hash (the round-2 repro)
+            "\\recycle",      // leading backslash
+            "\\\\x",          // two leading backslashes
+            "recycle",        // plain
+            "a#b",            // # not at the start — untouched
+            "",               // empty (skipped by the box, but must not crash)
+        ]
+        for v in cases where !v.isEmpty {
+            let line = D.boxLineForValue(v)
+            XCTAssertEqual(D.valueFromBoxLine(line), v,
+                           "value \(v.debugDescription) must survive encode→decode as itself")
+            // A comment must never be mistaken for a value and vice-versa.
+            if v.hasPrefix("#") {
+                XCTAssertNotNil(D.valueFromBoxLine(line), "an escaped #-value decodes to a value")
+            }
+        }
+        // A genuine comment line decodes to nil (comment), not a value.
+        XCTAssertNil(D.valueFromBoxLine("# a real comment"))
+        XCTAssertNil(D.valueFromBoxLine("#"))
+    }
+
+    func test_b5_backslashHashValue_fullRoundTrip_throughDocument() {
+        let doc = D.parse("path = \\#recycle\n")   // literal value: backslash, hash, recycle
+        XCTAssertEqual(doc.values(forKey: "path"), ["\\#recycle"])
+        let box = doc.valuesWithComments(forKey: "path")
+        XCTAssertEqual(box, ["\\\\#recycle"], "escaped with one extra leading backslash")
+        var edited = doc
+        edited.setValuesWithComments(box, forKey: "path")
+        XCTAssertEqual(edited.values(forKey: "path"), ["\\#recycle"],
+                       "the literal backslash-hash value is preserved, not decoded to #recycle")
+        // Repeated round-trips are stable.
+        var again = edited
+        again.setValuesWithComments(again.valuesWithComments(forKey: "path"), forKey: "path")
+        XCTAssertEqual(again.values(forKey: "path"), ["\\#recycle"])
+    }
+
     // MARK: - SF4: extensionless include detection
 
     func test_sf4_extensionlessInclude_isDetected() {
