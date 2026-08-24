@@ -901,16 +901,23 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     TraceLog.shared.write("ProfileEditor: archive cleanup on delete refused '\(profile)' — \(error)")
                     let a = NSAlert()
                     if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
+                        // A lock is still held (split family, retained abort lock,
+                        // or a foreign lock) — "left in place" would be false here,
+                        // since some files may be in quarantine. Use the accurate
+                        // per-error blocking title + explanation.
                         (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
                         a.alertStyle = .critical
+                        a.messageText = "Profile deleted; archive maintenance needs attention"
+                        a.informativeText = "The profile was moved to the Trash. "
+                            + CleanStaleArchivesWindowController.mutationRefusalText(error)
                     } else {
                         a.alertStyle = .warning
+                        a.messageText = "Profile deleted; archive files left in place"
+                        a.informativeText =
+                            "The profile was moved to the Trash, but its archive files were left "
+                            + "in place. " + CleanStaleArchivesWindowController.mutationRefusalText(error)
+                            + " You can remove them later with Settings, Maintenance, Clean Stale Archives."
                     }
-                    a.messageText = "Profile deleted; archive files left in place"
-                    a.informativeText =
-                        "The profile was moved to the Trash, but its archive files were left "
-                        + "in place. " + CleanStaleArchivesWindowController.mutationRefusalText(error)
-                        + " You can remove them later with Settings, Maintenance, Clean Stale Archives."
                     a.addButton(withTitle: "OK")
                     a.runModal()
                 }

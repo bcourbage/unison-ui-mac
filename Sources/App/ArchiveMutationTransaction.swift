@@ -182,11 +182,14 @@ enum ArchiveMutationError: Error, Equatable {
     /// the profile in-session (not only after restart):
     ///  - `rollbackIncomplete`: staging record retained, app locks kept HELD.
     ///  - `lockRetainedAfterAbort`: app lock could not be confirmed released.
-    ///  - `lockUnavailable`: a foreign lock exists; if the intent record could not
-    ///    be removed it blocks on restart, and refreshing is a safe no-op otherwise.
+    ///  - `lockUnavailable(.alreadyHeld)`: a foreign lock actually EXISTS; if the
+    ///    intent record could not be removed it blocks on restart. The other
+    ///    `lockUnavailable` reasons (exception/invalidHash/bridgeMissing) do not
+    ///    prove a lock and require no refresh.
     var requiresArchiveBlockRefresh: Bool {
         switch self {
-        case .rollbackIncomplete, .lockRetainedAfterAbort, .lockUnavailable: return true
+        case .rollbackIncomplete, .lockRetainedAfterAbort: return true
+        case .lockUnavailable(_, let reason): return reason.provesLockExists
         default: return false
         }
     }
@@ -290,12 +293,15 @@ enum ArchiveMutation {
                 throw primary
             case .lockFree(let q):
                 // Every APP-owned lock was released, but the record could not be
-                // removed. If the abort was caused by a FOREIGN lock, that lock
-                // still exists and the leftover blocks on restart — keep the
-                // `lockUnavailable` primary (truthful + refreshes the block) rather
-                // than claiming the archive is unlocked (SF2). Otherwise it is a
-                // genuinely lock-free leftover folder.
-                if case .lockUnavailable = primary { throw primary }
+                // removed. Keep the primary ONLY when it proves a lock still exists
+                // (`.alreadyHeld`): that foreign lock makes the leftover block on
+                // restart, so the truthful headline is the lock condition (SF2).
+                // For every other cause — including `lockUnavailable` from an
+                // exception/invalid-hash/bridge failure — no lock is proven, so the
+                // leftover is genuinely lock-free and must be surfaced (not masked).
+                if case .lockUnavailable(_, let reason) = primary, reason.provesLockExists {
+                    throw primary
+                }
                 throw ArchiveMutationError.abortedCleanupIncomplete(quarantine: q)
             case .locked(let hs, let q):
                 throw ArchiveMutationError.lockRetainedAfterAbort(hashes: hs, quarantine: q)

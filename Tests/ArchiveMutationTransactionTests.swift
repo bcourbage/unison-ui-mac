@@ -12,10 +12,13 @@ final class ArchiveMutationTransactionTests: XCTestCase {
 
     private final class FakeLocking: ArchiveLocking {
         var heldByOthers: Set<String> = []
+        /// Force a specific non-acquired result for a hash (exception/invalidHash/…).
+        var failWith: [String: ArchiveLock.AcquireResult] = [:]
         private(set) var acquired: [String] = []
         private(set) var released: [String] = []
         var releaseConfirmed = true   // whether release() reports the lock gone
         func acquire(hash: String) -> ArchiveLock.AcquireResult {
+            if let forced = failWith[hash] { return forced }
             if heldByOthers.contains(hash) { return .alreadyHeld }
             acquired.append(hash); return .acquired
         }
@@ -232,12 +235,17 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertNotNil(store.manifest, "the intent record is retained (blocks on restart)")
     }
 
-    // SF1/SF2: the block-refresh classifier — the three lock-leaving failures
-    // require an in-session refresh; the clean-abort failures do not.
+    // SF1/SF2: the block-refresh classifier — the lock-leaving failures require an
+    // in-session refresh; the clean-abort failures do not. Only `.alreadyHeld`
+    // among the lockUnavailable reasons proves a lock exists.
     func test_requiresArchiveBlockRefresh_classifier() {
         XCTAssertTrue(ArchiveMutationError.rollbackIncomplete(quarantine: "/q").requiresArchiveBlockRefresh)
         XCTAssertTrue(ArchiveMutationError.lockRetainedAfterAbort(hashes: ["a"], quarantine: "/q").requiresArchiveBlockRefresh)
         XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .alreadyHeld).requiresArchiveBlockRefresh)
+        // The non-alreadyHeld lockUnavailable reasons prove no lock → no refresh.
+        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .exception).requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .invalidHash).requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .bridgeMissing).requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.revalidationFailed.requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.stagingFailed(file: "x").requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.beginStagingFailed.requiresArchiveBlockRefresh)
@@ -248,6 +256,46 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             ArchiveMutationError.rollbackIncomplete(quarantine: "/q")))
         XCTAssertFalse(CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(
             ArchiveMutationError.revalidationFailed))
+    }
+
+    // SF1: a matrix over all four lock-acquisition failure reasons, each combined
+    // with a discard failure. Only `.alreadyHeld` proves a foreign lock and so
+    // preserves the primary; every other reason surfaces the lock-free leftover
+    // (abortedCleanupIncomplete) rather than masking it behind "another Unison".
+    func test_lockFailureMatrix_onlyAlreadyHeldProvesLock_others_surfaceLeftover() {
+        let reasons: [ArchiveLock.AcquireResult] = [.alreadyHeld, .exception, .invalidHash, .bridgeMissing]
+        for reason in reasons {
+            let h = String(repeating: "a", count: 32); let files = ["ar"+h]
+            let store = FakeStore(present: Set(files)); store.discardThrows = true
+            let lock = FakeLocking(); lock.failWith = [h: reason]
+            XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) { err in
+                let e = err as? ArchiveMutationError
+                if reason == .alreadyHeld {
+                    XCTAssertEqual(e, .lockUnavailable(hash: h, reason: .alreadyHeld),
+                                   "a proven lock preserves the primary")
+                } else {
+                    XCTAssertEqual(e, .abortedCleanupIncomplete(quarantine: "/fake/quarantine"),
+                                   "\(reason): no lock proven → surface the lock-free leftover, not a foreign-lock claim")
+                }
+            }
+            XCTAssertNotNil(store.manifest, "record retained on every discard failure")
+        }
+    }
+
+    // SF1: each lock-failure reason gets its own accurate diagnostic — only
+    // `.alreadyHeld` mentions another Unison holding the archive.
+    func test_mutationRefusalText_perLockReason() {
+        func text(_ r: ArchiveLock.AcquireResult) -> String {
+            CleanStaleArchivesWindowController.mutationRefusalText(
+                ArchiveMutationError.lockUnavailable(hash: "a", reason: r))
+        }
+        XCTAssertTrue(text(.alreadyHeld).contains("Another Unison"))
+        XCTAssertFalse(text(.exception).contains("Another Unison"))
+        XCTAssertFalse(text(.invalidHash).contains("Another Unison"))
+        XCTAssertFalse(text(.bridgeMissing).contains("Another Unison"))
+        // Distinct, non-empty guidance for each.
+        XCTAssertNotEqual(text(.exception), text(.bridgeMissing))
+        XCTAssertFalse(text(.bridgeMissing).isEmpty)
     }
 
     // MARK: staging failure + rollback

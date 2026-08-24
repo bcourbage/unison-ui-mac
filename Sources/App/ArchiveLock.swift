@@ -23,6 +23,12 @@ enum ArchiveLock {
 
         /// True only for `.acquired`. Every other outcome must block mutation.
         var didAcquire: Bool { self == .acquired }
+
+        /// True only for `.alreadyHeld`: a lock file actually EXISTS on disk
+        /// (a live Unison or a stale lock). The other failures — `.exception`,
+        /// `.invalidHash`, `.bridgeMissing` — do NOT prove a lock exists, so they
+        /// must not be reported as "another Unison holds the archive."
+        var provesLockExists: Bool { self == .alreadyHeld }
     }
 
     enum LockState: Equatable {

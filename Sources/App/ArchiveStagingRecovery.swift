@@ -13,15 +13,16 @@ import Foundation
 /// file is touched. The two kinds are tracked so the final step is correct:
 /// an existing (authorized) lock is unlinked, a freshly-acquired one is released.
 ///
-/// Recovery direction depends on phase. Only a STAGING (pre-commit) record holds
-/// staged payload: the quarantine has the only copy of some files, so the safe
-/// direction is to RESTORE them into the active directory — after a full preflight
-/// (nothing moves unless every file can be restored) with rollback if a move still
-/// fails. Every OTHER record — COMMITTED (removal finished, family already staged
-/// out), ACQUIRING (locks were being taken, nothing moved), and ABORTED (rolled
-/// back, family already restored) — carries NO staged payload, so recovery takes
-/// the cleanup branch: release the lock and retire the intent/leftover folder,
-/// restoring nothing. In BOTH branches locks are released only after the file
+/// Recovery direction depends on phase. Only a STAGING (pre-commit) record needs
+/// its payload restored: the quarantine has the only copy of some files, so the
+/// safe direction is to RESTORE them into the active directory — after a full
+/// preflight (nothing moves unless every file can be restored) with rollback if a
+/// move still fails. Every OTHER record carries no payload REQUIRING RESTORATION —
+/// COMMITTED holds the whole staged family but the removal was logically committed
+/// so it must NOT be restored (just Trashed); ACQUIRING (locks were being taken,
+/// nothing moved) and ABORTED (rolled back, family already restored) hold nothing.
+/// All three take the cleanup branch: release the lock and retire the leftover
+/// folder, restoring nothing. In BOTH branches locks are released only after the
 /// operation (or the no-op) succeeds and every release is confirmed, and the
 /// record is retired only then (mirrors `ArchiveMutation.execute`, SF2). Any
 /// unsuccessful recovery leaves every affected family PHYSICALLY LOCKED and the
@@ -135,10 +136,10 @@ enum ArchiveStagingRecovery {
             return .recovered
         } else {
             // Cleanup branch for every non-staging record — committed (removal
-            // finished), acquiring (nothing moved), or aborted (already restored).
-            // None carries staged payload, so there is nothing to restore: confirm
-            // the lock releases first (mirror ArchiveMutation.execute), then retire
-            // the intent/leftover folder by Trashing it.
+            // finished; the family sits in the quarantine but must NOT be restored),
+            // acquiring (nothing moved), or aborted (already restored). None has
+            // payload requiring restoration, so confirm the lock releases first
+            // (mirror ArchiveMutation.execute), then retire the folder by Trashing it.
             let unreleased = releaseAll(hashes: hashes, barrier: barrier,
                                         activeDir: activeDir, locking: locking, fm: fm)
             guard unreleased.isEmpty else {
@@ -149,7 +150,7 @@ enum ArchiveStagingRecovery {
                 var out: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: a.quarantineDir), resultingItemURL: &out)
             } catch {
-                // Every lock is released and the removal is committed — the folder
+                // Every lock is released and nothing needs restoring — the folder
                 // is a lock-free leftover, NOT a block (SF2).
                 return .cleanupOnly("\(a.quarantineDir): unlocked, but the quarantine could not be "
                     + "moved to Trash; delete it manually")

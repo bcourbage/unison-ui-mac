@@ -612,16 +612,28 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     }
 
     /// Human-readable reason a mutation refused. Every case is fail-closed —
-    /// nothing was removed and the originals are intact.
-    static func mutationRefusalText(_ error: Error) -> String {
+    /// nothing was removed and the originals are intact. Pure (`nonisolated`) so it
+    /// is callable and testable off the main actor.
+    nonisolated static func mutationRefusalText(_ error: Error) -> String {
         guard let e = error as? ArchiveMutationError else {
             return "The archives were left untouched; the originals are intact."
         }
         switch e {
         case .engineNotIdle:
             return "Unison became busy, so the archives were left untouched. Try again when it’s idle."
-        case .lockUnavailable:
-            return "Another Unison process holds a lock on one of these archives, so nothing was removed. Close other Unison instances and try again."
+        case .lockUnavailable(_, let reason):
+            switch reason {
+            case .alreadyHeld:
+                return "Another Unison process holds a lock on one of these archives, so nothing was removed. Close other Unison instances and try again."
+            case .exception:
+                return "Preparing an archive lock failed unexpectedly, so nothing was removed. The originals are intact. Try again; if it persists, quit and reopen the app."
+            case .invalidHash:
+                return "An internal error (an invalid archive identifier) stopped the operation, so nothing was removed. The originals are intact."
+            case .bridgeMissing:
+                return "The archive-lock component isn’t available, so nothing was removed for safety. Quit and reopen the app, then try again."
+            case .acquired:
+                return "The archives were left untouched; the originals are intact."
+            }
         case .revalidationFailed:
             return "The set of stale archives changed since you reviewed it, so nothing was moved. The list has been refreshed; review and try again."
         case .beginStagingFailed, .stagingFailed:
@@ -656,10 +668,10 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     /// per-error title is used instead.
     nonisolated static func mutationBlockingTitle(_ error: Error) -> String {
         switch error as? ArchiveMutationError {
-        case .rollbackIncomplete:      return "An archive move couldn’t be fully undone"
-        case .lockUnavailable:         return "Another Unison is using these archives"
-        case .lockRetainedAfterAbort:  return "An archive lock is still held"
-        default:                       return "Archive maintenance needs attention"
+        case .rollbackIncomplete:                        return "An archive move couldn’t be fully undone"
+        case .lockUnavailable(_, .alreadyHeld):          return "Another Unison is using these archives"
+        case .lockRetainedAfterAbort:                    return "An archive lock is still held"
+        default:                                         return "Archive maintenance needs attention"
         }
     }
 
