@@ -6,10 +6,10 @@
 # SF7: the app is built on a host whose Xcode/SDK and OCaml runtime may be newer
 # than the advertised floor (Release builds run on macOS 26 with Xcode 26). A
 # Mach-O tagged for a NEWER macOS silently raises the real minimum: it either
-# emits deployment-version linker warnings (the OCaml runtime case, fixed by the
-# Makefile relabel) or — for our own compiled code — refuses to load on the
-# baseline OS. Checking the finished bundle proves the guarantee for the EXACT
-# signed/packaged bytes we ship, independent of how they were built.
+# emits deployment-version linker warnings (the OCaml runtime case, fixed by
+# building OCaml for the target) or — for our own compiled code — refuses to load
+# on the baseline OS. Checking the finished bundle proves the guarantee for the
+# EXACT signed/packaged bytes we ship, independent of how they were built.
 #
 # Two-tier rule (checks LC_BUILD_VERSION minos, or the legacy LC_VERSION_MIN_MACOSX):
 #   * NO Mach-O — ours or a vendored framework — may declare a floor GREATER than
@@ -38,7 +38,24 @@ fi
 
 [ -d "$app" ] || { echo "error: app bundle not found: $app" >&2; exit 1; }
 
-echo "Verifying Mach-O deployment floors in $(basename "$app") (target $expected) ..."
+# The app's REAL main executable, from Info.plist. A count-only check would pass a
+# bundle that lost its main binary but kept a vendored framework (a real packaging
+# regression), so require CFBundleExecutable to name an existing regular Mach-O in
+# Contents/MacOS — the file that must actually run on the baseline OS. It is then
+# held to the strict "== target" rule by the loop below (it lives in Contents/MacOS).
+plist="$app/Contents/Info.plist"
+[ -f "$plist" ] || { echo "error: no Info.plist at $plist" >&2; exit 1; }
+main_exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist" 2>/dev/null || true)"
+[ -n "$main_exec" ] || { echo "error: Info.plist has no CFBundleExecutable" >&2; exit 1; }
+main_path="$app/Contents/MacOS/$main_exec"
+main_rel="Contents/MacOS/$main_exec"
+[ -f "$main_path" ] || { echo "error: main executable $main_rel (CFBundleExecutable) is missing" >&2; exit 1; }
+case "$(file -b "$main_path" 2>/dev/null)" in
+    *Mach-O*) : ;;
+    *) echo "error: main executable $main_rel is not a Mach-O binary" >&2; exit 1 ;;
+esac
+
+echo "Verifying Mach-O deployment floors in $(basename "$app") (target $expected, main $main_exec) ..."
 
 # gt A B: true (exit 0) iff version A is strictly greater than version B, by
 # dotted-numeric order (10.13 < 11.0 < 15.0 < 26.0). `sort -V` orders them; A>B
@@ -53,6 +70,7 @@ gt() {
 # Autoupdate, the framework binary, ...).
 fail=0
 count=0
+main_seen=0
 # Use a temp file rather than a pipeline so `fail`/`count` survive (a `while` in a
 # pipe runs in a subshell under POSIX sh).
 list="$(mktemp)"
@@ -66,6 +84,7 @@ while IFS= read -r f; do
     esac
     count=$((count + 1))
     rel="${f#"$app"/}"
+    [ "$rel" = "$main_rel" ] && main_seen=1
     # Our own binaries live directly in Contents/MacOS/; anything under a nested
     # bundle (Frameworks/…, *.xpc, *.app) is vendored (Sparkle) and held only to
     # the not-greater rule.
@@ -115,9 +134,17 @@ if [ "$count" -eq 0 ]; then
     exit 1
 fi
 
+# Defensive: the up-front check guarantees the main executable exists and is
+# Mach-O, so the enumeration must have reached it. If not, the bundle layout is
+# inconsistent — fail rather than report success over a partial scan.
+if [ "$main_seen" -ne 1 ]; then
+    echo "error: main executable $main_rel was not among the scanned Mach-O binaries" >&2
+    exit 1
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "error: one or more Mach-O binaries do not satisfy the macOS $expected floor" >&2
     exit 1
 fi
 
-echo "All $count Mach-O binaries satisfy the macOS $expected floor."
+echo "All $count Mach-O binaries satisfy the macOS $expected floor (main $main_exec == $expected)."

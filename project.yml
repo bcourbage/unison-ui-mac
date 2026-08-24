@@ -205,14 +205,13 @@ targets:
         # (Debug-config only, below) plays that role for the reaper test reset.
         GCC_PREPROCESSOR_DEFINITIONS:
           - CAML_NAME_SPACE=1
-        # STRIPPED_ASMRUN_DIR FIRST: it holds the deployment-target-relabelled
-        # runtime archives (libasmrun_nomain, libthreadsnat, libunixnat,
-        # libcamlstrnat — see Makefile SF7). Searching it before $(OCAMLLIBDIR)
-        # makes the linker resolve -lthreadsnat &c. to the relabelled copy rather
-        # than the OCaml install's host-minos original.
+        # $(OCAMLLIBDIR) supplies libthreadsnat/libunixnat/libcamlstrnat directly;
+        # $(STRIPPED_ASMRUN_DIR) supplies the main-stripped libasmrun_nomain. All
+        # four are built for the deployment target by the OCaml install itself
+        # (Makefile SF7 + verify-runtime-minos), so no per-lib copy is needed.
         LIBRARY_SEARCH_PATHS:
-          - $(STRIPPED_ASMRUN_DIR)
           - $(OCAMLLIBDIR)
+          - $(STRIPPED_ASMRUN_DIR)
         OTHER_LDFLAGS:
           - $(BLOB)
           - -lasmrun_nomain

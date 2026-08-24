@@ -44,6 +44,18 @@ newapp() {
     rm -rf "$1"
     mkdir -p "$1/Contents/MacOS"
     mkdir -p "$1/Contents/Frameworks/Sparkle.framework/Versions/B"
+    # Info.plist naming the main executable (default "app"); the verifier reads
+    # CFBundleExecutable and requires that exact Mach-O to exist.
+    cat > "$1/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>${2:-app}</string>
+</dict>
+</plist>
+PLIST
 }
 
 # --- Case 1: our binary == target, a vendored framework BELOW target → PASS ---
@@ -78,6 +90,25 @@ app="$work/vequal.app"; newapp "$app"
 mach_o "$app/Contents/MacOS/app" 15.0
 mach_o "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle" 15.0
 expect pass "vendored binary equals target" -- "$app" 15.0
+
+# --- Case 7: VENDORED-ONLY — main executable missing, Sparkle present at target →
+# FAIL. A packaging regression that drops the app binary but keeps a framework
+# must not pass a count-only check (the reviewer's reproduction). ---
+app="$work/vendored-only.app"; newapp "$app"
+mach_o "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle" 15.0
+expect fail "main executable missing, only vendored framework present" -- "$app" 15.0
+
+# --- Case 8: DEBUG-SIDECAR-ONLY — Contents/MacOS holds only a *.debug.dylib
+# sidecar, not the CFBundleExecutable → FAIL (the named main binary is absent). ---
+app="$work/sidecar-only.app"; newapp "$app"
+mach_o "$app/Contents/MacOS/app.debug.dylib" 15.0
+expect fail "only a debug sidecar present, not the main executable" -- "$app" 15.0
+
+# --- Case 9: no Info.plist at all → FAIL closed ---
+app="$work/noplist.app"; newapp "$app"
+mach_o "$app/Contents/MacOS/app" 15.0
+rm -f "$app/Contents/Info.plist"
+expect fail "missing Info.plist" -- "$app" 15.0
 
 echo ""
 echo "verify-bundle-minos fixtures: $pass passed, $fail failed"

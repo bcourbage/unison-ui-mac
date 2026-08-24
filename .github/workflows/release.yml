@@ -1,19 +1,27 @@
-# Release pipeline, split into two jobs so production code-signing can never be
-# reached from an arbitrary ref:
+# Release pipeline, split into three jobs so production code-signing can never be
+# reached from an arbitrary ref, and so the exact bytes we sign are the exact
+# bytes proven to run on the macOS deployment floor:
 #
-#   build   — runs for every trigger (a v* tag push, or a manual dispatch of any
-#             branch/SHA). Builds + tests + packages the app UNSIGNED. Sees NO
-#             signing/notary secrets and holds a read-only token. This is the
-#             safe "dry-run" build check.
-#   release — runs ONLY on a pushed v* tag, gated by the `release` GitHub
-#             Environment (required reviewers + a v* tag deployment rule). Only
-#             this job can read the Developer ID / notary secrets and holds a
-#             write token, so signing + notarization + publishing are reachable
-#             solely through the protected tag path, with human approval.
+#   build        — runs for every trigger (a v* tag push, or a manual dispatch of
+#                  any branch/SHA). Builds + tests + packages the app UNSIGNED and
+#                  uploads it as an artifact. Sees NO signing/notary secrets and
+#                  holds a read-only token. The safe "dry-run" build check.
+#   smoke-macos15 — runs on macos-15, downloads the build artifact and LAUNCHES it
+#                  on the deployment-floor OS (exercising the exact executable +
+#                  OCaml runtime bytes). Gates the release job (SF7): a build that
+#                  cannot run on macOS 15 blocks publication.
+#   release      — runs ONLY on a pushed v* tag, gated by the `release` GitHub
+#                  Environment (required reviewers + a v* tag deployment rule) AND
+#                  by smoke-macos15. Only this job reads the Developer ID / notary
+#                  secrets and holds a write token. It SIGNS THE SAME ARTIFACT the
+#                  smoke job validated (it does not rebuild), then notarizes and
+#                  publishes — so signing + notarization + publishing are reachable
+#                  solely through the protected tag path, with human approval.
 #
-# Runs on macos-26, pinned to Xcode 26.6 (build 17F113): the native Icon
+# build runs on macos-26, pinned to Xcode 26.6 (build 17F113): the native Icon
 # Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
-# actool, verified fail-closed below.
+# actool, verified fail-closed below. The OCaml runtime is built for macOS 15
+# there (MACOSX_DEPLOYMENT_TARGET exported before setup-ocaml), never relabelled.
 #
 # Normal release: bump BOTH MARKETING_VERSION and CURRENT_PROJECT_VERSION in
 # project.yml (the build number must strictly increase — Sparkle compares it, and
@@ -63,10 +71,23 @@ jobs:
       - name: Untap aws/tap (runner-image noise)
         run: brew untap aws/tap || true
 
+      # SF7: export the deployment target BEFORE setup-ocaml so the OCaml runtime
+      # is GENUINELY built for macOS 15 on this macOS-26 host (post-15 APIs
+      # weak-imported, not strongly bound against SDK 26). No relabelling; the app
+      # links a real minos-15 runtime, asserted by verify-runtime-minos.
+      - name: Export macOS deployment target (from project.yml) for the OCaml build
+        run: |
+          target="$(awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[" ]/,""); split($0,a,":"); print a[2]; exit}' project.yml)"
+          [ -n "$target" ] || { echo "::error::could not read deploymentTarget macOS from project.yml"; exit 1; }
+          echo "MACOSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
+          echo "OCaml runtime will be built for macOS $target"
+
       - name: Set up OCaml 5.5.0 (pinned)
         uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
         with:
           ocaml-compiler: "5.5.0"
+          # Bust any switch cached before the deployment target was pinned.
+          cache-prefix: "v2-macos-deploy-target"
       - name: Put the pinned OCaml switch on PATH
         run: echo "$(opam var bin)" >> "$GITHUB_PATH"
       - name: Verify pinned OCaml
@@ -120,9 +141,86 @@ jobs:
           path: ${{ env.ZIP }}
           retention-days: 7
 
+  # SF7: run the EXACT release-built application on the macOS deployment floor
+  # before anything is published. The build job compiles on macOS 26 (needed for
+  # Xcode 26's Icon Composer actool); this job downloads that build's app artifact
+  # and launches it on macos-15, exercising the same executable + OCaml runtime
+  # bytes that will subsequently be signed and shipped. Signing does not change a
+  # Mach-O's load behaviour or deployment target, so validating the unsigned
+  # artifact establishes macOS-15 compatibility for the release. If a post-15 API
+  # were bound against the newer SDK, dyld would fail at load here and the release
+  # would be blocked (the `release` job `needs` this job).
+  smoke-macos15:
+    name: macOS 15 launch smoke (release build)
+    needs: build
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out (for the verifier script)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Show runner macOS version
+        run: sw_vers
+
+      - name: Download the unsigned release build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: unison-ui-mac-unsigned-${{ github.run_id }}
+          path: dl
+
+      - name: Unpack the app
+        run: |
+          zip="$(find dl -name '*.app.zip' | head -1)"
+          [ -n "$zip" ] || { echo "::error::no .app.zip in the downloaded artifact"; exit 1; }
+          /usr/bin/ditto -x -k "$zip" unpacked
+          app="$(find unpacked -maxdepth 2 -name '*.app' -type d | head -1)"
+          [ -n "$app" ] || { echo "::error::no .app in the unpacked artifact"; exit 1; }
+          echo "APP=$PWD/$app" >> "$GITHUB_ENV"
+          echo "unpacked: $app"
+
+      - name: Verify the release bundle's macOS floor (exact release bytes)
+        run: ./scripts/verify-bundle-minos.sh "$APP"
+
+      - name: Launch on macOS 15 and require a clean exit
+        # Runs the release-built binary directly (not via `open`) so the process
+        # exit code is observable. UNISON_UI_SMOKE makes the app initialise the
+        # OCaml runtime + engine (unison_bridge_startup + init0), show the picker,
+        # then terminate cleanly; Sparkle is skipped under that flag. A load-time
+        # failure from a post-15 symbol, or any crash during engine init, exits
+        # nonzero and fails the release. macOS has no `timeout(1)`, so guard with a
+        # background launch + poll; a hang (e.g. an unexpected modal) also fails.
+        run: |
+          bin="$APP/Contents/MacOS/unison-ui-mac"
+          test -x "$bin" || { echo "::error::main executable missing at $bin"; exit 1; }
+          work="$RUNNER_TEMP/smoke"; mkdir -p "$work/unison"
+          UNISON="$work/unison" UNISON_UI_SMOKE=1 "$bin" > "$work/out.log" 2>&1 &
+          pid=$!
+          exited=0
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$pid" 2>/dev/null; then exited=1; break; fi
+            sleep 1
+          done
+          if [ "$exited" -ne 1 ]; then
+            echo "::error::app did not exit within 60s on macOS 15 (hang) — killing"
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+            sed -n '1,80p' "$work/out.log" || true
+            exit 1
+          fi
+          wait "$pid"; rc=$?
+          echo "app exit code on macOS 15: $rc"
+          sed -n '1,80p' "$work/out.log" || true
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::release build exited nonzero ($rc) on macOS 15 — deployment-floor compatibility not established"
+            exit 1
+          fi
+          echo "Release build launched and exited cleanly on macOS 15."
+
   release:
     name: Sign, notarize, publish
-    needs: build
+    needs: [build, smoke-macos15]
     # Only a pushed v* tag reaches this job; the `release` environment adds
     # required-reviewer approval and a v* tag deployment rule on top.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -161,20 +259,6 @@ jobs:
       - name: Untap aws/tap (runner-image noise)
         run: brew untap aws/tap || true
 
-      - name: Set up OCaml 5.5.0 (pinned)
-        uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
-        with:
-          ocaml-compiler: "5.5.0"
-      - name: Put the pinned OCaml switch on PATH
-        run: echo "$(opam var bin)" >> "$GITHUB_PATH"
-      - name: Verify pinned OCaml
-        run: |
-          ocamlc -version
-          test "$(ocamlc -version)" = "5.5.0"
-
-      - name: Install xcodegen
-        run: brew install xcodegen
-
       - name: Verify the tag matches MARKETING_VERSION
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -185,18 +269,28 @@ jobs:
             exit 1
           fi
 
-      - name: Build (Release configuration)
-        # Builds ad-hoc (the resolver forces ad-hoc for Release/CI); the
-        # Developer ID signature is applied by the explicit sign step below.
-        # SF7 gate: fail on any deployment-version linker warning (macos-26 host).
+      # SF7: this job does NOT rebuild. It signs the EXACT app the build job
+      # produced and the smoke-macos15 job launched on the baseline OS — so the
+      # bytes shipped to users are the same bytes whose macOS-15 compatibility was
+      # established. (Signing replaces signatures; it does not touch a Mach-O's
+      # deployment target or load behaviour.) No OCaml/XcodeGen/Xcode build tooling
+      # is needed here as a result.
+      - name: Download the smoke-validated app artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: unison-ui-mac-unsigned-${{ github.run_id }}
+          path: dl
+
+      - name: Unpack it to the Release products path
         run: |
-          set -o pipefail
-          make build CONFIG=Release 2>&1 | tee build.log
-          if grep -q "was built for newer" build.log; then
-            echo "::error::deployment-version linker warnings present in the Release build (SF7)"
-            grep "was built for newer" build.log | sort -u | head
-            exit 1
-          fi
+          zip="$(find dl -name '*.app.zip' | head -1)"
+          [ -n "$zip" ] || { echo "::error::no .app.zip in the downloaded artifact"; exit 1; }
+          dest=".build/derived/Build/Products/Release"
+          mkdir -p "$dest"
+          /usr/bin/ditto -x -k "$zip" "$dest"
+          app="$dest/unison-ui-mac.app"
+          test -d "$app" || { echo "::error::unpacked app not found at $app"; exit 1; }
+          echo "Unpacked the build job's artifact to $app (will be signed as-is)."
 
       - name: Import Developer ID signing certificate
         env:
