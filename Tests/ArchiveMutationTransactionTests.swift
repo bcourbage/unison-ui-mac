@@ -25,6 +25,11 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         @discardableResult func release(hash: String) -> Bool {
             released.append(hash); return releaseConfirmed
         }
+        // A synthetic, non-nil identity so the transaction can record it (the fake
+        // store writes no real lock files, so any deterministic value works).
+        func identity(hash: String) -> LockIdentity? {
+            LockIdentity(dev: 1, ino: UInt64(hash.count), ctimeSec: 0, ctimeNsec: 0)
+        }
     }
 
     private enum StoreErr: Error { case begin, plan, stage, commit, missing, discard }
@@ -374,6 +379,9 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             init(_ f: @escaping () -> Void) { onAcquire = f }
             func acquire(hash: String) -> ArchiveLock.AcquireResult { onAcquire(); return .acquired }
              func release(hash: String) -> Bool { true }
+            func identity(hash: String) -> LockIdentity? {
+                LockIdentity(dev: 1, ino: 1, ctimeSec: 0, ctimeNsec: 0)
+            }
         }
         var existing: Set<String> = ["ar"+h]
         let store = FakeStore(present: ["ar"+h, "fp"+h])

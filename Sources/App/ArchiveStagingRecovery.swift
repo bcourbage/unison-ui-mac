@@ -6,12 +6,17 @@ import Foundation
 ///
 /// The exclusion barrier is NEVER dropped and re-taken. An abandoned mutation
 /// leaves an `lk<hash>` file that already excludes every other Unison; recovery
-/// RETAINS that file as its barrier for the whole operation (Blocker 1 — deleting
-/// it first, even under user authorization, opens a window for a CLI/cron/incoming
-/// Unison to grab the freed lock and operate on the still-split family). Only a
-/// hash whose lock is somehow absent is acquired FRESH — atomically, before any
-/// file is touched. The two kinds are tracked so the final step is correct:
-/// an existing (authorized) lock is unlinked, a freshly-acquired one is released.
+/// RETAINS that file as its barrier for the whole operation (deleting it first,
+/// even under user authorization, opens a window for a CLI/cron/incoming Unison to
+/// grab the freed lock and operate on the still-split family). But an existing
+/// lock is adopted ONLY when its on-disk identity (dev+ino+ctime) still matches
+/// the one the transaction recorded — otherwise it may belong to a DIFFERENT
+/// process that acquired the same hash after the crash, and it is never adopted or
+/// deleted (round-11 Blocker; a legacy/acquiring record with no recorded identity
+/// likewise never authorizes adoption). A hash whose lock is absent is acquired
+/// FRESH — atomically, before any file is touched. The two kinds are tracked so the
+/// final step is correct: an adopted lock is unlinked, a freshly-acquired one is
+/// released; on abort, only the fresh locks WE created this attempt are released.
 ///
 /// Recovery direction depends on phase. Only a STAGING (pre-commit) record needs
 /// its payload restored: the quarantine has the only copy of some files, so the
@@ -128,15 +133,32 @@ enum ArchiveStagingRecovery {
             (activeDir as NSString).appendingPathComponent("lk" + h)
         }
 
-        // 1. Secure EVERY affected archive without ever unlinking an existing
-        //    barrier. Retain a recorded lock as-is; acquire a missing one FRESH
-        //    (atomic). If any hash cannot be secured, abort WITHOUT touching files
-        //    and WITHOUT releasing anything: barriers already established stay in
-        //    place, but the hash that failed may be unprotected (a `.unknown`
-        //    acquisition) — the abort message says so rather than claiming a lock.
+        // 1. Secure EVERY affected archive. An EXISTING lock is adopted as the
+        //    abandoned barrier ONLY when its on-disk identity still matches the one
+        //    the transaction recorded — otherwise it may belong to a DIFFERENT
+        //    process (started after the crash) and must never be adopted or deleted
+        //    (round-11 Blocker). A MISSING lock is acquired FRESH atomically. On any
+        //    failure we release only the FRESH locks WE created this attempt (they
+        //    are ours; releasing them restores the pre-recovery state and avoids a
+        //    deadlock) and touch neither payload nor any other process's lock.
         var barrier: [String: Barrier] = [:]
+        var freshlyAcquired: [String] = []
+        func releaseFresh() { for h in freshlyAcquired.reversed() { _ = locking.release(hash: h) } }
+
         for h in hashes {
             if fm.fileExists(atPath: lkPath(h)) {
+                // Adopt only if we recorded this lock's identity AND the file on
+                // disk still is that exact lock. Missing identity (a legacy/acquiring
+                // record) or a mismatch → fail closed: touch nothing.
+                guard let recorded = a.manifest.lockIdentities?[h],
+                      let current = LockIdentity(path: lkPath(h)),
+                      current == recorded else {
+                    releaseFresh()
+                    return .needsManualReview("\(a.quarantineDir): the lock for archive \(h) is not "
+                        + "the one this operation created (it may belong to another Unison, or the "
+                        + "record predates lock-identity tracking). Left untouched; quit every "
+                        + "Unison and recover manually")
+                }
                 barrier[h] = .existing
                 continue
             }
@@ -144,11 +166,14 @@ enum ArchiveStagingRecovery {
             switch r.acquisitionDisposition {
             case .acquiredByUs:   // we established a fresh barrier
                 barrier[h] = .fresh
+                freshlyAcquired.append(h)
             case .heldByAnother:  // a live Unison (or stale lock) grabbed it since our check
+                releaseFresh()
                 return .aborted("another Unison holds archive \(h); recovery deferred — "
-                    + "that archive stays locked. Quit every Unison and try again")
+                    + "quit every Unison and try again")
             case .unknown:        // acquire raised or the bridge is unavailable — we could
                                   // NOT establish a barrier, and the lock file was absent
+                releaseFresh()
                 return .aborted("could NOT establish a lock on archive \(h) (\(r)); recovery "
                     + "stopped. WARNING: this archive may be UNPROTECTED — quit every Unison "
                     + "and try recovery again")

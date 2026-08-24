@@ -54,6 +54,24 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         @discardableResult func release(hash: String) -> Bool {
             released.append(hash); return releaseConfirmed
         }
+        // recover() verifies an existing lock via LockIdentity(path:) on the real
+        // file, not through this method, so a nil here is never consulted.
+        func identity(hash: String) -> LockIdentity? { nil }
+    }
+
+    /// Return a copy of `a` whose manifest records the real on-disk identity of each
+    /// hash's `lk` file in `activeDir` — i.e. the record an interrupted transaction
+    /// would have written. Recovery adopts an existing lock only when it matches this.
+    private func adopting(_ a: AbandonedStaging, in activeDir: String) -> AbandonedStaging {
+        var m = a.manifest
+        var ids: [String: LockIdentity] = [:]
+        for h in m.hashes {
+            if let id = LockIdentity(path: (activeDir as NSString).appendingPathComponent("lk" + h)) {
+                ids[h] = id
+            }
+        }
+        m.lockIdentities = ids
+        return AbandonedStaging(quarantineDir: a.quarantineDir, manifest: m)
     }
 
     // MARK: - finalize / isProfileBlocked (helpers)
@@ -86,7 +104,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         let lk = FakeLocking()
         let outcome = ArchiveStagingRecovery.recover(
-            preCommit(q, hashes: [h], payloads: ["ar"+h, "fp"+h]), activeDir: active, locking: lk)
+            adopting(preCommit(q, hashes: [h], payloads: ["ar"+h, "fp"+h]), in: active),
+            activeDir: active, locking: lk)
 
         XCTAssertEqual(outcome, .recovered)
         XCTAssertEqual(lk.acquired, [], "existing lock retained — never deleted and re-acquired")
@@ -120,7 +139,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         let lk = FakeLocking()
         let outcome = ArchiveStagingRecovery.recover(
-            committed(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk)
+            adopting(committed(q, hashes: [h], payloads: ["ar"+h]), in: active),
+            activeDir: active, locking: lk)
 
         XCTAssertEqual(outcome, .recovered)
         XCTAssertEqual(lk.acquired, [], "committed staging with a surviving lock retains it as barrier")
@@ -160,7 +180,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         let lk = FakeLocking()
         let outcome = ArchiveStagingRecovery.recover(
-            preCommit(q, hashes: [h], payloads: ["ar"+h, "fp"+h]), activeDir: active, locking: lk)
+            adopting(preCommit(q, hashes: [h], payloads: ["ar"+h, "fp"+h]), in: active),
+            activeDir: active, locking: lk)
 
         guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
         XCTAssertTrue(exists(q, "ar"+h), "non-colliding sibling NOT moved (preflight aborts before any move)")
@@ -179,7 +200,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         let lk = FakeLocking(); lk.heldByOthers = [h2]   // h2 held by an external process
 
         let outcome = ArchiveStagingRecovery.recover(
-            preCommit(q, hashes: [h1, h2], payloads: ["ar"+h1, "ar"+h2]), activeDir: active, locking: lk)
+            adopting(preCommit(q, hashes: [h1, h2], payloads: ["ar"+h1, "ar"+h2]), in: active),
+            activeDir: active, locking: lk)
 
         guard case .aborted = outcome else { return XCTFail("expected .aborted, got \(outcome)") }
         XCTAssertTrue(exists(q, "ar"+h1), "no payload moved for the secured hash")
@@ -205,6 +227,47 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
                       "manifest/quarantine retained because release was not confirmed")
     }
 
+    // MARK: - Round-11 Blocker: an existing lock is adopted ONLY if it is OURS
+
+    /// The recorded lock is replaced with a different inode before recovery (a
+    /// DIFFERENT process acquired lk<hash> after the crash). Recovery must NOT adopt
+    /// or delete it, must acquire nothing, and must leave the lock, payload, and
+    /// record untouched.
+    func test_recover_existingLock_identityMismatch_failsClosed_touchesNothing() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)                                   // the original transaction's lock
+        write(q, "ar"+h)
+        let rec = adopting(preCommit(q, hashes: [h], payloads: ["ar"+h]), in: active)
+        // A different process replaces the lock (new inode / change time).
+        try FileManager.default.removeItem(atPath: (active as NSString).appendingPathComponent("lk"+h))
+        write(active, "lk"+h)
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(rec, activeDir: active, locking: lk)
+
+        guard case .needsManualReview = outcome else { return XCTFail("expected .needsManualReview, got \(outcome)") }
+        XCTAssertEqual(lk.acquired, [], "did not acquire anything")
+        XCTAssertEqual(lk.released, [], "did NOT delete the other process's lock")
+        XCTAssertTrue(exists(active, "lk"+h), "the foreign lock is left in place")
+        XCTAssertTrue(exists(q, "ar"+h), "payload untouched")
+        XCTAssertFalse(exists(active, "ar"+h), "nothing restored")
+    }
+
+    /// A legacy/acquiring record with NO recorded identity must never adopt (and
+    /// delete) an existing lock, even though the lock happens to be present.
+    func test_recover_existingLock_noRecordedIdentity_failsClosed() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h); write(q, "ar"+h)
+        // preCommit() without adopting() → manifest has no lockIdentities.
+        let outcome = ArchiveStagingRecovery.recover(
+            preCommit(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: FakeLocking())
+        guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertTrue(exists(active, "lk"+h), "lock left untouched (no identity to prove it is ours)")
+        XCTAssertTrue(exists(q, "ar"+h), "payload untouched")
+    }
+
     /// A move failure leaves the family physically locked and the record intact.
     func test_recover_preCommit_moveFailure_leavesLocked() throws {
         let active = try tempDir(); let q = try tempDir()
@@ -215,11 +278,11 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         }
         write(active, "lk"+h)
         write(q, "ar"+h)
+        let rec = adopting(preCommit(q, hashes: [h], payloads: ["ar"+h]), in: active)
         chmod(active, 0o500)                  // read-only active dir → moveItem into it fails
 
         let lk = FakeLocking()
-        let outcome = ArchiveStagingRecovery.recover(
-            preCommit(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk)
+        let outcome = ArchiveStagingRecovery.recover(rec, activeDir: active, locking: lk)
 
         guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
         XCTAssertTrue(exists(q, "ar"+h), "staged copy still present after failed move")
@@ -256,7 +319,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         let lk = FakeLocking()
         let outcome = ArchiveStagingRecovery.recover(
-            preCommit(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk, fileManager: fm)
+            adopting(preCommit(q, hashes: [h], payloads: ["ar"+h]), in: active),
+            activeDir: active, locking: lk, fileManager: fm)
 
         guard case .cleanupOnly = outcome else { return XCTFail("expected .cleanupOnly, got \(outcome)") }
         XCTAssertTrue(exists(active, "ar"+h), "family restored")
@@ -272,7 +336,8 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         let lk = FakeLocking()
         let outcome = ArchiveStagingRecovery.recover(
-            committed(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk, fileManager: fm)
+            adopting(committed(q, hashes: [h], payloads: ["ar"+h]), in: active),
+            activeDir: active, locking: lk, fileManager: fm)
 
         guard case .cleanupOnly = outcome else { return XCTFail("expected .cleanupOnly, got \(outcome)") }
         XCTAssertFalse(exists(active, "lk"+h), "lock genuinely released — profile not blocked")

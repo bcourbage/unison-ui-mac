@@ -64,7 +64,7 @@ struct ArchiveMutationPlan: Equatable {
 /// `lk` files (which carry no owner metadata) cannot be proven across a crash,
 /// so an abandoned manifest requires explicit recovery, never silent cleanup.
 struct StagingManifest: Codable, Equatable {
-    static let currentVersion = 1
+    static let currentVersion = 2   // v2 adds per-hash lock identities
     static let phaseAcquiring = "acquiring"  // intent recorded, locks being acquired
     static let phaseStaging = "staging"      // pre-commit: locks held, payloads moving
     static let phaseCommitted = "committed"  // post-commit: removal done; release may still be pending
@@ -87,6 +87,14 @@ struct StagingManifest: Codable, Equatable {
     /// record blocks iff its `lk<hash>` is still present; a staging record always
     /// blocks (its family may be split).
     var phase: String = StagingManifest.phaseAcquiring
+    /// Identity of the `lk<hash>` this transaction acquired, per hash, captured
+    /// immediately after acquisition and BEFORE any payload can move. Recovery
+    /// adopts an existing lock ONLY when its on-disk identity still matches the one
+    /// recorded here — so it can never adopt (and then delete) a lock a DIFFERENT
+    /// process created for the same hash after a crash. nil / missing entry (a v1
+    /// legacy record, or an acquiring record written before capture) NEVER
+    /// authorizes adopting an existing lock — recovery fails closed on it.
+    var lockIdentities: [String: LockIdentity]?
 
     /// A staging (pre-commit) record — its family may be split, so restore, not trash.
     var isPreCommit: Bool { phase == StagingManifest.phaseStaging }
@@ -123,9 +131,15 @@ protocol ArchiveLocking {
     /// re-acquired) — the caller must then treat it as NOT safely released and
     /// retain a blocking recovery record.
     @discardableResult func release(hash: String) -> Bool
+    /// Identity of the `lk<hash>` file this process currently holds (call right
+    /// after a successful `acquire`). nil if it can't be read.
+    func identity(hash: String) -> LockIdentity?
 }
 
 struct SystemArchiveLocking: ArchiveLocking {
+    func identity(hash: String) -> LockIdentity? {
+        ArchiveLock.lockPath(hash: hash).flatMap { LockIdentity(path: $0) }
+    }
     func acquire(hash: String) -> ArchiveLock.AcquireResult { ArchiveLock.acquire(hash: hash) }
     @discardableResult func release(hash: String) -> Bool {
         ArchiveLock.release(hash: hash)
@@ -328,12 +342,21 @@ enum ArchiveMutation {
         catch { throw ArchiveMutationError.beginStagingFailed }
 
         // 1. Acquire all locks in deterministic order, before any payload touch.
+        //    Capture each lock's on-disk identity right after acquiring it — this is
+        //    what lets recovery later prove an existing lock is OURS and not a
+        //    different process's (round-11 Blocker). If we can't read our own lock's
+        //    identity, fail closed rather than persist a record we couldn't verify.
+        var identities: [String: LockIdentity] = [:]
         for h in sortedHashes {
             let r = locking.acquire(hash: h)
             guard r == .acquired else {
                 try throwSettled(primary: .lockUnavailable(hash: h, reason: r))
             }
             owned.append(h)
+            guard let id = locking.identity(hash: h) else {
+                try throwSettled(primary: .beginStagingFailed)
+            }
+            identities[h] = id
         }
 
         // 2. Derive + freeze the exact payload set UNDER the locks (Blocker 2).
@@ -344,12 +367,14 @@ enum ArchiveMutation {
             try throwSettled(primary: .revalidationFailed)
         }
 
-        // 3b. Record the under-lock payload plan (flip acquiring → staging) BEFORE
-        //     moving any payload — the pre-commit crash window is now covered.
-        let staging = StagingManifest(operation: operation, hashes: plan.hashes,
+        // 3b. Record the under-lock payload plan + the captured lock identities
+        //     (flip acquiring → staging) BEFORE moving any payload — the pre-commit
+        //     crash window and the lock-identity provenance are now both durable.
+        var staging = StagingManifest(operation: operation, hashes: plan.hashes,
                                       payloadFiles: plan.payloadFiles,
                                       createdAtISO8601: nowISO8601,
                                       phase: StagingManifest.phaseStaging)
+        staging.lockIdentities = identities
         do { try store.recordPlan(staging) }
         catch { try throwSettled(primary: .beginStagingFailed) }
 

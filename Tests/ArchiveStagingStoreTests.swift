@@ -202,6 +202,9 @@ final class ArchiveStagingStoreTests: XCTestCase {
         final class NoopLocking: ArchiveLocking {
             func acquire(hash: String) -> ArchiveLock.AcquireResult { .acquired }
              func release(hash: String) -> Bool { true }
+            func identity(hash: String) -> LockIdentity? {
+                LockIdentity(dev: 1, ino: 1, ctimeSec: 0, ctimeNsec: 0)
+            }
         }
         let out = try ArchiveMutation.execute(
             operation: "clean-stale", hashes: [h], nowISO8601: "2026-08-23T00:00:00Z",
