@@ -59,6 +59,35 @@ final class ArchiveLockBridgeTests: XCTestCase {
         XCTAssertTrue(exists(p), "a refused acquire must not remove the foreign lock")
     }
 
+    /// SF2 — the PRODUCTION identity seam: from the bridge-provided unison dir,
+    /// through `ArchiveLock.lockPath`, to `SystemArchiveLocking.identity` (`lstat`).
+    /// A regression that makes `lockPath`/`identity` return nil would fail every
+    /// mutation closed at startup while synthetic-identity tests stayed green.
+    func test_systemLocking_identity_matchesRealLockFile() {
+        let h = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        rm(lockPath(h))
+        defer { ArchiveLock.release(hash: h); rm(lockPath(h)) }
+
+        // Before acquisition there is no lock → no identity.
+        XCTAssertNil(SystemArchiveLocking().identity(hash: h),
+                     "no identity for an absent lock")
+
+        XCTAssertEqual(ArchiveLock.acquire(hash: h), .acquired)
+        // lockPath points at the real lk<hash> the bridge created.
+        XCTAssertEqual(ArchiveLock.lockPath(hash: h), lockPath(h),
+                       "lockPath must equal the actual on-disk lk<hash> path")
+        // The production seam yields a real, non-nil identity equal to a direct stat.
+        let viaSeam = SystemArchiveLocking().identity(hash: h)
+        let viaPath = LockIdentity(path: lockPath(h))
+        XCTAssertNotNil(viaSeam, "SystemArchiveLocking.identity must read the held lock")
+        XCTAssertEqual(viaSeam, viaPath,
+                       "the production seam and a direct LockIdentity(path:) must agree")
+
+        ArchiveLock.release(hash: h)
+        XCTAssertNil(SystemArchiveLocking().identity(hash: h),
+                     "identity is nil again once the lock is released")
+    }
+
     /// Only a 32-char lowercase-hex hash is a valid capability. Everything else
     /// is refused before any filesystem touch; is_locked returns diagnostic
     /// `.unknown`; release is a harmless no-op. No lockfile is ever created.

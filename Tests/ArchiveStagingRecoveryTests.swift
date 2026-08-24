@@ -2,11 +2,13 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Explicit recovery for an abandoned staging. The exclusion barrier is never
-/// dropped and re-taken (Blocker 1): an existing `lk<hash>` is RETAINED as the
-/// barrier and only unlinked after a successful, confirmed file operation; a
-/// missing lock is acquired fresh atomically before any file is touched. Any
-/// unsuccessful recovery leaves every affected family physically locked and the
-/// record intact. Plus the pure profile-open block policy.
+/// dropped and re-taken: an existing `lk<hash>` is adopted only when its recorded
+/// identity matches (else fail closed), and unlinked only after a successful,
+/// confirmed file operation; a missing lock is acquired fresh atomically before
+/// any file is touched. An unsuccessful recovery keeps the record intact (stays
+/// blocked); adopted/fresh barriers are held, but a hash whose acquisition failed
+/// with an unknown result may be left physically unprotected. Plus the pure
+/// profile-open block policy.
 final class ArchiveStagingRecoveryTests: XCTestCase {
 
     private let h  = "abcdef0123456789abcdef0123456789"
@@ -252,6 +254,29 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         XCTAssertTrue(exists(active, "lk"+h), "the foreign lock is left in place")
         XCTAssertTrue(exists(q, "ar"+h), "payload untouched")
         XCTAssertFalse(exists(active, "ar"+h), "nothing restored")
+    }
+
+    /// SF1: recovery acquires h1 fresh, then h2 can't be secured; releasing its own
+    /// fresh h1 lock also FAILS. Recovery must surface that retained lock (its
+    /// identity isn't recorded, so a later recovery can't adopt it — otherwise a
+    /// dead end) rather than reporting only the h2 problem.
+    func test_recover_abortReleaseFailure_reportsRetainedFreshLock() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(q, "ar"+h1); write(q, "ar"+h2)      // no lk on disk for either → fresh path
+        let lk = FakeLocking()
+        lk.heldByOthers = [h2]                     // h2 can't be acquired
+        lk.releaseConfirmed = false               // releasing our fresh h1 lock fails
+
+        let outcome = ArchiveStagingRecovery.recover(
+            preCommit(q, hashes: [h1, h2], payloads: ["ar"+h1, "ar"+h2]), activeDir: active, locking: lk)
+
+        guard case .needsManualReview(let why) = outcome else {
+            return XCTFail("expected .needsManualReview, got \(outcome)")
+        }
+        XCTAssertTrue(why.contains(h1), "names the fresh lock it could not release")
+        XCTAssertEqual(lk.acquired, [h1], "acquired h1 fresh before h2 failed")
+        XCTAssertEqual(lk.released, [h1], "attempted to release the fresh h1 lock")
     }
 
     /// A legacy/acquiring record with NO recorded identity must never adopt (and

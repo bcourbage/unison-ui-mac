@@ -143,7 +143,26 @@ enum ArchiveStagingRecovery {
         //    deadlock) and touch neither payload nor any other process's lock.
         var barrier: [String: Barrier] = [:]
         var freshlyAcquired: [String] = []
-        func releaseFresh() { for h in freshlyAcquired.reversed() { _ = locking.release(hash: h) } }
+        // Release the fresh locks WE created this attempt, CONFIRMING each (SF1 —
+        // ArchiveLocking.release returns whether the lock is gone). Returns, sorted,
+        // the hashes whose fresh lock could NOT be released.
+        func releaseFresh() -> [String] {
+            var stuck: [String] = []
+            for h in freshlyAcquired.reversed() where !locking.release(hash: h) { stuck.append(h) }
+            return stuck.sorted()
+        }
+        // Abort with `msg`; if releasing our own fresh locks left any behind, upgrade
+        // to needsManualReview naming them (their identity isn't recorded, so a later
+        // recovery can't adopt them — surface it rather than leaving a dead end).
+        func abort(_ msg: String, deferred: Bool) -> RecoverOutcome {
+            let stuck = releaseFresh()
+            guard stuck.isEmpty else {
+                return .needsManualReview(msg + " Additionally, recovery could not release the "
+                    + "lock(s) it had just acquired for: \(stuck.joined(separator: ", ")); these "
+                    + "remain and need manual cleanup.")
+            }
+            return deferred ? .aborted(msg) : .needsManualReview(msg)
+        }
 
         for h in hashes {
             if fm.fileExists(atPath: lkPath(h)) {
@@ -153,11 +172,10 @@ enum ArchiveStagingRecovery {
                 guard let recorded = a.manifest.lockIdentities?[h],
                       let current = LockIdentity(path: lkPath(h)),
                       current == recorded else {
-                    releaseFresh()
-                    return .needsManualReview("\(a.quarantineDir): the lock for archive \(h) is not "
-                        + "the one this operation created (it may belong to another Unison, or the "
-                        + "record predates lock-identity tracking). Left untouched; quit every "
-                        + "Unison and recover manually")
+                    return abort("\(a.quarantineDir): the lock for archive \(h) is not the one this "
+                        + "operation created (it may belong to another Unison, or the record predates "
+                        + "lock-identity tracking). Left untouched; quit every Unison and recover "
+                        + "manually", deferred: false)
                 }
                 barrier[h] = .existing
                 continue
@@ -168,15 +186,13 @@ enum ArchiveStagingRecovery {
                 barrier[h] = .fresh
                 freshlyAcquired.append(h)
             case .heldByAnother:  // a live Unison (or stale lock) grabbed it since our check
-                releaseFresh()
-                return .aborted("another Unison holds archive \(h); recovery deferred — "
-                    + "quit every Unison and try again")
+                return abort("another Unison holds archive \(h); recovery deferred — "
+                    + "quit every Unison and try again", deferred: true)
             case .unknown:        // acquire raised or the bridge is unavailable — we could
                                   // NOT establish a barrier, and the lock file was absent
-                releaseFresh()
-                return .aborted("could NOT establish a lock on archive \(h) (\(r)); recovery "
+                return abort("could NOT establish a lock on archive \(h) (\(r)); recovery "
                     + "stopped. WARNING: this archive may be UNPROTECTED — quit every Unison "
-                    + "and try recovery again")
+                    + "and try recovery again", deferred: true)
             }
         }
 

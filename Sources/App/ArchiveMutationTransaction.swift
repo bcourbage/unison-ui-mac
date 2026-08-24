@@ -59,10 +59,13 @@ struct ArchiveMutationPlan: Equatable {
 }
 
 /// Durable record written before any payload is moved, so an interrupted
-/// mutation is detectable on restart. It deliberately records NO claim that
-/// could authorize automatic lock deletion — ownership of the raw upstream
-/// `lk` files (which carry no owner metadata) cannot be proven across a crash,
-/// so an abandoned manifest requires explicit recovery, never silent cleanup.
+/// mutation is detectable on restart. The raw upstream `lk` files carry no owner
+/// metadata, so v2 records each lock's on-disk IDENTITY (`lockIdentities`) at
+/// acquisition — the claim that lets recovery prove an existing lock is the very
+/// one this transaction created, and only then adopt/remove it. Recovery still
+/// never cleans up silently: it requires the user's explicit authorization, and
+/// it fails closed on any lock whose recorded identity is absent or no longer
+/// matches (it may belong to another process).
 struct StagingManifest: Codable, Equatable {
     static let currentVersion = 2   // v2 adds per-hash lock identities
     static let phaseAcquiring = "acquiring"  // intent recorded, locks being acquired
