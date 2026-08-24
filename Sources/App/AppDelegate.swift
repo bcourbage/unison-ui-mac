@@ -38,14 +38,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var activeVersionProbe: VersionCheck.Handle?
     private var versionProbeSession: SessionID?
 
-    /// APP-GLOBAL diff-request broker. The OCaml diff result carries no request
-    /// id and is delivered through a single permanent handler, so at most one
-    /// diff is outstanding across the whole app and its result is routed to the
-    /// session that OWNS it (`diffRequestOwner`) — never to whatever session is
-    /// merely current. A session abandoned while its diff is in flight drains
-    /// before any new diff can be issued (see `DiffRequestBroker`).
-    private var diffBroker = DiffRequestBroker()
-    private var diffRequestOwner: SessionID?
+    /// The asynchronous per-diff lifecycle (PR-4): the app-global broker, the
+    /// off-main bridge dispatch, the wedged-diff watchdog, and the completion
+    /// handshake. The scheduler/bridge/sink are injected so the production sequence
+    /// is unit-tested (`DiffLifecycle`). AppDelegate is the sink; engine ownership
+    /// (`.diffing`) is taken/released through the coordinator.
+    private lazy var diffLifecycle: DiffLifecycle = DiffLifecycle(
+        sink: self,
+        runBridge: { [weak self] row, completion in
+            self?.connectQueue.async {
+                let can = unison_bridge_can_diff(Int32(row))
+                let ok = can && unison_bridge_run_show_diffs(Int32(row))
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(can, ok) } }
+            }
+        },
+        scheduleWatchdog: { delay, fire in
+            let work = DispatchWorkItem { MainActor.assumeIsolated { fire() } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return { work.cancel() }
+        },
+        stallTimeout: 45)
 
     /// Pending restore for a one-shot `-ignorearchives` rescan: the `.prf`
     /// we temporarily appended the injected suffix to. Cleaned up the moment
@@ -214,20 +226,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var scanSawRemoteWait = false
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
-    /// The in-flight diff op (PR-4). A diff runs the OCaml engine off-main on
-    /// `connectQueue`, so like scan/sync it needs a non-overlap slot; the
-    /// coordinator is `.diffing` for its lifetime.
-    private var pendingDiff: (SessionID, OperationID)?
-    /// Fires if an in-flight diff runs too long (wedged on a dead remote
-    /// transport). It does NOT tear the connection down (an in-process close would
-    /// deadlock behind the synchronous diff on the single OCaml worker); it surfaces
-    /// the stall and keeps the diff's engine ownership until its bridge call returns.
-    private var diffWatchdog: DispatchWorkItem?
-    /// How long a diff may run before the wedged-diff watchdog fires.
-    private let diffStallTimeout: TimeInterval = 45
-    /// Guards the app-level wedged-diff alert (shown only when the owner window is
-    /// gone) so it appears once per wedged diff.
-    private var diffStallAlertShown = false
     /// The session whose successful Ignore is awaiting its dedicated completion.
     /// Identity token (separate from `pendingScan`) so an Ignore completion can
     /// never satisfy a pending scan/rescan, and a stale/duplicate completion for
@@ -400,149 +398,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// so a slow/wedged remote transfer never beachballs the app.
     private func requestDiff(session s: SessionID, row: Int) -> DiffRequestResult {
         // Broker first (cheap, revertible): sets up result routing for this owner.
-        switch diffBroker.request(owner: s.raw) {
-        case .refuseInFlight, .refuseDraining:
+        guard diffLifecycle.request(owner: s.raw) else { return .refused }
+        // Coordinator gate: a diff runs only from `.ready`. If the engine is busy
+        // (opening/scanning/syncing/diffing/…), refuse and undo the broker request.
+        let effects = engine.requestDiff(row: row)
+        guard !effects.isEmpty else {
+            diffLifecycle.undoRequest(owner: s.raw)
             return .refused
-        case .issue:
-            // Coordinator gate: a diff runs only from `.ready`. If the engine is
-            // busy (opening/scanning/syncing/diffing/…), refuse and undo the broker.
-            let effects = engine.requestDiff(row: row)
-            guard !effects.isEmpty else {
-                diffBroker.abandon(owner: s.raw)
-                return .refused
-            }
-            diffRequestOwner = s
-            run(effects)                    // → driveBeginDiff (off-main)
-            return .issued
         }
+        run(effects)                    // → driveBeginDiff (off-main)
+        return .issued
     }
 
-    /// Run the diff bridge call OFF the main thread on the serial engine lane, then
-    /// release engine ownership. The diff TEXT (or an error) is delivered
-    /// asynchronously by the diff/diff-err handlers; here we only learn whether the
-    /// OCaml call raised and, on failure, surface a narrow diff error.
+    /// Run the coordinator-authorized diff off-main via the lifecycle (broker +
+    /// dispatch + watchdog + completion handshake). All presentation and the engine
+    /// release route back through `DiffLifecycleSink` below.
     private func driveBeginDiff(_ s: SessionID, _ op: OperationID, row: Int) {
-        pendingDiff = (s, op)
-        windowBySession[s]?.setDiffInFlight(true)   // gate the whole reconcile window
-        armDiffWatchdog(s, op)
-        connectQueue.async { [weak self] in
-            let can = unison_bridge_can_diff(Int32(row))
-            let ok = can && unison_bridge_run_show_diffs(Int32(row))
-            DispatchQueue.main.async {
-                guard let self else { return }
-                guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
-                self.pendingDiff = nil
-                self.cancelDiffWatchdog()
-                self.windowBySession[s]?.setDiffInFlight(false)
-                if !ok {
-                    // No async result will arrive: drain the broker's outstanding
-                    // request and show a narrow error in this session's diff window.
-                    self.diffBroker.requestRaised(owner: s.raw)
-                    if self.diffRequestOwner == s { self.diffRequestOwner = nil }
-                    self.windowBySession[s]?.showDiffError(can
-                        ? "Unison could not produce a diff for this item."
-                        : "This item can’t be diffed — it’s a directory, a symlink, had only "
-                          + "metadata changes, or hit a problem during update detection.")
-                } else {
-                    // SUCCESS. A diff/diff-err callback (if any) fired during the
-                    // call and already delivered via the handler (broker now idle →
-                    // `.dropStale` here, a no-op). If NONE fired, the diff produced
-                    // NO OUTPUT (upstream `Files.diff` calls showDiff only when the
-                    // result is nonempty — e.g. `diff = true` or a GUI tool). The
-                    // synchronous return is the terminal handshake that honors the
-                    // broker's one-callback contract (SF2): terminate it here and
-                    // show an honest "no output" result rather than strand the
-                    // loading window and refuse every future diff.
-                    switch self.diffBroker.deliver() {
-                    case .apply(let owner):
-                        let os = SessionID(raw: owner)
-                        if self.diffRequestOwner == os { self.diffRequestOwner = nil }
-                        self.windowBySession[os]?.showDiff(
-                            title: "Diff", text: "The diff command produced no output.")
-                    case .dropStale:
-                        // A real result already delivered, or an abandoned request
-                        // just drained (broker back to idle — unstuck either way).
-                        if self.diffRequestOwner == s { self.diffRequestOwner = nil }
-                    }
-                }
-                // Release engine ownership (→ `.ready`, or the deferred close if the
-                // session was abandoned while the diff ran).
-                self.run(self.engine.diffCompleted(session: s, op: op))
-            }
-        }
+        diffLifecycle.begin(owner: s.raw, op: op.raw, row: row)
     }
 
-    /// The session's diff window closed, or the session itself is being torn
-    /// down. If it owns the outstanding diff, the broker enters draining so the
-    /// still-in-flight result is discarded before any new diff can be issued. The
-    /// diff keeps engine ownership until its bridge call actually returns (the lane
-    /// isn't free until then); `diffCompleted` releases it.
+    /// The session's diff window closed, or the session itself is being torn down.
+    /// The broker enters draining so a still-in-flight result is discarded; the diff
+    /// keeps engine ownership until its bridge call actually returns.
     private func abandonDiff(session s: SessionID) {
-        diffBroker.abandon(owner: s.raw)
-        if diffRequestOwner == s { diffRequestOwner = nil }
-    }
-
-    // MARK: - Wedged-diff watchdog
-
-    /// Arm a one-shot timer for the in-flight diff. A diff normally completes in
-    /// well under a second; if it runs past `diffStallTimeout` it is wedged on a
-    /// dead/slow remote transport.
-    ///
-    /// Wedged-diff SPECIFICATION (PR-4): the diff runs SYNCHRONOUSLY on the single
-    /// OCaml worker, so the engine lane cannot be freed until `run_show_diffs`
-    /// returns — an in-process close/abort would deadlock behind it. The safe,
-    /// honest behavior is therefore: the wedged diff KEEPS engine ownership
-    /// (`.diffing`), so scan/sync/rescan/mutation stay refused and can never
-    /// overlap or misorder against it; the UI stays fully responsive (the block is
-    /// off-main); and the user is told the diff stalled and can Quit. Ownership is
-    /// released only when the bridge call finally returns (`diffCompleted`). The
-    /// still-outstanding result is drained so a very-late result isn't misattributed.
-    /// (A future option: `unison_bridge_reap_transport_children()` can SIGKILL the
-    /// ssh child off the worker to force the read to fail — but a hard mid-session
-    /// transport kill is a connection-lifecycle change deferred pending review.)
-    private func armDiffWatchdog(_ s: SessionID, _ op: OperationID) {
-        cancelDiffWatchdog()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
-            self.log.write("diff (\(s)/\(op)) still running past \(self.diffStallTimeout)s — likely wedged")
-            self.diffBroker.abandon(owner: s.raw)   // drop a very-late result
-            let message =
-                "A file comparison is taking unusually long — the remote connection may be "
-                + "stalled. The app is waiting for it and other engine actions stay disabled "
-                + "until it finishes. If it never does, quit and reopen the app."
-            if let w = self.windowBySession[s] {
-                w.showDiffError(message)
-            } else {
-                // SF3: the reconcile window was abandoned (Return to Profiles /
-                // closed), so there is no diff window to route to. Surface the
-                // stall at app level, deduplicated, so a queued replacement profile
-                // isn't left waiting with no explanation.
-                self.presentDiffStallAppAlert(message)
-            }
-        }
-        diffWatchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + diffStallTimeout, execute: work)
-    }
-
-    /// One app-level alert for a wedged diff whose owner window is gone. A single
-    /// wedged diff can only fire this once (the watchdog is one-shot), but the flag
-    /// also guards against a re-entrant present.
-    private func presentDiffStallAppAlert(_ message: String) {
-        guard !diffStallAlertShown else { return }
-        diffStallAlertShown = true
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "A file comparison is stuck"
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    private func cancelDiffWatchdog() {
-        diffWatchdog?.cancel()
-        diffWatchdog = nil
-        diffStallAlertShown = false
+        diffLifecycle.abandon(owner: s.raw)
     }
 
     /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
@@ -1077,33 +956,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         UnisonBridge.installDiffHandler { [weak self] title, text in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                // Route to the OWNER of the outstanding request (not the current
-                // session). The broker drops a result whose owning session was
-                // abandoned (draining) or that nothing is awaiting.
-                switch self.diffBroker.deliver() {
-                case .apply(let owner):
-                    if let s = self.diffRequestOwner, s.raw == owner {
-                        self.windowBySession[s]?.showDiff(title: title, text: text)
-                    }
-                    self.diffRequestOwner = nil
-                case .dropStale:
-                    self.diffRequestOwner = nil
-                }
+                // The lifecycle routes to the OWNER of the outstanding request via
+                // the broker (dropping a result whose session was abandoned).
+                self?.diffLifecycle.deliverResult(title: title, text: text)
             }
         }
         UnisonBridge.installDiffErrHandler { [weak self] err in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                switch self.diffBroker.deliver() {
-                case .apply(let owner):
-                    if let s = self.diffRequestOwner, s.raw == owner {
-                        self.windowBySession[s]?.showDiffError(err)
-                    }
-                    self.diffRequestOwner = nil
-                case .dropStale:
-                    self.diffRequestOwner = nil
-                }
+                self?.diffLifecycle.deliverError(err)
             }
         }
         UnisonBridge.installInit1CompleteHandler { [weak self] needsPrompt in
@@ -2844,5 +2704,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             .credits: credits,
             .applicationName: appName,
         ])
+    }
+}
+
+// MARK: - DiffLifecycle sink (PR-4)
+
+extension AppDelegate: DiffLifecycleSink {
+    func diffSetInFlight(_ inFlight: Bool, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.setDiffInFlight(inFlight)
+    }
+    func diffShowResult(title: String, text: String, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.showDiff(title: title, text: text)
+    }
+    func diffShowError(_ message: String, owner: UInt64) {
+        windowBySession[SessionID(raw: owner)]?.showDiffError(message)
+    }
+    func diffOwnerWindowExists(_ owner: UInt64) -> Bool {
+        windowBySession[SessionID(raw: owner)] != nil
+    }
+    func diffPresentAppStall(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "A file comparison is stuck"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+    func diffReleaseEngineOwnership(owner: UInt64, op: UInt64) {
+        run(engine.diffCompleted(session: SessionID(raw: owner), op: OperationID(raw: op)))
     }
 }
