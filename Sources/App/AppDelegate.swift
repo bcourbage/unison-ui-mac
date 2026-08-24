@@ -14,6 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// reopening just brings the existing instance to front.
     private var settingsWindowController: SettingsWindowController?
     private var unisonDirectory: String = ""
+    /// Archive hashes locked by a PRE-COMMIT abandoned staging (an interrupted
+    /// mutation) found at launch. A profile whose archive matches one of these
+    /// must not be opened until explicit recovery. See checkForAbandonedArchiveStaging.
+    private var blockedArchiveHashes: Set<String> = []
+    private var abandonedStagings: [AbandonedStaging] = []
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
     /// updater), in which case the Settings window omits the Updates tab.
     var updater: (any UpdatePreferences)?
@@ -1685,6 +1690,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// (window creation + connect, or a waiting window) we run.
     private func profileSelected(_ profile: String) {
         log.write("AppDelegate: profile '\(profile)' picked")
+        // Fail closed: a profile whose archive is held by an interrupted
+        // (pre-commit) mutation must not be opened until recovery.
+        if let blocking = abandonedStagingBlocking(profile) {
+            log.write("AppDelegate: '\(profile)' blocked by abandoned staging — offering recovery")
+            presentAndRecoverAbandonedStaging(blocking,
+                context: "This profile's archives are being recovered from an interrupted maintenance operation.")
+            // If recovery cleared the block, open now; otherwise stay in the picker.
+            if abandonedStagingBlocking(profile) == nil {
+                run(engine.requestOpen(profile: profile))
+            }
+            return
+        }
         run(engine.requestOpen(profile: profile))
     }
 
@@ -2322,24 +2339,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func checkForAbandonedArchiveStaging() {
         guard !unisonDirectory.isEmpty else { return }
         let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
-        let preCommit = abandoned.filter { $0.manifest.isPreCommit }
-        guard !preCommit.isEmpty else { return }
-        let blocked = AbandonedStagingScan.blockedHashes(abandoned)
+        abandonedStagings = abandoned.filter { $0.manifest.isPreCommit }
+        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned)
+        guard !abandonedStagings.isEmpty else { return }
         log.write("abandoned pre-commit archive staging detected: "
-            + "\(preCommit.count) dir(s), blocked hashes=\(blocked.sorted().joined(separator: ","))")
-        let dirs = preCommit.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
+            + "\(abandonedStagings.count) dir(s), blocked hashes="
+            + "\(blockedArchiveHashes.sorted().joined(separator: ","))")
+        presentAndRecoverAbandonedStaging(abandonedStagings, context:
+            "An archive maintenance operation was interrupted the last time the app ran.")
+    }
+
+    /// The abandoned pre-commit stagings (if any) that block opening `profile`.
+    /// nil when nothing blocks it.
+    private func abandonedStagingBlocking(_ profile: String) -> [AbandonedStaging]? {
+        guard !blockedArchiveHashes.isEmpty else { return nil }
+        guard case .success(let computed) = ArchiveHash.computeAll(
+            unisonDirectory: unisonDirectory, profile: profile) else { return nil }
+        guard ArchiveStagingRecovery.isProfileBlocked(
+            profileHashes: computed.hashes, blocked: blockedArchiveHashes) else { return nil }
+        let mine = Set(computed.hashes)
+        return abandonedStagings.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) }
+    }
+
+    /// Terminal-state recovery for pre-commit abandoned staging. Never suggests
+    /// trashing the quarantine (it holds the only copy of some files). Offers to
+    /// RESTORE the staged files (no overwrite), then — only after the user
+    /// attests no other Unison is running — remove the locks.
+    private func presentAndRecoverAbandonedStaging(_ abandoned: [AbandonedStaging],
+                                                   context: String) {
+        let dirs = abandoned.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "An archive maintenance operation was interrupted"
         alert.informativeText =
-            "Unison-UI-Mac was interrupted while removing archive files, so some are "
-            + "held in a quarantine folder and their locks are still in place (which "
-            + "safely stops Unison from using those archives). Nothing was lost.\n\n"
-            + "To recover, make sure no other Unison is running, then move each folder "
-            + "below to the Trash in Finder:\n\n\(dirs)\n\n"
-            + "The app will not remove these automatically."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+            context + " Some archive files are held in a quarantine and their locks "
+            + "are still in place, which safely blocks the affected profile(s) until "
+            + "you recover. Nothing was lost.\n\n"
+            + "Recover Now restores the quarantined files to their original place "
+            + "without overwriting anything. Locks are removed only after you confirm "
+            + "no other Unison is running.\n\n\(dirs)"
+        alert.addButton(withTitle: "Recover Now")
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var restoredHashes = Set<String>()
+        var problems: [String] = []
+        for a in abandoned {
+            let r = ArchiveStagingRecovery.restore(a, activeDir: unisonDirectory)
+            log.write("recovery: \(a.quarantineDir) restored=\(r.restored.count) "
+                + "collided=\(r.collided.count) failed=\(r.failed.count)")
+            if r.isComplete {
+                _ = ArchiveStagingRecovery.finalize(a)
+                restoredHashes.formUnion(a.manifest.hashes)
+            } else {
+                problems.append("  • \(a.quarantineDir): "
+                    + (r.collided.isEmpty ? "" : "\(r.collided.count) already present; ")
+                    + (r.failed.isEmpty ? "" : "\(r.failed.count) could not move"))
+            }
+        }
+
+        guard problems.isEmpty else {
+            let a2 = NSAlert()
+            a2.alertStyle = .warning
+            a2.messageText = "Recovery needs manual review"
+            a2.informativeText =
+                "Some quarantined files could not be restored automatically because a "
+                + "file with the same name already exists, or a move failed. Nothing "
+                + "was deleted; the locks remain. Resolve these manually:\n\n"
+                + problems.joined(separator: "\n")
+            a2.addButton(withTitle: "OK")
+            a2.runModal()
+            return
+        }
+
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Files restored — remove the archive locks?"
+        confirm.informativeText =
+            "The quarantined files were restored. To let Unison use these archives "
+            + "again, their lock files must be removed. Only do this if NO other Unison "
+            + "(on this Mac or another) is currently syncing these archives."
+        confirm.addButton(withTitle: "No other Unison is running — remove locks")
+        confirm.addButton(withTitle: "Keep locks")
+        if confirm.runModal() == .alertFirstButtonReturn {
+            for a in abandoned { _ = ArchiveStagingRecovery.removeLocks(a, activeDir: unisonDirectory) }
+            blockedArchiveHashes.subtract(restoredHashes)
+            abandonedStagings.removeAll { restoredHashes.isSuperset(of: $0.manifest.hashes) }
+        }
     }
 
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {
