@@ -68,4 +68,97 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         XCTAssertFalse(ArchiveStagingRecovery.isProfileBlocked(profileHashes: ["x", "y"], blocked: [h]))
         XCTAssertFalse(ArchiveStagingRecovery.isProfileBlocked(profileHashes: [h], blocked: []))
     }
+
+    // MARK: - recover() — Blocker 1 + SF2 (authority-controlled transaction)
+
+    /// Injectable locking that tracks calls and can simulate a lock held by
+    /// another process. Operates purely in-memory (recover() removes the on-disk
+    /// lk file via removeLocks first; acquisition is modelled here).
+    private final class FakeLocking: ArchiveLocking {
+        var heldByOthers: Set<String> = []
+        private(set) var acquired: [String] = []
+        private(set) var released: [String] = []
+        func acquire(hash: String) -> ArchiveLock.AcquireResult {
+            if heldByOthers.contains(hash) { return .alreadyHeld }
+            acquired.append(hash); return .acquired
+        }
+        @discardableResult func release(hash: String) -> Bool {
+            released.append(hash); return true
+        }
+    }
+
+    private func committedManifest(quarantine: String, payloads: [String]) -> AbandonedStaging {
+        var m = StagingManifest(operation: "test", hashes: [h], payloadFiles: payloads,
+                                createdAtISO8601: "2026-08-23T00:00:00Z")
+        m.phase = StagingManifest.phaseCommitted
+        return AbandonedStaging(quarantineDir: quarantine, manifest: m)
+    }
+
+    func test_recover_preCommit_restoresUnderFreshLock_removesQuarantine() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)          // recorded stale lock
+        write(q, "ar"+h); write(q, "fp"+h)
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(
+            abandoned(quarantine: q, payloads: ["ar"+h, "fp"+h]), activeDir: active, locking: lk)
+
+        XCTAssertEqual(outcome, .recovered)
+        XCTAssertEqual(lk.acquired, [h], "acquired the archive lock fresh")
+        XCTAssertEqual(lk.released, [h], "released only the lock it acquired")
+        XCTAssertFalse(exists(active, "lk"+h), "recorded stale lock removed")
+        XCTAssertTrue(exists(active, "ar"+h)); XCTAssertTrue(exists(active, "fp"+h))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: q), "quarantine removed after full restore")
+    }
+
+    func test_recover_abortsWithoutTouchingFiles_whenLockHeldByOther() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(q, "ar"+h)               // staged copy — the ONLY copy
+        let lk = FakeLocking(); lk.heldByOthers = [h]
+
+        let outcome = ArchiveStagingRecovery.recover(
+            abandoned(quarantine: q, payloads: ["ar"+h]), activeDir: active, locking: lk)
+
+        guard case .aborted = outcome else { return XCTFail("expected .aborted, got \(outcome)") }
+        XCTAssertTrue(exists(q, "ar"+h), "no restore attempted — staged file untouched")
+        XCTAssertFalse(exists(active, "ar"+h), "nothing restored into the active dir")
+        XCTAssertEqual(lk.released, [], "released nothing (acquired nothing)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: q), "manifest/quarantine retained for retry")
+    }
+
+    func test_recover_committed_trashesWholeQuarantine() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)
+        write(q, "ar"+h)               // already-staged-out family
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(
+            committedManifest(quarantine: q, payloads: ["ar"+h]), activeDir: active, locking: lk)
+
+        XCTAssertEqual(outcome, .recovered)
+        XCTAssertEqual(lk.acquired, [h]); XCTAssertEqual(lk.released, [h])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: q), "committed quarantine moved to Trash")
+    }
+
+    func test_recover_preCommit_needsManualReview_onCollision_retainsQuarantine() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)
+        write(q, "ar"+h)
+        write(active, "ar"+h)          // collision: engine re-created it
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(
+            abandoned(quarantine: q, payloads: ["ar"+h]), activeDir: active, locking: lk)
+
+        guard case .needsManualReview = outcome else {
+            return XCTFail("expected .needsManualReview, got \(outcome)")
+        }
+        XCTAssertTrue(exists(q, "ar"+h), "colliding staged file kept, never deleted")
+        XCTAssertEqual(lk.released, [h], "the acquired lock is still released on exit")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: q), "quarantine retained for manual review")
+    }
 }

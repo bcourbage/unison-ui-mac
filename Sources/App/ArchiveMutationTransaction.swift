@@ -6,21 +6,28 @@ import Foundation
 ///
 /// Phase model (per the review):
 /// 1. Acquire the real per-archive locks a live Unison uses, then write a
-///    DURABLE staging manifest recording the plan + the locks held.
+///    DURABLE staging manifest recording the plan + the locks held. The payload
+///    plan is derived AFTER the locks are held, so it captures the true family.
 /// 2. Move every payload file with a real same-filesystem `rename(2)`.
 /// 3. If any rename fails, restore every staged file and remove the manifest,
-///    before releasing locks — the original family is intact.
+///    then release locks — the original family is intact. If a restore itself
+///    fails, the quarantine + manifest are RETAINED and the locks are kept held
+///    (rollbackIncomplete); recovery is explicit, never automatic.
 /// 4. Once all files are staged, the removal is LOGICALLY COMMITTED: the
 ///    complete family is absent from Unison's active directory.
-/// 5. Move the entire staging directory to Trash as ONE unit. If that cleanup
-///    fails, retain the complete quarantine directory and report it — never
-///    restore it after locks have been released.
+/// 5. Confirm each owned lock is released BEFORE Trashing. Move the entire
+///    staging directory to Trash as ONE unit. If cleanup fails, retain the
+///    complete quarantine directory and report it — never restore after commit.
 ///
-/// Locks are released — owned ones only — on every exit path. A pre-existing or
-/// foreign lock is never released. `lk` is excluded from payloads by
-/// construction (it is the interprocess lock, held across the mutation).
+/// Owned locks are released on success and on ordinary rollback; an INCOMPLETE
+/// rollback keeps them held on purpose (the archive stays blocked until explicit
+/// recovery). A pre-existing or foreign lock is never released. `lk` is excluded
+/// from payloads by construction (it is the interprocess lock, held across the
+/// mutation).
 
-/// Immutable set of archives to mutate, frozen before locking. `lk` excluded.
+/// Immutable set of archives to mutate. Payload files are derived under the held
+/// locks (see `ArchiveMaintenance`), so the set reflects the family as it exists
+/// once no other process can change it. `lk` is excluded.
 struct ArchiveMutationPlan: Equatable {
     let hashes: [String]        // 32-char lowercase-hex, deterministically ordered
     let payloadFiles: [String]  // ar/fp/sc/tm<hash> that exist; never lk; ordered

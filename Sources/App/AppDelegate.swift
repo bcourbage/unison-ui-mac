@@ -2339,18 +2339,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func checkForAbandonedArchiveStaging() {
         guard !unisonDirectory.isEmpty else { return }
         let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
-        abandonedStagings = abandoned.filter { $0.manifest.isPreCommit }
         blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: unisonDirectory)
+        // The stagings that actually block (pre-commit, or committed with a
+        // surviving lock) are the ones needing recovery.
+        abandonedStagings = abandoned.filter {
+            !Set($0.manifest.hashes).isDisjoint(with: blockedArchiveHashes)
+        }
         guard !abandonedStagings.isEmpty else { return }
-        log.write("abandoned pre-commit archive staging detected: "
-            + "\(abandonedStagings.count) dir(s), blocked hashes="
-            + "\(blockedArchiveHashes.sorted().joined(separator: ","))")
+        log.write("abandoned archive staging detected: \(abandonedStagings.count) dir(s), "
+            + "blocked hashes=\(blockedArchiveHashes.sorted().joined(separator: ","))")
         presentAndRecoverAbandonedStaging(abandonedStagings, context:
             "An archive maintenance operation was interrupted the last time the app ran.")
     }
 
-    /// The abandoned pre-commit stagings (if any) that block opening `profile`.
-    /// nil when nothing blocks it.
+    /// The abandoned stagings (if any) that block opening `profile`. nil when
+    /// nothing blocks it.
     private func abandonedStagingBlocking(_ profile: String) -> [AbandonedStaging]? {
         guard !blockedArchiveHashes.isEmpty else { return nil }
         guard case .success(let computed) = ArchiveHash.computeAll(
@@ -2361,10 +2364,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return abandonedStagings.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) }
     }
 
-    /// Terminal-state recovery for pre-commit abandoned staging. Never suggests
-    /// trashing the quarantine (it holds the only copy of some files). Offers to
-    /// RESTORE the staged files (no overwrite), then — only after the user
-    /// attests no other Unison is running — remove the locks.
+    /// Terminal-state recovery for an interrupted archive mutation. Never
+    /// suggests trashing the quarantine (pre-commit it holds the only copy of
+    /// some files). Authorization is obtained FIRST (the user attests no other
+    /// Unison is running), then each staging is recovered as one transaction:
+    /// remove the stale locks, acquire fresh exclusive ownership, and only then
+    /// restore (pre-commit) or complete the intended removal (committed). A
+    /// staging that can't be resolved keeps its record and stays blocked.
     private func presentAndRecoverAbandonedStaging(_ abandoned: [AbandonedStaging],
                                                    context: String) {
         let dirs = abandoned.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
@@ -2372,60 +2378,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         alert.alertStyle = .critical
         alert.messageText = "An archive maintenance operation was interrupted"
         alert.informativeText =
-            context + " Some archive files are held in a quarantine and their locks "
-            + "are still in place, which safely blocks the affected profile(s) until "
-            + "you recover. Nothing was lost.\n\n"
-            + "Recover Now restores the quarantined files to their original place "
-            + "without overwriting anything. Locks are removed only after you confirm "
-            + "no other Unison is running.\n\n\(dirs)"
+            context + " Some archive files are quarantined and their locks are still in "
+            + "place, which safely blocks the affected profile(s) until you recover. "
+            + "Nothing was lost.\n\n"
+            + "Recover Now restores or finishes clearing the files under a fresh lock it "
+            + "acquires — but only if no other Unison holds them.\n\n\(dirs)"
         alert.addButton(withTitle: "Recover Now")
         alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        var restoredHashes = Set<String>()
+        // Authorization FIRST: recovery removes and re-acquires locks.
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Is any other Unison running?"
+        confirm.informativeText =
+            "Recovery removes the interrupted operation's locks and re-acquires them to "
+            + "work safely. Only continue if NO other Unison (on this Mac or another) is "
+            + "currently syncing these archives."
+        confirm.addButton(withTitle: "No other Unison is running — recover")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        var recovered = Set<String>()
         var problems: [String] = []
         for a in abandoned {
-            let r = ArchiveStagingRecovery.restore(a, activeDir: unisonDirectory)
-            log.write("recovery: \(a.quarantineDir) restored=\(r.restored.count) "
-                + "collided=\(r.collided.count) failed=\(r.failed.count)")
-            if r.isComplete {
-                _ = ArchiveStagingRecovery.finalize(a)
-                restoredHashes.formUnion(a.manifest.hashes)
-            } else {
-                problems.append("  • \(a.quarantineDir): "
-                    + (r.collided.isEmpty ? "" : "\(r.collided.count) already present; ")
-                    + (r.failed.isEmpty ? "" : "\(r.failed.count) could not move"))
+            let outcome = ArchiveStagingRecovery.recover(
+                a, activeDir: unisonDirectory, locking: SystemArchiveLocking())
+            log.write("recovery: \(a.quarantineDir) -> \(outcome)")
+            switch outcome {
+            case .recovered:
+                recovered.formUnion(a.manifest.hashes)
+            case .aborted(let why), .needsManualReview(let why):
+                problems.append("  • \(why)")
             }
         }
 
-        guard problems.isEmpty else {
-            let a2 = NSAlert()
-            a2.alertStyle = .warning
-            a2.messageText = "Recovery needs manual review"
-            a2.informativeText =
-                "Some quarantined files could not be restored automatically because a "
-                + "file with the same name already exists, or a move failed. Nothing "
-                + "was deleted; the locks remain. Resolve these manually:\n\n"
-                + problems.joined(separator: "\n")
-            a2.addButton(withTitle: "OK")
-            a2.runModal()
-            return
-        }
+        // Clear blocks ONLY for fully recovered stagings; the rest stay blocked
+        // and detectable (their records were not removed).
+        blockedArchiveHashes.subtract(recovered)
+        abandonedStagings.removeAll { recovered.isSuperset(of: $0.manifest.hashes) }
 
-        let confirm = NSAlert()
-        confirm.alertStyle = .warning
-        confirm.messageText = "Files restored — remove the archive locks?"
-        confirm.informativeText =
-            "The quarantined files were restored. To let Unison use these archives "
-            + "again, their lock files must be removed. Only do this if NO other Unison "
-            + "(on this Mac or another) is currently syncing these archives."
-        confirm.addButton(withTitle: "No other Unison is running — remove locks")
-        confirm.addButton(withTitle: "Keep locks")
-        if confirm.runModal() == .alertFirstButtonReturn {
-            for a in abandoned { _ = ArchiveStagingRecovery.removeLocks(a, activeDir: unisonDirectory) }
-            blockedArchiveHashes.subtract(restoredHashes)
-            abandonedStagings.removeAll { restoredHashes.isSuperset(of: $0.manifest.hashes) }
-        }
+        guard !problems.isEmpty else { return }
+        let a2 = NSAlert()
+        a2.alertStyle = .warning
+        a2.messageText = "Some archives still need attention"
+        a2.informativeText =
+            "These could not be recovered automatically (another process is using them, "
+            + "or a file with the same name already exists). Nothing was deleted; they "
+            + "stay blocked and can be recovered later:\n\n"
+            + problems.joined(separator: "\n")
+        a2.addButton(withTitle: "OK")
+        a2.runModal()
     }
 
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {

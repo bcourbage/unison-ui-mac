@@ -1,7 +1,10 @@
 import Foundation
 
-/// Finds and trashes the local archive files for a given hash. Used by
-/// the proactive "Reset Archives" action in the Profile Editor.
+/// Indexes and identifies the local archive files for a given hash. Used to
+/// discover the payload a mutation will act on (Reset Archives, Clean Stale,
+/// delete-with-archives). This type only READS the Unison directory; the actual
+/// destructive mutation runs through the crash-safe `ArchiveMutation`
+/// transaction via `ArchiveMaintenance` (see the NOTE at the end of the file).
 ///
 /// Unison stores five files per local replica, all keyed off the same
 /// MD5 hash suffix (see `ArchiveHash`):
@@ -14,19 +17,14 @@ import Foundation
 ///     sc<hash>   Scratch archive (ScratchArch). Same — crash artifact.
 ///
 /// The five-prefix list mirrors `Update.archiveName`'s switch on
-/// `archiveVersion`. We err on the side of cleaning up the crash-only
-/// variants too: if the user is hitting Reset Archives, it's because
-/// something went wrong and we want a clean slate.
-///
-/// All deletions go through `FileManager.trashItem(at:)` so a misclick
-/// is recoverable from Finder's Trash. The user can drag the files
-/// back into the Unison directory if they regret it.
+/// `archiveVersion`. The crash-only variants are included on purpose: if the
+/// user is resetting archives, something went wrong and a clean slate is wanted.
 struct ArchiveCleanup {
 
     /// The archive PAYLOAD prefixes. `lk` is deliberately EXCLUDED (Blocker
     /// B3): it is the interprocess lock, not payload — the mutation transaction
     /// acquires and holds it across the operation, and it must never appear in a
-    /// file list to be trashed (trashing a live lock removes Unison's exclusion).
+    /// file list to be mutated (removing a live lock removes Unison's exclusion).
     /// Matches `ArchiveMutationPlan.payloadPrefixes`.
     static let archivePrefixes = ["ar", "fp", "tm", "sc"]
 

@@ -1,12 +1,17 @@
 import Foundation
 
-/// Explicit recovery for a PRE-COMMIT abandoned staging (an interrupted archive
-/// mutation, detected by `AbandonedStagingScan`). The safe direction is to
-/// RESTORE the staged files back into the active directory — NEVER to trash the
-/// quarantine, which pre-commit holds the only copy of some files. Restoration
-/// never overwrites a collision (e.g. a file the engine re-created), never
-/// deletes anything, and the recorded lock is removed only after the caller has
-/// established exclusive ownership (the user attests no other Unison is running).
+/// Explicit recovery for an abandoned staging (an interrupted archive mutation,
+/// detected by `AbandonedStagingScan`). `recover(_:activeDir:locking:)` is the
+/// authoritative entry point; the other functions are its building blocks.
+///
+/// Recovery direction depends on phase. PRE-COMMIT, the quarantine holds the
+/// only copy of some files, so the safe direction is to RESTORE them back into
+/// the active directory (never overwriting a collision, never deleting). COMMITTED,
+/// the removal was intended and the family is already staged out, so recovery
+/// completes it by Trashing the whole quarantine. In both cases the recorded
+/// stale locks are removed and re-acquired FRESH first, so no file is touched
+/// unless this process holds exclusive ownership (Blocker 1). The caller must
+/// obtain the user's stale-lock authorization before calling `recover`.
 enum ArchiveStagingRecovery {
 
     struct RestoreResult: Equatable {
@@ -77,9 +82,71 @@ enum ArchiveStagingRecovery {
         return removed
     }
 
-    /// Profile-open gate: a profile whose any archive hash is blocked by a
-    /// pre-commit abandoned staging must not be opened until recovery. Pure.
+    /// Profile-open gate: a profile whose any archive hash is blocked by an
+    /// abandoned staging must not be opened until recovery. Pure.
     static func isProfileBlocked(profileHashes: [String], blocked: Set<String>) -> Bool {
         !Set(profileHashes).isDisjoint(with: blocked)
+    }
+
+    enum RecoverOutcome: Equatable {
+        case recovered                    // fully resolved; record removed; locks released
+        case aborted(String)              // could not take exclusive ownership; record retained
+        case needsManualReview(String)    // collisions/failures; record retained
+    }
+
+    /// Recover ONE abandoned staging as an authority-controlled transaction. The
+    /// CALLER must have the user's authorization first (they attested no other
+    /// Unison is running), because this removes and re-acquires locks. Order
+    /// (Blocker 1): remove the recorded stale locks → acquire every affected
+    /// archive lock FRESH → abort without touching files if any acquisition fails
+    /// → only then, under our own locks, restore (pre-commit) or complete the
+    /// intended removal (committed) → release our locks. The manifest is removed
+    /// ONLY on full success, so a failure leaves the staging detectable and
+    /// recoverable (SF2).
+    static func recover(_ a: AbandonedStaging,
+                        activeDir: String,
+                        locking: ArchiveLocking,
+                        fileManager fm: FileManager = .default) -> RecoverOutcome {
+        // 1. Remove the recorded (authorized) stale locks so we can re-acquire.
+        _ = removeLocks(a, activeDir: activeDir, fileManager: fm)
+
+        // 2. Acquire exclusive ownership of every affected archive, FRESH.
+        var owned: [String] = []
+        func releaseOwned() { for h in owned.reversed() { _ = locking.release(hash: h) } }
+        for hash in a.manifest.hashes.sorted() {
+            if locking.acquire(hash: hash) == .acquired {
+                owned.append(hash)
+            } else {
+                // 4. Abort WITHOUT touching files. Release any we grabbed; leave
+                //    the manifest so this is detected and retried next time.
+                releaseOwned()
+                return .aborted("another Unison is using archive \(hash); recovery deferred")
+            }
+        }
+        // 6. Release our acquired locks on exit (archive usable again).
+        defer { releaseOwned() }
+
+        // 5. Handle files under our locks, by phase.
+        if a.manifest.isPreCommit {
+            let r = restore(a, activeDir: activeDir, fileManager: fm)
+            guard r.isComplete else {
+                return .needsManualReview(
+                    "\(a.quarantineDir): \(r.collided.count) already present, "
+                    + "\(r.failed.count) could not be moved")
+            }
+            guard finalize(a, fileManager: fm) else {
+                return .needsManualReview("\(a.quarantineDir): could not remove the quarantine")
+            }
+        } else {
+            // Committed: the removal was intended and completed (family already
+            // staged out); complete it by Trashing the whole quarantine.
+            do {
+                var out: NSURL?
+                try fm.trashItem(at: URL(fileURLWithPath: a.quarantineDir), resultingItemURL: &out)
+            } catch {
+                return .needsManualReview("\(a.quarantineDir): could not move to Trash")
+            }
+        }
+        return .recovered
     }
 }
