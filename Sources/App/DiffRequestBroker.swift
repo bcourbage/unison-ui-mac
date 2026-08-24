@@ -36,12 +36,15 @@ enum DiffRequestResult: Equatable {
 /// diff callback (`displayDiff`/`displayDiffErr` → `deliver()`) only when the diff
 /// produced output, so a successful diff with NO output (e.g. `diff = true`, or a
 /// GUI diff tool) produces ZERO callbacks. The synchronous return of
-/// `run_show_diffs` is therefore the terminal handshake: on a TRUE return the
-/// driver calls `deliver()` itself — a no-op if a callback already resolved the
-/// request (broker idle → `.dropStale`), or the resolution if none did (SF2). A
-/// FALSE return (the OCaml dispatch raised) is resolved by `requestRaised`. Either
-/// way an abandoned request always drains back to `idle`, so it can never block all
-/// future diffs.
+/// `run_show_diffs` is therefore the terminal handshake: on EITHER a true or a
+/// false return the driver resolves the request through `deliver()` — the same
+/// state machine as a callback — so it always returns to `idle` from `.outstanding`
+/// (present the outcome) or `.draining` (an abandoned/timed-out diff — drop
+/// presentation), and is a no-op if a callback already resolved it (idle →
+/// `.dropStale`). An abandoned request therefore ALWAYS drains back to `idle` —
+/// with a callback, a no-output success, OR a failure — so it can never block all
+/// future diffs. (`requestRaised` remains a valid lower-level primitive, exercised
+/// directly against the real bridge in BridgeTests.)
 ///
 /// Pure and synchronous — mutated on the main actor; no threading here, which
 /// is what makes the invariant unit-testable against the exact dangerous
@@ -104,6 +107,15 @@ struct DiffRequestBroker: Equatable {
     /// (only if this owner still holds the outstanding request). A read-only
     /// diff query raising does not corrupt engine state, so nothing escalates.
     mutating func requestRaised(owner: Owner) {
+        if case .outstanding(let o) = state, o == owner { state = .idle }
+    }
+
+    /// Cancel a request that was ISSUED to the broker but never dispatched to the
+    /// engine (the coordinator refused ownership after `request`). Returns the
+    /// broker straight to `idle` for the owner — NOT to `draining`: no bridge call
+    /// exists, so nothing will ever arrive to drain it. Using `abandon` here would
+    /// strand the broker draining forever (review round 4, SF2).
+    mutating func cancelUnissued(owner: Owner) {
         if case .outstanding(let o) = state, o == owner { state = .idle }
     }
 

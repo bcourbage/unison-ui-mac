@@ -78,8 +78,10 @@ final class DiffLifecycle {
     }
 
     /// Undo a broker request when the coordinator refused engine ownership after it.
+    /// The request was never dispatched, so it must go straight back to idle — NOT
+    /// draining (which would wait forever for a callback that can't arrive, SF2).
     func undoRequest(owner: UInt64) {
-        broker.abandon(owner: owner)
+        broker.cancelUnissued(owner: owner)
         if self.owner == owner { self.owner = nil }
     }
 
@@ -102,26 +104,29 @@ final class DiffLifecycle {
         current = nil
         cancelWatchdog?(); cancelWatchdog = nil; appAlertShown = false
         sink.diffSetInFlight(false, owner: owner)
-        if !ok {
-            // Raised or not diffable: no async result will arrive.
-            broker.requestRaised(owner: owner)
-            if self.owner == owner { self.owner = nil }
-            sink.diffShowError(canDiff
-                ? "Unison could not produce a diff for this item."
-                : "This item can’t be diffed — it’s a directory, a symlink, had only metadata "
-                  + "changes, or hit a problem during update detection.", owner: owner)
-        } else {
-            // Success. The synchronous return is the terminal handshake: if a diff
-            // callback already delivered the result the broker is idle (dropStale,
-            // a no-op); if NONE did, the diff produced no output — resolve it here.
-            switch broker.deliver() {
-            case .apply(let o):
-                if self.owner == o { self.owner = nil }
+        // The synchronous return is the terminal handshake. Resolve it through the
+        // broker's `deliver()` disposition — the SAME state machine as a callback —
+        // so it correctly returns to idle from EITHER `.outstanding` (present the
+        // outcome) OR `.draining` (an abandoned/timed-out diff — drop presentation,
+        // don't reopen the window the user dismissed). A no-op if a real callback
+        // already resolved it (broker idle → `.dropStale`).
+        switch broker.deliver() {
+        case .apply(let o):
+            if self.owner == o { self.owner = nil }
+            if ok {
+                // Success but NO callback fired → the diff produced no output.
                 sink.diffShowResult(title: "Diff",
                                     text: "The diff command produced no output.", owner: o)
-            case .dropStale:
-                if self.owner == owner { self.owner = nil }
+            } else {
+                sink.diffShowError(canDiff
+                    ? "Unison could not produce a diff for this item."
+                    : "This item can’t be diffed — it’s a directory, a symlink, had only metadata "
+                      + "changes, or hit a problem during update detection.", owner: o)
             }
+        case .dropStale:
+            // A real result already delivered, or an abandoned request just drained
+            // (broker back to idle — unstuck either way; present nothing).
+            if self.owner == owner { self.owner = nil }
         }
         sink.diffReleaseEngineOwnership(owner: owner, op: op)
     }

@@ -136,4 +136,48 @@ final class DiffLifecycleTests: XCTestCase {
         XCTAssertTrue(sink.results.isEmpty)
         XCTAssertEqual(sink.released.map(\.0), [A])
     }
+
+    // MARK: - Round 4, SF1: an abandoned/timed-out diff that FAILS still idles
+
+    /// Abandon (window closed) → the bridge later returns ok=false → the broker must
+    /// drain back to idle and present NOTHING (never reopen the dismissed window).
+    func test_abandonThenFailedReturn_idles_noErrorWindow() {
+        let sink = FakeSink(); let (lc, bridge, _) = make(sink)
+        _ = lc.request(owner: A)
+        lc.begin(owner: A, op: 10, row: 0)
+        lc.abandon(owner: A)
+        bridge.value?(true, false)               // stalled remote raised → ok=false
+        XCTAssertTrue(sink.errors.isEmpty, "no error window is reopened for an abandoned diff")
+        XCTAssertTrue(sink.results.isEmpty)
+        XCTAssertFalse(lc.isDraining, "broker drained to idle, not stuck draining")
+        XCTAssertEqual(sink.released.map(\.0), [A])
+        XCTAssertTrue(lc.request(owner: B), "future diffs work")
+    }
+
+    /// Watchdog fired (which abandons) → the bridge later returns ok=false → idle,
+    /// and no duplicate terminal error (the watchdog already surfaced the stall).
+    func test_watchdogThenFailedReturn_idles_noDuplicateError() {
+        let sink = FakeSink()                    // no owner window → app-level stall
+        let (lc, bridge, fire) = make(sink)
+        _ = lc.request(owner: A)
+        lc.begin(owner: A, op: 10, row: 0)
+        fire()?()                                // watchdog abandons + app-stall alert
+        XCTAssertEqual(sink.appStalls.count, 1)
+        bridge.value?(true, false)               // then the diff finally fails
+        XCTAssertTrue(sink.errors.isEmpty, "no duplicate terminal error after the stall")
+        XCTAssertFalse(lc.isDraining, "drained to idle")
+        XCTAssertEqual(sink.released.map(\.0), [A])
+        XCTAssertTrue(lc.request(owner: B))
+    }
+
+    // MARK: - Round 4, SF2: undoRequest returns straight to idle (not draining)
+
+    func test_undoRequest_afterCoordinatorRefusal_returnsToIdle() {
+        let sink = FakeSink(); let (lc, _, _) = make(sink)
+        XCTAssertTrue(lc.request(owner: A))      // broker outstanding(A)
+        lc.undoRequest(owner: A)                 // coordinator refused ownership
+        XCTAssertFalse(lc.isDraining, "an unissued request cancels to idle, never draining")
+        XCTAssertFalse(lc.isAwaitingResult)
+        XCTAssertTrue(lc.request(owner: B), "a later diff is not permanently refused")
+    }
 }
