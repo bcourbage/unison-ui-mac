@@ -48,7 +48,9 @@ enum ArchiveStagingRecovery {
     enum RecoverOutcome: Equatable {
         case recovered                    // fully resolved; record retired; locks released
         case aborted(String)              // a lock couldn't be secured; nothing touched; all locked
-        case needsManualReview(String)    // collision/move/release issue; record retained; all locked
+        case needsManualReview(String)    // collision/move/release issue; record retained; STILL LOCKED
+        case cleanupOnly(String)          // file op done AND all locks released; only quarantine
+                                          // cleanup failed → NOT blocking, safe to delete by hand
     }
 
     /// How this recovery came to hold each hash's lock — decides the final step.
@@ -120,7 +122,11 @@ enum ArchiveStagingRecovery {
                     + "lock(s) could not be released; record retained and archives remain locked")
             }
             guard finalize(a, fileManager: fm) else {
-                return .needsManualReview("\(a.quarantineDir): could not remove the quarantine after restore")
+                // Files are restored and every lock is released — the archives are
+                // usable. Only the empty quarantine could not be removed: a benign
+                // leftover, NOT a block (SF2).
+                return .cleanupOnly("\(a.quarantineDir): restored and unlocked, but the empty "
+                    + "quarantine folder could not be removed; delete it manually")
             }
             return .recovered
         } else {
@@ -136,7 +142,10 @@ enum ArchiveStagingRecovery {
                 var out: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: a.quarantineDir), resultingItemURL: &out)
             } catch {
-                return .needsManualReview("\(a.quarantineDir): could not move to Trash")
+                // Every lock is released and the removal is committed — the folder
+                // is a lock-free leftover, NOT a block (SF2).
+                return .cleanupOnly("\(a.quarantineDir): unlocked, but the quarantine could not be "
+                    + "moved to Trash; delete it manually")
             }
             return .recovered
         }

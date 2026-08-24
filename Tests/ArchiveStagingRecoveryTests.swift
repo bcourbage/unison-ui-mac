@@ -25,8 +25,9 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(name))
     }
     private func preCommit(_ q: String, hashes: [String], payloads: [String]) -> AbandonedStaging {
-        let m = StagingManifest(operation: "test", hashes: hashes, payloadFiles: payloads,
+        var m = StagingManifest(operation: "test", hashes: hashes, payloadFiles: payloads,
                                 createdAtISO8601: "2026-08-23T00:00:00Z")
+        m.phase = StagingManifest.phaseStaging
         return AbandonedStaging(quarantineDir: q, manifest: m)
     }
     private func committed(_ q: String, hashes: [String], payloads: [String]) -> AbandonedStaging {
@@ -221,5 +222,57 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
         guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
         XCTAssertTrue(exists(q, "ar"+h), "staged copy still present after failed move")
         XCTAssertTrue(exists(active, "lk"+h), "barrier retained — family stays physically locked")
+    }
+
+    // MARK: - SF2 — cleanup failures after a successful, fully-released recovery
+    //         are NOT blocking (.cleanupOnly), unlike a genuine still-locked failure.
+
+    /// Fails removeItem for DIRECTORIES only (the quarantine) — a file unlink (lk)
+    /// still succeeds, so the lock is genuinely released.
+    private final class FailDirRemoveFM: FileManager {
+        override func removeItem(atPath path: String) throws {
+            var isDir: ObjCBool = false
+            if super.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try super.removeItem(atPath: path)
+        }
+    }
+    private final class FailTrashFM: FileManager {
+        override func trashItem(at url: URL,
+                                resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    func test_recover_preCommit_finalizeFailure_afterRelease_isCleanupOnly() throws {
+        let fm = FailDirRemoveFM()
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)                 // existing barrier — released via file unlink (allowed)
+        write(q, "ar"+h)
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(
+            preCommit(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk, fileManager: fm)
+
+        guard case .cleanupOnly = outcome else { return XCTFail("expected .cleanupOnly, got \(outcome)") }
+        XCTAssertTrue(exists(active, "ar"+h), "family restored")
+        XCTAssertFalse(exists(active, "lk"+h), "lock genuinely released — not blocking")
+    }
+
+    func test_recover_committed_trashFailure_afterRelease_isCleanupOnly() throws {
+        let fm = FailTrashFM()
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h)
+        write(q, "ar"+h)
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(
+            committed(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk, fileManager: fm)
+
+        guard case .cleanupOnly = outcome else { return XCTFail("expected .cleanupOnly, got \(outcome)") }
+        XCTAssertFalse(exists(active, "lk"+h), "lock genuinely released — profile not blocked")
     }
 }

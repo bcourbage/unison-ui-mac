@@ -1,0 +1,5 @@
+# Vendored unison patches are unified diffs: their context and added lines can
+# legitimately carry trailing whitespace (a blank source line is a single space
+# in a diff, and some hunks intentionally change whitespace). Exempt them from
+# the whitespace checks so `git diff --check` stays clean.
+patches/*.patch -whitespace

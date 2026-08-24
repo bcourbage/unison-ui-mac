@@ -2376,9 +2376,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// suggests trashing the quarantine (pre-commit it holds the only copy of
     /// some files). Authorization is obtained FIRST (the user attests no other
     /// Unison is running), then each staging is recovered as one transaction:
-    /// remove the stale locks, acquire fresh exclusive ownership, and only then
-    /// restore (pre-commit) or complete the intended removal (committed). A
-    /// staging that can't be resolved keeps its record and stays blocked.
+    /// an existing lock is RETAINED as the exclusion barrier (a missing one is
+    /// acquired fresh atomically), the family is restored (pre-commit) or the
+    /// intended removal completed (committed), and only then is the barrier
+    /// released. A staging that stays locked keeps its record and stays blocked;
+    /// a fully unlocked one whose only failure is quarantine cleanup is cleared.
     private func presentAndRecoverAbandonedStaging(_ abandoned: [AbandonedStaging],
                                                    context: String) {
         let dirs = abandoned.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
@@ -2389,54 +2391,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             context + " Some archive files are quarantined and their locks are still in "
             + "place, which safely blocks the affected profile(s) until you recover. "
             + "Nothing was lost.\n\n"
-            + "Recover Now restores or finishes clearing the files under a fresh lock it "
-            + "acquires — but only if no other Unison holds them.\n\n\(dirs)"
+            + "Recover Now restores or finishes clearing the files while holding the "
+            + "existing lock as a barrier — but only if no other Unison holds them.\n\n\(dirs)"
         alert.addButton(withTitle: "Recover Now")
         alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        // Authorization FIRST: recovery removes and re-acquires locks.
+        // Authorization FIRST: recovery works under (and finally clears) the locks.
         let confirm = NSAlert()
         confirm.alertStyle = .warning
         confirm.messageText = "Is any other Unison running?"
         confirm.informativeText =
-            "Recovery removes the interrupted operation's locks and re-acquires them to "
-            + "work safely. Only continue if NO other Unison (on this Mac or another) is "
-            + "currently syncing these archives."
+            "Recovery works under the interrupted operation's existing lock and clears it "
+            + "only when finished. Only continue if NO other Unison (on this Mac or "
+            + "another) is currently syncing these archives."
         confirm.addButton(withTitle: "No other Unison is running — recover")
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        var recovered = Set<String>()
-        var problems: [String] = []
+        var cleared = Set<String>()      // fully unlocked → safe to unblock
+        var problems: [String] = []      // still locked → stay blocked
+        var cleanupNotes: [String] = []  // unlocked, only a leftover folder to delete
         for a in abandoned {
             let outcome = ArchiveStagingRecovery.recover(
                 a, activeDir: unisonDirectory, locking: SystemArchiveLocking())
             log.write("recovery: \(a.quarantineDir) -> \(outcome)")
             switch outcome {
             case .recovered:
-                recovered.formUnion(a.manifest.hashes)
+                cleared.formUnion(a.manifest.hashes)
+            case .cleanupOnly(let note):
+                cleared.formUnion(a.manifest.hashes)   // locks are gone → unblock
+                cleanupNotes.append("  • \(note)")
             case .aborted(let why), .needsManualReview(let why):
                 problems.append("  • \(why)")
             }
         }
 
-        // Clear blocks ONLY for fully recovered stagings; the rest stay blocked
-        // and detectable (their records were not removed).
-        blockedArchiveHashes.subtract(recovered)
-        abandonedStagings.removeAll { recovered.isSuperset(of: $0.manifest.hashes) }
+        // Clear blocks for stagings whose locks are fully gone (recovered OR only
+        // a benign cleanup leftover); the rest stay blocked and detectable.
+        blockedArchiveHashes.subtract(cleared)
+        abandonedStagings.removeAll { cleared.isSuperset(of: $0.manifest.hashes) }
 
-        guard !problems.isEmpty else { return }
-        let a2 = NSAlert()
-        a2.alertStyle = .warning
-        a2.messageText = "Some archives still need attention"
-        a2.informativeText =
-            "These could not be recovered automatically (another process is using them, "
-            + "or a file with the same name already exists). Nothing was deleted; they "
-            + "stay blocked and can be recovered later:\n\n"
-            + problems.joined(separator: "\n")
-        a2.addButton(withTitle: "OK")
-        a2.runModal()
+        if !problems.isEmpty {
+            let a2 = NSAlert()
+            a2.alertStyle = .warning
+            a2.messageText = "Some archives still need attention"
+            a2.informativeText =
+                "These could not be recovered automatically (another process is using them, "
+                + "or a file with the same name already exists). Nothing was deleted; they "
+                + "stay blocked and can be recovered later:\n\n"
+                + problems.joined(separator: "\n")
+            a2.addButton(withTitle: "OK")
+            a2.runModal()
+        }
+        if !cleanupNotes.isEmpty {
+            let a3 = NSAlert()
+            a3.alertStyle = .informational
+            a3.messageText = "Recovered — a leftover folder can be deleted"
+            a3.informativeText =
+                "The archives are restored and unlocked, so the affected profiles are "
+                + "available again. Only an empty quarantine folder is left over; delete it "
+                + "manually when convenient:\n\n"
+                + cleanupNotes.joined(separator: "\n")
+            a3.addButton(withTitle: "OK")
+            a3.runModal()
+        }
     }
 
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {

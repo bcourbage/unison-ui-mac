@@ -23,24 +23,30 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         }
     }
 
-    private enum StoreErr: Error { case begin, stage, commit, missing }
+    private enum StoreErr: Error { case begin, plan, stage, commit, missing }
 
     private final class FakeStore: ArchivePayloadStore {
         private(set) var present: Set<String>
         private(set) var staged: Set<String> = []
         private(set) var committedWholeDir = false
         private(set) var rolledBack = false
+        private(set) var discarded = false
         private(set) var manifest: StagingManifest?
         var quarantinePath: String? = "/fake/quarantine"
-        var beginFail = false
+        var beginFail = false        // beginIntent fails (BEFORE any lock)
+        var recordPlanFail = false   // recordPlan fails (after locks, before staging)
         var stageFailAt: Int?
         var commitFail = false
         var rollbackThrows = false   // simulate an incomplete restore
         private var nStage = 0
         init(present: Set<String>) { self.present = present }
-        func beginStaging(_ m: StagingManifest) throws {
+        func beginIntent(_ m: StagingManifest) throws {
             if beginFail { throw StoreErr.begin }
-            manifest = m
+            manifest = m   // durable intent record, phase acquiring
+        }
+        func recordPlan(_ m: StagingManifest) throws {
+            if recordPlanFail { throw StoreErr.plan }
+            manifest = m   // acquiring → staging, with the payload plan
         }
         func stage(_ name: String) throws {
             nStage += 1
@@ -56,6 +62,12 @@ final class ArchiveMutationTransactionTests: XCTestCase {
                 throw StoreErr.missing
             }
             for n in staged { present.insert(n) }
+            staged.removeAll()
+            // NOTE: the record is NOT removed here — that is `discardRecord`, gated
+            // on confirmed lock release (SF1).
+        }
+        func discardRecord() throws {
+            discarded = true
             staged.removeAll()
             manifest = nil
         }
@@ -119,27 +131,60 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             XCTAssertEqual($0 as? ArchiveMutationError, .lockUnavailable(hash: h2, reason: .alreadyHeld))
         }
         XCTAssertEqual(lock.acquired, [h1]); XCTAssertEqual(lock.released, [h1])
-        XCTAssertNil(store.manifest, "manifest is written only after locks + revalidate")
+        XCTAssertNil(store.manifest, "intent record discarded once the acquired lock is released")
+        XCTAssertTrue(store.discarded, "record removed only after confirmed release")
         XCTAssertEqual(store.present, Set(files))
     }
 
-    func test_revalidationFailure_releases_noManifest_touchesNothing() {
+    func test_revalidationFailure_releases_discardsRecord_touchesNothing() {
         let h = String(repeating: "a", count: 32); let files = ["ar"+h]
         let store = FakeStore(present: Set(files)); let lock = FakeLocking()
         XCTAssertThrowsError(try run(plan([h], files), revalidate: { _ in false }, locking: lock, store: store)) {
             XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed)
         }
-        XCTAssertNil(store.manifest); XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
+        XCTAssertNil(store.manifest); XCTAssertTrue(store.discarded)
+        XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
     }
 
-    func test_beginStagingFailure_releasesLocks_touchesNothing() {
+    // SF1: the intent record is written BEFORE any lock, so a failure to write it
+    // means no lock was ever acquired — nothing to release, nothing to detect.
+    func test_beginIntentFailure_beforeAnyLock_touchesNothing() {
         let h = String(repeating: "a", count: 32); let files = ["ar"+h]
         let store = FakeStore(present: Set(files)); store.beginFail = true
         let lock = FakeLocking()
         XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
             XCTAssertEqual($0 as? ArchiveMutationError, .beginStagingFailed)
         }
-        XCTAssertEqual(store.present, Set(files)); XCTAssertEqual(lock.released, [h])
+        XCTAssertEqual(store.present, Set(files))
+        XCTAssertEqual(lock.acquired, [], "no lock acquired before the intent record exists")
+        XCTAssertEqual(lock.released, [])
+    }
+
+    // SF1: recordPlan runs AFTER locks are held; a failure there releases the
+    // held locks and discards the intent record (no orphaned lock).
+    func test_recordPlanFailure_afterLocks_releasesAndDiscards() {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h]
+        let store = FakeStore(present: Set(files)); store.recordPlanFail = true
+        let lock = FakeLocking()
+        XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError, .beginStagingFailed)
+        }
+        XCTAssertEqual(lock.acquired, [h]); XCTAssertEqual(lock.released, [h])
+        XCTAssertTrue(store.discarded); XCTAssertNil(store.manifest)
+        XCTAssertEqual(store.present, Set(files))
+    }
+
+    // SF1: if a held lock cannot be confirmed released on an early-exit path, the
+    // intent record is RETAINED (never orphan a lock without a recovery record).
+    func test_revalidationFailure_unconfirmedRelease_retainsRecord() {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h]
+        let store = FakeStore(present: Set(files))
+        let lock = FakeLocking(); lock.releaseConfirmed = false
+        XCTAssertThrowsError(try run(plan([h], files), revalidate: { _ in false }, locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed)
+        }
+        XCTAssertFalse(store.discarded, "record retained because release was not confirmed")
+        XCTAssertNotNil(store.manifest, "leftover lock stays detectable on restart")
     }
 
     // MARK: staging failure + rollback

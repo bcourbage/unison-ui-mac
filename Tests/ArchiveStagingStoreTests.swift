@@ -47,6 +47,12 @@ final class ArchiveStagingStoreTests: XCTestCase {
         m.phase = phase
         return m
     }
+    /// Drive the store to the staging phase the way the transaction does: a durable
+    /// intent record BEFORE locks, then the under-lock payload plan.
+    private func begin(_ store: POSIXStagingStore, _ files: [String]) throws {
+        try store.beginIntent(manifest([], phase: StagingManifest.phaseAcquiring))
+        try store.recordPlan(manifest(files, phase: StagingManifest.phaseStaging))
+    }
 
     // MARK: real POSIX rename
 
@@ -54,17 +60,22 @@ final class ArchiveStagingStoreTests: XCTestCase {
         let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
         write(active, "ar"+h); write(active, "fp"+h)
         let store = POSIXStagingStore(unisonDir: active)
-        try store.beginStaging(manifest(["ar"+h, "fp"+h]))
+        try begin(store, ["ar"+h, "fp"+h])
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h)
         try store.stage("fp"+h)
         XCTAssertFalse(exists(active, "ar"+h), "rename moved it out of the active dir")
         XCTAssertTrue(FileManager.default.fileExists(atPath: (q as NSString).appendingPathComponent("ar"+h)),
                       "rename moved it into the quarantine dir")
-        // Rollback restores both to the active dir and removes the quarantine.
+        // Rollback restores both to the active dir but KEEPS the record (removal is
+        // gated on confirmed lock release, SF1).
         try store.rollback()
         XCTAssertTrue(exists(active, "ar"+h)); XCTAssertTrue(exists(active, "fp"+h))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: q), "quarantine removed on rollback")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: q), "record retained until discardRecord")
+        // discardRecord removes the now-empty quarantine + manifest.
+        try store.discardRecord()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: q), "quarantine removed on discardRecord")
+        XCTAssertNil(store.quarantinePath)
     }
 
     // MARK: rollback that cannot fully restore → retain, never delete
@@ -74,7 +85,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         defer { chmod(active, 0o700); try? FileManager.default.removeItem(atPath: active) }
         write(active, "ar"+h); write(active, "fp"+h)
         let store = POSIXStagingStore(unisonDir: active)
-        try store.beginStaging(manifest(["ar"+h, "fp"+h]))
+        try begin(store, ["ar"+h, "fp"+h])
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h); try store.stage("fp"+h)   // both moved into quarantine
         // Make the active dir read-only so restore rename() back into it fails.
@@ -99,7 +110,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         write(active, "ar"+h); write(active, "fp"+h)
         let fm = RecordingTrashFM()
         let store = POSIXStagingStore(unisonDir: active, fileManager: fm)
-        try store.beginStaging(manifest(["ar"+h, "fp"+h]))
+        try begin(store, ["ar"+h, "fp"+h])
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h); try store.stage("fp"+h)
         try store.markCommitted()
@@ -117,7 +128,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
         write(active, "ar"+h)
         let store = POSIXStagingStore(unisonDir: active, fileManager: FailingTrashFM())
-        try store.beginStaging(manifest(["ar"+h]))
+        try begin(store, ["ar"+h])
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h)
         try store.markCommitted()
@@ -143,7 +154,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
         write(active, "ar"+h)
         let store = POSIXStagingStore(unisonDir: active)
-        try store.beginStaging(manifest(["ar"+h]))   // manifest written…
+        try begin(store, ["ar"+h])   // manifest written…
         try store.stage("ar"+h)                       // …and staging begun, but NOT committed
         // (simulate process death here — no commit/rollback)
 
@@ -161,7 +172,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         // A lock left by an interrupted op, plus its abandoned staging.
         write(active, "lk"+h)
         let store = POSIXStagingStore(unisonDir: active)
-        try store.beginStaging(manifest(["ar"+h]))
+        try begin(store, ["ar"+h])
 
         let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
         _ = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active)
@@ -193,5 +204,34 @@ final class ArchiveStagingStoreTests: XCTestCase {
         XCTAssertFalse(exists(active, "ar"+h)); XCTAssertFalse(exists(active, "fp"+h))
         XCTAssertTrue(AbandonedStagingScan.find(inUnisonDir: active).isEmpty,
                       "no abandoned staging remains after a clean commit")
+    }
+
+    // MARK: SF1 — an intent record written BEFORE locks is detectable on restart
+
+    func test_abandonedAcquiringIntent_isDetected_blocksOnlyIfLocked() throws {
+        let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
+        let store = POSIXStagingStore(unisonDir: active)
+        // Intent recorded, but the process "dies" before recordPlan/staging.
+        try store.beginIntent(manifest([], phase: StagingManifest.phaseAcquiring))
+
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
+        XCTAssertEqual(abandoned.count, 1)
+        XCTAssertEqual(abandoned.first?.manifest.phase, StagingManifest.phaseAcquiring)
+        // No lock present yet → nothing to block (no family split, no lock held).
+        XCTAssertTrue(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active).isEmpty)
+        // A surviving lock from the interrupted acquisition → blocks that hash.
+        write(active, "lk"+h)
+        XCTAssertEqual(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active), [h],
+                       "an acquiring record whose lock survived blocks its hash")
+    }
+
+    func test_discardRecord_removesQuarantine() throws {
+        let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
+        let store = POSIXStagingStore(unisonDir: active)
+        try store.beginIntent(manifest([], phase: StagingManifest.phaseAcquiring))
+        let q = try XCTUnwrap(store.quarantinePath)
+        try store.discardRecord()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: q))
+        XCTAssertNil(store.quarantinePath)
     }
 }

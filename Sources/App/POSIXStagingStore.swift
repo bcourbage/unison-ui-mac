@@ -13,16 +13,20 @@ enum ArchiveStoreError: Error, Equatable {
 
 /// Production `ArchivePayloadStore`: crash-safe staging inside the unison dir.
 ///
-/// - `beginStaging` creates a unique per-operation quarantine directory on the
-///   SAME filesystem as the active archives and writes a durable manifest
-///   (temp + fsync + atomic rename + directory fsync) BEFORE any payload moves,
-///   so an interrupted mutation is detectable on restart.
+/// - `beginIntent` creates a unique per-operation quarantine directory on the
+///   SAME filesystem as the active archives and writes a durable INTENT manifest
+///   (temp + fsync + atomic rename + directory fsync) BEFORE any lock is acquired,
+///   so even a crash mid-acquisition is detectable on restart (SF1).
+/// - `recordPlan` durably rewrites the manifest with the under-lock payload plan
+///   (acquiring → staging) before any move.
 /// - `stage` moves one payload with a real `rename(2)` (guaranteed atomic on the
 ///   same filesystem — not `FileManager.moveItem`, which may copy+unlink).
-/// - `rollback` renames every staged file back and removes the quarantine dir.
-/// - `commit` durably marks the manifest committed, then moves the ENTIRE
-///   quarantine directory to Trash as one unit; on Trash failure it RETAINS the
-///   complete quarantine dir and throws (never restores after this point).
+/// - `rollback` renames every staged file back but does NOT remove the record.
+/// - `discardRecord` removes the quarantine dir + manifest — called only after
+///   every owned lock is confirmed released, so a lock is never orphaned.
+/// - `markCommitted` durably marks the manifest committed; `trashQuarantine`
+///   moves the ENTIRE quarantine directory to Trash as one unit; on Trash failure
+///   it RETAINS the complete quarantine dir and throws (never restores after commit).
 final class POSIXStagingStore: ArchivePayloadStore {
 
     private let activeDir: String
@@ -36,9 +40,9 @@ final class POSIXStagingStore: ArchivePayloadStore {
         self.fm = fileManager
     }
 
-    // MARK: phase 1 — quarantine dir + durable manifest
+    // MARK: phase 0 — quarantine dir + durable INTENT manifest (before locks)
 
-    func beginStaging(_ manifest: StagingManifest) throws {
+    func beginIntent(_ manifest: StagingManifest) throws {
         let name = AbandonedStagingScan.quarantinePrefix + UUID().uuidString
         let dir = (activeDir as NSString).appendingPathComponent(name)
         do {
@@ -52,6 +56,14 @@ final class POSIXStagingStore: ArchivePayloadStore {
         try writeManifestDurably(manifest, inQuarantine: dir)
     }
 
+    // MARK: phase 1 — record the under-lock payload plan (acquiring → staging)
+
+    func recordPlan(_ manifest: StagingManifest) throws {
+        guard let q = quarantinePath else { throw ArchiveStoreError.notStaging }
+        try writeManifestDurably(manifest, inQuarantine: q)
+        self.manifest = manifest
+    }
+
     // MARK: phase 2 — rename(2) each payload in
 
     func stage(_ name: String) throws {
@@ -63,7 +75,7 @@ final class POSIXStagingStore: ArchivePayloadStore {
         stagedNames.append(name)
     }
 
-    // MARK: phase 3 — rollback restores every staged file, removes quarantine
+    // MARK: phase 3 — rollback restores every staged file (record NOT removed)
 
     func rollback() throws {
         guard let q = quarantinePath else { return }
@@ -84,9 +96,19 @@ final class POSIXStagingStore: ArchivePayloadStore {
             throw ArchiveStoreError.rollbackIncomplete(q)
         }
         stagedNames.removeAll()
-        try? fm.removeItem(atPath: q)   // full restore → remove quarantine dir + manifest
+        // NOTE: the record is deliberately NOT removed here — removal is gated on
+        // confirmed lock release via `discardRecord` (SF1), so an owned lock is
+        // never left without a durable recovery record.
+    }
+
+    /// Remove the quarantine dir + manifest. The caller has confirmed every owned
+    /// lock is released and the payloads are restored/absent.
+    func discardRecord() throws {
+        guard let q = quarantinePath else { return }
+        try? fm.removeItem(atPath: q)
         quarantinePath = nil
         manifest = nil
+        stagedNames.removeAll()
     }
 
     // MARK: phase 4+5 — mark committed, then whole-dir Trash (retain on failure)
