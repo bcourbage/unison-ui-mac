@@ -81,7 +81,24 @@ jobs:
         run: make test
 
       - name: Build (Release configuration, unsigned)
-        run: make build CONFIG=Release
+        # This runner is macos-26 with the newer OCaml — the exact SF7 scenario.
+        # Fail on any deployment-version linker warning so a runtime object built
+        # for a newer macOS than the baseline can never silently ship.
+        run: |
+          set -o pipefail
+          make build CONFIG=Release 2>&1 | tee build.log
+          if grep -q "was built for newer" build.log; then
+            echo "::error::deployment-version linker warnings present in the Release build (SF7)"
+            grep "was built for newer" build.log | sort -u | head
+            exit 1
+          fi
+
+      - name: Verify macOS deployment baseline (unsigned Release bundle)
+        # The exact bytes about to be packaged: our own binaries == the deployment
+        # target, nothing (incl. Sparkle) exceeds it. Signing/notarization don't
+        # change a Mach-O's minos, so verifying here proves the floor for the
+        # product the signed release job builds from the same recipe.
+        run: make verify-bundle-minos CONFIG=Release
 
       - name: Package unsigned build (for inspection)
         env:
@@ -171,7 +188,15 @@ jobs:
       - name: Build (Release configuration)
         # Builds ad-hoc (the resolver forces ad-hoc for Release/CI); the
         # Developer ID signature is applied by the explicit sign step below.
-        run: make build CONFIG=Release
+        # SF7 gate: fail on any deployment-version linker warning (macos-26 host).
+        run: |
+          set -o pipefail
+          make build CONFIG=Release 2>&1 | tee build.log
+          if grep -q "was built for newer" build.log; then
+            echo "::error::deployment-version linker warnings present in the Release build (SF7)"
+            grep "was built for newer" build.log | sort -u | head
+            exit 1
+          fi
 
       - name: Import Developer ID signing certificate
         env:
@@ -232,6 +257,10 @@ jobs:
           test -d "$app" || { echo "::error::built app not found at $app"; exit 1; }
           codesign --verify --deep --strict "$app"
           spctl -a -vvv --type exec "$app"
+          # SF7: verify the EXACT signed + notarized + stapled bundle carries the
+          # macOS baseline floor before it is zipped and published — the "exact
+          # signed package" guarantee, on the literal bytes shipped to users.
+          ./scripts/verify-bundle-minos.sh "$app"
           zip="unison-ui-mac-${VERSION}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"

@@ -80,6 +80,21 @@ LIBDIR := $(CURDIR)/.build/ocamllibs
 STRIPPED_ASMRUN := $(LIBDIR)/libasmrun_nomain.a
 export STRIPPED_ASMRUN_DIR := $(LIBDIR)
 
+# The other OCaml runtime archives the app links (project.yml OTHER_LDFLAGS:
+# -lthreadsnat -lunixnat -lcamlstrnat). Like libasmrun they are built for the
+# OCaml host's macOS, so on a newer build host they too carry a minos > the app's
+# deployment target and emit "was built for newer macOS version" linker warnings.
+# We relabel each into $(LIBDIR) under its ORIGINAL name and search $(LIBDIR)
+# before $(OCAMLLIBDIR) (project.yml), so the linker resolves -lthreadsnat &c. to
+# the relabelled copy. Names only — the source is $(OCAMLLIBDIR)/<name>.
+RELABELLED_RUNTIME_NAMES := libthreadsnat.a libunixnat.a libcamlstrnat.a
+RELABELLED_RUNTIME := $(addprefix $(LIBDIR)/,$(RELABELLED_RUNTIME_NAMES))
+
+# The app's macOS deployment target, read from the single source of truth
+# (project.yml). The OCaml runtime is relabelled to this so a runtime built on a
+# newer macOS host doesn't trip deployment-version linker warnings (SF7).
+DEPLOY_TARGET := $(shell awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[" ]/,""); split($$0,a,":"); print a[2]; exit}' project.yml)
+
 XCODEPROJ := unison-ui-mac.xcodeproj
 DERIVED := $(CURDIR)/.build/derived
 BUILT_APP := $(DERIVED)/Build/Products/$(CONFIG)/unison-ui-mac.app
@@ -191,12 +206,70 @@ vendor-manual:
 	@echo "  - update vendor/README.md with the new commit hash"
 	@echo "  - git add vendor/ && git commit"
 
-# ----- Stripped libasmrun -----
-$(STRIPPED_ASMRUN): $(OCAMLLIBDIR)/libasmrun.a
-	@mkdir -p $(LIBDIR)/extract
-	cd $(LIBDIR)/extract && ar x $(OCAMLLIBDIR)/libasmrun.a && rm -f main.n.o
-	ar rcs $@ $(LIBDIR)/extract/*.o
-	rm -rf $(LIBDIR)/extract
+# ----- OCaml runtime relabelled to the deployment target (SF7) -----
+# The OCaml runtime archives (libasmrun.a, libthreadsnat.a, libunixnat.a,
+# libcamlstrnat.a from `ocamlc -where`) are built for the OCaml host's macOS.
+# On a newer build host (e.g. macOS 26) that host minos exceeds the app's
+# deployment target, so every runtime object emits a "was built for newer macOS
+# version" linker warning and the advertised macOS-15 minimum becomes an
+# unverified assumption. The runtime is target-compatible (it uses no
+# newer-macOS-only symbols); only its build-host minos tag differed. `ld -r`
+# re-emits each object with the requested platform version, so the relabelled
+# runtime is deterministically minos == DEPLOY_TARGET regardless of the OCaml
+# install — no suppression, no warnings, and the app genuinely links at the
+# baseline. The (expected) warning ld prints while READING each newer object is
+# discarded, since relabelling is exactly the fix for it. `verify-runtime-minos`
+# asserts the result.
+
+# relabel_objs,<dir>: rewrite every *.o in <dir> to minos == DEPLOY_TARGET.
+define relabel_objs
+	@for o in $(1)/*.o; do \
+		ld -r -o "$$o.relabel" "$$o" -platform_version macos $(DEPLOY_TARGET) $(DEPLOY_TARGET) 2>/dev/null \
+			&& mv -f "$$o.relabel" "$$o" \
+			|| { echo "error: failed to relabel $$o to macOS $(DEPLOY_TARGET)"; exit 1; }; \
+	done
+endef
+
+# Stripped copy of libasmrun.a WITHOUT main.n.o, so the linker doesn't see two
+# definitions of `_main` (one from libasmrun, one synthesized by Swift).
+$(STRIPPED_ASMRUN): $(OCAMLLIBDIR)/libasmrun.a project.yml
+	@test -n "$(DEPLOY_TARGET)" || { echo "error: could not read deploymentTarget from project.yml"; exit 1; }
+	@rm -rf $(LIBDIR)/extract-asmrun
+	@mkdir -p $(LIBDIR)/extract-asmrun
+	cd $(LIBDIR)/extract-asmrun && ar x $(OCAMLLIBDIR)/libasmrun.a && rm -f main.n.o
+	$(call relabel_objs,$(LIBDIR)/extract-asmrun)
+	ar rcs $@ $(LIBDIR)/extract-asmrun/*.o
+	rm -rf $(LIBDIR)/extract-asmrun
+
+# The remaining runtime archives, relabelled verbatim (name preserved). The
+# explicit libasmrun_nomain rule above wins for that target; this pattern serves
+# libthreadsnat / libunixnat / libcamlstrnat, whose source is $(OCAMLLIBDIR)/<same>.
+$(LIBDIR)/lib%.a: $(OCAMLLIBDIR)/lib%.a project.yml
+	@test -n "$(DEPLOY_TARGET)" || { echo "error: could not read deploymentTarget from project.yml"; exit 1; }
+	@rm -rf $(LIBDIR)/extract-$*
+	@mkdir -p $(LIBDIR)/extract-$*
+	cd $(LIBDIR)/extract-$* && ar x $(OCAMLLIBDIR)/lib$*.a
+	$(call relabel_objs,$(LIBDIR)/extract-$*)
+	ar rcs $@ $(LIBDIR)/extract-$*/*.o
+	rm -rf $(LIBDIR)/extract-$*
+
+# Deterministic SF7 gate: every relabelled runtime archive is minos == DEPLOY_TARGET
+# (checks the archives directly, no app build required). Fails loudly on any object
+# still tagged for a different macOS — the exact condition that produces the
+# deployment-version linker warnings.
+.PHONY: verify-runtime-minos
+verify-runtime-minos: $(STRIPPED_ASMRUN) $(RELABELLED_RUNTIME)
+	@test -n "$(DEPLOY_TARGET)" || { echo "error: could not read deploymentTarget from project.yml"; exit 1; }
+	@fail=0; \
+	for a in $(STRIPPED_ASMRUN) $(RELABELLED_RUNTIME); do \
+		vers="$$(otool -l "$$a" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $$2; f=0}' | sort -u | paste -sd, -)"; \
+		if [ "$$vers" != "$(DEPLOY_TARGET)" ]; then \
+			echo "FAIL: $$(basename $$a) minos '$$vers' (want $(DEPLOY_TARGET))" >&2; fail=1; \
+		else \
+			echo "OK:   $$(basename $$a) minos $(DEPLOY_TARGET)"; \
+		fi; \
+	done; \
+	test $$fail -eq 0
 
 # ----- Xcode project (regenerate from project.yml + source list) -----
 #
@@ -287,7 +360,7 @@ export CONFIG
 
 # ----- Build via xcodebuild -----
 .PHONY: build
-build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(RELABELLED_RUNTIME) verify-runtime-minos $(XCODEPROJ)
 	@vals="$$(./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -313,7 +386,7 @@ run: build
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
 # identically (signing is always resolved with CONFIG=Debug here).
 .PHONY: test
-test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(RELABELLED_RUNTIME) verify-runtime-minos $(XCODEPROJ)
 	@vals="$$(CONFIG=Debug ./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -355,6 +428,20 @@ check-appcast:
 .PHONY: check-sign-app
 check-sign-app:
 	@./scripts/test-sign-app.sh
+
+# SF7 bundle-floor verifier test (clang fixtures only, no Xcode/OCaml): exercises
+# verify-bundle-minos.sh's two-tier rule and its fail-closed cases.
+.PHONY: check-bundle-minos
+check-bundle-minos:
+	@./scripts/test-verify-bundle-minos.sh
+
+# SF7: assert the BUILT bundle's Mach-O deployment floors (checks the finished
+# product, complementing verify-runtime-minos which checks the input archives).
+# Runs against the current CONFIG's build output; CI invokes it after `make build`
+# and, for the exact packaged/signed artifact, against the unpacked .app.
+.PHONY: verify-bundle-minos
+verify-bundle-minos:
+	./scripts/verify-bundle-minos.sh $(BUILT_APP)
 
 # Release-notes markdown -> Sparkle "What's New" HTML fragment converter test
 # (Python stdlib only, no network / no Sparkle tools).

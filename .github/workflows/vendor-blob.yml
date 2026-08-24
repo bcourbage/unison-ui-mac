@@ -224,8 +224,18 @@ jobs:
           [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
 
       - name: Smoke-test — build + test the app against the freshly built blob
+        # SF7: `make build` relabels the OCaml runtime and runs verify-runtime-minos;
+        # also fail on any deployment-version linker warning, then verify the built
+        # bundle's Mach-O floors. Keeps the maintainer smoke aligned with CI.
         run: |
           cd gui
           eval "$(opam env)"
-          make build
+          set -o pipefail
+          make build 2>&1 | tee build.log
+          if grep -q "was built for newer" build.log; then
+            echo "::error::deployment-version linker warnings present (SF7)"
+            grep "was built for newer" build.log | sort -u | head
+            exit 1
+          fi
+          make verify-bundle-minos
           make test
