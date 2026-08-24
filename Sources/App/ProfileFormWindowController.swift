@@ -84,6 +84,32 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// explicit `false`/absent rather than silently flipping the meaning.
     private var originalLog: String?
 
+    /// Non-nil when the loaded profile CANNOT be safely edited through this form —
+    /// the read failed / wasn't UTF-8 (B4), or it has duplicated surfaced scalar
+    /// settings the form can't represent (SF5). Save and mutation are refused; the
+    /// user is pointed at raw-file editing. A blank form must never overwrite a
+    /// profile it couldn't faithfully load.
+    private var notEditableReason: String?
+
+    /// Set once the user changes any logging control, so an unrelated save leaves
+    /// an explicit `log`/`logfile` exactly as loaded (SF6).
+    private var loggingDirty = false
+
+    /// Editor-surfaced SCALAR keys (each has a single dedicated field). Excludes
+    /// the legitimately list-valued keys (root/path/ignore/ignorenot). A duplicate
+    /// among these is ambiguous to a single-field form (SF5).
+    private static var surfacedScalarKeys: Set<String> {
+        Set(remoteKeys + attrKeys + optionKeys)
+    }
+
+    /// Whether Unison's `log` preference is ON for a loaded value. Unison's default
+    /// is TRUE, so an ABSENT `log` is ON; only an explicit `false` is OFF (SF6).
+    /// Pure (`nonisolated`) so it is callable and testable off the main actor.
+    nonisolated static func logEnabled(_ value: String?) -> Bool {
+        guard let v = value?.trimmingCharacters(in: .whitespaces).lowercased() else { return true }
+        return v != "false"
+    }
+
     /// Tier-1 inheritance banner: shown when the profile `include`s others.
     private let includesBanner = NSTextField(labelWithString: "")
 
@@ -432,6 +458,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // defaults to Unison-<profile>.log. Both rows hide when logging off.
         logCheckbox.target = self
         logCheckbox.action = #selector(logToggled(_:))
+        logFolderField.delegate = self   // SF6: edits mark logging dirty
+        logNameField.delegate = self
         logFolderField.placeholderString = SettingsModel.defaultLogDirectory()
         logFolderField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         logFolderBrowse.bezelStyle = .rounded
@@ -688,12 +716,33 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Reads the .prf from disk (when editing existing) and populates the
     /// form fields. Unknown keys land in the Advanced field as raw lines.
     private func loadDocumentIntoForm() {
+        notEditableReason = nil
         if let name = initialProfileName {
             let url = profileURL(forName: name)
             if let text = try? String(contentsOf: url, encoding: .utf8) {
                 prfDocument = ProfileDocument.parse(text)
             } else {
+                // B4: the profile couldn't be read (permissions) or isn't UTF-8.
+                // Do NOT present a blank editable form that would overwrite the
+                // real file on Save — refuse editing and surface the failure.
                 TraceLog.shared.write("ProfileForm: failed to read \(url.path)")
+                notEditableReason =
+                    "This profile couldn’t be read as text. It may use a non-UTF-8 encoding or "
+                    + "be unreadable. To avoid overwriting it with a blank profile, editing is "
+                    + "disabled — open it in a text editor instead:\n\n\(url.path)"
+            }
+        }
+        // SF5: a scalar setting duplicated in the file has an effective (last)
+        // value the single-field form can't safely represent — a save would
+        // collapse the duplicates and could flip the effective value. Refuse
+        // editing (the effective value is still shown, read-only).
+        if notEditableReason == nil {
+            let dups = prfDocument.duplicatedScalarKeys(among: Self.surfacedScalarKeys)
+            if !dups.isEmpty {
+                notEditableReason =
+                    "This profile sets " + dups.joined(separator: ", ") + " more than once. Unison "
+                    + "uses the last value, which a single-field editor can’t safely round-trip. "
+                    + "Editing is disabled — adjust the duplicates in a text editor first."
             }
         }
         // Top-level fields: the two `root = …` lines in document order.
@@ -712,10 +761,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         advancedView.values = advancedLines(from: prfDocument)
 
         // Remote connection fields (owned by Roots → Remote Connection).
-        servercmdField.stringValue = prfDocument.firstValue(forKey: "servercmd") ?? ""
-        sshcmdField.stringValue = prfDocument.firstValue(forKey: "sshcmd") ?? ""
-        sshargsField.stringValue = prfDocument.firstValue(forKey: "sshargs") ?? ""
-        clientHostNameField.stringValue = prfDocument.firstValue(forKey: "clientHostName") ?? ""
+        // Scalars read the EFFECTIVE (last) value — Unison's last-wins order (SF5).
+        servercmdField.stringValue = prfDocument.lastValue(forKey: "servercmd") ?? ""
+        sshcmdField.stringValue = prfDocument.lastValue(forKey: "sshcmd") ?? ""
+        sshargsField.stringValue = prfDocument.lastValue(forKey: "sshargs") ?? ""
+        clientHostNameField.stringValue = prfDocument.lastValue(forKey: "clientHostName") ?? ""
         updateRemoteVisibility()
 
         // Picker visibility (mirrors the Profile Editor's eye toggle).
@@ -725,12 +775,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         visibilityCheckbox.state = isHidden ? .off : .on
 
         // File attributes
-        setTriState(timesPopup, from: prfDocument.firstValue(forKey: "times"))
-        setTriState(rsrcPopup, from: prfDocument.firstValue(forKey: "rsrc"))
-        setTriState(ownerPopup, from: prfDocument.firstValue(forKey: "owner"))
-        setTriState(groupPopup, from: prfDocument.firstValue(forKey: "group"))
-        setTriState(dontchmodPopup, from: prfDocument.firstValue(forKey: "dontchmod"))
-        switch prfDocument.firstValue(forKey: "perms") {
+        setTriState(timesPopup, from: prfDocument.lastValue(forKey: "times"))
+        setTriState(rsrcPopup, from: prfDocument.lastValue(forKey: "rsrc"))
+        setTriState(ownerPopup, from: prfDocument.lastValue(forKey: "owner"))
+        setTriState(groupPopup, from: prfDocument.lastValue(forKey: "group"))
+        setTriState(dontchmodPopup, from: prfDocument.lastValue(forKey: "dontchmod"))
+        switch prfDocument.lastValue(forKey: "perms") {
         case nil:        permsPopup.selectItem(at: 0)
         case "0"?:       permsPopup.selectItem(at: 1)
         case let mask?:  permsPopup.selectItem(at: 2); permsMaskField.stringValue = mask
@@ -738,18 +788,20 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         updatePermsMaskVisibility()
 
         // Options
-        setTriState(confirmbigdelPopup, from: prfDocument.firstValue(forKey: "confirmbigdel"))
-        setTriState(autoPopup, from: prfDocument.firstValue(forKey: "auto"))
-        setTriState(fastcheckPopup, from: prfDocument.firstValue(forKey: "fastcheck"))
+        setTriState(confirmbigdelPopup, from: prfDocument.lastValue(forKey: "confirmbigdel"))
+        setTriState(autoPopup, from: prfDocument.lastValue(forKey: "auto"))
+        setTriState(fastcheckPopup, from: prfDocument.lastValue(forKey: "fastcheck"))
         loadConflict()
 
-        // Logging. Split an existing logfile into folder + name. Leave the
-        // folder blank when it matches the default so the placeholder shows
-        // through (blank means "use the default").
-        originalLog = prfDocument.firstValue(forKey: "log")
-        logCheckbox.state = (originalLog == "true") ? .on : .off
+        // Logging. Unison's `log` default is TRUE, so an absent `log` shows ON —
+        // an unrelated save then leaves an explicit `logfile` in place (SF6).
+        // Split an existing logfile into folder + name. Leave the folder blank when
+        // it matches the default so the placeholder shows through.
+        originalLog = prfDocument.lastValue(forKey: "log")
+        loggingDirty = false
+        logCheckbox.state = Self.logEnabled(originalLog) ? .on : .off
         logNameField.placeholderString = defaultLogName()
-        if let lf = prfDocument.firstValue(forKey: "logfile"), !lf.isEmpty {
+        if let lf = prfDocument.lastValue(forKey: "logfile"), !lf.isEmpty {
             let dir = (lf as NSString).deletingLastPathComponent
             logFolderField.stringValue = (dir == SettingsModel.defaultLogDirectory()) ? "" : dir
             logNameField.stringValue = (lf as NSString).lastPathComponent
@@ -768,6 +820,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // reset the dirty flag explicitly so a fresh form is never seen as edited.
         includesDirty = false
         refreshIncludesBanner()
+        applyEditability()
+    }
+
+    /// Reflect `notEditableReason`: when set, disable Save so a profile that could
+    /// not be faithfully loaded is never overwritten, and surface the reason.
+    private func applyEditability() {
+        let editable = (notEditableReason == nil)
+        saveButton.isEnabled = editable
+        if let reason = notEditableReason {
+            includesBanner.isHidden = false
+            includesBanner.stringValue = "Read-only: " + reason.split(separator: "\n").first.map(String.init)!
+        }
     }
 
     /// Strip a trailing `.prf` for display in the Includes combo — the user
@@ -796,8 +860,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         // `force` wins over `prefer` if a profile somehow sets both.
         let pair: (String, String)?
-        if let f = prfDocument.firstValue(forKey: "force") { pair = ("force", f) }
-        else if let p = prfDocument.firstValue(forKey: "prefer") { pair = ("prefer", p) }
+        if let f = prfDocument.lastValue(forKey: "force") { pair = ("force", f) }
+        else if let p = prfDocument.lastValue(forKey: "prefer") { pair = ("prefer", p) }
         else { pair = nil }
 
         guard let (key, value) = pair else { conflictPopup.selectItem(at: 0); return }
@@ -993,8 +1057,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setConflict(key: raw.key, value: raw.value)
         }
 
-        // Logging. The global mode decides how logfile is composed.
-        if logCheckbox.state == .on {
+        // Logging. SF6: only rewrite `log`/`logfile` when the user actually changed
+        // a logging control — otherwise leave an explicit `logfile` (and the `log`
+        // line, or its Unison default) exactly as loaded, so an unrelated save
+        // never drops a custom logfile.
+        if !loggingDirty {
+            // leave doc's log/logfile untouched
+        } else if logCheckbox.state == .on {
             doc.setValue("true", forKey: "log")
             let nameRaw = logNameField.stringValue.trimmingCharacters(in: .whitespaces)
             let name = nameRaw.isEmpty ? defaultLogName() : nameRaw
@@ -1057,7 +1126,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // is handled (and refused) in `saveAction` before any mutation; treat it
         // as a no-op here defensively (and `setIncludes` itself refuses too).
         switch includeSaveDecision() {
-        case .unchanged, .refuseUnmanaged:
+        case .unchanged, .refuseUnmanaged, .refuseExtensionless:
             break
         case .applyTopBottom:
             let edited = includesView.entries
@@ -1080,7 +1149,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private func includeSaveDecision() -> ProfileDocument.IncludeSaveDecision {
         ProfileDocument.includeSaveDecision(
             includesEdited: includesDirty,
-            hasUnmanagedOrderedEntries: prfDocument.hasUnmanagedOrderedEntries)
+            hasUnmanagedOrderedEntries: prfDocument.hasUnmanagedOrderedEntries,
+            hasExtensionlessInclude: prfDocument.hasExtensionlessInclude)
     }
 
     /// Add the "pop-out" button to the title bar's upper-right corner as a
@@ -1156,6 +1226,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     @objc private func logToggled(_ sender: NSButton) {
         // Default folder + name show through as placeholders, so nothing to
         // pre-fill: blank fields mean "use the default".
+        loggingDirty = true            // SF6: the user changed a logging control
         logNameField.placeholderString = defaultLogName()
         updateLogfileVisibility()
     }
@@ -1234,6 +1305,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func saveAction(_ sender: NSButton) {
+        // B4 / SF5: never write a form that couldn't faithfully load. The disabled
+        // Save button is a courtesy; this guard is the authority.
+        if let reason = notEditableReason {
+            showAlert(text: "This profile can’t be edited here", info: reason, style: .warning)
+            return
+        }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             showAlert(text: "Profile name required",
@@ -1320,6 +1397,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if includeSaveDecision() == .refuseUnmanaged {
             showAlert(text: "Includes can't be edited here",
                       info: "This profile contains ordered lines the Includes section doesn't manage — for example source, include?, or source? directives, or other custom lines. Changing includes here could reorder them and alter how settings override each other. Use “Open .prf” to edit this profile in your text editor, then reload.",
+                      style: .warning)
+            return
+        }
+        // SF4: an extensionless include (e.g. `include common`) would be rewritten
+        // to `include common.prf` — a different file — by the display's `.prf`
+        // strip/re-append. Refuse editing the includes rather than corrupt it.
+        if includeSaveDecision() == .refuseExtensionless {
+            showAlert(text: "Includes can't be edited here",
+                      info: "This profile includes a file whose name has no .prf extension (for example “include common”). Editing includes here would rewrite it to “common.prf”, a different file. Use “Open .prf” to edit this profile in your text editor, then reload.",
                       style: .warning)
             return
         }
@@ -1558,8 +1644,11 @@ extension ProfileFormWindowController: NSSearchFieldDelegate {
     // on the sender: search filters the sidebar; a root change re-evaluates
     // the Remote Connection subsection's visibility.
     func controlTextDidChange(_ obj: Notification) {
-        if obj.object as AnyObject === sidebarSearch {
+        let o = obj.object as AnyObject
+        if o === sidebarSearch {
             filterSidebar()
+        } else if o === logFolderField || o === logNameField {
+            loggingDirty = true          // SF6: a logfile edit must be saved
         } else {
             updateRemoteVisibility()
         }

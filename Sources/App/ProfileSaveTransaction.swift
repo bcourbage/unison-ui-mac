@@ -314,7 +314,30 @@ struct SystemFileOps: ProfileFileOps {
         // renames it into place — exactly the destination-filesystem atomic
         // commit the transaction relies on. This REPLACES an existing file
         // (intentional for an in-place overwrite).
-        try content.write(toFile: path, atomically: true, encoding: .utf8)
+        //
+        // SF15: if `path` is a symlink (e.g. ~/.unison/foo.prf → a dotfiles repo),
+        // resolve it and write to the REAL target, so the temp+rename replaces the
+        // target and the symlink is preserved — a deliberate write-through, rather
+        // than replacing the symlink with a regular file and orphaning the linked
+        // copy. The temp lands in the target's own directory, keeping the rename
+        // atomic on the target's filesystem.
+        try content.write(toFile: realTarget(path), atomically: true, encoding: .utf8)
+    }
+
+    /// Fully resolve a leaf symlink to the real file it points at (following the
+    /// whole chain). A non-symlink is returned unchanged. A dangling link resolves
+    /// to its intended target (so a write creates it and the link stops dangling).
+    private func realTarget(_ path: String) -> String {
+        var st = stat()
+        guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK else { return path }
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        if realpath(path, &buf) != nil { return String(cString: buf) }
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: path) {
+            return (dest as NSString).isAbsolutePath
+                ? dest
+                : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(dest)
+        }
+        return path
     }
 
     func installExclusive(_ content: String, to path: String) throws {
@@ -393,7 +416,10 @@ struct SystemFileOps: ProfileFileOps {
         // Copy need NOT be atomic — the caller atomically MOVES the temp into
         // place afterward.
         if fm.fileExists(atPath: to) { try fm.removeItem(atPath: to) }
-        try fm.copyItem(atPath: from, toPath: to)
+        // SF15: back up the real CONTENT, not the symlink — `copyItem` would
+        // otherwise copy a link, giving a ".bak" that tracks the target instead of
+        // preserving the pre-save bytes. Resolving a non-symlink is a no-op.
+        try fm.copyItem(atPath: realTarget(from), toPath: to)
     }
 
     func move(from: String, to: String) throws {

@@ -272,19 +272,28 @@ final class ProfileDirectiveTests: XCTestCase {
     func test_includeDecision_notEdited_isUnchanged() {
         // Untouched editor ⇒ .unchanged regardless of document content.
         XCTAssertEqual(D.includeSaveDecision(includesEdited: false,
-                                             hasUnmanagedOrderedEntries: false), .unchanged)
+            hasUnmanagedOrderedEntries: false, hasExtensionlessInclude: false), .unchanged)
         XCTAssertEqual(D.includeSaveDecision(includesEdited: false,
-                                             hasUnmanagedOrderedEntries: true), .unchanged)
+            hasUnmanagedOrderedEntries: true, hasExtensionlessInclude: true), .unchanged)
     }
 
     func test_includeDecision_editedNoUnmanaged_applies() {
         XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
-                                             hasUnmanagedOrderedEntries: false), .applyTopBottom)
+            hasUnmanagedOrderedEntries: false, hasExtensionlessInclude: false), .applyTopBottom)
     }
 
     func test_includeDecision_editedWithUnmanaged_refuses() {
         XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
-                                             hasUnmanagedOrderedEntries: true), .refuseUnmanaged)
+            hasUnmanagedOrderedEntries: true, hasExtensionlessInclude: false), .refuseUnmanaged)
+    }
+
+    // SF4: an edited includes section with an extensionless include refuses
+    // (unmanaged takes precedence when both hold).
+    func test_includeDecision_editedWithExtensionless_refuses() {
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
+            hasUnmanagedOrderedEntries: false, hasExtensionlessInclude: true), .refuseExtensionless)
+        XCTAssertEqual(D.includeSaveDecision(includesEdited: true,
+            hasUnmanagedOrderedEntries: true, hasExtensionlessInclude: true), .refuseUnmanaged)
     }
 
     func test_hasUnmanagedOrderedEntries_flag() {

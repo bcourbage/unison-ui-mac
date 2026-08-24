@@ -224,6 +224,24 @@ struct ProfileDocument: Equatable {
         values(forKey: key).first
     }
 
+    /// LAST value for a key, or nil. This is the EFFECTIVE value of a scalar
+    /// preference: Unison processes `.prf` lines in order, so a later duplicate
+    /// overrides an earlier one (SF5). Editor scalar fields must read this, not
+    /// `firstValue`, or a duplicated key displays the wrong (overridden) value.
+    func lastValue(forKey key: String) -> String? {
+        values(forKey: key).last
+    }
+
+    /// Editor-surfaced scalar keys that appear MORE THAN ONCE. Duplicated scalars
+    /// can't be edited safely in a single-field form (a save would collapse them
+    /// and could move the effective value across ordered directives), so the form
+    /// refuses editing when any are present (SF5).
+    func duplicatedScalarKeys(among keys: Set<String>) -> [String] {
+        var counts: [String: Int] = [:]
+        for e in entries { if case let .keyValue(k, _) = e, keys.contains(k) { counts[k, default: 0] += 1 } }
+        return counts.filter { $0.value > 1 }.keys.sorted()
+    }
+
     /// Replace every entry with `key` with the given list of values, in
     /// order. Inserts at the position of the first previous match (or
     /// end of file if no previous match). Empty `values` removes all
@@ -236,14 +254,25 @@ struct ProfileDocument: Equatable {
         entries.insert(contentsOf: newEntries, at: min(insertAt, entries.count))
     }
 
-    /// Set a single-valued key. Convenience over setValues for the common
-    /// case. Pass nil to remove the key entirely.
+    /// Set a single-valued (scalar) key. Pass nil to remove the key entirely.
+    ///
+    /// Unlike `setValues` (which collapses to the FIRST occurrence's position), a
+    /// scalar is written at its EFFECTIVE occurrence: the value replaces the LAST
+    /// entry for the key in place and any earlier duplicates are removed (SF5). So
+    /// the effective value and its ordering relative to includes are preserved,
+    /// and a duplicated scalar never silently flips to an earlier value.
     mutating func setValue(_ value: String?, forKey key: String) {
-        if let value {
-            setValues([value], forKey: key)
-        } else {
-            setValues([], forKey: key)
+        let matchIdxs = entries.indices.filter { entries[$0].matches(key: key) }
+        guard let value else {
+            for i in matchIdxs.reversed() { entries.remove(at: i) }
+            return
         }
+        guard let last = matchIdxs.last else {
+            entries.append(.keyValue(key: key, value: value))
+            return
+        }
+        entries[last] = .keyValue(key: key, value: value)
+        for i in matchIdxs.dropLast().reversed() { entries.remove(at: i) }
     }
 
     /// Apply a mutually-exclusive conflict preference (`force` / `prefer`)
@@ -279,9 +308,27 @@ struct ProfileDocument: Equatable {
                 comments.append("# " + c); j -= 1
             }
             out.append(contentsOf: comments.reversed())
-            out.append(v)
+            out.append(Self.boxLineForValue(v))
         }
         return out
+    }
+
+    /// The freeform box distinguishes a comment line (`# …`) from a value only by
+    /// the leading `#`. A legal value that itself begins with `#` (e.g. a Synology
+    /// `path = #recycle`) would be read back as a comment and silently dropped
+    /// (B5). Escape it with a leading backslash so the box round-trips it as a
+    /// VALUE, not a comment. Any other value is emitted verbatim.
+    static func boxLineForValue(_ v: String) -> String {
+        v.hasPrefix("#") ? "\\" + v : v
+    }
+
+    /// Inverse of `boxLineForValue` for one already-trimmed box line: returns the
+    /// value if the line is a value (including an escaped `\#…`), or nil if it is a
+    /// comment. `\#…` → the literal value `#…`; a bare `#…` → nil (comment).
+    static func valueFromBoxLine(_ trimmed: String) -> String? {
+        if trimmed.hasPrefix("\\#") { return String(trimmed.dropFirst()) }
+        if trimmed.hasPrefix("#") { return nil }
+        return trimmed
     }
 
     /// Replace a key's values from box lines, treating `#`-prefixed lines as
@@ -293,10 +340,10 @@ struct ProfileDocument: Equatable {
         for line in lines {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.isEmpty { continue }
-            if t.hasPrefix("#") {
-                newEntries.append(.comment(String(t.dropFirst()).trimmingCharacters(in: .whitespaces)))
+            if let value = Self.valueFromBoxLine(t) {
+                newEntries.append(.keyValue(key: key, value: value))
             } else {
-                newEntries.append(.keyValue(key: key, value: t))
+                newEntries.append(.comment(String(t.dropFirst()).trimmingCharacters(in: .whitespaces)))
             }
         }
         var remove = Set<Int>()
@@ -327,6 +374,21 @@ struct ProfileDocument: Equatable {
     /// (`source`/`include?`/`source?`) the Includes UI does not manage.
     var hasPassThroughDirectives: Bool {
         entries.contains { $0.isPassThroughDirective }
+    }
+
+    /// True if any ordinary `include` names a file WITHOUT a `.prf` extension
+    /// (e.g. `include common` or `include base.conf`). The Includes UI displays a
+    /// name with `.prf` stripped and re-appends `.prf` on save, which would rewrite
+    /// `include common` into `include common.prf` — a different file (SF4). Such an
+    /// include therefore cannot be safely represented in the UI, so editing the
+    /// Includes section is refused while one is present.
+    var hasExtensionlessInclude: Bool {
+        entries.contains {
+            if case let .directive(d) = $0, d.kind == .include {
+                return !d.argument.hasSuffix(".prf")
+            }
+            return false
+        }
     }
 
     /// True if the document contains any UNMANAGED ORDERED content the Includes
@@ -547,16 +609,24 @@ struct ProfileDocument: Equatable {
     ///                      unmanaged ordered content (`source`/`include?`/
     ///                      `source?` or any `.raw` line); refuse the save rather
     ///                      than reorder content the UI cannot represent.
-    enum IncludeSaveDecision: Equatable { case unchanged, applyTopBottom, refuseUnmanaged }
+    enum IncludeSaveDecision: Equatable {
+        case unchanged, applyTopBottom, refuseUnmanaged, refuseExtensionless
+    }
 
     /// Pure decision used by the real save path AND the tests. No-op detection is
     /// driven by the editor's explicit dirty flag (`includesEdited`), NOT by
     /// comparing a lossy display projection — so an untouched Includes section
     /// always chooses `.unchanged` even if its displayed representation can't be
-    /// reconstructed byte-for-byte.
+    /// reconstructed byte-for-byte. When the section WAS edited, a rebuild is
+    /// refused if it would reorder unmanaged content (`.refuseUnmanaged`) OR
+    /// corrupt an extensionless include via the `.prf` strip/re-append
+    /// (`.refuseExtensionless`, SF4); otherwise the Top/Bottom rebuild is safe.
     static func includeSaveDecision(includesEdited: Bool,
-                                    hasUnmanagedOrderedEntries: Bool) -> IncludeSaveDecision {
+                                    hasUnmanagedOrderedEntries: Bool,
+                                    hasExtensionlessInclude: Bool) -> IncludeSaveDecision {
         guard includesEdited else { return .unchanged }
-        return hasUnmanagedOrderedEntries ? .refuseUnmanaged : .applyTopBottom
+        if hasUnmanagedOrderedEntries { return .refuseUnmanaged }
+        if hasExtensionlessInclude { return .refuseExtensionless }
+        return .applyTopBottom
     }
 }
