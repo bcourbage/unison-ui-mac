@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 final class CleanStaleArchivesWindowController: NSWindowController,
     NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
 
-    /// One stale archive (an `ar<hash>` plus its `fp/lk/tm/sc` siblings).
+    /// One stale archive (an `ar<hash>` plus its `fp/tm/sc` siblings (never the lock lk)).
     struct Row {
         let hash: String
         let reason: ArchiveStaleScanner.Reason
@@ -174,12 +174,12 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         guard let content = window?.contentView else { return }
 
         let header = NSTextField(wrappingLabelWithString:
-            "These archives are not used by any current profile. Checked " +
-            "rows move to the Trash (recoverable). Unchecked rows reference " +
-            "another machine and may belong to a sync that machine runs " +
-            "against this Mac (where this Mac is the remote side), so verify " +
-            "before removing them. Live archives (what each profile's next " +
-            "sync uses) are never listed here.")
+            "These archives are not used by any current profile. Only rows that " +
+            "are provably a superseded copy (replaced by a current profile's live " +
+            "archive) can be selected; they move to the Trash (recoverable). " +
+            "Everything else — orphans, possible other-machine syncs, remote or " +
+            "ambiguous archives — is shown for review only and cannot be selected. " +
+            "Live archives (what each profile's next sync uses) are never listed.")
         header.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         header.textColor = .secondaryLabelColor
         header.translatesAutoresizingMaskIntoConstraints = false

@@ -483,9 +483,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    /// Proactive Reset Archives — wipes the local archive files
-    /// (ar*/fp*/lk*/tm*/sc*) for the selected profile's roots, so the
-    /// next sync rebuilds reconciliation state from scratch. Useful
+    /// Proactive Reset Archives — removes the local archive payload files
+    /// (ar*/fp*/tm*/sc*; never the lock lk*) for the selected profile's roots,
+    /// so the next sync rebuilds reconciliation state from scratch. Useful
     /// when the archive is corrupted (rare but possible — typically
     /// from a sync crash mid-write) without having to wait for the
     /// reactive recovery to surface the "inconsistent state" fatal.
@@ -512,10 +512,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             case .profileFileMissing:
                 alert.informativeText =
                     "Couldn't read \(unisonDirectory)/\(profile).prf. " +
-                    "If you deleted the .prf manually, you can still " +
-                    "clean up its archives by looking up the name with " +
-                    "`unison -ui text -showArchiveName` and removing the " +
-                    "matching ar*/fp*/lk* files from the Unison directory."
+                    "If you deleted the .prf manually, you can still clean up its " +
+                    "archives with Settings, Maintenance, Clean Stale Archives, " +
+                    "which removes only the archive payload safely and never the " +
+                    "lock file (leave any lk* file in place — it is Unison's " +
+                    "concurrency lock, not an archive)."
             case .noRoots:
                 alert.informativeText =
                     "The profile has no `root = …` lines, so we can't " +
@@ -580,7 +581,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                                                   in: cleanup.indexArchives(),
                                                   localHostname: ArchiveHash.systemHostname)
 
-        // Collapse to distinct archive files (ar + fp/lk/tm/sc siblings),
+        // Collapse to distinct archive files (ar + fp/tm/sc siblings (never lk)),
         // deduped, in a stable order.
         var byHash: [String: ArchiveCleanup.ArchiveEntry] = [:]
         for entry in matched where byHash[entry.hash] == nil { byHash[entry.hash] = entry }

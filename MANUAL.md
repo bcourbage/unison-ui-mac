@@ -180,9 +180,12 @@ Bottom-bar buttons (left to right by profile lifecycle):
   Trash.
 
   If the profile has matching archive files in the Unison directory
-  (`ar<hash>`, `fp<hash>`, `lk<hash>`, etc.), the confirmation grows a
-  checkbox: **"Also move N archive file(s) to Trash"**, *checked by
-  default*. The hash is computed from the profile's roots before the
+  (`ar<hash>`, `fp<hash>`, `tm<hash>`, `sc<hash>` — never the lock
+  `lk<hash>`), the confirmation grows a checkbox: **"Also move N archive
+  file(s) to Trash"**, *checked by default*. The removal runs through the
+  crash-safe archive-mutation transaction (it acquires each archive's
+  lock, stages the files, and Trashes them as one unit; the lock is held,
+  never trashed). The hash is computed from the profile's roots before the
   `.prf` is deleted, so we still know which archives belong to it. If
   you uncheck the box, the `.prf` goes but the archives stay; useful
   when you plan to restore the profile from Trash and resume syncing.
@@ -190,9 +193,11 @@ Bottom-bar buttons (left to right by profile lifecycle):
   archives already cleaned up), the checkbox is hidden.
 - **Reset Archives…**: for the selected profile, compute its archive
   hash (see [archive files](https://github.com/bcpierce00/unison/wiki/FAQ#what-are-archive-files-in-unison)
-  in the upstream wiki), find matching `ar<hash>`, `fp<hash>`, `lk<hash>`,
-  `tm<hash>`, `sc<hash>` files in the Unison directory, and move them to
-  Trash. The confirmation dialog lists exactly which files will be moved
+  in the upstream wiki), find the matching payload files `ar<hash>`,
+  `fp<hash>`, `tm<hash>`, `sc<hash>` (never the lock `lk<hash>`) in the
+  Unison directory, and remove them through the crash-safe transaction
+  (acquire lock → stage → Trash as one unit; the lock stays in place).
+  The confirmation dialog lists exactly which files will be moved
   plus the computed hash (you can cross-check against
   `unison -showArchiveName <profile>` on the CLI if you want). The next
   sync of this profile will then rebuild reconciliation state from
@@ -581,9 +586,14 @@ Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
 - **Sync**: the end-of-sync notification and sound (actual on/off
   preferences you set directly).
 - **Logging**: how log file locations are chosen across profiles.
-- **Maintenance**: Archive Maintenance, a **Clean Stale Archives** scan
-  that moves reconciliation archives no current profile uses to the
-  Trash (recoverable); live archives are left untouched.
+- **Maintenance**: Archive Maintenance, a **Clean Stale Archives** scan.
+  It lists archives that no current profile uses, but only offers to
+  remove the ones it can prove are a superseded generation (an older copy
+  a current profile has already replaced with a live archive). Orphans,
+  "probably old" copies, anything involving a remote replica, and anything
+  it can't attribute unambiguously are shown for review but are not
+  selectable. Removal is recoverable (Trash) and runs through the
+  crash-safe transaction; live archives are never listed.
 - **Updates**: Software Updates, direct toggles for whether the app
   checks for updates automatically and whether it sends an anonymous
   system profile with the check. Shown only when the Sparkle updater is
