@@ -1343,8 +1343,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// entry point (Edit menu, menu bar) uses the current selection, so a stale
     /// `clickedRow` can't be targeted. Returns nil when neither resolves to a leaf.
     private func rowForPendingMenuAction(preferClicked: Bool) -> Int? {
-        if preferClicked, let node = clickedNode(), let row = node.row {
-            return row
+        if preferClicked {
+            // Context menu: the target is the CLICKED leaf ONLY — it must NEVER fall
+            // through to the selection. A right-click on a synthetic folder or blank
+            // space has no leaf target (nil → beep), not the currently-selected file
+            // (which would silently change sync scope; SF2, round 3).
+            return clickedNode()?.row
         }
         return leafRowsInSelection().first
     }
@@ -1354,10 +1358,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// invocation honors the right-clicked row (SF2); otherwise the target is the
     /// selection alone — matching the toolbar Diff, which already ignores `clickedRow`.
     private func rowForDiff(preferClicked: Bool) -> Int? {
-        RowSelectionRules.diffTarget(
-            rightClickedNode: preferClicked ? clickedNode() : nil,
-            selectedNodes: selectedNodes()
-        )
+        if preferClicked {
+            // Context menu: the CLICKED leaf only. A folder or blank right-click
+            // (clicked row is a folder → nil row, or no node) must NOT fall through
+            // to the selection (same class as the Ignore fix). Pass no selection so
+            // `diffTarget` can't reach for one.
+            guard let clicked = clickedNode() else { return nil }
+            return RowSelectionRules.diffTarget(rightClickedNode: clicked, selectedNodes: [])
+        }
+        return RowSelectionRules.diffTarget(rightClickedNode: nil, selectedNodes: selectedNodes())
     }
 
     /// Apply one of the three Ignore actions to a specific leaf row. The bridge

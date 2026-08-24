@@ -9,6 +9,8 @@ import XCTest
 @MainActor
 final class ReconcileUITargetingTests: XCTestCase {
 
+    private final class Box<T> { var value: T? }
+
     private func item(_ path: String, _ direction: String) -> StateItem {
         StateItem(path: path, left: "f", right: "f", direction: direction,
                   sizeBytes: 1, fileType: "file", progress: "", bytesTransferred: 0,
@@ -68,6 +70,53 @@ final class ReconcileUITargetingTests: XCTestCase {
         setupStaleClick(c)
         c.ignoreMenuActionForTesting(contextIgnoreItem(c))
         XCTAssertEqual(recorded, 0, "context-menu Ignore targets the CLICKED row (A)")
+    }
+
+    // Round 3: a context-menu Ignore on a FOLDER or BLANK space must NOT fall
+    // through to the selection — it has no leaf target (beep), never the selected file.
+
+    /// Load a folder-nested tree and return the controller with the folder node
+    /// clicked and leaf B selected.
+    private func setupContextClickOnFolder(_ clickIsNil: Bool) -> (ReconcileWindowController, Box<Int?>) {
+        let savedLayout = SettingsModel.reconcileLayoutMode()
+        SettingsModel.setReconcileLayoutMode(.nestedFull)
+        addTeardownBlock { SettingsModel.setReconcileLayoutMode(savedLayout) }
+
+        let box = Box<Int?>()
+        let c = makeRecordingController(onIgnoreRow: { box.value = $0 }, onDiffRow: { box.value = $0 })
+        c.replaceItems([item("folder/leaf.txt", "<-?->"), item("b.txt", "<-?->")])
+        let folder = c.treeForTesting.allNodes.first { $0.name == "folder" && $0.row == nil }!
+        let b = c.treeForTesting.allNodes.first { $0.row == 1 }!
+        c.clickedNodeProviderForTesting = clickIsNil ? { nil } : { folder }
+        c.selectedNodesProviderForTesting = { [b] }
+        return (c, box)
+    }
+
+    func test_sf2_contextIgnore_onFolder_targetsNothing_notSelection() {
+        let (c, box) = setupContextClickOnFolder(false)   // clicked a synthetic folder
+        let item = contextIgnoreItem(c)
+        XCTAssertFalse(c.validateMenuItem(item), "context Ignore on a folder is disabled")
+        c.ignoreMenuActionForTesting(item)
+        XCTAssertNil(box.value, "no Ignore is applied to the selected leaf")
+    }
+
+    func test_sf2_contextIgnore_onBlankSpace_targetsNothing_notSelection() {
+        let (c, box) = setupContextClickOnFolder(true)    // right-clicked blank space
+        let item = contextIgnoreItem(c)
+        XCTAssertFalse(c.validateMenuItem(item), "context Ignore on blank space is disabled")
+        c.ignoreMenuActionForTesting(item)
+        XCTAssertNil(box.value, "no Ignore is applied to the selection")
+    }
+
+    func test_sf2_contextDiff_onFolderOrBlank_targetsNothing_notSelection() {
+        for clickIsNil in [false, true] {
+            let (c, box) = setupContextClickOnFolder(clickIsNil)
+            let ctxDiff = c.contextMenuForTesting!.items.first!   // the "Diff" item
+            XCTAssertFalse(c.validateMenuItem(ctxDiff),
+                           "context Diff on \(clickIsNil ? "blank" : "a folder") is disabled")
+            c.diffMenuActionForTesting(ctxDiff)
+            XCTAssertNil(box.value, "no Diff targets the selected leaf")
+        }
     }
 
     // MARK: - SF2: Diff
