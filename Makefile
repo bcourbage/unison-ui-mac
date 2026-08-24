@@ -413,6 +413,13 @@ check-appcast:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# install.sh hardening tests (SF8–SF10): Release-only selection, staged-then-swap
+# install with rollback, and verified quarantine strip. Pure shell (no
+# Xcode/OCaml/sudo), via install.sh's test seams.
+.PHONY: check-install
+check-install:
+	@./scripts/test-install.sh
+
 # SF7 bundle-floor verifier test (clang fixtures only, no Xcode/OCaml): exercises
 # verify-bundle-minos.sh's two-tier rule and its fail-closed cases.
 .PHONY: check-bundle-minos

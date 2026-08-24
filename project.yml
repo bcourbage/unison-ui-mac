@@ -177,7 +177,10 @@ targets:
         # SUSignedFeedFailureExpirationInterval seconds (default 1,728,000 = 20
         # days), a key-rotation escape hatch that also fails open. Set it to 0,
         # which the pinned 2.9.6 source treats as "never recover", so feed-level
-        # enforcement stays permanently fail-closed.
+        # enforcement stays permanently fail-closed. Because 0 removes Sparkle's
+        # automatic recovery, an EdDSA key rotation MUST follow the staged
+        # old-key-transition procedure in docs/sparkle-updates.md ("Key rotation")
+        # or dormant clients are permanently stranded on the old key.
         SURequireSignedFeed: true
         SUSignedFeedFailureExpirationInterval: 0
         SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml

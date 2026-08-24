@@ -97,9 +97,62 @@ rotation; when it does, the value must equal `generate_keys -p` and match what
 the built bundle ships (verify with
 `/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist`).
 
-**Key rotation:** Sparkle allows changing *either* the EdDSA key *or* the Apple
-code-signing certificate in a given update, never both at once — otherwise an
-older client can't validate the transition. Plan rotations accordingly.
+### Key rotation (EdDSA) — full runbook
+
+Rotating the EdDSA key is a deliberate, staged operation, not a routine step.
+Each installed client trusts only the `SUPublicEDKey` baked into *its own* bundle,
+and this app runs a **fail-closed** feed policy (`SURequireSignedFeed: true` with
+`SUSignedFeedFailureExpirationInterval: 0` — see `project.yml`). That combination
+removes Sparkle's built-in ~20-day "recover into unsigned handling" escape hatch:
+a client that never receives an **old-key-signed transition feed** can *never*
+authenticate a later new-key feed and has no automatic recovery. Rotate only with
+the sequence below.
+
+**Two independent trust factors, one at a time.** An update is accepted when its
+archive carries a valid EdDSA signature under the client's known public key *or*
+its Developer ID matches the running app's (same team) — and, separately, the
+whole **feed** must carry a valid feed-level signature under the client's known
+key. Never change the EdDSA key *and* the Developer ID certificate in the same
+release: the transition relies on one factor staying stable so existing clients
+can still validate the release that teaches them the new key.
+
+**Why one generator key isn't enough.** `generate_appcast` signs both the archive
+`edSignature` and the feed-level signature with the single `--ed-key-file` you
+pass. There is no dual-key feed. So a rotation is handled by running the release
+pipeline with the **old** key across the cutover, then switching the secret to the
+**new** key only afterward — the two phases sign with distinct keys.
+
+Sequence:
+
+1. **Generate** the new keypair (`./bin/generate_keys` — see above); note the new
+   public key. Keep the **old** private key: you still need it to sign the
+   transition feed.
+2. **Ship the transition release.** Update `SUPublicEDKey` in `project.yml` to the
+   **new** public key (so the new bundle teaches clients the new key), but publish
+   its appcast **signed with the OLD private key** — i.e. leave
+   `SPARKLE_ED_PRIVATE_KEY` set to the old key for this release. Existing clients
+   accept the feed (old-key feed signature) and accept the archive via the stable
+   **Developer ID** path, then install a bundle that now trusts the new key. Do
+   **not** rotate the Developer ID cert in this release.
+3. **Hold the cutover window.** Keep publishing feeds signed with the **old** key
+   (`SPARKLE_ED_PRIVATE_KEY` = old) until you are confident essentially every
+   active client has installed the transition release. There is no grace period
+   (`…FailureExpirationInterval: 0`), so err long.
+4. **Cut over.** Replace the `SPARKLE_ED_PRIVATE_KEY` secret with the **new**
+   private key. From here the pipeline signs feed + archives with the new key, and
+   transition-updated clients validate normally. (Only now is the old key retired.)
+
+**Dormant clients.** A client offline or not update-checking throughout the cutover
+never installs the transition release, so after step 4 it cannot authenticate the
+new-key feed and cannot auto-update — by design, there is no automatic recovery.
+Its only path back is a **manual re-download** of the current signed, notarized
+build from GitHub Releases (Gatekeeper accepts it independently of Sparkle). Pair
+any rotation with a durable GitHub Release and say so in the release notes.
+
+**Do not casually rotate the release secret.** Replacing `SPARKLE_ED_PRIVATE_KEY`
+*is* an EdDSA key rotation and triggers everything above. Rotate it only through
+this runbook (never together with a Developer ID change), and only for a real
+reason — a suspected key compromise, not routine hygiene.
 
 ## Getting the tools
 

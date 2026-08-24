@@ -35,6 +35,20 @@ on:
   # commit — useful when only the workflow file itself changes.
   workflow_dispatch:
 
+# SF12: declare the least-privilege default token explicitly — this workflow only
+# reads the repository (build + test); it never writes.
+permissions:
+  contents: read
+
+# SF11: XcodeGen is pinned + checksum-verified (in lockstep with release.yml and
+# vendor-blob.yml), so a floating `brew install xcodegen` can't change the
+# generated .xcodeproj — the source of truth for build settings and Info.plist
+# security keys — between otherwise-identical commits.
+env:
+  XCODEGEN_VERSION: "2.44.1"
+  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
+  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+
 jobs:
   test:
     name: Build + test
@@ -46,8 +60,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         # No submodules / LFS — the vendored blob lives in the tree.
+        # SF12: pinned to a SHA (mutable @v5 tag can be re-pointed).
 
       - name: Untap aws/tap (runner-image noise)
         # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
@@ -83,7 +98,7 @@ jobs:
       # This is the runtime the vendored blob is linked against; do not
       # replace with an unversioned `brew install ocaml`.
       - name: Set up OCaml 5.5.0 (pinned)
-        uses: ocaml/setup-ocaml@v3
+        uses: ocaml/setup-ocaml@f92e0606b7ae4873dd1238465ea4bf6f8e40d85c # v3
         with:
           ocaml-compiler: "5.5.0"
           # Bust any cached switch built before the deployment target was pinned
@@ -102,13 +117,22 @@ jobs:
           ocamlc -version
           test "$(ocamlc -version)" = "5.5.0"
 
-      - name: Install xcodegen
-        # xcodegen regenerates the .xcodeproj from project.yml. The
-        # `unison-ui-mac.xcodeproj` directory is gitignored (`*.xcodeproj/`)
-        # and recreated by XcodeGen on every build, so we install the tool
-        # rather than track a generated project. (aws/tap is untapped in an
-        # earlier step so this brew call is quiet.)
-        run: brew install xcodegen
+      - name: Install pinned + SHA-256-verified XcodeGen
+        # SF11: XcodeGen regenerates the .xcodeproj from project.yml (the source of
+        # truth for build settings and Info.plist security keys). A floating
+        # `brew install xcodegen` could change that generated project between
+        # identical commits, so pin the exact release and verify its checksum —
+        # the same guard release.yml and vendor-blob.yml use.
+        run: |
+          curl -fsSL -o xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
+            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
+          unzip -q xcodegen.zip
+          sudo ./xcodegen/install.sh
+          got="$(xcodegen --version | awk '{print $2}')"
+          echo "xcodegen: $got"
+          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
 
       - name: Check signing resolver matrix
         # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
@@ -133,6 +157,12 @@ jobs:
         # Pure-shell gate: sign-app.sh's fail-fast presence + identity guards
         # (required Sparkle components; explicit identity must be Developer ID).
         run: make check-sign-app
+
+      - name: Check install.sh hardening
+        # Pure-shell gate (no Xcode/OCaml/sudo): install.sh's SF8–SF10 behaviour —
+        # Release-only selection, staged-then-swap with rollback, and a verified
+        # quarantine strip — via install.sh's test seams.
+        run: make check-install
 
       - name: Check bundle-floor verifier
         # Pure-shell gate (clang fixtures, no Xcode/OCaml): the SF7
@@ -198,7 +228,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: xcresult-bundle
           path: .build/derived/Logs/Test/*.xcresult
