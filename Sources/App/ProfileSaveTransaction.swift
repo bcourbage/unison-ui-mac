@@ -67,7 +67,9 @@ enum ProfileSaveError: Error, Equatable {
     /// The source profile is a SYMLINK and the user asked to rename it. A rename
     /// would create a new regular file and remove the link, silently orphaning its
     /// target (e.g. a dotfiles copy). We refuse rather than break the linkage; the
-    /// name is left unchanged and the user can rename it in the linked location.
+    /// name is left unchanged. To rename it the user must recreate the symbolic
+    /// link under the new profile name (updating its destination if the linked file
+    /// is renamed too), then reopen the profile.
     case renameOfSymlink(name: String)
 }
 
