@@ -737,10 +737,10 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         case .failure(let error):
             TraceLog.shared.write("ProfileEditor: reset refused for '\(profile)' — \(error)")
             let a = NSAlert()
-            if CleanStaleArchivesWindowController.mutationRetainedALock(error) {
+            if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
                 (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
                 a.alertStyle = .critical
-                a.messageText = "Archives were not reset — a lock is still held"
+                a.messageText = CleanStaleArchivesWindowController.mutationBlockingTitle(error)
             } else {
                 a.alertStyle = .informational
                 a.messageText = "Archives were not reset"
@@ -900,7 +900,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 case .failure(let error):
                     TraceLog.shared.write("ProfileEditor: archive cleanup on delete refused '\(profile)' — \(error)")
                     let a = NSAlert()
-                    if CleanStaleArchivesWindowController.mutationRetainedALock(error) {
+                    if CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(error) {
                         (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
                         a.alertStyle = .critical
                     } else {

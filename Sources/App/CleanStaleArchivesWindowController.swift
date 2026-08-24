@@ -597,10 +597,10 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         case .failure(let error):
             TraceLog.shared.write("CleanStale: mutation refused — \(error)")
             let a = NSAlert()
-            if Self.mutationRetainedALock(error) {
+            if Self.mutationRequiresBlockRefresh(error) {
                 (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
                 a.alertStyle = .critical
-                a.messageText = "Nothing was moved — a lock is still held"
+                a.messageText = Self.mutationBlockingTitle(error)
             } else {
                 a.alertStyle = .informational
                 a.messageText = "Nothing was moved"
@@ -642,11 +642,24 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         }
     }
 
-    /// True for the abort outcome that leaves an app-created lock held: the caller
-    /// must refresh the in-session profile block so the profile is gated at once.
-    static func mutationRetainedALock(_ error: Error) -> Bool {
-        if case ArchiveMutationError.lockRetainedAfterAbort = error { return true }
-        return false
+    /// True when a mutation failure left a lock that blocks the affected profiles,
+    /// so the caller must refresh the in-session profile block at once (rather than
+    /// only on the next launch). Delegates to the error's own classification.
+    static func mutationRequiresBlockRefresh(_ error: Error) -> Bool {
+        (error as? ArchiveMutationError)?.requiresArchiveBlockRefresh ?? false
+    }
+
+    /// Accurate headline for a blocking mutation failure (used when the caller
+    /// switches to the critical, block-refresh path). The caller's own "nothing
+    /// moved" framing is wrong for `rollbackIncomplete` (a move did happen), so a
+    /// per-error title is used instead.
+    static func mutationBlockingTitle(_ error: Error) -> String {
+        switch error as? ArchiveMutationError {
+        case .rollbackIncomplete:      return "An archive move couldn’t be fully undone"
+        case .lockUnavailable:         return "Another Unison is using these archives"
+        case .lockRetainedAfterAbort:  return "An archive lock is still held"
+        default:                       return "Archive maintenance needs attention"
+        }
     }
 
     @objc private func exportCSVAction(_ sender: Any?) {

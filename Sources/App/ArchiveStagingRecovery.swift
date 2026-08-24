@@ -13,15 +13,19 @@ import Foundation
 /// file is touched. The two kinds are tracked so the final step is correct:
 /// an existing (authorized) lock is unlinked, a freshly-acquired one is released.
 ///
-/// Recovery direction depends on phase. PRE-COMMIT, the quarantine holds the only
-/// copy of some files, so the safe direction is to RESTORE them into the active
-/// directory — after a full preflight, so nothing moves unless every file can be
-/// restored, and with rollback if a move still fails. COMMITTED, the removal was
-/// intended and the family is already staged out, so recovery completes it by
-/// Trashing the whole quarantine. In BOTH phases: locks are released only after
-/// the file operation succeeds and every release is confirmed, and the manifest
-/// is retired only then (mirrors `ArchiveMutation.execute`, SF2). Any unsuccessful
-/// recovery leaves every affected family PHYSICALLY LOCKED and the record intact.
+/// Recovery direction depends on phase. Only a STAGING (pre-commit) record holds
+/// staged payload: the quarantine has the only copy of some files, so the safe
+/// direction is to RESTORE them into the active directory — after a full preflight
+/// (nothing moves unless every file can be restored) with rollback if a move still
+/// fails. Every OTHER record — COMMITTED (removal finished, family already staged
+/// out), ACQUIRING (locks were being taken, nothing moved), and ABORTED (rolled
+/// back, family already restored) — carries NO staged payload, so recovery takes
+/// the cleanup branch: release the lock and retire the intent/leftover folder,
+/// restoring nothing. In BOTH branches locks are released only after the file
+/// operation (or the no-op) succeeds and every release is confirmed, and the
+/// record is retired only then (mirrors `ArchiveMutation.execute`, SF2). Any
+/// unsuccessful recovery leaves every affected family PHYSICALLY LOCKED and the
+/// record intact.
 /// The caller must obtain the user's stale-lock authorization before calling.
 enum ArchiveStagingRecovery {
 
@@ -130,8 +134,11 @@ enum ArchiveStagingRecovery {
             }
             return .recovered
         } else {
-            // Committed: the removal is the intended final state. Confirm releases
-            // first (mirror ArchiveMutation.execute), then Trash the quarantine.
+            // Cleanup branch for every non-staging record — committed (removal
+            // finished), acquiring (nothing moved), or aborted (already restored).
+            // None carries staged payload, so there is nothing to restore: confirm
+            // the lock releases first (mirror ArchiveMutation.execute), then retire
+            // the intent/leftover folder by Trashing it.
             let unreleased = releaseAll(hashes: hashes, barrier: barrier,
                                         activeDir: activeDir, locking: locking, fm: fm)
             guard unreleased.isEmpty else {

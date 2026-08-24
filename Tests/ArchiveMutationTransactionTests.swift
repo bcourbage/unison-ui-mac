@@ -214,6 +214,42 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertNotNil(store.manifest, "store retained its in-memory record (no false success)")
     }
 
+    // SF2: a FOREIGN lock caused acquisition to fail AND the intent folder can't be
+    // removed. The transaction must NOT claim the archive is unlocked — it keeps the
+    // `lockUnavailable` primary (a foreign lock still exists, and the acquiring
+    // record blocks on restart), and that error requires a block refresh.
+    func test_lockUnavailable_discardFailsAfterRelease_keepsLockUnavailablePrimary() {
+        let h1 = String(repeating: "1", count: 32), h2 = String(repeating: "2", count: 32)
+        let files = ["ar"+h1, "ar"+h2]
+        let store = FakeStore(present: Set(files)); store.discardThrows = true
+        let lock = FakeLocking(); lock.heldByOthers = [h2]   // foreign lock on h2
+        XCTAssertThrowsError(try run(plan([h1, h2], files), locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError,
+                           .lockUnavailable(hash: h2, reason: .alreadyHeld),
+                           "foreign-lock primary preserved, not masked as 'unlocked'")
+        }
+        XCTAssertEqual(lock.released, [h1], "the app-owned lock was released")
+        XCTAssertNotNil(store.manifest, "the intent record is retained (blocks on restart)")
+    }
+
+    // SF1/SF2: the block-refresh classifier — the three lock-leaving failures
+    // require an in-session refresh; the clean-abort failures do not.
+    func test_requiresArchiveBlockRefresh_classifier() {
+        XCTAssertTrue(ArchiveMutationError.rollbackIncomplete(quarantine: "/q").requiresArchiveBlockRefresh)
+        XCTAssertTrue(ArchiveMutationError.lockRetainedAfterAbort(hashes: ["a"], quarantine: "/q").requiresArchiveBlockRefresh)
+        XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .alreadyHeld).requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.revalidationFailed.requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.stagingFailed(file: "x").requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.beginStagingFailed.requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.engineNotIdle.requiresArchiveBlockRefresh)
+        XCTAssertFalse(ArchiveMutationError.abortedCleanupIncomplete(quarantine: "/q").requiresArchiveBlockRefresh)
+        // And the Error-typed classifier the callers actually use:
+        XCTAssertTrue(CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(
+            ArchiveMutationError.rollbackIncomplete(quarantine: "/q")))
+        XCTAssertFalse(CleanStaleArchivesWindowController.mutationRequiresBlockRefresh(
+            ArchiveMutationError.revalidationFailed))
+    }
+
     // MARK: staging failure + rollback
 
     func test_stagingFailure_midway_rollsBackAll_removesManifest() {

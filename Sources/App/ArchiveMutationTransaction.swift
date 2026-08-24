@@ -173,8 +173,23 @@ enum ArchiveMutationError: Error, Equatable {
     case lockRetainedAfterAbort(hashes: [String], quarantine: String)
     /// An abort released every lock and left the family intact, but the quarantine
     /// record could not be removed. It is a lock-free leftover folder (safe to
-    /// delete), NOT a block (SF1).
+    /// delete), NOT a block (SF1). Only thrown when no lock — app-owned OR foreign
+    /// — remains; a foreign lock preserves the `lockUnavailable` primary instead.
     case abortedCleanupIncomplete(quarantine: String)
+
+    /// True when this failure left (or left in place) a lock that blocks the
+    /// affected profiles, so the caller must refresh `blockedArchiveHashes` to gate
+    /// the profile in-session (not only after restart):
+    ///  - `rollbackIncomplete`: staging record retained, app locks kept HELD.
+    ///  - `lockRetainedAfterAbort`: app lock could not be confirmed released.
+    ///  - `lockUnavailable`: a foreign lock exists; if the intent record could not
+    ///    be removed it blocks on restart, and refreshing is a safe no-op otherwise.
+    var requiresArchiveBlockRefresh: Bool {
+        switch self {
+        case .rollbackIncomplete, .lockRetainedAfterAbort, .lockUnavailable: return true
+        default: return false
+        }
+    }
 }
 
 struct ArchiveMutationOutcome: Equatable {
@@ -271,9 +286,19 @@ enum ArchiveMutation {
         // to `primary` when the record was cleanly discarded.
         func throwSettled(primary: ArchiveMutationError) throws -> Never {
             switch releaseOwnedAndSettleRecord() {
-            case .discarded:            throw primary
-            case .lockFree(let q):      throw ArchiveMutationError.abortedCleanupIncomplete(quarantine: q)
-            case .locked(let hs, let q): throw ArchiveMutationError.lockRetainedAfterAbort(hashes: hs, quarantine: q)
+            case .discarded:
+                throw primary
+            case .lockFree(let q):
+                // Every APP-owned lock was released, but the record could not be
+                // removed. If the abort was caused by a FOREIGN lock, that lock
+                // still exists and the leftover blocks on restart — keep the
+                // `lockUnavailable` primary (truthful + refreshes the block) rather
+                // than claiming the archive is unlocked (SF2). Otherwise it is a
+                // genuinely lock-free leftover folder.
+                if case .lockUnavailable = primary { throw primary }
+                throw ArchiveMutationError.abortedCleanupIncomplete(quarantine: q)
+            case .locked(let hs, let q):
+                throw ArchiveMutationError.lockRetainedAfterAbort(hashes: hs, quarantine: q)
             }
         }
 
