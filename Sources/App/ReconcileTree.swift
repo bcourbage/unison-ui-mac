@@ -536,30 +536,30 @@ struct ReconcileTree {
     /// `outlineView.expandItem(_:)`. The configured policy is not
     /// mutated.
     ///
-    /// Symmetric with `smartNodesToExpand` but keyed on a different
-    /// "needs attention" predicate (post-sync failure vs. pre-sync
-    /// unresolved conflict). Kept as a separate method rather than a
-    /// shared predicate-taking helper to avoid the abstraction cost
-    /// for two callers — extract if a third predicate arrives.
-    func nodesToRevealFailedRows(_ failedRows: Set<Int>) -> [ReconcileNode] {
+    /// The container nodes to `expandItem` so every row in `rows` becomes visible
+    /// (its collapsed ancestor chain is revealed). Generic over an arbitrary row
+    /// set — used post-sync to reveal FAILED rows and by Select Conflicts to reveal
+    /// unresolved-conflict rows buried under collapsed folders (SF14). The
+    /// configured expand policy is not mutated.
+    func nodesToRevealRows(_ rows: Set<Int>) -> [ReconcileNode] {
         var result: [ReconcileNode] = []
-        // Returns whether this node's OWN row or any descendant is a failure.
+        // Returns whether this node's OWN row or any descendant is in `rows`.
         // A hybrid directory node evaluates its own row AND recurses.
         @discardableResult
         func walk(_ node: ReconcileNode) -> Bool {
-            let ownFailed = node.row.map { failedRows.contains($0) } ?? false
-            var childFailed = false
+            let ownHit = node.row.map { rows.contains($0) } ?? false
+            var childHit = false
             for child in node.children {
-                if walk(child) { childFailed = true }
+                if walk(child) { childHit = true }
             }
-            // Expand a container when a DESCENDANT failed, to reveal it. A node
-            // whose own row failed doesn't need expanding (it's a visible line);
+            // Expand a container when a DESCENDANT is a target, to reveal it. A node
+            // whose own row is a target doesn't need expanding (it's a visible line);
             // its ancestors expand via the propagated return. Skip the synthetic
             // root (never an outline item).
-            if childFailed, !node.name.isEmpty {
+            if childHit, !node.name.isEmpty {
                 result.append(node)
             }
-            return ownFailed || childFailed
+            return ownHit || childHit
         }
         walk(root)
         return result
