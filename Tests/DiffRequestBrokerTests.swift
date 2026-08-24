@@ -140,4 +140,33 @@ final class DiffRequestBrokerTests: XCTestCase {
         XCTAssertEqual(b.request(owner: B), .issue)
         XCTAssertEqual(b.deliver(), .apply(owner: B))
     }
+
+    // MARK: - SF2: a no-output diff resolves via the synchronous terminal handshake
+
+    /// A successful diff that produced NO output fires ZERO diff callbacks. The
+    /// driver's `deliver()` on the synchronous return resolves the request
+    /// (→ apply to the owner, so it can show a "no output" result) and unblocks the
+    /// broker — instead of stranding it awaiting a callback that never arrives.
+    func test_noOutputSuccess_deliverResolvesToOwner_thenIdle() {
+        var b = DiffRequestBroker()
+        _ = b.request(owner: A)
+        XCTAssertTrue(b.isAwaitingResult)
+        XCTAssertEqual(b.deliver(), .apply(owner: A), "the terminal handshake resolves it")
+        XCTAssertFalse(b.isAwaitingResult)
+        // A later diff can be issued — the broker isn't stranded.
+        XCTAssertEqual(b.request(owner: B), .issue)
+    }
+
+    /// A no-output diff whose window was abandoned: the request is draining, and
+    /// the synchronous `deliver()` drops the (empty) result and returns to idle —
+    /// so an abandoned no-output diff can't block all future diffs forever.
+    func test_noOutputSuccess_afterAbandon_drainsToIdle() {
+        var b = DiffRequestBroker()
+        _ = b.request(owner: A)
+        b.abandon(owner: A)                 // window closed before the (empty) result
+        XCTAssertTrue(b.isDraining)
+        XCTAssertEqual(b.deliver(), .dropStale, "the empty result is drained")
+        XCTAssertFalse(b.isDraining)
+        XCTAssertEqual(b.request(owner: B), .issue, "future diffs are no longer blocked")
+    }
 }

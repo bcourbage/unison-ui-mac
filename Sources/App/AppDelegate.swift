@@ -219,10 +219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// coordinator is `.diffing` for its lifetime.
     private var pendingDiff: (SessionID, OperationID)?
     /// Fires if an in-flight diff runs too long (wedged on a dead remote
-    /// transport). Recovery tears the connection down to unblock the engine lane.
+    /// transport). It does NOT tear the connection down (an in-process close would
+    /// deadlock behind the synchronous diff on the single OCaml worker); it surfaces
+    /// the stall and keeps the diff's engine ownership until its bridge call returns.
     private var diffWatchdog: DispatchWorkItem?
     /// How long a diff may run before the wedged-diff watchdog fires.
     private let diffStallTimeout: TimeInterval = 45
+    /// Guards the app-level wedged-diff alert (shown only when the owner window is
+    /// gone) so it appears once per wedged diff.
+    private var diffStallAlertShown = false
     /// The session whose successful Ignore is awaiting its dedicated completion.
     /// Identity token (separate from `pendingScan`) so an Ignore completion can
     /// never satisfy a pending scan/rescan, and a stale/duplicate completion for
@@ -418,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// OCaml call raised and, on failure, surface a narrow diff error.
     private func driveBeginDiff(_ s: SessionID, _ op: OperationID, row: Int) {
         pendingDiff = (s, op)
+        windowBySession[s]?.setDiffInFlight(true)   // gate the whole reconcile window
         armDiffWatchdog(s, op)
         connectQueue.async { [weak self] in
             let can = unison_bridge_can_diff(Int32(row))
@@ -427,6 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
                 self.pendingDiff = nil
                 self.cancelDiffWatchdog()
+                self.windowBySession[s]?.setDiffInFlight(false)
                 if !ok {
                     // No async result will arrive: drain the broker's outstanding
                     // request and show a narrow error in this session's diff window.
@@ -436,6 +443,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                         ? "Unison could not produce a diff for this item."
                         : "This item can’t be diffed — it’s a directory, a symlink, had only "
                           + "metadata changes, or hit a problem during update detection.")
+                } else {
+                    // SUCCESS. A diff/diff-err callback (if any) fired during the
+                    // call and already delivered via the handler (broker now idle →
+                    // `.dropStale` here, a no-op). If NONE fired, the diff produced
+                    // NO OUTPUT (upstream `Files.diff` calls showDiff only when the
+                    // result is nonempty — e.g. `diff = true` or a GUI tool). The
+                    // synchronous return is the terminal handshake that honors the
+                    // broker's one-callback contract (SF2): terminate it here and
+                    // show an honest "no output" result rather than strand the
+                    // loading window and refuse every future diff.
+                    switch self.diffBroker.deliver() {
+                    case .apply(let owner):
+                        let os = SessionID(raw: owner)
+                        if self.diffRequestOwner == os { self.diffRequestOwner = nil }
+                        self.windowBySession[os]?.showDiff(
+                            title: "Diff", text: "The diff command produced no output.")
+                    case .dropStale:
+                        // A real result already delivered, or an abandoned request
+                        // just drained (broker back to idle — unstuck either way).
+                        if self.diffRequestOwner == s { self.diffRequestOwner = nil }
+                    }
                 }
                 // Release engine ownership (→ `.ready`, or the deferred close if the
                 // session was abandoned while the diff ran).
@@ -479,17 +507,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
             self.log.write("diff (\(s)/\(op)) still running past \(self.diffStallTimeout)s — likely wedged")
             self.diffBroker.abandon(owner: s.raw)   // drop a very-late result
-            self.windowBySession[s]?.showDiffError(
-                "This diff is taking unusually long — the remote connection may be stalled. "
-                + "Other actions stay disabled until it finishes; you can Quit if it never does.")
+            let message =
+                "A file comparison is taking unusually long — the remote connection may be "
+                + "stalled. The app is waiting for it and other engine actions stay disabled "
+                + "until it finishes. If it never does, quit and reopen the app."
+            if let w = self.windowBySession[s] {
+                w.showDiffError(message)
+            } else {
+                // SF3: the reconcile window was abandoned (Return to Profiles /
+                // closed), so there is no diff window to route to. Surface the
+                // stall at app level, deduplicated, so a queued replacement profile
+                // isn't left waiting with no explanation.
+                self.presentDiffStallAppAlert(message)
+            }
         }
         diffWatchdog = work
         DispatchQueue.main.asyncAfter(deadline: .now() + diffStallTimeout, execute: work)
     }
 
+    /// One app-level alert for a wedged diff whose owner window is gone. A single
+    /// wedged diff can only fire this once (the watchdog is one-shot), but the flag
+    /// also guards against a re-entrant present.
+    private func presentDiffStallAppAlert(_ message: String) {
+        guard !diffStallAlertShown else { return }
+        diffStallAlertShown = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "A file comparison is stuck"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func cancelDiffWatchdog() {
         diffWatchdog?.cancel()
         diffWatchdog = nil
+        diffStallAlertShown = false
     }
 
     /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or

@@ -289,8 +289,9 @@ final class EngineSessionCoordinator {
         return [.beginDiff(s, op, row: row)]
     }
 
-    /// The diff bridge call returned (success, error, or wedged-then-torn-down).
-    /// Releases engine ownership back to `.ready` for the SAME session+op; a
+    /// The diff bridge call returned (success, no-output, error, or a wedged diff
+    /// that finally completed). Releases engine ownership back to `.ready` for the
+    /// SAME session+op; a
     /// stale/duplicate delivery is a no-op. If the session was abandoned while the
     /// diff ran, the deferred close is started here instead of returning to a
     /// now-gone results window.

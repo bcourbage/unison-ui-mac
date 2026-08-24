@@ -113,6 +113,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// set, so row actions MUST be disabled — otherwise a click would address the
     /// wrong OCaml item. Gates row/sync/rescan actions like `isScanning`.
     private var mutationInFlight = false
+    /// PR-4: set by the driver (`AppDelegate.driveBeginDiff` / diff completion)
+    /// while THIS session's diff occupies the OCaml worker. Folds into `actionGate`
+    /// so every engine-reaching action is refused at its method boundary — a
+    /// bridge call on the main thread would block behind the wedged diff.
+    private(set) var diffInFlight = false
     /// Terminal restart-required latch. Set by `showRestartRequired`; once
     /// set, all row/sync/rescan actions are disabled (the coordinator has
     /// declared the engine unsafe for reuse — the user must quit + reopen).
@@ -1420,9 +1425,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     // MARK: - Diff
 
-    /// Open the diff window for the right-clicked / first-selected
-    /// leaf row. The diff itself runs asynchronously on the OCaml
-    /// side; the result (or an error) arrives via the diff handlers
+    /// Open the diff window for the right-clicked / first-selected leaf row. The
+    /// diff runs SYNCHRONOUSLY inside the single OCaml worker, but the driver runs
+    /// that bridge call OFF the main thread on the serial engine lane (PR-4), so it
+    /// doesn't block the UI; the result (or an error) arrives via the diff handlers
     /// installed in `configure`.
     @objc private func diffMenuAction(_ sender: Any?) {
         applyDiff()
@@ -1474,7 +1480,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             NSSound.beep()
             TraceLog.shared.write("ReconcileWindow: diff refused (engine busy/draining) for row \(row)")
             return
-        case .issued, .raised:
+        case .issued:
             break
         }
 
@@ -1902,10 +1908,25 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             isScanning: isScanning,
             phase: gatePhase,
             hasItems: !items.isEmpty,
+            diffInFlight: diffInFlight,
             resultsUnavailable: syncResultsUnavailable)
     }
 
+    /// Driver hook: mark this session's diff as in flight (or done). While set,
+    /// `actionGate` refuses every engine-reaching action, the details panel shows a
+    /// placeholder instead of calling `ri_get_details`, and toolbar/menu items
+    /// disable — so no bridge call runs on the main thread behind the wedged diff.
+    func setDiffInFlight(_ value: Bool) {
+        guard diffInFlight != value else { return }
+        diffInFlight = value
+        refreshToolbarEnabled()
+        updateDetailsForSelection()   // show placeholder while diffing; refresh after
+    }
+
     private var isActionable: Bool { actionGate.isActionable }
+
+    /// Test seam: the gate the action methods and menu/toolbar validation consult.
+    var actionGateForTesting: ReconcileActionGate { actionGate }
 }
 
 // MARK: - Direction-cell view (the only colored cell in the row)
