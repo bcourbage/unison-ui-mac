@@ -21,15 +21,19 @@ import Foundation
 struct ArchiveRecovery {
 
     let unisonDirectory: String
-    /// Archive name → URLs for ar/fp/lk files that exist locally. Indexed by
-    /// the archive's hash suffix so we can produce a stable summary.
+    /// URLs for the ar/fp files that exist locally (NEVER lk — the lock is not
+    /// payload; deletion routes through the mutation transaction, which acquires
+    /// and holds lk). For display/summary only.
     let localOrphans: [URL]
+    /// The 32-char archive hashes present locally to be removed — the input to
+    /// the mutation transaction (which trashes ar/fp/tm/sc for each and holds lk).
+    let localOrphanHashes: [String]
     /// Archive names mentioned as "should be DELETED" that aren't present
     /// locally — the user has to clean these up on the remote host
     /// themselves. We surface these in the alert text.
     let remoteOnlyOrphans: [String]
 
-    var hasLocalOrphans: Bool { !localOrphans.isEmpty }
+    var hasLocalOrphans: Bool { !localOrphanHashes.isEmpty }
 
     static func parse(message: String, unisonDirectory: String) -> ArchiveRecovery? {
         // Only worth parsing when the message looks like an archive-consistency
@@ -47,6 +51,7 @@ struct ArchiveRecovery {
 
         let fm = FileManager.default
         var locals: [URL] = []
+        var localHashes: [String] = []
         var remotes: [String] = []
 
         let nsMsg = message as NSString
@@ -54,40 +59,25 @@ struct ArchiveRecovery {
                                     range: NSRange(location: 0, length: nsMsg.length))
         for m in matches where m.numberOfRanges >= 2 {
             let archiveName = nsMsg.substring(with: m.range(at: 1))
-            // ar/fp/lk share the same suffix (hash); we strip "ar" from the
-            // archive name and rebuild the three companion paths.
+            // ar/fp/tm/sc share the same suffix (hash). lk is EXCLUDED — it is
+            // the lock, held across the mutation, never deleted here.
             let suffix = String(archiveName.dropFirst(2))
-            let candidates = ["ar", "fp", "lk"].map { prefix in
+            let candidates = ArchiveCleanup.archivePrefixes.map { prefix in
                 URL(fileURLWithPath: "\(unisonDirectory)/\(prefix)\(suffix)")
             }
-
             let presentLocally = candidates.filter { fm.fileExists(atPath: $0.path) }
             if presentLocally.isEmpty {
                 remotes.append(archiveName)
             } else {
                 locals.append(contentsOf: presentLocally)
+                localHashes.append(suffix)
             }
         }
 
         if locals.isEmpty && remotes.isEmpty { return nil }
         return ArchiveRecovery(unisonDirectory: unisonDirectory,
                                localOrphans: locals,
+                               localOrphanHashes: localHashes,
                                remoteOnlyOrphans: remotes)
-    }
-
-    /// Delete every local orphan file. Returns the paths that actually went
-    /// away (best effort; failures are logged but don't stop the run).
-    @discardableResult
-    func deleteLocalOrphans() -> [String] {
-        var deleted: [String] = []
-        for url in localOrphans {
-            do {
-                try FileManager.default.removeItem(at: url)
-                deleted.append(url.path)
-            } catch {
-                TraceLog.shared.write("ArchiveRecovery: failed to delete \(url.path): \(error)")
-            }
-        }
-        return deleted
     }
 }

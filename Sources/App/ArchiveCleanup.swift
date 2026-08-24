@@ -23,10 +23,12 @@ import Foundation
 /// back into the Unison directory if they regret it.
 struct ArchiveCleanup {
 
-    /// The five archive-file prefixes in upstream's `archiveVersion`
-    /// enum order. Each maps to a kind of archive Unison may have
-    /// written for the same logical replica state.
-    static let archivePrefixes = ["ar", "fp", "lk", "tm", "sc"]
+    /// The archive PAYLOAD prefixes. `lk` is deliberately EXCLUDED (Blocker
+    /// B3): it is the interprocess lock, not payload — the mutation transaction
+    /// acquires and holds it across the operation, and it must never appear in a
+    /// file list to be trashed (trashing a live lock removes Unison's exclusion).
+    /// Matches `ArchiveMutationPlan.payloadPrefixes`.
+    static let archivePrefixes = ["ar", "fp", "tm", "sc"]
 
     let unisonDirectory: String
 

@@ -375,10 +375,28 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
             if response == .alertFirstButtonReturn {
                 retryIgnoringArchives = true
             } else if hasDelete, response == .alertSecondButtonReturn {
-                let deleted = recovery.deleteLocalOrphans()
-                TraceLog.shared.write("ArchiveRecovery: deleted \(deleted.count) file(s):")
-                for p in deleted { TraceLog.shared.write("  \(p)") }
-                shouldRetry = true
+                // Route through the single mutation authority: the failed op has
+                // already unwound (the embedded engine isn't using these
+                // archives), so isEngineIdle is true here; the per-archive lock
+                // still blocks an EXTERNAL Unison, and staging keeps the removal
+                // atomic (never a partial family, lk never trashed).
+                let result = ArchiveMaintenance.mutate(
+                    operation: "fatal-recovery",
+                    hashes: recovery.localOrphanHashes,
+                    unisonDirectory: unisonDir,
+                    isEngineIdle: { true },
+                    revalidate: { true })
+                switch result {
+                case .success(let out):
+                    TraceLog.shared.write("ArchiveRecovery: removed \(out.hashes.count) archive(s)"
+                        + (out.quarantineRetained.map { "; quarantine retained at \($0)" } ?? ""))
+                    shouldRetry = true
+                case .failure(let error):
+                    // A pre-existing lock (another process) blocked it — don't
+                    // retry into the same inconsistency; leave it for the user.
+                    TraceLog.shared.write("ArchiveRecovery: mutation refused — \(error)")
+                    shouldRetry = false
+                }
             }
         } else {
             alert.addButton(withTitle: "OK")
