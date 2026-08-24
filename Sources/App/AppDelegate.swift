@@ -1591,6 +1591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // picker is up first and the alert doesn't compete with launch.
         DispatchQueue.main.async { [weak self] in
             self?.checkForPriorCrashReport()
+            self?.checkForAbandonedArchiveStaging()
         }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
@@ -2310,6 +2311,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Offer (once) to send a crash report if the app crashed since we last
     /// asked. First run seeds the marker to "now" so reports predating this
     /// feature are never surfaced.
+    /// Fail-closed restart handling for an interrupted archive mutation
+    /// (issue: crash-safe staging). A PRE-COMMIT abandoned staging means the
+    /// operation died while archives were being moved: its `lk` locks are still
+    /// held (stopping Unison — safe) and ownership of those raw locks cannot be
+    /// proven across a crash, so we NEVER auto-remove them or auto-recover.
+    /// Surface it and require explicit, manual recovery. A committed leftover
+    /// (removal finished, only Trash-cleanup failed) does not block and is not
+    /// alerted here.
+    private func checkForAbandonedArchiveStaging() {
+        guard !unisonDirectory.isEmpty else { return }
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
+        let preCommit = abandoned.filter { $0.manifest.isPreCommit }
+        guard !preCommit.isEmpty else { return }
+        let blocked = AbandonedStagingScan.blockedHashes(abandoned)
+        log.write("abandoned pre-commit archive staging detected: "
+            + "\(preCommit.count) dir(s), blocked hashes=\(blocked.sorted().joined(separator: ","))")
+        let dirs = preCommit.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "An archive maintenance operation was interrupted"
+        alert.informativeText =
+            "Unison-UI-Mac was interrupted while removing archive files, so some are "
+            + "held in a quarantine folder and their locks are still in place (which "
+            + "safely stops Unison from using those archives). Nothing was lost.\n\n"
+            + "To recover, make sure no other Unison is running, then move each folder "
+            + "below to the Trash in Finder:\n\n\(dirs)\n\n"
+            + "The app will not remove these automatically."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {
         guard let marker = defaults.object(forKey: Self.crashReportMarkerKey) as? Date else {
             defaults.set(Date(), forKey: Self.crashReportMarkerKey)
