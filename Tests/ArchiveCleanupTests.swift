@@ -15,28 +15,17 @@ import XCTest
 final class ArchiveCleanupTests: XCTestCase {
 
     private var tempDir: String!
-    private var trashedFromTests: [URL] = []
 
     override func setUpWithError() throws {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ArchiveCleanupTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         tempDir = url.path
-        trashedFromTests = []
     }
 
     override func tearDownWithError() throws {
-        // Clean up the temp directory if anything is left.
         if let tempDir {
             try? FileManager.default.removeItem(atPath: tempDir)
-        }
-        // Best-effort cleanup of items we moved to Trash. Trash items
-        // live at ~/.Trash/<name> on the boot volume; we delete the
-        // ones we created here rather than leaving them to clutter.
-        let homeTrash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        for url in trashedFromTests {
-            let candidate = homeTrash.appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.removeItem(at: candidate)
         }
     }
 
@@ -116,42 +105,10 @@ final class ArchiveCleanupTests: XCTestCase {
         XCTAssertEqual(cleanup.findFiles(matching: "abc"), [])
     }
 
-    // MARK: - trash
-
-    func test_trash_movesAllProvidedURLs() throws {
-        let hash = "1111111111111111111111111111aaaa"
-        let urls = [try touch("ar\(hash)"), try touch("fp\(hash)")]
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash(urls)
-        XCTAssertEqual(result.trashed.count, 2)
-        XCTAssertTrue(result.failed.isEmpty)
-        // Source files are gone from the Unison directory.
-        for url in urls {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
-                           "expected \(url.lastPathComponent) to be moved out")
-        }
-        trashedFromTests.append(contentsOf: urls)
-    }
-
-    func test_trash_reportsFailuresWithoutAbortingTheRest() throws {
-        let hash = "2222222222222222222222222222bbbb"
-        let real = try touch("ar\(hash)")
-        let phantom = URL(fileURLWithPath: "\(tempDir!)/does-not-exist-\(hash)")
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash([real, phantom])
-        XCTAssertEqual(result.trashed.count, 1)
-        XCTAssertEqual(result.failed.count, 1)
-        XCTAssertEqual(result.trashed.first, real)
-        XCTAssertEqual(result.failed.first?.0, phantom)
-        trashedFromTests.append(real)
-    }
-
-    func test_trash_emptyInputReturnsEmptyResult() {
-        let cleanup = ArchiveCleanup(unisonDirectory: tempDir)
-        let result = cleanup.trash([])
-        XCTAssertTrue(result.trashed.isEmpty)
-        XCTAssertTrue(result.failed.isEmpty)
-    }
+    // NOTE: ArchiveCleanup no longer has a `trash(_:)` — destructive mutation is
+    // the sole responsibility of the ArchiveMutation transaction (see
+    // ArchiveMutationTransactionTests / ArchiveStagingStoreTests). ArchiveCleanup
+    // only finds/indexes archives now.
 
     // MARK: - Header parsing / indexing
 

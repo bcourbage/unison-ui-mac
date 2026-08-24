@@ -162,6 +162,29 @@ final class ArchiveStaleScannerTests: XCTestCase {
         XCTAssertEqual(f?.actionable, false, "remote rows are report-only")
     }
 
+    // MARK: SF5 — remoteness comes from the profile's RootSpec, not DNS labels
+
+    func test_remoteness_fromProfileRootSpec_notCollidingDnsLabels() {
+        // Local host "node"; the ssh peer "node.example.com" shares the short
+        // label "node", so header inference (distinct labels) would call this
+        // local↔local. The profile has an ssh:// root, so it is remote → the
+        // superseded copy must be uncertain + non-actionable even though a live
+        // archive exists (which would otherwise make it provably superseded).
+        let roots = ["/local/a", "ssh://node.example.com//remote/b"]
+        let cur   = "//node//local/a, //node.example.com//remote/b"
+        let stale = "//node.local//local/a, //node.example.com//remote/b"
+        let index = [
+            entry("live", thisRoot: "//node//local/a", roots: cur),
+            entry("old",  thisRoot: "//node.local//local/a", roots: stale),
+        ]
+        let f = find(index, [profile("P", roots)], host: "node").first { $0.entry.hash == "old" }
+        XCTAssertEqual(f?.reason, .superseded)
+        XCTAssertEqual(f?.uncertain, true, "an ssh-root profile is remote → report-only (SF5)")
+        XCTAssertEqual(f?.actionable, false)
+        // Sanity: the header alone does NOT see a remote side here.
+        XCTAssertFalse(ArchiveMatcher.involvesRemoteHost(rootsName: stale))
+    }
+
     // MARK: B1 — a comma-containing (ambiguous) rootsName is uncertain
 
     func test_commaInRoot_ambiguousRootsName_isUncertainAndNonActionable() {

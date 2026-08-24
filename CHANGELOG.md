@@ -12,16 +12,18 @@ across releases per Apple's bundle-version rules.
 ## [Unreleased]
 
 ### Security / Safety
-- **Archive maintenance is now crash-safe and can never remove a live or
-  in-use archive.** Every destructive archive operation — Clean Stale Archives,
-  Reset Archives, delete-with-archives, and archive-inconsistency recovery — runs
-  through one transaction that acquires the same per-archive lock a live Unison
-  uses (so a running sync, in this app or another process, blocks it), stages
-  each file with an atomic same-filesystem move, rolls everything back if any
-  step fails, and only then moves the removed set to the Trash as one unit. A
-  crash mid-operation leaves the locks in place (safely stopping Unison) and is
-  detected on next launch, which asks for explicit recovery rather than removing
-  anything automatically.
+- **Archive maintenance is crash-safe and protects live and in-use archives.**
+  Every destructive archive operation — Clean Stale Archives, Reset Archives,
+  delete-with-archives, and archive-inconsistency recovery — runs through one
+  transaction that acquires the same per-archive lock a live Unison uses (so a
+  running sync, in this app or another process, blocks it), stages each file
+  with an atomic same-filesystem move, and only then moves the removed set to
+  the Trash as one unit. If any step fails it restores what it staged; if even
+  that restore can't complete, it retains everything and keeps the locks held
+  rather than deleting. A crash mid-operation leaves the locks in place (safely
+  stopping Unison), blocks the affected profiles, and is detected on next
+  launch, which offers to restore the files — never to delete them — and removes
+  the locks only after you confirm no other Unison is running.
 - **Clean Stale Archives only offers provably superseded copies.** An archive is
   removable only when it is attributed to a current profile that has a newer
   live archive replacing it. Orphans, "probably old" copies, anything involving

@@ -138,22 +138,8 @@ struct ArchiveCleanup {
         return nil
     }
 
-    /// Move each file in `urls` to Trash. Returns the URLs that
-    /// successfully moved (and a parallel list of failures with the
-    /// underlying error, for surfacing in the UI).
-    @discardableResult
-    func trash(_ urls: [URL]) -> (trashed: [URL], failed: [(URL, Error)]) {
-        let fm = FileManager.default
-        var trashed: [URL] = []
-        var failed: [(URL, Error)] = []
-        for url in urls {
-            do {
-                try fm.trashItem(at: url, resultingItemURL: nil)
-                trashed.append(url)
-            } catch {
-                failed.append((url, error))
-            }
-        }
-        return (trashed, failed)
-    }
+    // NOTE: there is deliberately NO `trash(_:)` here. Destructive archive
+    // mutation has a single authority — the crash-safe ArchiveMutation
+    // transaction via ArchiveMaintenance (acquire lock → stage → whole-dir
+    // Trash). `ArchiveCleanup` only INDEXES/finds archives; it never mutates.
 }

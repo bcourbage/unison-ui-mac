@@ -78,6 +78,14 @@ enum ArchiveStaleScanner {
                          localHostname: String) -> [Finding] {
         let current = localHostname.lowercased()
         let unreliableNames = Set(profiles.filter { !$0.attributionReliable }.map(\.name))
+        // Authoritative remoteness per profile: a profile with any non-local
+        // (ssh://, socket://, remote file://) root has a genuine remote replica
+        // whose path is unknowable offline (SF5) — derived from RootSpec, not
+        // from guessing at header DNS labels (which collide, e.g. node.local vs
+        // node.example.com). Header inference is only the orphan fallback.
+        let profileHasRemoteRoot: [String: Bool] = Dictionary(
+            profiles.map { ($0.name, ArchiveMatcher.rootSpecs(forRoots: $0.roots).contains { !$0.isLocal }) },
+            uniquingKeysWith: { $0 || $1 })
         var liveHashes = Set<String>()
         var hashToNames: [String: Set<String>] = [:]
         var profilesWithLiveArchive = Set<String>()
@@ -100,7 +108,11 @@ enum ArchiveStaleScanner {
                 //  - an ambiguous (comma-containing) rootsName (B1);
                 //  - a remote side, unverifiable offline (SF3).
                 let ambiguous = ArchiveMatcher.rootsNameIsAmbiguous(entry.rootsName)
-                let involvesRemote = ArchiveMatcher.involvesRemoteHost(rootsName: entry.rootsName)
+                // Attributed → trust the profile's RootSpec (authoritative, SF5).
+                // Orphan (unattributed) → conservative header inference fallback.
+                let involvesRemote = names.isEmpty
+                    ? ArchiveMatcher.involvesRemoteHost(rootsName: entry.rootsName)
+                    : names.contains { profileHasRemoteRoot[$0] == true }
                 let attributionUncertain = names.isEmpty
                     ? !unreliableNames.isEmpty
                     : !Set(names).isDisjoint(with: unreliableNames)

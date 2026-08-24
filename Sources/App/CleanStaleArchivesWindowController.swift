@@ -490,8 +490,8 @@ final class CleanStaleArchivesWindowController: NSWindowController,
 
     @objc private func toggleSelectAll(_ sender: NSButton) {
         // Select All operates ONLY on actionable rows; non-actionable rows can
-        // never be selected (report-only).
-        let actionableIdx = rows.indices.filter { rows[$0].actionable }
+        // never be selected (report-only). See CleanStalePolicy.
+        let actionableIdx = CleanStalePolicy.selectableIndices(actionable: rows.map(\.actionable))
         let target = !actionableIdx.allSatisfy { checked[$0] }   // any actionable unchecked → check all
         for i in actionableIdx { checked[i] = target }
         tableView.reloadData()
@@ -520,7 +520,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         trashButton.isEnabled = checkedFiles > 0 && snapshotGuard.mayTrash(engineIdle: engineIdle)
         trashButton.toolTip = engineIdle ? nil : ArchiveMutationGate.busyMessage
         // Select-All state reflects only actionable rows (the only selectable set).
-        let actionableIdx = rows.indices.filter { rows[$0].actionable }
+        let actionableIdx = CleanStalePolicy.selectableIndices(actionable: rows.map(\.actionable))
         if actionableIdx.isEmpty || actionableIdx.allSatisfy({ !checked[$0] }) {
             selectAllCheckbox.state = .off
         } else if actionableIdx.allSatisfy({ checked[$0] }) {
@@ -536,9 +536,8 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     @objc private func trashAction(_ sender: Any?) {
         // Only actionable + checked rows are eligible; a non-actionable row is
         // rejected here even if stale UI state marked it checked (authority).
-        let hashes = rows.indices
-            .filter { checked.indices.contains($0) && checked[$0] && rows[$0].actionable }
-            .map { rows[$0].hash }
+        let hashes = CleanStalePolicy.mutationHashes(
+            hashes: rows.map(\.hash), actionable: rows.map(\.actionable), checked: checked)
         guard !hashes.isEmpty else { NSSound.beep(); return }
 
         // Recheck the engine-idle policy AND the snapshot guard immediately
@@ -726,8 +725,13 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleRow(_:)))
         box.tag = row
         // Non-actionable (report-only) rows are visibly disabled — they can't be
-        // checked at all.
+        // checked at all — and carry a tooltip explaining why.
         box.isEnabled = rows.indices.contains(row) && rows[row].actionable
+        if rows.indices.contains(row) {
+            box.toolTip = CleanStalePolicy.refusalReason(
+                actionable: rows[row].actionable, uncertain: rows[row].uncertain,
+                reason: rows[row].reason)
+        }
         box.state = (checked.indices.contains(row) && checked[row]) ? .on : .off
         box.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(box)
