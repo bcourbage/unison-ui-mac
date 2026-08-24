@@ -15,7 +15,8 @@
 #   * NO Mach-O — ours or a vendored framework — may declare a floor GREATER than
 #     the target. That is the actual "runs on macOS <target>" guarantee.
 #   * Our OWN binaries (directly in Contents/MacOS/) must be EXACTLY the target —
-#     a stricter check that the SF7 relabel landed and nothing bumped our floor.
+#     a stricter check that our binaries were built with the configured deployment
+#     target and nothing bumped our floor.
 #     Vendored code (Sparkle) legitimately ships a LOWER floor (it supports older
 #     macOS) and is only held to the not-greater rule.
 #

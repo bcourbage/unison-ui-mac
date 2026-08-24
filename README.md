@@ -174,14 +174,19 @@ directly) and a bare `xcodebuild` both build and link correctly with no
 extra flags. A build that somehow runs without those paths set fails
 immediately with a clear error pointing back here, rather than
 producing a bundle that crashes at launch. Prerequisites for any build:
-Xcode, `xcodegen`, and **OCaml 5.5.0**. The vendored blob removes the
-5–10 min upstream *source* compile, **not** the OCaml runtime dependency:
-`make build` still links the app against the OCaml 5.5.0 runtime libraries
-(`libasmrun` etc.) and its headers, and runs `make check-ocaml-version`,
-which rejects any version other than 5.5.0. Install OCaml 5.5.0 via opam
-or a pinned formula (not a bare `brew install ocaml`, which follows the
-latest). OCaml is additionally needed to regenerate the blob itself
-(`make vendor-blob`), a maintainer-only step.
+Xcode, `xcodegen`, and **OCaml 5.5.0 built for the app's macOS deployment
+target**. The vendored blob removes the 5–10 min upstream *source* compile,
+**not** the OCaml runtime dependency: `make build` still links the app against
+the OCaml 5.5.0 runtime libraries (`libasmrun` etc.) and its headers. Two gates
+enforce the toolchain: `check-ocaml-version` rejects any version other than
+5.5.0, and `verify-runtime-minos` rejects a runtime not built for the deployment
+target. On a newer host (e.g. macOS 26) a normally-installed OCaml builds its
+runtime for that host, so create a target-built switch — set
+`MACOSX_DEPLOYMENT_TARGET=15.0` **before** the compiler is built (a host-built
+switch, or a bare `brew install ocaml`, must be rebuilt; the variable does not
+repair already-compiled archives). See [INSTALL.md](INSTALL.md#to-build-from-source)
+for the exact `opam switch create` recipe. OCaml is additionally needed to
+regenerate the blob itself (`make vendor-blob`), a maintainer-only step.
 
 ### Local fork patches
 
