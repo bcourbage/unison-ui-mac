@@ -6,6 +6,8 @@ import Foundation
 /// is `SystemFileOps`.
 protocol ProfileFileOps {
     func exists(_ path: String) -> Bool
+    /// True iff `path` itself is a symbolic link (does NOT follow the link).
+    func isSymlink(_ path: String) -> Bool
     /// Write `content` to `path` atomically: a temp file in the SAME directory
     /// (destination filesystem) followed by an atomic rename, so `path` is
     /// never left partially written — it holds either the old bytes or the new.
@@ -62,6 +64,13 @@ enum ProfileSaveError: Error, Equatable {
     /// than claiming "nothing changed". Distinct from `backupFailed` (which
     /// asserts a fully clean state).
     case cleanupFailed(String)
+    /// The source profile is a SYMLINK and the user asked to rename it. A rename
+    /// would create a new regular file and remove the link, silently orphaning its
+    /// target (e.g. a dotfiles copy). We refuse rather than break the linkage; the
+    /// name is left unchanged. To rename it the user must recreate the symbolic
+    /// link under the new profile name (updating its destination if the linked file
+    /// is renamed too), then reopen the profile.
+    case renameOfSymlink(name: String)
 }
 
 /// A low-level filesystem-op failure carrying `errno`, thrown by `SystemFileOps`
@@ -149,6 +158,14 @@ struct ProfileSaveTransaction {
         // catches a destination created between here and the write.
         if (isNew || isRename), ops.exists(dest) {
             throw ProfileSaveError.destinationExists(name: newName)
+        }
+
+        // SF15 (round 3): a rename of a SYMLINK-backed profile would create a
+        // regular `<newName>.prf` and delete the `<oldName>.prf` link, orphaning
+        // the linked target. Refuse — the rename can't preserve the linkage and
+        // silently breaking it is worse than declining.
+        if isRename, ops.isSymlink(prf(oldName!)) {
+            throw ProfileSaveError.renameOfSymlink(name: oldName!)
         }
 
         if isRename {
@@ -309,12 +326,51 @@ struct SystemFileOps: ProfileFileOps {
         return fm.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
     }
 
+    func isSymlink(_ path: String) -> Bool {
+        var st = stat()
+        return lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+    }
+
     func writeAtomic(_ content: String, to path: String) throws {
         // `atomically: true` writes to a temp file in the same directory and
         // renames it into place — exactly the destination-filesystem atomic
         // commit the transaction relies on. This REPLACES an existing file
         // (intentional for an in-place overwrite).
-        try content.write(toFile: path, atomically: true, encoding: .utf8)
+        //
+        // SF15: if `path` is a symlink (e.g. ~/.unison/foo.prf → a dotfiles repo),
+        // resolve it and write to the REAL target, so the temp+rename replaces the
+        // target and the symlink is preserved — a deliberate write-through, rather
+        // than replacing the symlink with a regular file and orphaning the linked
+        // copy. The temp lands in the target's own directory, keeping the rename
+        // atomic on the target's filesystem.
+        try content.write(toFile: realTarget(path), atomically: true, encoding: .utf8)
+    }
+
+    /// Fully resolve a symlink CHAIN to the terminal real path it points at,
+    /// following every hop by hand so a dangling terminal (`a → b → missing`)
+    /// resolves to `missing` — NEVER to an intermediate link `b`, which a write
+    /// would wrongly replace (review round 2). A non-symlink (existing or not) is
+    /// the terminal. Throws on a cycle (or an unreadable link) rather than fall
+    /// back to replacing a link — fail closed.
+    private func realTarget(_ path: String) throws -> String {
+        var current = path
+        var seen = Set<String>()
+        while true {
+            var st = stat()
+            guard lstat(current, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK else {
+                return current   // terminal: a non-symlink path (may not exist yet)
+            }
+            guard seen.insert(current).inserted else {
+                throw ProfileFileOpsError(operation: "resolve symlink cycle",
+                                          from: path, to: current, code: ELOOP)
+            }
+            guard let dest = try? fm.destinationOfSymbolicLink(atPath: current) else {
+                throw ProfileFileOpsError(operation: "readlink", from: current, to: path, code: errno)
+            }
+            current = (dest as NSString).isAbsolutePath
+                ? dest
+                : ((current as NSString).deletingLastPathComponent as NSString).appendingPathComponent(dest)
+        }
     }
 
     func installExclusive(_ content: String, to path: String) throws {
@@ -393,7 +449,10 @@ struct SystemFileOps: ProfileFileOps {
         // Copy need NOT be atomic — the caller atomically MOVES the temp into
         // place afterward.
         if fm.fileExists(atPath: to) { try fm.removeItem(atPath: to) }
-        try fm.copyItem(atPath: from, toPath: to)
+        // SF15: back up the real CONTENT, not the symlink — `copyItem` would
+        // otherwise copy a link, giving a ".bak" that tracks the target instead of
+        // preserving the pre-save bytes. Resolving a non-symlink is a no-op.
+        try fm.copyItem(atPath: try realTarget(from), toPath: to)
     }
 
     func move(from: String, to: String) throws {

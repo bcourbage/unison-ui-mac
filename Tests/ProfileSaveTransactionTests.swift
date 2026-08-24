@@ -36,6 +36,10 @@ final class ProfileSaveTransactionTests: XCTestCase {
         /// `exists` pre-check and the later exclusive install (the TOCTOU race).
         var afterExists: ((String) -> Void)?
 
+        /// Paths the fake treats as symbolic links (for the rename-refusal test).
+        var symlinks: Set<String> = []
+        func isSymlink(_ path: String) -> Bool { symlinks.contains(path) }
+
         func exists(_ path: String) -> Bool {
             let r = files[path] != nil
             afterExists?(path)
@@ -85,6 +89,29 @@ final class ProfileSaveTransactionTests: XCTestCase {
     private let dir = "/u"
     private func tx(_ ops: ProfileFileOps) -> ProfileSaveTransaction {
         ProfileSaveTransaction(ops: ops, unisonDirectory: dir)
+    }
+
+    // SF15 (round 3): renaming a SYMLINK-backed profile is refused via commit(),
+    // and nothing is written or removed.
+    func test_rename_ofSymlinkProfile_isRefused_touchesNothing() {
+        let ops = FakeFileOps()
+        ops.files["/u/old.prf"] = "root = /a\n"
+        ops.symlinks = ["/u/old.prf"]
+        XCTAssertThrowsError(try tx(ops).commit(oldName: "old", newName: "new", content: "root = /b\n")) {
+            XCTAssertEqual($0 as? ProfileSaveError, .renameOfSymlink(name: "old"))
+        }
+        XCTAssertNil(ops.files["/u/new.prf"], "no new file written")
+        XCTAssertNotNil(ops.files["/u/old.prf"], "the source link is untouched")
+        XCTAssertTrue(ops.log.isEmpty, "no filesystem writes at all")
+    }
+
+    // A NON-symlink rename still works (guard is symlink-specific).
+    func test_rename_ofRegularProfile_stillWorks() throws {
+        let ops = FakeFileOps()
+        ops.files["/u/old.prf"] = "root = /a\n"
+        try tx(ops).commit(oldName: "old", newName: "new", content: "root = /b\n")
+        XCTAssertEqual(ops.files["/u/new.prf"], "root = /b\n")
+        XCTAssertNil(ops.files["/u/old.prf"], "old removed after a successful rename")
     }
 
     // MARK: - Happy paths (fake)

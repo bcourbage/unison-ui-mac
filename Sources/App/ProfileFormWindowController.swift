@@ -3,7 +3,10 @@ import AppKit
 /// Editor for a Unison `.prf` profile. Two modes:
 ///
 /// - **Edit existing** — opens with a profile name (e.g. "Sync-Home") and
-///   loads `<unisonDirectory>/<name>.prf` into the form. Name is locked.
+///   loads `<unisonDirectory>/<name>.prf` into the form. The name is editable:
+///   changing it renames the profile on save (move the `.prf`, carry the `.bak`,
+///   update prefs order/hidden). A rename of a SYMLINK-backed profile is refused
+///   (it would orphan the link's target) — see `ProfileSaveError.renameOfSymlink`.
 /// - **New** — name is editable; on save we write to a fresh file (with
 ///   collision check) and the picker reloads.
 ///
@@ -45,17 +48,24 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let secondRootField = NSTextField(string: "")
 
     // List fields (multi-line, one value per line)
+    /// Shown beside every value box: a line starting with `#` is a comment, so a
+    /// value that must begin with `#` or `\` is escaped with a leading `\`
+    /// (`\#recycle`, `\\archive`). Disclosing the grammar keeps a hand-typed
+    /// leading-`#`/`\` value from silently becoming a comment or losing a backslash.
+    private static let escapeHelp =
+        " A line starting with # is a comment; to enter a value that begins with # or \\, prefix it with \\ (e.g. \\#recycle, \\\\archive)."
+
     private let pathsView = ListFieldView(
         label: "Paths to sync",
-        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\". Lines beginning with # are comments."
+        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\"." + escapeHelp
     )
     private let ignoreView = ListFieldView(
         label: "Ignore patterns",
-        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets. Lines beginning with # are comments."
+        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets." + escapeHelp
     )
     private let ignorenotView = ListFieldView(
         label: "Exceptions (override ignore)",
-        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line. Lines beginning with # are comments."
+        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line." + escapeHelp
     )
 
     // Built in configure() (needs the list of existing profiles).
@@ -80,9 +90,36 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let logNameField = NSTextField(string: "")
     private var logFolderRow: NSView!
     private var logNameRow: NSView!
-    /// `log` value as loaded, so turning the checkbox off can preserve an
-    /// explicit `false`/absent rather than silently flipping the meaning.
+    /// `log` value as loaded, used only to render the checkbox On/Off at load
+    /// (Unison's default is true, so absent → On). Turning the checkbox off always
+    /// writes `log = false`; it does not preserve an absent value (SF6).
     private var originalLog: String?
+
+    /// Non-nil when the loaded profile CANNOT be safely edited through this form —
+    /// the read failed / wasn't UTF-8 (B4), or it has duplicated surfaced scalar
+    /// settings the form can't represent (SF5). Save and mutation are refused; the
+    /// user is pointed at raw-file editing. A blank form must never overwrite a
+    /// profile it couldn't faithfully load.
+    private var notEditableReason: String?
+
+    /// Set once the user changes any logging control, so an unrelated save leaves
+    /// an explicit `log`/`logfile` exactly as loaded (SF6).
+    private var loggingDirty = false
+
+    /// Editor-surfaced SCALAR keys (each has a single dedicated field). Excludes
+    /// the legitimately list-valued keys (root/path/ignore/ignorenot). A duplicate
+    /// among these is ambiguous to a single-field form (SF5).
+    private static var surfacedScalarKeys: Set<String> {
+        Set(remoteKeys + attrKeys + optionKeys)
+    }
+
+    /// Whether Unison's `log` preference is ON for a loaded value. Unison's default
+    /// is TRUE, so an ABSENT `log` is ON; only an explicit `false` is OFF (SF6).
+    /// Pure (`nonisolated`) so it is callable and testable off the main actor.
+    nonisolated static func logEnabled(_ value: String?) -> Bool {
+        guard let v = value?.trimmingCharacters(in: .whitespaces).lowercased() else { return true }
+        return v != "false"
+    }
 
     /// Tier-1 inheritance banner: shown when the profile `include`s others.
     private let includesBanner = NSTextField(labelWithString: "")
@@ -432,6 +469,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // defaults to Unison-<profile>.log. Both rows hide when logging off.
         logCheckbox.target = self
         logCheckbox.action = #selector(logToggled(_:))
+        logFolderField.delegate = self   // SF6: edits mark logging dirty
+        logNameField.delegate = self
         logFolderField.placeholderString = SettingsModel.defaultLogDirectory()
         logFolderField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         logFolderBrowse.bezelStyle = .rounded
@@ -688,12 +727,33 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Reads the .prf from disk (when editing existing) and populates the
     /// form fields. Unknown keys land in the Advanced field as raw lines.
     private func loadDocumentIntoForm() {
+        notEditableReason = nil
         if let name = initialProfileName {
             let url = profileURL(forName: name)
             if let text = try? String(contentsOf: url, encoding: .utf8) {
                 prfDocument = ProfileDocument.parse(text)
             } else {
+                // B4: the profile couldn't be read (permissions) or isn't UTF-8.
+                // Do NOT present a blank editable form that would overwrite the
+                // real file on Save — refuse editing and surface the failure.
                 TraceLog.shared.write("ProfileForm: failed to read \(url.path)")
+                notEditableReason =
+                    "This profile couldn’t be read as text. It may use a non-UTF-8 encoding or "
+                    + "be unreadable. To avoid overwriting it with a blank profile, editing is "
+                    + "disabled — open it in a text editor instead:\n\n\(url.path)"
+            }
+        }
+        // SF5: a scalar setting duplicated in the file has an effective (last)
+        // value the single-field form can't safely represent — a save would
+        // collapse the duplicates and could flip the effective value. Refuse
+        // editing (the effective value is still shown, read-only).
+        if notEditableReason == nil {
+            let dups = prfDocument.duplicatedScalarKeys(among: Self.surfacedScalarKeys)
+            if !dups.isEmpty {
+                notEditableReason =
+                    "This profile sets " + dups.joined(separator: ", ") + " more than once. Unison "
+                    + "uses the last value, which a single-field editor can’t safely round-trip. "
+                    + "Editing is disabled — adjust the duplicates in a text editor first."
             }
         }
         // Top-level fields: the two `root = …` lines in document order.
@@ -712,10 +772,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         advancedView.values = advancedLines(from: prfDocument)
 
         // Remote connection fields (owned by Roots → Remote Connection).
-        servercmdField.stringValue = prfDocument.firstValue(forKey: "servercmd") ?? ""
-        sshcmdField.stringValue = prfDocument.firstValue(forKey: "sshcmd") ?? ""
-        sshargsField.stringValue = prfDocument.firstValue(forKey: "sshargs") ?? ""
-        clientHostNameField.stringValue = prfDocument.firstValue(forKey: "clientHostName") ?? ""
+        // Scalars read the EFFECTIVE (last) value — Unison's last-wins order (SF5).
+        servercmdField.stringValue = prfDocument.lastValue(forKey: "servercmd") ?? ""
+        sshcmdField.stringValue = prfDocument.lastValue(forKey: "sshcmd") ?? ""
+        sshargsField.stringValue = prfDocument.lastValue(forKey: "sshargs") ?? ""
+        clientHostNameField.stringValue = prfDocument.lastValue(forKey: "clientHostName") ?? ""
         updateRemoteVisibility()
 
         // Picker visibility (mirrors the Profile Editor's eye toggle).
@@ -725,12 +786,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         visibilityCheckbox.state = isHidden ? .off : .on
 
         // File attributes
-        setTriState(timesPopup, from: prfDocument.firstValue(forKey: "times"))
-        setTriState(rsrcPopup, from: prfDocument.firstValue(forKey: "rsrc"))
-        setTriState(ownerPopup, from: prfDocument.firstValue(forKey: "owner"))
-        setTriState(groupPopup, from: prfDocument.firstValue(forKey: "group"))
-        setTriState(dontchmodPopup, from: prfDocument.firstValue(forKey: "dontchmod"))
-        switch prfDocument.firstValue(forKey: "perms") {
+        setTriState(timesPopup, from: prfDocument.lastValue(forKey: "times"))
+        setTriState(rsrcPopup, from: prfDocument.lastValue(forKey: "rsrc"))
+        setTriState(ownerPopup, from: prfDocument.lastValue(forKey: "owner"))
+        setTriState(groupPopup, from: prfDocument.lastValue(forKey: "group"))
+        setTriState(dontchmodPopup, from: prfDocument.lastValue(forKey: "dontchmod"))
+        switch prfDocument.lastValue(forKey: "perms") {
         case nil:        permsPopup.selectItem(at: 0)
         case "0"?:       permsPopup.selectItem(at: 1)
         case let mask?:  permsPopup.selectItem(at: 2); permsMaskField.stringValue = mask
@@ -738,18 +799,20 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         updatePermsMaskVisibility()
 
         // Options
-        setTriState(confirmbigdelPopup, from: prfDocument.firstValue(forKey: "confirmbigdel"))
-        setTriState(autoPopup, from: prfDocument.firstValue(forKey: "auto"))
-        setTriState(fastcheckPopup, from: prfDocument.firstValue(forKey: "fastcheck"))
+        setTriState(confirmbigdelPopup, from: prfDocument.lastValue(forKey: "confirmbigdel"))
+        setTriState(autoPopup, from: prfDocument.lastValue(forKey: "auto"))
+        setTriState(fastcheckPopup, from: prfDocument.lastValue(forKey: "fastcheck"))
         loadConflict()
 
-        // Logging. Split an existing logfile into folder + name. Leave the
-        // folder blank when it matches the default so the placeholder shows
-        // through (blank means "use the default").
-        originalLog = prfDocument.firstValue(forKey: "log")
-        logCheckbox.state = (originalLog == "true") ? .on : .off
+        // Logging. Unison's `log` default is TRUE, so an absent `log` shows ON —
+        // an unrelated save then leaves an explicit `logfile` in place (SF6).
+        // Split an existing logfile into folder + name. Leave the folder blank when
+        // it matches the default so the placeholder shows through.
+        originalLog = prfDocument.lastValue(forKey: "log")
+        loggingDirty = false
+        logCheckbox.state = Self.logEnabled(originalLog) ? .on : .off
         logNameField.placeholderString = defaultLogName()
-        if let lf = prfDocument.firstValue(forKey: "logfile"), !lf.isEmpty {
+        if let lf = prfDocument.lastValue(forKey: "logfile"), !lf.isEmpty {
             let dir = (lf as NSString).deletingLastPathComponent
             logFolderField.stringValue = (dir == SettingsModel.defaultLogDirectory()) ? "" : dir
             logNameField.stringValue = (lf as NSString).lastPathComponent
@@ -768,6 +831,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // reset the dirty flag explicitly so a fresh form is never seen as edited.
         includesDirty = false
         refreshIncludesBanner()
+        applyEditability()
+    }
+
+    /// Reflect `notEditableReason`: when set, disable Save so a profile that could
+    /// not be faithfully loaded is never overwritten, and surface the reason.
+    private func applyEditability() {
+        let editable = (notEditableReason == nil)
+        saveButton.isEnabled = editable
+        if let reason = notEditableReason {
+            includesBanner.isHidden = false
+            includesBanner.stringValue = "Read-only: " + reason.split(separator: "\n").first.map(String.init)!
+        }
     }
 
     /// Strip a trailing `.prf` for display in the Includes combo — the user
@@ -796,8 +871,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         // `force` wins over `prefer` if a profile somehow sets both.
         let pair: (String, String)?
-        if let f = prfDocument.firstValue(forKey: "force") { pair = ("force", f) }
-        else if let p = prfDocument.firstValue(forKey: "prefer") { pair = ("prefer", p) }
+        if let f = prfDocument.lastValue(forKey: "force") { pair = ("force", f) }
+        else if let p = prfDocument.lastValue(forKey: "prefer") { pair = ("prefer", p) }
         else { pair = nil }
 
         guard let (key, value) = pair else { conflictPopup.selectItem(at: 0); return }
@@ -993,8 +1068,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setConflict(key: raw.key, value: raw.value)
         }
 
-        // Logging. The global mode decides how logfile is composed.
-        if logCheckbox.state == .on {
+        // Logging. SF6: only rewrite `log`/`logfile` when the user actually changed
+        // a logging control — otherwise leave an explicit `logfile` (and the `log`
+        // line, or its Unison default) exactly as loaded, so an unrelated save
+        // never drops a custom logfile.
+        if !loggingDirty {
+            // leave doc's log/logfile untouched
+        } else if logCheckbox.state == .on {
             doc.setValue("true", forKey: "log")
             let nameRaw = logNameField.stringValue.trimmingCharacters(in: .whitespaces)
             let name = nameRaw.isEmpty ? defaultLogName() : nameRaw
@@ -1009,9 +1089,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 sharedDirectory: SettingsModel.sharedLogDirectory(),
                 perProfileFolder: perProfileFolder), forKey: "logfile")
         } else {
-            // Off: write `false` only if it was previously on; otherwise
-            // preserve the original (absent stays absent, false stays false).
-            doc.setValue(originalLog == "true" ? "false" : originalLog, forKey: "log")
+            // Off: write `log = false` unconditionally. Unison's default is TRUE,
+            // so leaving `log` ABSENT (or any non-false value) would keep logging
+            // ENABLED — the user explicitly turned it off, so it must be recorded
+            // as false (SF6, review round 2).
+            doc.setValue("false", forKey: "log")
             doc.setValue(nil, forKey: "logfile")
         }
 
@@ -1057,7 +1139,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // is handled (and refused) in `saveAction` before any mutation; treat it
         // as a no-op here defensively (and `setIncludes` itself refuses too).
         switch includeSaveDecision() {
-        case .unchanged, .refuseUnmanaged:
+        case .unchanged, .refuseUnmanaged, .refuseExtensionless:
             break
         case .applyTopBottom:
             let edited = includesView.entries
@@ -1080,7 +1162,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private func includeSaveDecision() -> ProfileDocument.IncludeSaveDecision {
         ProfileDocument.includeSaveDecision(
             includesEdited: includesDirty,
-            hasUnmanagedOrderedEntries: prfDocument.hasUnmanagedOrderedEntries)
+            hasUnmanagedOrderedEntries: prfDocument.hasUnmanagedOrderedEntries,
+            hasExtensionlessInclude: prfDocument.hasExtensionlessInclude)
     }
 
     /// Add the "pop-out" button to the title bar's upper-right corner as a
@@ -1156,6 +1239,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     @objc private func logToggled(_ sender: NSButton) {
         // Default folder + name show through as placeholders, so nothing to
         // pre-fill: blank fields mean "use the default".
+        loggingDirty = true            // SF6: the user changed a logging control
         logNameField.placeholderString = defaultLogName()
         updateLogfileVisibility()
     }
@@ -1173,10 +1257,19 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                           : (start as NSString).expandingTildeInPath)
         let runIt: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
             guard resp == .OK, let url = panel.url else { return }
-            self?.logFolderField.stringValue = url.path
+            self?.applyChosenLogFolder(url.path)
         }
         if let window { panel.beginSheetModal(for: window, completionHandler: runIt) }
         else { runIt(panel.runModal()) }
+    }
+
+    /// Apply a Browse-chosen log folder. Programmatic assignment doesn't fire
+    /// controlTextDidChange, so this marks the logging controls dirty — otherwise
+    /// the chosen folder is discarded on save (SF6, review round 2). Internal so
+    /// the action-to-save path is testable without an NSOpenPanel.
+    func applyChosenLogFolder(_ path: String) {
+        logFolderField.stringValue = path
+        loggingDirty = true
     }
 
     @objc private func browseFirstRoot(_ sender: NSButton) {
@@ -1234,6 +1327,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func saveAction(_ sender: NSButton) {
+        // B4 / SF5: never write a form that couldn't faithfully load. The disabled
+        // Save button is a courtesy; this guard is the authority.
+        if let reason = notEditableReason {
+            showAlert(text: "This profile can’t be edited here", info: reason, style: .warning)
+            return
+        }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             showAlert(text: "Profile name required",
@@ -1323,6 +1422,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                       style: .warning)
             return
         }
+        // SF4: an extensionless include (e.g. `include common`) would be rewritten
+        // to `include common.prf` — a different file — by the display's `.prf`
+        // strip/re-append. Refuse editing the includes rather than corrupt it.
+        if includeSaveDecision() == .refuseExtensionless {
+            showAlert(text: "Includes can't be edited here",
+                      info: "This profile includes a file whose name has no .prf extension (for example “include common”). Editing includes here would rewrite it to “common.prf”, a different file. Use “Open .prf” to edit this profile in your text editor, then reload.",
+                      style: .warning)
+            return
+        }
 
         let doc = formIntoDocument()
         let text = doc.serialized
@@ -1396,6 +1504,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         case .cleanupFailed(let detail):
             showAlert(text: "The profile was left unchanged, but a temporary file remains",
                       info: "\(detail)", style: .warning)
+        case .renameOfSymlink(let name):
+            showAlert(text: "This profile can't be renamed here",
+                      info: "\(name).prf is a symbolic link (for example into a dotfiles "
+                          + "repository). Renaming it here would replace the link with a regular "
+                          + "file and orphan the linked copy. To rename it, recreate the symbolic "
+                          + "link under the new name — updating its destination if you also rename "
+                          + "the linked file — using Finder, Terminal, or your dotfiles tooling, "
+                          + "then reopen the profile. Its contents were not changed.",
+                      style: .warning)
         }
     }
 
@@ -1404,12 +1521,30 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showAlert(text: String, info: String, style: NSAlert.Style) {
+        // Tests drive save/guard paths headlessly; a modal alert would block the
+        // hosted run. Record the last alert instead of presenting it.
+        if suppressAlertsForTesting { lastAlertForTesting = (text, info); return }
         let alert = NSAlert()
         alert.messageText = text
         alert.informativeText = info
         alert.alertStyle = style
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    // MARK: - Test seams (internal; only used by the hosted-AppKit regressions)
+
+    var suppressAlertsForTesting = false
+    private(set) var lastAlertForTesting: (text: String, info: String)?
+    var pathsViewForTesting: ListFieldView { pathsView }
+    var ignoreViewForTesting: ListFieldView { ignoreView }
+    var ignorenotViewForTesting: ListFieldView { ignorenotView }
+    var isSaveEnabledForTesting: Bool { saveButton.isEnabled }
+    var notEditableReasonForTesting: String? { notEditableReason }
+    func invokeSaveForTesting() { saveAction(saveButton) }
+    func setLogCheckboxForTesting(on: Bool) {
+        logCheckbox.state = on ? .on : .off
+        logToggled(logCheckbox)
     }
 
     // (The rename-warning alert + NSTextFieldDelegate that gated it
@@ -1558,8 +1693,11 @@ extension ProfileFormWindowController: NSSearchFieldDelegate {
     // on the sender: search filters the sidebar; a root change re-evaluates
     // the Remote Connection subsection's visibility.
     func controlTextDidChange(_ obj: Notification) {
-        if obj.object as AnyObject === sidebarSearch {
+        let o = obj.object as AnyObject
+        if o === sidebarSearch {
             filterSidebar()
+        } else if o === logFolderField || o === logNameField {
+            loggingDirty = true          // SF6: a logfile edit must be saved
         } else {
             updateRemoteVisibility()
         }
@@ -1650,6 +1788,11 @@ final class ListFieldView: NSView {
         return p
     }()
 
+    // Test seams for the help-label layout regression (round 4).
+    var helpTextForTesting: String { helpField.stringValue }
+    var helpMaxLinesForTesting: Int { helpField.maximumNumberOfLines }
+    var helpFontForTesting: NSFont { helpField.font ?? .systemFont(ofSize: NSFont.smallSystemFontSize) }
+
     var values: [String] {
         get {
             textView.string
@@ -1675,7 +1818,10 @@ final class ListFieldView: NSView {
         helpField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         helpField.textColor = .secondaryLabelColor
         helpField.lineBreakMode = .byWordWrapping
-        helpField.maximumNumberOfLines = 2
+        // Unrestricted: the escape-grammar help needs 3–4 wrapped lines at the
+        // default window width, and a 2-line cap hid the examples (round 4). The
+        // label wraps and grows to show the whole string.
+        helpField.maximumNumberOfLines = 0
         // Don't let the (required) width chain up to the window honor this
         // label's single-line intrinsic width — that grows the resizable
         // window. Low resistance → it wraps to the available width instead.
