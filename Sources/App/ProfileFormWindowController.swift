@@ -45,17 +45,24 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let secondRootField = NSTextField(string: "")
 
     // List fields (multi-line, one value per line)
+    /// Shown beside every value box: a line starting with `#` is a comment, so a
+    /// value that must begin with `#` or `\` is escaped with a leading `\`
+    /// (`\#recycle`, `\\archive`). Disclosing the grammar keeps a hand-typed
+    /// leading-`#`/`\` value from silently becoming a comment or losing a backslash.
+    private static let escapeHelp =
+        " A line starting with # is a comment; to enter a value that begins with # or \\, prefix it with \\ (e.g. \\#recycle, \\\\archive)."
+
     private let pathsView = ListFieldView(
         label: "Paths to sync",
-        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\". Lines beginning with # are comments."
+        help: "Top-level paths to include in the sync. Blank means \"sync everything under the root\"." + escapeHelp
     )
     private let ignoreView = ListFieldView(
         label: "Ignore patterns",
-        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets. Lines beginning with # are comments."
+        help: "One Unison ignore pattern per line. Examples: `Name *.tmp`, `Path build`, `Regex \\..*`, `BelowPath foo`. Use Add Common… for typical sets." + escapeHelp
     )
     private let ignorenotView = ListFieldView(
         label: "Exceptions (override ignore)",
-        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line. Lines beginning with # are comments."
+        help: "Patterns kept even when an ignore rule would drop them (`ignorenot`). One per line." + escapeHelp
     )
 
     // Built in configure() (needs the list of existing profiles).
@@ -80,8 +87,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let logNameField = NSTextField(string: "")
     private var logFolderRow: NSView!
     private var logNameRow: NSView!
-    /// `log` value as loaded, so turning the checkbox off can preserve an
-    /// explicit `false`/absent rather than silently flipping the meaning.
+    /// `log` value as loaded, used only to render the checkbox On/Off at load
+    /// (Unison's default is true, so absent → On). Turning the checkbox off always
+    /// writes `log = false`; it does not preserve an absent value (SF6).
     private var originalLog: String?
 
     /// Non-nil when the loaded profile CANNOT be safely edited through this form —
@@ -1493,6 +1501,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         case .cleanupFailed(let detail):
             showAlert(text: "The profile was left unchanged, but a temporary file remains",
                       info: "\(detail)", style: .warning)
+        case .renameOfSymlink(let name):
+            showAlert(text: "This profile can't be renamed here",
+                      info: "\(name).prf is a symbolic link (for example into a dotfiles "
+                          + "repository). Renaming it here would replace the link with a regular "
+                          + "file and orphan the linked copy. Rename it in the linked location "
+                          + "instead, then reopen it. Its contents were not changed.",
+                      style: .warning)
         }
     }
 

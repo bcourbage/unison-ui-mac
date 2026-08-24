@@ -6,6 +6,8 @@ import Foundation
 /// is `SystemFileOps`.
 protocol ProfileFileOps {
     func exists(_ path: String) -> Bool
+    /// True iff `path` itself is a symbolic link (does NOT follow the link).
+    func isSymlink(_ path: String) -> Bool
     /// Write `content` to `path` atomically: a temp file in the SAME directory
     /// (destination filesystem) followed by an atomic rename, so `path` is
     /// never left partially written — it holds either the old bytes or the new.
@@ -62,6 +64,11 @@ enum ProfileSaveError: Error, Equatable {
     /// than claiming "nothing changed". Distinct from `backupFailed` (which
     /// asserts a fully clean state).
     case cleanupFailed(String)
+    /// The source profile is a SYMLINK and the user asked to rename it. A rename
+    /// would create a new regular file and remove the link, silently orphaning its
+    /// target (e.g. a dotfiles copy). We refuse rather than break the linkage; the
+    /// name is left unchanged and the user can rename it in the linked location.
+    case renameOfSymlink(name: String)
 }
 
 /// A low-level filesystem-op failure carrying `errno`, thrown by `SystemFileOps`
@@ -149,6 +156,14 @@ struct ProfileSaveTransaction {
         // catches a destination created between here and the write.
         if (isNew || isRename), ops.exists(dest) {
             throw ProfileSaveError.destinationExists(name: newName)
+        }
+
+        // SF15 (round 3): a rename of a SYMLINK-backed profile would create a
+        // regular `<newName>.prf` and delete the `<oldName>.prf` link, orphaning
+        // the linked target. Refuse — the rename can't preserve the linkage and
+        // silently breaking it is worse than declining.
+        if isRename, ops.isSymlink(prf(oldName!)) {
+            throw ProfileSaveError.renameOfSymlink(name: oldName!)
         }
 
         if isRename {
@@ -307,6 +322,11 @@ struct SystemFileOps: ProfileFileOps {
     func exists(_ path: String) -> Bool {
         var isDir: ObjCBool = false
         return fm.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
+    }
+
+    func isSymlink(_ path: String) -> Bool {
+        var st = stat()
+        return lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
     }
 
     func writeAtomic(_ content: String, to path: String) throws {

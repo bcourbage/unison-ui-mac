@@ -75,6 +75,30 @@ final class ProfileSymlinkSaveTests: XCTestCase {
         XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: middle), missing)
     }
 
+    /// SF15 (round 3): the FULL transaction refuses to rename a symlink-backed
+    /// profile through `commit(oldName:newName:)`, leaving the link and its target
+    /// untouched — so the dotfiles linkage is never silently broken.
+    func test_commit_renameOfSymlinkProfile_refused_linkAndTargetIntact() throws {
+        let fm = FileManager.default
+        let dir = try tempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let dotfiles = (dir as NSString).appendingPathComponent("dotfiles")
+        try fm.createDirectory(atPath: dotfiles, withIntermediateDirectories: true)
+        let target = (dotfiles as NSString).appendingPathComponent("old.prf")
+        try "root = /old\n".write(toFile: target, atomically: true, encoding: .utf8)
+        let oldLink = (dir as NSString).appendingPathComponent("old.prf")
+        try fm.createSymbolicLink(atPath: oldLink, withDestinationPath: target)
+
+        let txn = ProfileSaveTransaction(ops: SystemFileOps(), unisonDirectory: dir)
+        XCTAssertThrowsError(try txn.commit(oldName: "old", newName: "new", content: "root = /new\n")) {
+            XCTAssertEqual($0 as? ProfileSaveError, .renameOfSymlink(name: "old"))
+        }
+        // The link, its target, and the (absent) new file are all as before.
+        XCTAssertEqual(try fm.attributesOfItem(atPath: oldLink)[.type] as? FileAttributeType, .typeSymbolicLink)
+        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "root = /old\n")
+        XCTAssertFalse(fm.fileExists(atPath: (dir as NSString).appendingPathComponent("new.prf")))
+    }
+
     func test_writeAtomic_symlinkCycle_failsClosed_touchesNothing() throws {
         let fm = FileManager.default
         let dir = try tempDir()
