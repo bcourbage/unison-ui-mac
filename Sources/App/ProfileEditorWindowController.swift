@@ -50,10 +50,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     // Avoids two ways to do the same thing.
     private let editButton = NSButton(title: "Edit…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
-    /// "Reset Archives" trashes the Unison archive files (ar*/fp*/lk*/
-    /// tm*/sc*) for the selected profile, forcing the next sync to
-    /// rebuild reconciliation state from scratch. Useful when archives
-    /// get corrupted (rare but possible — crash mid-write, etc.).
+    /// "Reset Archives" removes the Unison archive payload files
+    /// (ar*/fp*/tm*/sc* — never the lock lk*) for the selected profile via the
+    /// crash-safe mutation transaction (acquire lk, stage, whole-dir Trash),
+    /// forcing the next sync to rebuild reconciliation state from scratch.
+    /// Useful when archives get corrupted (rare — crash mid-write, etc.).
     /// See `ArchiveHash` for how we identify which files belong to the
     /// profile without going through OCaml.
     private let resetArchivesButton = NSButton(title: "Reset Archives…", target: nil, action: nil)
