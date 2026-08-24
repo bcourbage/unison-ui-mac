@@ -1591,6 +1591,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
         NSApp.activate(ignoringOtherApps: true)
 
+        // Launch smoke for the macOS deployment-baseline check (SF7): reaching
+        // here means the app spun up the OCaml runtime (unison_bridge_startup +
+        // init0 succeeded above) and showed the picker — i.e. it exercised the
+        // exact linked runtime bytes on THIS OS. When UNISON_UI_SMOKE is set,
+        // terminate cleanly so a CI job on the baseline macOS can assert a zero
+        // exit; a post-15 reference bound against a newer SDK would have crashed
+        // at load/init before this point. Intentionally NOT #if DEBUG: the point
+        // is to run the release-built runtime on the floor OS. Sparkle is skipped
+        // under this flag (main.swift) so no network/prompt perturbs the check.
+        if ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil {
+            log.write("SMOKE: engine initialized and picker shown; terminating cleanly (exit 0)")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+
         // If the app crashed on a previous launch, offer (once) to send the
         // macOS crash report. Deferred to the next run-loop turn so the
         // picker is up first and the alert doesn't compete with launch.

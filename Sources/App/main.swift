@@ -27,8 +27,14 @@ app.delegate = delegate
 // background feed check inside the headless host — main-thread activity that
 // perturbs timing-sensitive tests. Mirrors the app's other XCTest guards (e.g.
 // the UNISON-directory redirect in AppDelegate).
+// Also skip Sparkle under UNISON_UI_SMOKE (the macOS-baseline launch check):
+// the smoke launches the release-built app to exercise the OCaml runtime on the
+// deployment-floor OS and exits immediately, so a live updater's first-launch
+// permission prompt / background feed check would only add a network dependency
+// and modal noise to a check that must be deterministic.
 let underXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-let updaterController: SPUStandardUpdaterController? = underXCTest ? nil
+let underSmoke = ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil
+let updaterController: SPUStandardUpdaterController? = (underXCTest || underSmoke) ? nil
     : SPUStandardUpdaterController(
         startingUpdater: true,
         updaterDelegate: nil,

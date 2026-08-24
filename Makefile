@@ -80,6 +80,21 @@ LIBDIR := $(CURDIR)/.build/ocamllibs
 STRIPPED_ASMRUN := $(LIBDIR)/libasmrun_nomain.a
 export STRIPPED_ASMRUN_DIR := $(LIBDIR)
 
+# The full set of OCaml runtime archives the app links (project.yml OTHER_LDFLAGS:
+# -lasmrun_nomain -lthreadsnat -lunixnat -lcamlstrnat). The last three link
+# straight from $(OCAMLLIBDIR); the first is the stripped copy above. All four
+# must be genuinely built for the deployment target (see SF7 below); the runtime
+# archives are the OCaml install's own (built by `ocaml/setup-ocaml`), so this is
+# a property of HOW OCaml was built, verified by verify-runtime-minos.
+RUNTIME_ARCHIVES := $(STRIPPED_ASMRUN) \
+	$(OCAMLLIBDIR)/libthreadsnat.a \
+	$(OCAMLLIBDIR)/libunixnat.a \
+	$(OCAMLLIBDIR)/libcamlstrnat.a
+
+# The app's macOS deployment target, read from the single source of truth
+# (project.yml). verify-runtime-minos asserts the OCaml runtime was built for it.
+DEPLOY_TARGET := $(shell awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[" ]/,""); split($$0,a,":"); print a[2]; exit}' project.yml)
+
 XCODEPROJ := unison-ui-mac.xcodeproj
 DERIVED := $(CURDIR)/.build/derived
 BUILT_APP := $(DERIVED)/Build/Products/$(CONFIG)/unison-ui-mac.app
@@ -191,12 +206,54 @@ vendor-manual:
 	@echo "  - update vendor/README.md with the new commit hash"
 	@echo "  - git add vendor/ && git commit"
 
-# ----- Stripped libasmrun -----
+# ----- OCaml runtime built for the deployment target (SF7) -----
+# The OCaml runtime archives the app links (libasmrun.a, libthreadsnat.a,
+# libunixnat.a, libcamlstrnat.a from `ocamlc -where`) come from the OCaml install
+# itself. When OCaml is built on a newer macOS host (Release runs on macOS 26)
+# WITHOUT a deployment target, its runtime objects are compiled with that host's
+# minos — so linking the app for macOS 15 emits ~470 "was built for newer macOS
+# version" warnings, and, worse, any post-15 API the runtime references is bound
+# as a STRONG symbol against the newer SDK rather than weak-imported. That is a
+# real load-time / runtime hazard on the baseline OS, not a cosmetic warning.
+#
+# The fix is to build OCaml itself for the deployment target: the CI/release
+# workflows export MACOSX_DEPLOYMENT_TARGET (from project.yml) BEFORE
+# `ocaml/setup-ocaml`, so the compiler evaluates availability at the target and
+# emits genuinely minos-15 runtime objects (SDK stays the host's — an honest
+# "built against SDK 26, deploys to 15"). We do NOT rewrite LC_BUILD_VERSION
+# afterward: relabelling would only falsify the metadata the gates then trust.
+# `verify-runtime-minos` asserts the runtime really was built for the target, and
+# a macOS-15 launch smoke of the release-built app exercises the exact bytes.
+
+# Stripped copy of libasmrun.a WITHOUT main.n.o, so the linker doesn't see two
+# definitions of `_main` (one from libasmrun, one synthesized by Swift). This is a
+# pure `ar` repackage — no recompile, no metadata rewrite — so the stripped copy
+# inherits libasmrun.a's real deployment target unchanged.
 $(STRIPPED_ASMRUN): $(OCAMLLIBDIR)/libasmrun.a
 	@mkdir -p $(LIBDIR)/extract
 	cd $(LIBDIR)/extract && ar x $(OCAMLLIBDIR)/libasmrun.a && rm -f main.n.o
 	ar rcs $@ $(LIBDIR)/extract/*.o
 	rm -rf $(LIBDIR)/extract
+
+# Deterministic SF7 gate: every runtime archive the app links was genuinely built
+# for the deployment target (checks the archives directly, no app build required).
+# Fails loudly if OCaml was built for a different macOS — the condition that both
+# produces the deployment-version warnings and leaves post-15 references strongly
+# bound. Unlike a relabel, this asserts a property of the actual compiled bytes.
+.PHONY: verify-runtime-minos
+verify-runtime-minos: $(STRIPPED_ASMRUN)
+	@test -n "$(DEPLOY_TARGET)" || { echo "error: could not read deploymentTarget from project.yml"; exit 1; }
+	@fail=0; \
+	for a in $(RUNTIME_ARCHIVES); do \
+		test -f "$$a" || { echo "FAIL: runtime archive not found: $$a" >&2; fail=1; continue; }; \
+		vers="$$(otool -l "$$a" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $$2; f=0}' | sort -u | paste -sd, -)"; \
+		if [ "$$vers" != "$(DEPLOY_TARGET)" ]; then \
+			echo "FAIL: $$(basename $$a) built for macOS '$$vers' (want $(DEPLOY_TARGET)) — build OCaml with MACOSX_DEPLOYMENT_TARGET=$(DEPLOY_TARGET)" >&2; fail=1; \
+		else \
+			echo "OK:   $$(basename $$a) built for macOS $(DEPLOY_TARGET)"; \
+		fi; \
+	done; \
+	test $$fail -eq 0
 
 # ----- Xcode project (regenerate from project.yml + source list) -----
 #
@@ -287,7 +344,7 @@ export CONFIG
 
 # ----- Build via xcodebuild -----
 .PHONY: build
-build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos $(XCODEPROJ)
 	@vals="$$(./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -313,7 +370,7 @@ run: build
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
 # identically (signing is always resolved with CONFIG=Debug here).
 .PHONY: test
-test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) $(XCODEPROJ)
+test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos $(XCODEPROJ)
 	@vals="$$(CONFIG=Debug ./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -355,6 +412,20 @@ check-appcast:
 .PHONY: check-sign-app
 check-sign-app:
 	@./scripts/test-sign-app.sh
+
+# SF7 bundle-floor verifier test (clang fixtures only, no Xcode/OCaml): exercises
+# verify-bundle-minos.sh's two-tier rule and its fail-closed cases.
+.PHONY: check-bundle-minos
+check-bundle-minos:
+	@./scripts/test-verify-bundle-minos.sh
+
+# SF7: assert the BUILT bundle's Mach-O deployment floors (checks the finished
+# product, complementing verify-runtime-minos which checks the input archives).
+# Runs against the current CONFIG's build output; CI invokes it after `make build`
+# and, for the exact packaged/signed artifact, against the unpacked .app.
+.PHONY: verify-bundle-minos
+verify-bundle-minos:
+	./scripts/verify-bundle-minos.sh $(BUILT_APP)
 
 # Release-notes markdown -> Sparkle "What's New" HTML fragment converter test
 # (Python stdlib only, no network / no Sparkle tools).

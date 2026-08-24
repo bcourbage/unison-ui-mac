@@ -67,27 +67,40 @@ incompatible hosts rather than producing a bundle that won't launch.
   xcode-select --install
   ```
 - **Homebrew**: <https://brew.sh>
-- **Build tools**: `xcodegen` (via Homebrew) plus **OCaml 5.5.0**.
+- **Build tools**: `xcodegen` (via Homebrew) plus **OCaml 5.5.0, built for the
+  app's macOS deployment target**.
   ```sh
   brew install xcodegen
-  # OCaml 5.5.0 specifically: the vendored blob's runtime ABI is locked to
-  # it, so the app must link against 5.5.0 (`libasmrun`, `libthreadsnat`, …).
-  # The reproducible way is an opam switch:
-  opam switch create 5.5.0    # then: eval $(opam env)
   ```
-  A plain `brew install ocaml` works **only** while Homebrew's current
-  formula is exactly 5.5.0; `make` runs `check-ocaml-version` and fails fast
-  otherwise. OCaml is needed for the runtime libraries we link, *not* to
+  Two constraints apply to OCaml, and both are enforced by `make build`:
+  - **Version 5.5.0** — the vendored blob's runtime ABI is locked to it, so the
+    app must link against 5.5.0's runtime archives (`libasmrun`, `libthreadsnat`,
+    …). `make` runs `check-ocaml-version` and fails fast on any other version.
+  - **Built for macOS 15** — those archives must have been compiled *for* the
+    deployment target. On a newer host (e.g. macOS 26) a normally-installed OCaml
+    builds its runtime for that host, which raises the real minimum and makes the
+    shipped app's macOS-15 floor a false claim; `make` runs `verify-runtime-minos`
+    and fails fast. `15.0` here must match `project.yml`'s `deploymentTarget.macOS`.
+
+  Create a dedicated switch with the deployment target set **before** the compiler
+  is built:
+  ```sh
+  MACOSX_DEPLOYMENT_TARGET=15.0 \
+    opam switch create unison-ui-mac-5.5.0 ocaml-base-compiler.5.5.0
+  eval "$(opam env --switch=unison-ui-mac-5.5.0)"
+  ```
+  Exporting `MACOSX_DEPLOYMENT_TARGET` *after* OCaml is installed does not repair
+  anything — the runtime archives are already compiled, so an existing host-built
+  switch (or a `brew install ocaml`, even at exactly 5.5.0) must be rebuilt with
+  the variable set. OCaml is needed for the runtime libraries we link, *not* to
   compile Unison itself.
 
 That's it. **No upstream Unison clone required**: a prebuilt
 `unison-blob.o` lives in `vendor/` (see
 [vendor/README.md](vendor/README.md) for provenance). The build
-compiles Swift + C, links against the vendored blob + the OCaml 5.5.0
-runtime from your selected toolchain (the preferred, reproducible one is
-the opam 5.5.0 switch above; a Homebrew `ocaml` also works only while it
-is exactly 5.5.0), and finishes in a few seconds rather than the 5–10 min
-that a from-source upstream build would take. Maintainer-only target
+compiles Swift + C, links against the vendored blob + the target-built OCaml
+5.5.0 runtime from the switch above, and finishes in a few seconds rather than
+the 5–10 min that a from-source upstream build would take. Maintainer-only target
 `make vendor-blob` rebuilds the vendored blob when upstream Unison
 bumps version.
 
@@ -123,7 +136,7 @@ build the binary yourself, see
 ```sh
 # 1. Get build prerequisites (one time)
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
 
 # 2. Clone this repo
 cd ~/somewhere
@@ -243,7 +256,7 @@ brew install --cask bcourbage/tap/unison-ui-mac
 
 ```sh
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
 make install
 ```
 

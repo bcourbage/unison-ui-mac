@@ -67,12 +67,29 @@ jobs:
           uname -m
 
       # Pinned OCaml 5.5.0 via opam (setup-ocaml manages its own caching).
+      # SF7: export the app's macOS deployment target BEFORE setup-ocaml so the
+      # OCaml runtime is GENUINELY built for it. setup-ocaml compiles the compiler
+      # + runtime from source; with MACOSX_DEPLOYMENT_TARGET set, clang evaluates
+      # availability at the target and emits minos-15 runtime objects (post-15
+      # APIs weak-imported, not strongly bound). This is the real fix — the app is
+      # never relabelled. verify-runtime-minos (run by `make build`) asserts it.
+      - name: Export macOS deployment target (from project.yml) for the OCaml build
+        run: |
+          target="$(awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[" ]/,""); split($0,a,":"); print a[2]; exit}' project.yml)"
+          [ -n "$target" ] || { echo "::error::could not read deploymentTarget macOS from project.yml"; exit 1; }
+          echo "MACOSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
+          echo "OCaml runtime will be built for macOS $target"
+
       # This is the runtime the vendored blob is linked against; do not
       # replace with an unversioned `brew install ocaml`.
       - name: Set up OCaml 5.5.0 (pinned)
         uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: "5.5.0"
+          # Bust any cached switch built before the deployment target was pinned
+          # (a stale cache would serve a host-minos runtime and fail
+          # verify-runtime-minos). Bump this suffix if the target changes.
+          cache-prefix: "v2-macos-deploy-target"
 
       # setup-ocaml doesn't put the switch's bin on PATH for plain `run:`
       # steps; add it so `ocamlc` (and thus `make`'s `ocamlc -where` /
@@ -117,6 +134,13 @@ jobs:
         # (required Sparkle components; explicit identity must be Developer ID).
         run: make check-sign-app
 
+      - name: Check bundle-floor verifier
+        # Pure-shell gate (clang fixtures, no Xcode/OCaml): the SF7
+        # verify-bundle-minos.sh two-tier rule — our own binaries == the
+        # deployment target, nothing exceeds it, fail-closed on an empty bundle.
+        # Runs before Build so a regression in the deployment gate fails fast.
+        run: make check-bundle-minos
+
       - name: Check release-notes HTML converter
         # Pure-Python (stdlib) gate: the release-notes markdown -> Sparkle
         # "What's New" HTML-fragment converter, including the fragment invariant
@@ -144,7 +168,27 @@ jobs:
         # Debug, and stops short of running tests. Catches Swift
         # compile errors with a smaller failure surface than `make
         # test`, so a broken build shows up clearly in CI logs.
-        run: make build
+        #
+        # SF7 end-to-end gate: capture the build log and fail on ANY
+        # deployment-version linker warning. `make build` already runs
+        # verify-runtime-minos (the OCaml runtime was genuinely built for the
+        # target) as a prerequisite; this catches any NEW source of a
+        # newer-macOS object slipping into the link.
+        run: |
+          set -o pipefail
+          make build 2>&1 | tee build.log
+          if grep -q "was built for newer" build.log; then
+            echo "::error::deployment-version linker warnings present — a Mach-O is built for a newer macOS than the baseline (SF7)"
+            grep "was built for newer" build.log | sort -u | head
+            exit 1
+          fi
+
+      - name: Verify macOS deployment baseline
+        # Assert the finished Debug bundle's Mach-O floors: our own binaries are
+        # exactly the deployment target, and no embedded binary (incl. Sparkle)
+        # exceeds it. This runner IS macos-15, so a green build+test here is the
+        # app genuinely building AND running its full XCTest suite on the baseline OS.
+        run: make verify-bundle-minos
 
       - name: Run tests
         # 286 tests at the v0.1.0 baseline. Should run in ~1 s on the
