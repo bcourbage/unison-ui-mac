@@ -128,9 +128,13 @@ targets:
         #                            is in the maintainer's login keychain, and a
         #                            copy also exists as the gated `release`
         #                            environment secret SPARKLE_ED_PRIVATE_KEY;
-        #                            neither belongs in repo contents (rotate BOTH
-        #                            on compromise). NOT a placeholder — it changes
-        #                            only on a key rotation. Sparkle's validator accepts an
+        #                            neither belongs in repo contents. NOT a
+        #                            placeholder — it changes only on a key
+        #                            rotation, which the current one-key pipeline
+        #                            does NOT support in-band; on compromise, the
+        #                            recovery is manual reinstallation (see the
+        #                            "Key rotation" section of docs/sparkle-updates.md).
+        #                            Sparkle's validator accepts an
         #                            update when EITHER a valid EdDSA archive
         #                            signature OR a matching Apple Developer ID
         #                            signature is present (an OR, not both). The

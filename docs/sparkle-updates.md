@@ -110,8 +110,8 @@ accordingly.
 (`SURequireSignedFeed: true` + `SUSignedFeedFailureExpirationInterval: 0`, see
 `project.yml`), so they accept an appcast only if its **feed-level** signature is
 made with the key they already trust — the **old** key — and there is no automatic
-recovery if that fails. But two properties of the pinned Sparkle 2.9.6 tools make a
-single-key transition feed impossible:
+recovery if that fails. But the pinned Sparkle 2.9.6 tools and a single-feed design
+make an in-band rotation impossible:
 
 - `generate_appcast` emits an archive's `edSignature` **only when the archived
   app's `SUPublicEDKey` matches the private key it is signing with**; on a mismatch
@@ -119,27 +119,35 @@ single-key transition feed impossible:
   Keychain` and emits **no** signature
   ([Appcast.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_appcast/Appcast.swift#L178-L218)).
   Our structural gate (`scripts/verify-appcast-signatures.sh`) then rejects the
-  feed. So a transition bundle carrying the **new** public key **cannot** be signed
-  with the **old** key.
-- `generate_appcast` signs the archive *and* the feed with the **same**
-  `--ed-key-file`. Signing with the new key (to satisfy the archive) yields a
-  **new-key feed signature**, which existing clients reject. There is no one-shot
-  way to produce an old-key feed signature alongside a new-key archive signature.
+  feed. So a transition bundle carrying the **new** public key gets only a
+  **new-key** archive signature — existing clients must accept its archive via the
+  stable **Developer ID** path, not EdDSA.
+- A single appcast feed carries only **one** feed-level signature. `sign_update`
+  **can** re-sign a feed's XML directly with any key — it extracts the existing
+  content and writes the replacement atomically
+  ([sign_update main.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/sign_update/main.swift#L235-L249))
+  — so an old-key feed *or* a new-key feed is each producible. What is impossible is
+  **one** feed that satisfies **both** client generations: existing clients require
+  an old-key feed signature, while a client that has installed the transition app
+  trusts the **new** key and rejects an old-key feed.
 - `generate_keys` with the default account does not create a second key — it
   **reuses** the existing keychain key; a distinct key needs a separate `--account`
   (or explicit export/remove/import)
   ([main.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_keys/main.swift#L159-L187)).
 
-**What a supported rotation would require (unimplemented).** A correct transition
-needs **two keys handled separately**: generate the new key under its own keychain
-`--account`; sign the transition *archive* under the new key (so it matches the new
-bundle) while separately signing the *feed body* under the old key and splicing in
-that feed-level signature — no supported single command does both — held across a
-cutover window until active clients have installed the transition release, then a
-switch to the new key. This needs new release tooling and a fixture that proves the
-transition feed validates under **both** an old-key and a new-key client, using two
-throwaway keys and the pinned Sparkle tools. None of that exists today. Until it
-does, do not rotate.
+**What a supported rotation would require (unimplemented).** Because the two client
+generations need different feed signatures, a correct rotation needs **two feed
+URLs**, not one: an **old-key-signed transition feed** kept at the current
+`SUFeedURL` for existing and dormant clients (whose archives they accept via the
+stable Developer ID path), and a **new-key-signed feed** at a NEW `SUFeedURL` baked
+into the transition app. The transition app ships both the new `SUPublicEDKey` and
+the new feed URL; once an existing client installs it, it follows the new feed
+thereafter. This needs the new key generated under its own keychain `--account`,
+each feed (re-)signed with `sign_update` under the appropriate key, the old feed
+retained as long as any dormant client may still poll it, and a fixture using two
+throwaway keys + the pinned Sparkle tools proving an **old-key** client validates
+the transition feed and a **new-key** client validates the new feed. None of that
+exists today. Until it does, do not rotate.
 
 **If the key is ever compromised or lost.** Existing auto-update clients cannot be
 migrated in-band. Recovery is out-of-band: publish a fresh signed + notarized build
