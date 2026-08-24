@@ -6,9 +6,10 @@ import XCTest
 /// identity matches (else fail closed), and unlinked only after a successful,
 /// confirmed file operation; a missing lock is acquired fresh atomically before
 /// any file is touched. An unsuccessful recovery keeps the record intact (stays
-/// blocked); adopted/fresh barriers are held, but a hash whose acquisition failed
-/// with an unknown result may be left physically unprotected. Plus the pure
-/// profile-open block policy.
+/// blocked); adopted barriers stay held, while fresh barriers are released on
+/// abort (only a release we couldn't confirm may remain), and a hash whose
+/// acquisition failed with an unknown result may be left physically unprotected.
+/// Plus the pure profile-open block policy.
 final class ArchiveStagingRecoveryTests: XCTestCase {
 
     private let h  = "abcdef0123456789abcdef0123456789"

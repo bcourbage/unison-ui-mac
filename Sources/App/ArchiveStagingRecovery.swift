@@ -138,28 +138,34 @@ enum ArchiveStagingRecovery {
         //    the transaction recorded — otherwise it may belong to a DIFFERENT
         //    process (started after the crash) and must never be adopted or deleted
         //    (round-11 Blocker). A MISSING lock is acquired FRESH atomically. On any
-        //    failure we release only the FRESH locks WE created this attempt (they
-        //    are ours; releasing them restores the pre-recovery state and avoids a
-        //    deadlock) and touch neither payload nor any other process's lock.
+        //    failure we release only the FRESH locks WE created this attempt (this
+        //    restores the pre-recovery state and avoids a deadlock) and touch neither
+        //    payload nor any other process's lock. A release we can't CONFIRM is
+        //    surfaced without claiming the surviving lock is ours — it may belong to
+        //    another Unison that acquired the hash before verification.
         var barrier: [String: Barrier] = [:]
         var freshlyAcquired: [String] = []
         // Release the fresh locks WE created this attempt, CONFIRMING each (SF1 —
-        // ArchiveLocking.release returns whether the lock is gone). Returns, sorted,
-        // the hashes whose fresh lock could NOT be released.
-        func releaseFresh() -> [String] {
-            var stuck: [String] = []
-            for h in freshlyAcquired.reversed() where !locking.release(hash: h) { stuck.append(h) }
-            return stuck.sorted()
+        // ArchiveLocking.release returns whether the lock is gone afterward).
+        // Returns, sorted, the hashes whose release could NOT be confirmed. A
+        // false result does NOT prove the surviving lock is ours: our unlink may
+        // have failed, OR our lock was removed and another Unison acquired the hash
+        // before the check — so it must never be characterized as ours to delete.
+        func releaseUnconfirmed() -> [String] {
+            var unconfirmed: [String] = []
+            for h in freshlyAcquired.reversed() where !locking.release(hash: h) { unconfirmed.append(h) }
+            return unconfirmed.sorted()
         }
-        // Abort with `msg`; if releasing our own fresh locks left any behind, upgrade
-        // to needsManualReview naming them (their identity isn't recorded, so a later
-        // recovery can't adopt them — surface it rather than leaving a dead end).
+        // Abort with `msg`; if any of our own release attempts couldn't be
+        // confirmed, upgrade to needsManualReview and warn WITHOUT claiming the
+        // surviving lock is ours (it may belong to another Unison).
         func abort(_ msg: String, deferred: Bool) -> RecoverOutcome {
-            let stuck = releaseFresh()
-            guard stuck.isEmpty else {
-                return .needsManualReview(msg + " Additionally, recovery could not release the "
-                    + "lock(s) it had just acquired for: \(stuck.joined(separator: ", ")); these "
-                    + "remain and need manual cleanup.")
+            let unconfirmed = releaseUnconfirmed()
+            guard unconfirmed.isEmpty else {
+                return .needsManualReview(msg + " Could not confirm the lock(s) for "
+                    + "\(unconfirmed.joined(separator: ", ")) were released. A surviving lock may "
+                    + "belong to another Unison. Do not delete it while any Unison may be running; "
+                    + "retry after all Unison processes are quiescent, or inspect it manually.")
             }
             return deferred ? .aborted(msg) : .needsManualReview(msg)
         }
