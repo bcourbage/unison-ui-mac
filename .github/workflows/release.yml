@@ -45,6 +45,15 @@ on:
 permissions:
   contents: read
 
+# SF11: XcodeGen pinned + checksum-verified (in lockstep with ci.yml and
+# vendor-blob.yml) so a floating tool can't change the generated .xcodeproj on the
+# signed release path. The signature covers whatever project.yml generated, so the
+# generator must be reproducible.
+env:
+  XCODEGEN_VERSION: "2.44.1"
+  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
+  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+
 jobs:
   build:
     name: Build check (unsigned)
@@ -95,8 +104,20 @@ jobs:
           ocamlc -version
           test "$(ocamlc -version)" = "5.5.0"
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install pinned + SHA-256-verified XcodeGen
+        # SF11: pin + verify XcodeGen (not a floating `brew install`) so the
+        # generated .xcodeproj — the source of truth for build settings and
+        # Info.plist security keys — is reproducible on the release path.
+        run: |
+          curl -fsSL -o xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
+            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
+          unzip -q xcodegen.zip
+          sudo ./xcodegen/install.sh
+          got="$(xcodegen --version | awk '{print $2}')"
+          echo "xcodegen: $got"
+          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
 
       - name: Run tests
         run: make test
