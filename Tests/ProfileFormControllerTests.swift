@@ -74,6 +74,41 @@ final class ProfileFormControllerTests: XCTestCase {
         XCTAssertFalse(saved.contains("log = false"), "log was not touched")
     }
 
+    // MARK: - Round 4: the escape-grammar help must not be clipped
+
+    /// At the default window width the three value-box help strings need more than
+    /// two lines, so the round-3 two-line cap hid the escape grammar. The label
+    /// must be unrestricted (maxLines == 0) and each production string must fully
+    /// fit the (unlimited) label at the available width.
+    func test_round4_helpLabels_areUnrestricted_andFitAtDefaultWidth() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(atPath: dir) }
+        try "root = /a\n".write(toFile: prfPath(dir, "p"), atomically: true, encoding: .utf8)
+        let c = make(dir, "p")
+
+        // Available help width at the default 620pt window (matches the constraint
+        // `includesBanner.widthAnchor == rightSide - 28` region; the boxes sit in
+        // the same right column). Measure conservatively.
+        let availableWidth: CGFloat = 416
+
+        for box in [c.pathsViewForTesting, c.ignoreViewForTesting, c.ignorenotViewForTesting] {
+            XCTAssertEqual(box.helpMaxLinesForTesting, 0,
+                           "help label must be unrestricted so the escape grammar shows")
+            let text = box.helpTextForTesting
+            XCTAssertTrue(text.contains("\\#recycle") && text.contains("\\\\archive"),
+                          "the escape examples are present in the help string")
+            // The string genuinely needs > 2 lines here (documents why 2 clipped),
+            // and an unlimited label's fitting height covers every one of them.
+            let attrs: [NSAttributedString.Key: Any] = [.font: box.helpFontForTesting]
+            let bounds = (text as NSString).boundingRect(
+                with: NSSize(width: availableWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs)
+            let lineHeight = box.helpFontForTesting.ascender - box.helpFontForTesting.descender + box.helpFontForTesting.leading
+            let linesNeeded = Int((bounds.height / max(lineHeight, 1)).rounded(.up))
+            XCTAssertGreaterThan(linesNeeded, 2,
+                                 "this string needs >2 lines at \(availableWidth)pt — a 2-line cap would clip it")
+        }
+    }
+
     func test_sf6_browseChosenFolder_isSaved() throws {
         let oldMode = SettingsModel.loggingMode()
         SettingsModel.setLoggingMode(.perProfile)

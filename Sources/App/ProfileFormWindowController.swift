@@ -3,7 +3,10 @@ import AppKit
 /// Editor for a Unison `.prf` profile. Two modes:
 ///
 /// - **Edit existing** — opens with a profile name (e.g. "Sync-Home") and
-///   loads `<unisonDirectory>/<name>.prf` into the form. Name is locked.
+///   loads `<unisonDirectory>/<name>.prf` into the form. The name is editable:
+///   changing it renames the profile on save (move the `.prf`, carry the `.bak`,
+///   update prefs order/hidden). A rename of a SYMLINK-backed profile is refused
+///   (it would orphan the link's target) — see `ProfileSaveError.renameOfSymlink`.
 /// - **New** — name is editable; on save we write to a fresh file (with
 ///   collision check) and the picker reloads.
 ///
@@ -1505,8 +1508,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             showAlert(text: "This profile can't be renamed here",
                       info: "\(name).prf is a symbolic link (for example into a dotfiles "
                           + "repository). Renaming it here would replace the link with a regular "
-                          + "file and orphan the linked copy. Rename it in the linked location "
-                          + "instead, then reopen it. Its contents were not changed.",
+                          + "file and orphan the linked copy. To rename it, recreate the symbolic "
+                          + "link under the new name — updating its destination if you also rename "
+                          + "the linked file — using Finder, Terminal, or your dotfiles tooling, "
+                          + "then reopen the profile. Its contents were not changed.",
                       style: .warning)
         }
     }
@@ -1531,6 +1536,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     var suppressAlertsForTesting = false
     private(set) var lastAlertForTesting: (text: String, info: String)?
+    var pathsViewForTesting: ListFieldView { pathsView }
+    var ignoreViewForTesting: ListFieldView { ignoreView }
+    var ignorenotViewForTesting: ListFieldView { ignorenotView }
     var isSaveEnabledForTesting: Bool { saveButton.isEnabled }
     var notEditableReasonForTesting: String? { notEditableReason }
     func invokeSaveForTesting() { saveAction(saveButton) }
@@ -1780,6 +1788,11 @@ final class ListFieldView: NSView {
         return p
     }()
 
+    // Test seams for the help-label layout regression (round 4).
+    var helpTextForTesting: String { helpField.stringValue }
+    var helpMaxLinesForTesting: Int { helpField.maximumNumberOfLines }
+    var helpFontForTesting: NSFont { helpField.font ?? .systemFont(ofSize: NSFont.smallSystemFontSize) }
+
     var values: [String] {
         get {
             textView.string
@@ -1805,7 +1818,10 @@ final class ListFieldView: NSView {
         helpField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         helpField.textColor = .secondaryLabelColor
         helpField.lineBreakMode = .byWordWrapping
-        helpField.maximumNumberOfLines = 2
+        // Unrestricted: the escape-grammar help needs 3–4 wrapped lines at the
+        // default window width, and a 2-line cap hid the examples (round 4). The
+        // label wraps and grows to show the whole string.
+        helpField.maximumNumberOfLines = 0
         // Don't let the (required) width chain up to the window honor this
         // label's single-line intrinsic width — that grows the resizable
         // window. Low resistance → it wraps to the available width instead.
