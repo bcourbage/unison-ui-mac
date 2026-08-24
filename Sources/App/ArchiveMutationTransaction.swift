@@ -106,6 +106,11 @@ enum ArchiveMutationError: Error, Equatable {
     case revalidationFailed
     case beginStagingFailed
     case stagingFailed(file: String)   // rolled back; original family intact
+    /// A stage failed AND restoring an already-staged file also failed. The
+    /// quarantine + manifest are RETAINED and the locks are kept HELD (Unison
+    /// stays blocked) — nothing is deleted, but the family is split until an
+    /// explicit recovery. The most serious outcome; surface loudly.
+    case rollbackIncomplete(quarantine: String)
 }
 
 struct ArchiveMutationOutcome: Equatable {
@@ -133,7 +138,11 @@ enum ArchiveMutation {
 
         // Release ONLY acquired locks, reverse order, on EVERY exit.
         var owned: [String] = []
-        defer { for h in owned.reversed() { locking.release(hash: h) } }
+        // Release owned locks on exit — EXCEPT when an incomplete rollback left
+        // the family split: then the locks stay HELD so Unison remains blocked
+        // until an explicit recovery.
+        var releaseLocks = true
+        defer { if releaseLocks { for h in owned.reversed() { locking.release(hash: h) } } }
 
         // 1. Acquire all locks in deterministic order, before any payload touch.
         for h in plan.hashes {
@@ -158,8 +167,16 @@ enum ArchiveMutation {
         do {
             for f in plan.payloadFiles { try store.stage(f) }
         } catch {
-            // 3. Rollback: restore every staged file + remove the manifest.
-            try? store.rollback()
+            // 3. Rollback: restore every staged file + remove the manifest. If
+            //    restoration is INCOMPLETE, the store retains the quarantine +
+            //    manifest and throws — we keep the locks held (Unison stays
+            //    blocked) and surface the most serious error.
+            do {
+                try store.rollback()
+            } catch {
+                releaseLocks = false
+                throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?")
+            }
             throw ArchiveMutationError.stagingFailed(file: "\(error)")
         }
 

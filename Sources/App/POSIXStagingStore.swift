@@ -6,6 +6,9 @@ enum ArchiveStoreError: Error, Equatable {
     case manifestWriteFailed(Int32)
     case renameFailed(name: String, errno: Int32)
     case trashFailed(String)
+    /// A rollback could not restore every staged file. The quarantine + manifest
+    /// are RETAINED (nothing deleted) at this path; recovery is explicit.
+    case rollbackIncomplete(String)
 }
 
 /// Production `ArchivePayloadStore`: crash-safe staging inside the unison dir.
@@ -64,13 +67,24 @@ final class POSIXStagingStore: ArchivePayloadStore {
 
     func rollback() throws {
         guard let q = quarantinePath else { return }
+        // Attempt to restore every staged file. Track which ones could NOT be
+        // restored — they remain in the quarantine, never deleted.
+        var unrestored: [String] = []
         for name in stagedNames.reversed() {
             let src = (q as NSString).appendingPathComponent(name)
             let dst = (activeDir as NSString).appendingPathComponent(name)
-            _ = src.withCString { s in dst.withCString { d in rename(s, d) } }  // best-effort restore
+            let rc = src.withCString { s in dst.withCString { d in rename(s, d) } }
+            if rc != 0 { unrestored.append(name) }
+        }
+        if !unrestored.isEmpty {
+            // Incomplete: RETAIN the quarantine + manifest (still pre-commit, so
+            // restart detection fails closed) and keep only the un-restored
+            // names tracked. Do NOT remove anything. Caller keeps the locks held.
+            stagedNames = unrestored
+            throw ArchiveStoreError.rollbackIncomplete(q)
         }
         stagedNames.removeAll()
-        try? fm.removeItem(atPath: q)   // remove quarantine dir + manifest
+        try? fm.removeItem(atPath: q)   // full restore → remove quarantine dir + manifest
         quarantinePath = nil
         manifest = nil
     }

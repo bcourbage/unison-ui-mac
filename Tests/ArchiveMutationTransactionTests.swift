@@ -32,6 +32,7 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         var beginFail = false
         var stageFailAt: Int?
         var commitFail = false
+        var rollbackThrows = false   // simulate an incomplete restore
         private var nStage = 0
         init(present: Set<String>) { self.present = present }
         func beginStaging(_ m: StagingManifest) throws {
@@ -46,6 +47,11 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         }
         func rollback() throws {
             rolledBack = true
+            if rollbackThrows {
+                // Incomplete restore: retain the quarantine (keep staged, keep
+                // manifest); do NOT restore to present.
+                throw StoreErr.missing
+            }
             for n in staged { present.insert(n) }
             staged.removeAll()
             manifest = nil
@@ -139,6 +145,24 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertEqual(store.present, Set(files), "rollback restored every already-staged file")
         XCTAssertTrue(store.staged.isEmpty); XCTAssertNil(store.manifest)
         XCTAssertEqual(lock.released, [h])
+    }
+
+    // MARK: staging failure whose rollback ALSO fails — keep locks HELD, retain
+
+    func test_stagingFailure_rollbackAlsoFails_keepsLocksHeld_retainsQuarantine() {
+        let h = String(repeating: "a", count: 32)
+        let files = ["ar"+h, "fp"+h, "sc"+h]
+        let store = FakeStore(present: Set(files))
+        store.stageFailAt = 2       // f1 staged, f2 fails → rollback…
+        store.rollbackThrows = true // …which cannot fully restore
+        let lock = FakeLocking()
+        XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError,
+                           .rollbackIncomplete(quarantine: "/fake/quarantine"))
+        }
+        XCTAssertEqual(lock.acquired, [h])
+        XCTAssertEqual(lock.released, [], "locks stay HELD after an incomplete rollback")
+        XCTAssertNotNil(store.manifest, "manifest retained (still pre-commit)")
     }
 
     // MARK: commit (Trash) failure — no partial family at origin, retained quarantine

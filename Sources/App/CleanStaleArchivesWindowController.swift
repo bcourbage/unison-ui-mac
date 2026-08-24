@@ -606,6 +606,11 @@ final class CleanStaleArchivesWindowController: NSWindowController,
             return "The set of stale archives changed since you reviewed it, so nothing was moved. The list has been refreshed; review and try again."
         case .beginStagingFailed, .stagingFailed:
             return "Preparing to move the archives failed, so nothing was removed. The originals are intact."
+        case .rollbackIncomplete(let quarantine):
+            return "An archive move was interrupted and could not be fully undone. "
+                + "Nothing was deleted and the archives' locks are still held (so "
+                + "Unison stays blocked). Quit any other Unison, then recover the "
+                + "files here without deleting the locks:\n\n\(quarantine)"
         }
     }
 

@@ -67,6 +67,31 @@ final class ArchiveStagingStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: q), "quarantine removed on rollback")
     }
 
+    // MARK: rollback that cannot fully restore → retain, never delete
+
+    func test_rollback_restoreFailure_retainsQuarantine_neverDeletes() throws {
+        let active = try makeTempDir()
+        defer { chmod(active, 0o700); try? FileManager.default.removeItem(atPath: active) }
+        write(active, "ar"+h); write(active, "fp"+h)
+        let store = POSIXStagingStore(unisonDir: active)
+        try store.beginStaging(manifest(["ar"+h, "fp"+h]))
+        let q = try XCTUnwrap(store.quarantinePath)
+        try store.stage("ar"+h); try store.stage("fp"+h)   // both moved into quarantine
+        // Make the active dir read-only so restore rename() back into it fails.
+        XCTAssertEqual(chmod(active, 0o500), 0)
+        XCTAssertThrowsError(try store.rollback()) {
+            XCTAssertEqual($0 as? ArchiveStoreError, .rollbackIncomplete(q))
+        }
+        chmod(active, 0o700)   // restore write to inspect + clean up
+        XCTAssertTrue(FileManager.default.fileExists(atPath: q), "quarantine retained")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: (q as NSString).appendingPathComponent("ar"+h)),
+            "un-restored file kept in quarantine — never deleted")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: (q as NSString).appendingPathComponent(AbandonedStagingScan.manifestName)),
+            "manifest retained (still pre-commit → restart fails closed)")
+    }
+
     // MARK: whole-directory Trash, one unit
 
     func test_commit_trashesWholeDirectory_asOneUnit() throws {
