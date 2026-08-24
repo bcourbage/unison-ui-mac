@@ -75,14 +75,14 @@ if [ "$rc" -eq 2 ] && [ -f "$dest/unison-ui-mac.app/OLD_MARKER" ] \
     && [ -z "$(find "$dest" -maxdepth 1 -name '.unison-ui-mac.app.*')" ]; then r=ok; else r=FAIL; fi
 note "$r" "SF10: a bad staged copy leaves the existing install intact (exit 2, rollback)"
 
-# --- SF9: quarantine cannot be cleared -> exit 2, old install preserved --------
+# --- SF9: quarantine remains after strip -> exit 2, old install preserved ------
+# Fake xattr: -dr "fails" to remove; -r reports the attribute as still present.
 fakebin="$work/fakebin"; mkdir -p "$fakebin"
 cat > "$fakebin/xattr" <<'EOF'
 #!/bin/sh
-# Simulate a real removal failure and report the attribute as still present.
 case "$1" in
     -dr) echo "xattr: [Errno 1] Operation not permitted" >&2; exit 1 ;;
-    -rp) echo "$3: 0081;deadbeef;Safari;"; exit 0 ;;
+    -r)  echo "$2/Contents/MacOS/unison-ui-mac: com.apple.quarantine"; exit 0 ;;
 esac
 exit 0
 EOF
@@ -92,7 +92,56 @@ echo OLD > "$dest/unison-ui-mac.app/OLD_MARKER"
 if run_install "$good" "$dest" "$fakebin"; then rc=0; else rc=$?; fi
 if [ "$rc" -eq 2 ] && grep -qi "could not clear the quarantine" "$work/err.txt" \
     && [ -f "$dest/unison-ui-mac.app/OLD_MARKER" ]; then r=ok; else r=FAIL; fi
-note "$r" "SF9: an unclearable quarantine fails the install (exit 2), old install preserved"
+note "$r" "SF9: a quarantine still present after strip fails the install (exit 2), old preserved"
+
+# --- SF9b: the quarantine INSPECTION itself fails -> exit 2, not "clean" -------
+# Fake xattr: -r exits nonzero with no output (a real inspection failure). This
+# must NOT be read as "no quarantine" and let a possibly-quarantined app install.
+fakebin2="$work/fakebin2"; mkdir -p "$fakebin2"
+cat > "$fakebin2/xattr" <<'EOF'
+#!/bin/sh
+case "$1" in
+    -dr) exit 1 ;;
+    -r)  exit 1 ;;   # inspection failure, no stdout
+esac
+exit 0
+EOF
+chmod +x "$fakebin2/xattr"
+dest="$work/d9b"; mkdir -p "$dest/unison-ui-mac.app/Contents/MacOS"
+echo OLD > "$dest/unison-ui-mac.app/OLD_MARKER"
+if run_install "$good" "$dest" "$fakebin2"; then rc=0; else rc=$?; fi
+if [ "$rc" -eq 2 ] && grep -qi "could not inspect" "$work/err.txt" \
+    && [ -f "$dest/unison-ui-mac.app/OLD_MARKER" ]; then r=ok; else r=FAIL; fi
+note "$r" "SF9: a failed quarantine inspection fails the install (exit 2), not treated as clean"
+
+# --- Blocker 1a: atomic swap failure -> old install preserved, exit 2 ----------
+# Inject a swap helper that always fails; an existing install must be left intact
+# and no staging bundle may be swapped in.
+fail_swap="$work/fail-swap.sh"; printf '#!/bin/sh\nexit 1\n' > "$fail_swap"; chmod +x "$fail_swap"
+dest="$work/dswap"; mkdir -p "$dest/unison-ui-mac.app/Contents/MacOS"
+echo OLD > "$dest/unison-ui-mac.app/OLD_MARKER"
+# NB: `INSTALL_SWAP_HELPER=… run_install` would LEAK the variable into the shell
+# (a preceding assignment on a FUNCTION call persists), so export it, run in a
+# subshell for scoping, and unset afterwards — otherwise the next case inherits it.
+export INSTALL_SWAP_HELPER="$fail_swap"
+if run_install "$good" "$dest"; then rc=0; else rc=$?; fi
+unset INSTALL_SWAP_HELPER
+if [ "$rc" -eq 2 ] && [ -f "$dest/unison-ui-mac.app/OLD_MARKER" ] \
+    && [ -z "$(find "$dest" -maxdepth 1 -name '.unison-ui-mac.app.*')" ]; then r=ok; else r=FAIL; fi
+note "$r" "Blocker1: a failed atomic swap leaves the existing install intact (exit 2)"
+
+# --- Blocker 1b: happy replace of an existing install via the real swap --------
+# With a real RENAME_SWAP, an existing install is replaced by the new bundle and
+# the old one is cleaned up (no absent-destination window).
+good2="$work/Release2/unison-ui-mac.app"; make_bundle "$good2" 1
+echo NEW > "$good2/NEW_MARKER"
+dest="$work/drepl"; mkdir -p "$dest/unison-ui-mac.app/Contents/MacOS"
+echo OLD > "$dest/unison-ui-mac.app/OLD_MARKER"
+if run_install "$good2" "$dest"; then rc=0; else rc=$?; fi
+if [ "$rc" -eq 0 ] && [ -f "$dest/unison-ui-mac.app/NEW_MARKER" ] \
+    && [ ! -e "$dest/unison-ui-mac.app/OLD_MARKER" ] \
+    && [ -z "$(find "$dest" -maxdepth 1 -name '.unison-ui-mac.app.*')" ]; then r=ok; else r=FAIL; fi
+note "$r" "Blocker1: an existing install is atomically replaced (new in place, old removed)"
 
 echo ""
 echo "install.sh fixtures: $pass passed, $fail failed"

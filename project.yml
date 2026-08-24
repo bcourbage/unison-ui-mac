@@ -178,9 +178,9 @@ targets:
         # days), a key-rotation escape hatch that also fails open. Set it to 0,
         # which the pinned 2.9.6 source treats as "never recover", so feed-level
         # enforcement stays permanently fail-closed. Because 0 removes Sparkle's
-        # automatic recovery, an EdDSA key rotation MUST follow the staged
-        # old-key-transition procedure in docs/sparkle-updates.md ("Key rotation")
-        # or dormant clients are permanently stranded on the old key.
+        # automatic recovery, EdDSA key rotation is NOT supported by the current
+        # one-key pipeline — see docs/sparkle-updates.md ("Key rotation") before
+        # ever changing SUPublicEDKey or the SPARKLE_ED_PRIVATE_KEY secret.
         SURequireSignedFeed: true
         SUSignedFeedFailureExpirationInterval: 0
         SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml

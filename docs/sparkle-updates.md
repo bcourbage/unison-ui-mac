@@ -97,62 +97,63 @@ rotation; when it does, the value must equal `generate_keys -p` and match what
 the built bundle ships (verify with
 `/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist`).
 
-### Key rotation (EdDSA) — full runbook
+### Key rotation (EdDSA) — NOT supported by the current one-key pipeline
 
-Rotating the EdDSA key is a deliberate, staged operation, not a routine step.
-Each installed client trusts only the `SUPublicEDKey` baked into *its own* bundle,
-and this app runs a **fail-closed** feed policy (`SURequireSignedFeed: true` with
-`SUSignedFeedFailureExpirationInterval: 0` — see `project.yml`). That combination
-removes Sparkle's built-in ~20-day "recover into unsigned handling" escape hatch:
-a client that never receives an **old-key-signed transition feed** can *never*
-authenticate a later new-key feed and has no automatic recovery. Rotate only with
-the sequence below.
+**The current release pipeline cannot rotate the EdDSA key.** This is a real
+limitation, documented here so no one attempts a rotation that would strand
+clients. Treat the EdDSA private key as effectively un-rotatable and guard it
+accordingly.
 
-**Two independent trust factors, one at a time.** An update is accepted when its
-archive carries a valid EdDSA signature under the client's known public key *or*
-its Developer ID matches the running app's (same team) — and, separately, the
-whole **feed** must carry a valid feed-level signature under the client's known
-key. Never change the EdDSA key *and* the Developer ID certificate in the same
-release: the transition relies on one factor staying stable so existing clients
-can still validate the release that teaches them the new key.
+**Why.** A rotation would have to ship a *transition* release that (a) carries the
+**new** `SUPublicEDKey` (to teach clients the new key) and (b) is still accepted by
+**existing** clients. Existing clients run a **fail-closed** feed policy
+(`SURequireSignedFeed: true` + `SUSignedFeedFailureExpirationInterval: 0`, see
+`project.yml`), so they accept an appcast only if its **feed-level** signature is
+made with the key they already trust — the **old** key — and there is no automatic
+recovery if that fails. But two properties of the pinned Sparkle 2.9.6 tools make a
+single-key transition feed impossible:
 
-**Why one generator key isn't enough.** `generate_appcast` signs both the archive
-`edSignature` and the feed-level signature with the single `--ed-key-file` you
-pass. There is no dual-key feed. So a rotation is handled by running the release
-pipeline with the **old** key across the cutover, then switching the secret to the
-**new** key only afterward — the two phases sign with distinct keys.
+- `generate_appcast` emits an archive's `edSignature` **only when the archived
+  app's `SUPublicEDKey` matches the private key it is signing with**; on a mismatch
+  it prints `Warning: SUPublicEDKey in the app … does not match key EdDSA in the
+  Keychain` and emits **no** signature
+  ([Appcast.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_appcast/Appcast.swift#L178-L218)).
+  Our structural gate (`scripts/verify-appcast-signatures.sh`) then rejects the
+  feed. So a transition bundle carrying the **new** public key **cannot** be signed
+  with the **old** key.
+- `generate_appcast` signs the archive *and* the feed with the **same**
+  `--ed-key-file`. Signing with the new key (to satisfy the archive) yields a
+  **new-key feed signature**, which existing clients reject. There is no one-shot
+  way to produce an old-key feed signature alongside a new-key archive signature.
+- `generate_keys` with the default account does not create a second key — it
+  **reuses** the existing keychain key; a distinct key needs a separate `--account`
+  (or explicit export/remove/import)
+  ([main.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_keys/main.swift#L159-L187)).
 
-Sequence:
+**What a supported rotation would require (unimplemented).** A correct transition
+needs **two keys handled separately**: generate the new key under its own keychain
+`--account`; sign the transition *archive* under the new key (so it matches the new
+bundle) while separately signing the *feed body* under the old key and splicing in
+that feed-level signature — no supported single command does both — held across a
+cutover window until active clients have installed the transition release, then a
+switch to the new key. This needs new release tooling and a fixture that proves the
+transition feed validates under **both** an old-key and a new-key client, using two
+throwaway keys and the pinned Sparkle tools. None of that exists today. Until it
+does, do not rotate.
 
-1. **Generate** the new keypair (`./bin/generate_keys` — see above); note the new
-   public key. Keep the **old** private key: you still need it to sign the
-   transition feed.
-2. **Ship the transition release.** Update `SUPublicEDKey` in `project.yml` to the
-   **new** public key (so the new bundle teaches clients the new key), but publish
-   its appcast **signed with the OLD private key** — i.e. leave
-   `SPARKLE_ED_PRIVATE_KEY` set to the old key for this release. Existing clients
-   accept the feed (old-key feed signature) and accept the archive via the stable
-   **Developer ID** path, then install a bundle that now trusts the new key. Do
-   **not** rotate the Developer ID cert in this release.
-3. **Hold the cutover window.** Keep publishing feeds signed with the **old** key
-   (`SPARKLE_ED_PRIVATE_KEY` = old) until you are confident essentially every
-   active client has installed the transition release. There is no grace period
-   (`…FailureExpirationInterval: 0`), so err long.
-4. **Cut over.** Replace the `SPARKLE_ED_PRIVATE_KEY` secret with the **new**
-   private key. From here the pipeline signs feed + archives with the new key, and
-   transition-updated clients validate normally. (Only now is the old key retired.)
+**If the key is ever compromised or lost.** Existing auto-update clients cannot be
+migrated in-band. Recovery is out-of-band: publish a fresh signed + notarized build
+to GitHub Releases and tell users (README + release notes) to **re-download and
+replace the app manually**. A manual install carries the new `SUPublicEDKey` and
+resumes normal auto-updates; clients that never re-download stay on the old key.
 
-**Dormant clients.** A client offline or not update-checking throughout the cutover
-never installs the transition release, so after step 4 it cannot authenticate the
-new-key feed and cannot auto-update — by design, there is no automatic recovery.
-Its only path back is a **manual re-download** of the current signed, notarized
-build from GitHub Releases (Gatekeeper accepts it independently of Sparkle). Pair
-any rotation with a durable GitHub Release and say so in the release notes.
-
-**Do not casually rotate the release secret.** Replacing `SPARKLE_ED_PRIVATE_KEY`
-*is* an EdDSA key rotation and triggers everything above. Rotate it only through
-this runbook (never together with a Developer ID change), and only for a real
-reason — a suspected key compromise, not routine hygiene.
+**Do not casually touch the release secret.** Replacing `SPARKLE_ED_PRIVATE_KEY`
+*is* an EdDSA key change and — given the above — would break auto-updates for every
+existing client with no in-band recovery. It already lives only in the maintainer's
+login keychain and the reviewer-gated CI secret; keep it that way. (Separately, and
+for the same fail-closed reason, never change the EdDSA key and the Developer ID
+certificate together — but note that EdDSA rotation is not currently supported at
+all.)
 
 ## Getting the tools
 

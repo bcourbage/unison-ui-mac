@@ -100,15 +100,36 @@ else
     "$SIGN_APP" "$SRC_APP" -
 fi
 
-# 2. Stage the new bundle ON THE DESTINATION FILESYSTEM, validate it, then swap it
-#    into place (SF10). The old, working install is not touched until a complete,
-#    validated copy is ready — so a disk-full, permission, or interrupted copy can
-#    never leave no installation. Staging on $DEST guarantees the final swap is an
-#    atomic same-filesystem rename, and a failed swap rolls back to the backup.
+# atomic_swap <new> <dest>: atomically EXCHANGE two existing directories via
+# renameatx_np(RENAME_SWAP) — a single kernel operation. There is no instant where
+# <dest> is absent, and a crash/SIGKILL cannot interrupt it mid-way; on failure
+# both paths are left untouched. After success <dest> is the new bundle and <new>
+# holds the old one. Overridable for tests via INSTALL_SWAP_HELPER.
+atomic_swap() {
+    if [[ -n "${INSTALL_SWAP_HELPER:-}" ]]; then
+        "$INSTALL_SWAP_HELPER" "$1" "$2"
+        return
+    fi
+    $SUDO /usr/bin/python3 - "$1" "$2" <<'PY'
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+AT_FDCWD, RENAME_SWAP = -2, 0x2
+fn = libc.renameatx_np
+fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+if fn(AT_FDCWD, sys.argv[1].encode(), AT_FDCWD, sys.argv[2].encode(), RENAME_SWAP) != 0:
+    sys.stderr.write("renameatx_np(RENAME_SWAP) failed: %s\n" % os.strerror(ctypes.get_errno()))
+    sys.exit(1)
+PY
+}
+
+# 2. Stage the new bundle ON THE DESTINATION FILESYSTEM and validate it (SF10). The
+#    working install is not touched until a complete, validated copy is ready, so a
+#    disk-full, permission, or interrupted copy can never leave no installation.
+#    Only STAGE is ever cleaned up — there is no backup path whose loss could
+#    destroy the sole good install.
 echo "[2/4] Staging the new bundle next to $DEST_APP"
 STAGE="$DEST/.$BUNDLE_NAME.new.$$"
-BACKUP="$DEST/.$BUNDLE_NAME.old.$$"
-cleanup_stage() { $SUDO rm -rf "$STAGE" "$BACKUP" 2>/dev/null || true; }
+cleanup_stage() { $SUDO rm -rf "$STAGE" 2>/dev/null || true; }
 trap cleanup_stage EXIT
 $SUDO rm -rf "$STAGE"
 $SUDO cp -R "$SRC_APP" "$STAGE"
@@ -124,31 +145,42 @@ fi
 
 # 3. Strip the quarantine xattr macOS applies to anything copied from another
 #    origin, on the STAGED copy (before it is installed), then VERIFY it is gone.
-#    `xattr -dr` returns nonzero merely because the attribute is absent on some
-#    file, so its exit status can't tell that benign case from a real permission /
-#    I/O failure — verifying the end state can (SF9). A real failure leaves the
-#    attribute, fails the install, and never replaces the working app; a
-#    genuinely-absent attribute verifies clean.
+#    `xattr -dr`'s exit status can't tell a benign "attribute absent" from a real
+#    permission/I/O failure, so check the END STATE — and capture the verifier's
+#    OUTPUT and EXIT STATUS independently (SF9): a failed inspection must not be
+#    read as "clean". Only a successful attribute listing that contains no
+#    com.apple.quarantine is acceptable.
 echo "[3/4] Clearing quarantine attribute"
 $SUDO xattr -dr com.apple.quarantine "$STAGE" 2>/dev/null || true
-if $SUDO xattr -rp com.apple.quarantine "$STAGE" 2>/dev/null | grep -q .; then
-    echo "ERROR: could not clear the quarantine attribute from the staged bundle." >&2
-    echo "       Gatekeeper would block the app, so refusing to install." >&2
+if ! quarantine_attrs="$($SUDO xattr -r "$STAGE" 2>/dev/null)"; then
+    echo "ERROR: could not inspect the staged bundle's extended attributes." >&2
+    echo "       Refusing to install rather than risk shipping a quarantined app." >&2
     exit 2
 fi
+case "$quarantine_attrs" in
+    *com.apple.quarantine*)
+        echo "ERROR: could not clear the quarantine attribute from the staged bundle." >&2
+        echo "       Gatekeeper would block the app, so refusing to install." >&2
+        exit 2
+        ;;
+esac
 
-# Swap atomically: move any existing install aside, move the staged bundle in,
-# then drop the backup. If the swap fails, roll back so a working app remains.
+# Install atomically. Replace an existing install with a single RENAME_SWAP (no
+# absent-destination window, crash-safe, failure leaves the old app in place); a
+# first install is a plain rename, itself atomic. Only after the install succeeds
+# is STAGE (now the old bundle, or already consumed) removed.
 if [[ -d "$DEST_APP" ]]; then
-    $SUDO mv "$DEST_APP" "$BACKUP"
-fi
-if ! $SUDO mv "$STAGE" "$DEST_APP"; then
-    echo "ERROR: failed to move the new bundle into place; rolling back." >&2
-    if [[ -d "$BACKUP" ]]; then $SUDO mv "$BACKUP" "$DEST_APP"; fi
+    if ! atomic_swap "$STAGE" "$DEST_APP"; then
+        echo "ERROR: could not install the new bundle (atomic swap failed)." >&2
+        echo "       The existing install at $DEST_APP is unchanged." >&2
+        exit 2
+    fi
+elif ! $SUDO mv "$STAGE" "$DEST_APP"; then
+    echo "ERROR: could not move the new bundle into $DEST_APP." >&2
     exit 2
 fi
-$SUDO rm -rf "$BACKUP"
 trap - EXIT
+$SUDO rm -rf "$STAGE"
 
 # 4. Open it (unless --no-launch).
 if [[ "$LAUNCH" -eq 1 ]]; then
