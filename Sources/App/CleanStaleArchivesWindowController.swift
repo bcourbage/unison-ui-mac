@@ -597,8 +597,14 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         case .failure(let error):
             TraceLog.shared.write("CleanStale: mutation refused — \(error)")
             let a = NSAlert()
-            a.alertStyle = .informational
-            a.messageText = "Nothing was moved"
+            if Self.mutationRetainedALock(error) {
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Nothing was moved — a lock is still held"
+            } else {
+                a.alertStyle = .informational
+                a.messageText = "Nothing was moved"
+            }
             a.informativeText = Self.mutationRefusalText(error)
             a.addButton(withTitle: "OK")
             if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
@@ -625,7 +631,22 @@ final class CleanStaleArchivesWindowController: NSWindowController,
                 + "Nothing was deleted and the archives' locks are still held (so "
                 + "Unison stays blocked). Quit any other Unison, then recover the "
                 + "files here without deleting the locks:\n\n\(quarantine)"
+        case .lockRetainedAfterAbort(_, let quarantine):
+            return "Nothing was moved, but one of the archive locks this app set "
+                + "could not be released, so the affected profile(s) stay blocked "
+                + "until recovery. Quit and reopen the app to recover:\n\n\(quarantine)"
+        case .abortedCleanupIncomplete(let quarantine):
+            return "Nothing was moved and the archives are intact and unlocked. Only "
+                + "an empty working folder could not be removed — delete it manually "
+                + "when convenient:\n\n\(quarantine)"
         }
+    }
+
+    /// True for the abort outcome that leaves an app-created lock held: the caller
+    /// must refresh the in-session profile block so the profile is gated at once.
+    static func mutationRetainedALock(_ error: Error) -> Bool {
+        if case ArchiveMutationError.lockRetainedAfterAbort = error { return true }
+        return false
     }
 
     @objc private func exportCSVAction(_ sender: Any?) {

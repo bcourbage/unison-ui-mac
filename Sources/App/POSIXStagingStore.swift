@@ -9,6 +9,11 @@ enum ArchiveStoreError: Error, Equatable {
     /// A rollback could not restore every staged file. The quarantine + manifest
     /// are RETAINED (nothing deleted) at this path; recovery is explicit.
     case rollbackIncomplete(String)
+    /// `discardRecord` could not remove the quarantine after a successful rollback
+    /// and release. The in-memory path/state is RETAINED and the on-disk record is
+    /// flipped to a non-blocking terminal phase, so the leftover is a lock-free
+    /// folder (safe to delete), never a permanent block.
+    case discardFailed(String)
 }
 
 /// Production `ArchivePayloadStore`: crash-safe staging inside the unison dir.
@@ -102,10 +107,23 @@ final class POSIXStagingStore: ArchivePayloadStore {
     }
 
     /// Remove the quarantine dir + manifest. The caller has confirmed every owned
-    /// lock is released and the payloads are restored/absent.
+    /// lock is released and the payloads are restored/absent. If the directory
+    /// removal fails, the on-disk record is first flipped to a non-blocking
+    /// terminal phase (so an undeletable leftover never permanently blocks), then
+    /// the failure is PROPAGATED and the in-memory state is RETAINED (never lie
+    /// about success, SF1).
     func discardRecord() throws {
         guard let q = quarantinePath else { return }
-        try? fm.removeItem(atPath: q)
+        // A staging record blocks unconditionally on restart. Since the family is
+        // restored and the locks are released, flip it to `aborted` FIRST so an
+        // undeletable leftover is only a lock-free folder, not a block.
+        if var m = manifest, m.phase == StagingManifest.phaseStaging {
+            m.phase = StagingManifest.phaseAborted
+            try writeManifestDurably(m, inQuarantine: q)
+            self.manifest = m
+        }
+        do { try fm.removeItem(atPath: q) }
+        catch { throw ArchiveStoreError.discardFailed(q) }   // RETAIN in-memory state
         quarantinePath = nil
         manifest = nil
         stagedNames.removeAll()

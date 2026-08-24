@@ -406,6 +406,11 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
                 case .failure(let error):
                     // A pre-existing lock (another process) blocked it — don't
                     // retry into the same inconsistency; leave it for the user.
+                    if CleanStaleArchivesWindowController.mutationRetainedALock(error) {
+                        // Our own abort left a lock held — refresh the in-session
+                        // block so the profile is gated immediately.
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                    }
                     TraceLog.shared.write("ArchiveRecovery: mutation refused — \(error)")
                     shouldRetry = false
                 }

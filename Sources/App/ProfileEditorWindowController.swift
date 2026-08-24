@@ -737,8 +737,14 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         case .failure(let error):
             TraceLog.shared.write("ProfileEditor: reset refused for '\(profile)' — \(error)")
             let a = NSAlert()
-            a.alertStyle = .informational
-            a.messageText = "Archives were not reset"
+            if CleanStaleArchivesWindowController.mutationRetainedALock(error) {
+                (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                a.alertStyle = .critical
+                a.messageText = "Archives were not reset — a lock is still held"
+            } else {
+                a.alertStyle = .informational
+                a.messageText = "Archives were not reset"
+            }
             a.informativeText = CleanStaleArchivesWindowController.mutationRefusalText(error)
             a.addButton(withTitle: "OK")
             a.runModal()
@@ -894,7 +900,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                 case .failure(let error):
                     TraceLog.shared.write("ProfileEditor: archive cleanup on delete refused '\(profile)' — \(error)")
                     let a = NSAlert()
-                    a.alertStyle = .warning
+                    if CleanStaleArchivesWindowController.mutationRetainedALock(error) {
+                        (NSApp.delegate as? ArchiveBlockCoordinating)?.refreshBlockedArchiveState()
+                        a.alertStyle = .critical
+                    } else {
+                        a.alertStyle = .warning
+                    }
                     a.messageText = "Profile deleted; archive files left in place"
                     a.informativeText =
                         "The profile was moved to the Trash, but its archive files were left "

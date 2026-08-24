@@ -5,25 +5,30 @@ import Foundation
 /// partial archive family impossible and is crash-safe.
 ///
 /// Phase model (per the review):
-/// 1. Acquire the real per-archive locks a live Unison uses, then write a
-///    DURABLE staging manifest recording the plan + the locks held. The payload
-///    plan is derived AFTER the locks are held, so it captures the true family.
+/// 0. Write a DURABLE intent record (`phaseAcquiring`, hashes only) BEFORE the
+///    first lock, so even a crash mid-acquisition is detectable on restart.
+/// 1. Acquire the real per-archive locks a live Unison uses, derive the payload
+///    plan UNDER the locks (so it captures the true family), then durably record
+///    that plan (`phaseStaging`) before any move.
 /// 2. Move every payload file with a real same-filesystem `rename(2)`.
-/// 3. If any rename fails, restore every staged file and remove the manifest,
-///    then release locks — the original family is intact. If a restore itself
-///    fails, the quarantine + manifest are RETAINED and the locks are kept held
-///    (rollbackIncomplete); recovery is explicit, never automatic.
-/// 4. Once all files are staged, the removal is LOGICALLY COMMITTED: the
-///    complete family is absent from Unison's active directory.
+/// 3. If any move fails, restore every staged file, then RELEASE the locks and
+///    only afterwards remove the record — so an owned lock is never left without a
+///    durable record. If a restore itself fails, the quarantine + manifest are
+///    RETAINED and the locks kept held (rollbackIncomplete); if a lock cannot be
+///    confirmed released, the record is retained and those hashes stay blocked
+///    (lockRetainedAfterAbort). Recovery is always explicit, never automatic.
+/// 4. Once all files are staged, the removal is LOGICALLY COMMITTED
+///    (`phaseCommitted`): the complete family is absent from the active directory.
 /// 5. Confirm each owned lock is released BEFORE Trashing. Move the entire
 ///    staging directory to Trash as ONE unit. If cleanup fails, retain the
 ///    complete quarantine directory and report it — never restore after commit.
 ///
-/// Owned locks are released on success and on ordinary rollback; an INCOMPLETE
-/// rollback keeps them held on purpose (the archive stays blocked until explicit
-/// recovery). A pre-existing or foreign lock is never released. `lk` is excluded
-/// from payloads by construction (it is the interprocess lock, held across the
-/// mutation).
+/// The record is removed ONLY after every owned lock is confirmed released, on
+/// every exit path. Owned locks are released on success and on ordinary abort;
+/// an INCOMPLETE rollback keeps them held on purpose (the archive stays blocked
+/// until explicit recovery). A pre-existing or foreign lock is never released.
+/// `lk` is excluded from payloads by construction (it is the interprocess lock,
+/// held across the mutation).
 
 /// Immutable set of archives to mutate. Payload files are derived under the held
 /// locks (see `ArchiveMaintenance`), so the set reflects the family as it exists
@@ -63,6 +68,8 @@ struct StagingManifest: Codable, Equatable {
     static let phaseAcquiring = "acquiring"  // intent recorded, locks being acquired
     static let phaseStaging = "staging"      // pre-commit: locks held, payloads moving
     static let phaseCommitted = "committed"  // post-commit: removal done; release may still be pending
+    static let phaseAborted = "aborted"      // rolled back: family restored + locks released;
+                                             // only a lock-free quarantine folder remains
 
     var version: Int = StagingManifest.currentVersion
     let operation: String          // human label, e.g. "clean-stale", "reset"
@@ -85,6 +92,15 @@ struct StagingManifest: Codable, Equatable {
     var isPreCommit: Bool { phase == StagingManifest.phaseStaging }
     /// An intent record: locks were being acquired but no payload was moved.
     var isAcquiring: Bool { phase == StagingManifest.phaseAcquiring }
+}
+
+extension StagingManifest {
+    /// True for the terminal states that block ONLY when a lock survives on disk
+    /// (acquiring: nothing moved; committed: removal done; aborted: family
+    /// restored + locks released — only a lock-free folder remains). A staging
+    /// record is deliberately excluded: its family may be split, so it always
+    /// blocks regardless of the lock.
+    var blocksOnlyIfLocked: Bool { !isPreCommit }
 }
 
 /// Interprocess archive locking (injectable for tests).
@@ -124,7 +140,9 @@ protocol ArchivePayloadStore {
     func rollback() throws
     /// Remove the quarantine dir + manifest. Call ONLY after every owned lock has
     /// been confirmed released AND the payloads are restored/absent — so no owned
-    /// lock is ever left without a durable record (SF1).
+    /// lock is ever left without a durable record (SF1). THROWS if the removal
+    /// fails, retaining the in-memory path/state (never reports false success);
+    /// implementations must first make any leftover non-blocking.
     func discardRecord() throws
     /// Phase 4: durably mark the manifest committed (the whole family is now
     /// staged out of the active dir). The logical commit point.
@@ -148,6 +166,15 @@ enum ArchiveMutationError: Error, Equatable {
     /// stays blocked) — nothing is deleted, but the family is split until an
     /// explicit recovery. The most serious outcome; surface loudly.
     case rollbackIncomplete(quarantine: String)
+    /// An early exit (abort) released the family but could NOT confirm every
+    /// lock this app acquired was released. The intent record is RETAINED and
+    /// those hashes stay blocked; the caller must refresh the in-session block
+    /// (SF2). Nothing was changed on disk beyond the surviving lock.
+    case lockRetainedAfterAbort(hashes: [String], quarantine: String)
+    /// An abort released every lock and left the family intact, but the quarantine
+    /// record could not be removed. It is a lock-free leftover folder (safe to
+    /// delete), NOT a block (SF1).
+    case abortedCleanupIncomplete(quarantine: String)
 }
 
 struct ArchiveMutationOutcome: Equatable {
@@ -224,16 +251,30 @@ enum ArchiveMutation {
         let sortedHashes = hashes.sorted()
         var owned: [String] = []
 
-        // Release every owned lock, CONFIRM each, and settle the durable record:
-        // remove it only when NO lock survives (so an owned lock is never left
-        // without a recovery record, SF1); otherwise keep it (blocking, detectable
-        // on restart). Returns the hashes whose release could not be confirmed.
-        func releaseOwnedAndSettleRecord() -> [String] {
+        // How releasing the owned locks + settling the record turned out on an
+        // abort path. `.discarded` — every lock released, record removed.
+        // `.lockFree(q)` — every lock released but the record could not be removed
+        // (non-blocking leftover, SF1). `.locked(hashes,q)` — a lock could not be
+        // confirmed released; record RETAINED and those hashes stay blocked (SF2).
+        enum Settled { case discarded; case lockFree(String); case locked([String], String) }
+        func releaseOwnedAndSettleRecord() -> Settled {
             var unreleased: [String] = []
             for h in owned.reversed() where !locking.release(hash: h) { unreleased.append(h) }
             owned.removeAll()
-            if unreleased.isEmpty { try? store.discardRecord() }
-            return unreleased.sorted()
+            if !unreleased.isEmpty {
+                return .locked(unreleased.sorted(), store.quarantinePath ?? "?")
+            }
+            do { try store.discardRecord(); return .discarded }
+            catch { return .lockFree(store.quarantinePath ?? "?") }
+        }
+        // Translate a settle result into the thrown error for an abort, defaulting
+        // to `primary` when the record was cleanly discarded.
+        func throwSettled(primary: ArchiveMutationError) throws -> Never {
+            switch releaseOwnedAndSettleRecord() {
+            case .discarded:            throw primary
+            case .lockFree(let q):      throw ArchiveMutationError.abortedCleanupIncomplete(quarantine: q)
+            case .locked(let hs, let q): throw ArchiveMutationError.lockRetainedAfterAbort(hashes: hs, quarantine: q)
+            }
         }
 
         // 0. Durable INTENT record BEFORE any lock (SF1): a crash between the first
@@ -248,9 +289,7 @@ enum ArchiveMutation {
         for h in sortedHashes {
             let r = locking.acquire(hash: h)
             guard r == .acquired else {
-                // Release what we grabbed and settle the intent record.
-                _ = releaseOwnedAndSettleRecord()
-                throw ArchiveMutationError.lockUnavailable(hash: h, reason: r)
+                try throwSettled(primary: .lockUnavailable(hash: h, reason: r))
             }
             owned.append(h)
         }
@@ -260,8 +299,7 @@ enum ArchiveMutation {
 
         // 3. Revalidate the under-lock plan; still nothing touched.
         guard revalidate(plan) else {
-            _ = releaseOwnedAndSettleRecord()
-            throw ArchiveMutationError.revalidationFailed
+            try throwSettled(primary: .revalidationFailed)
         }
 
         // 3b. Record the under-lock payload plan (flip acquiring → staging) BEFORE
@@ -271,10 +309,7 @@ enum ArchiveMutation {
                                       createdAtISO8601: nowISO8601,
                                       phase: StagingManifest.phaseStaging)
         do { try store.recordPlan(staging) }
-        catch {
-            _ = releaseOwnedAndSettleRecord()
-            throw ArchiveMutationError.beginStagingFailed
-        }
+        catch { try throwSettled(primary: .beginStagingFailed) }
 
         // 4. Stage every payload via rename(2) (atomic removal-or-nothing).
         do {
@@ -287,11 +322,7 @@ enum ArchiveMutation {
             catch { throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?") }
             // Family restored. Release + settle the record BEFORE returning, so a
             // surviving lock never outlives its record.
-            let unreleased = releaseOwnedAndSettleRecord()
-            if !unreleased.isEmpty {
-                throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?")
-            }
-            throw ArchiveMutationError.stagingFailed(file: "\(error)")
+            try throwSettled(primary: .stagingFailed(file: "\(error)"))
         }
 
         // 5. Logical commit: durably mark the manifest committed. If even marking
@@ -300,11 +331,7 @@ enum ArchiveMutation {
         catch {
             do { try store.rollback() }
             catch { throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?") }
-            let unreleased = releaseOwnedAndSettleRecord()
-            if !unreleased.isEmpty {
-                throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?")
-            }
-            throw ArchiveMutationError.stagingFailed(file: "markCommitted: \(error)")
+            try throwSettled(primary: .stagingFailed(file: "markCommitted: \(error)"))
         }
 
         // 6. Release every owned lock and CONFIRM it is gone, BEFORE Trashing —
@@ -382,11 +409,11 @@ enum AbandonedStagingScan {
         var blocked = Set<String>()
         for a in abandoned {
             for h in a.manifest.hashes {
-                if a.manifest.isPreCommit {
-                    blocked.insert(h)
+                if !a.manifest.blocksOnlyIfLocked {
+                    blocked.insert(h)   // staging: family may be split → always block
                 } else if fm.fileExists(
                     atPath: (unisonDir as NSString).appendingPathComponent("lk" + h)) {
-                    blocked.insert(h)
+                    blocked.insert(h)   // acquiring/committed/aborted: block iff lock survives
                 }
             }
         }

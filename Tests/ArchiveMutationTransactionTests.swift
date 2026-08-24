@@ -2,11 +2,12 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Transaction integrity for the single archive-mutation authority (phase model:
-/// acquire → durable manifest → stage via rename → rollback-on-failure →
-/// whole-dir Trash, retain on cleanup failure). Logic is tested with fakes; one
-/// case uses the REAL lock bridge for genuine on-disk contention. Crash-safe
-/// production behavior (real rename, whole-dir Trash, restart detection) is in
-/// ArchiveStagingStoreTests.
+/// durable intent BEFORE locks → acquire → record plan under locks → stage via
+/// rename → rollback-then-release-then-discard on failure → whole-dir Trash,
+/// retain on cleanup failure; the record is removed only after confirmed release).
+/// Logic is tested with fakes; one case uses the REAL lock bridge for genuine
+/// on-disk contention. Crash-safe production behavior (real rename, whole-dir
+/// Trash, restart detection) is in ArchiveStagingStoreTests.
 final class ArchiveMutationTransactionTests: XCTestCase {
 
     private final class FakeLocking: ArchiveLocking {
@@ -23,7 +24,7 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         }
     }
 
-    private enum StoreErr: Error { case begin, plan, stage, commit, missing }
+    private enum StoreErr: Error { case begin, plan, stage, commit, missing, discard }
 
     private final class FakeStore: ArchivePayloadStore {
         private(set) var present: Set<String>
@@ -38,6 +39,7 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         var stageFailAt: Int?
         var commitFail = false
         var rollbackThrows = false   // simulate an incomplete restore
+        var discardThrows = false    // simulate the quarantine removal failing
         private var nStage = 0
         init(present: Set<String>) { self.present = present }
         func beginIntent(_ m: StagingManifest) throws {
@@ -67,6 +69,11 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             // on confirmed lock release (SF1).
         }
         func discardRecord() throws {
+            if discardThrows {
+                // Propagate + RETAIN state (never lie about success). A real store
+                // also flips the on-disk record to a non-blocking phase first.
+                throw StoreErr.discard
+            }
             discarded = true
             staged.removeAll()
             manifest = nil
@@ -174,17 +181,37 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertEqual(store.present, Set(files))
     }
 
-    // SF1: if a held lock cannot be confirmed released on an early-exit path, the
-    // intent record is RETAINED (never orphan a lock without a recovery record).
-    func test_revalidationFailure_unconfirmedRelease_retainsRecord() {
+    // SF2: if a held lock cannot be confirmed released on an early-exit path, the
+    // intent record is RETAINED and the transaction PROPAGATES a retained-lock
+    // outcome (not the bare revalidation error) so the app refreshes the block.
+    func test_revalidationFailure_unconfirmedRelease_propagatesRetainedLock() {
         let h = String(repeating: "a", count: 32); let files = ["ar"+h]
         let store = FakeStore(present: Set(files))
         let lock = FakeLocking(); lock.releaseConfirmed = false
         XCTAssertThrowsError(try run(plan([h], files), revalidate: { _ in false }, locking: lock, store: store)) {
-            XCTAssertEqual($0 as? ArchiveMutationError, .revalidationFailed)
+            XCTAssertEqual($0 as? ArchiveMutationError,
+                           .lockRetainedAfterAbort(hashes: [h], quarantine: "/fake/quarantine"))
         }
         XCTAssertFalse(store.discarded, "record retained because release was not confirmed")
         XCTAssertNotNil(store.manifest, "leftover lock stays detectable on restart")
+    }
+
+    // SF1: record deletion fails AFTER a successful rollback and release. The
+    // transaction must surface a lock-free cleanup condition (not lie about a
+    // clean discard), and the store must retain its in-memory state.
+    func test_stagingFailure_discardFailsAfterRelease_surfacesLockFreeLeftover() {
+        let h = String(repeating: "a", count: 32); let files = ["ar"+h, "fp"+h]
+        let store = FakeStore(present: Set(files))
+        store.stageFailAt = 2       // f1 staged, f2 fails → rollback restores all
+        store.discardThrows = true  // …but the quarantine record can't be removed
+        let lock = FakeLocking()
+        XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) {
+            XCTAssertEqual($0 as? ArchiveMutationError,
+                           .abortedCleanupIncomplete(quarantine: "/fake/quarantine"))
+        }
+        XCTAssertTrue(store.rolledBack); XCTAssertEqual(lock.released, [h], "locks released")
+        XCTAssertFalse(store.discarded, "discard did not succeed")
+        XCTAssertNotNil(store.manifest, "store retained its in-memory record (no false success)")
     }
 
     // MARK: staging failure + rollback

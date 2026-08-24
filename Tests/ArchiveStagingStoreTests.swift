@@ -27,6 +27,17 @@ final class ArchiveStagingStoreTests: XCTestCase {
             throw CocoaError(.fileWriteUnknown)
         }
     }
+    // Fails removeItem for DIRECTORIES only, so the low-level manifest rewrite
+    // (POSIX open/write/rename) still works but the quarantine dir cannot be removed.
+    private final class FailDirRemoveFM: FileManager {
+        override func removeItem(atPath path: String) throws {
+            var isDir: ObjCBool = false
+            if super.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try super.removeItem(atPath: path)
+        }
+    }
 
     private func makeTempDir() throws -> String {
         let dir = (NSTemporaryDirectory() as NSString)
@@ -233,5 +244,27 @@ final class ArchiveStagingStoreTests: XCTestCase {
         try store.discardRecord()
         XCTAssertFalse(FileManager.default.fileExists(atPath: q))
         XCTAssertNil(store.quarantinePath)
+    }
+
+    // SF1: discardRecord failure PROPAGATES, RETAINS in-memory state, and flips the
+    // on-disk staging record to a non-blocking phase so the leftover never blocks.
+    func test_discardRecord_removalFailure_propagates_retains_andLeavesNonBlocking() throws {
+        let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
+        write(active, "ar"+h)
+        let store = POSIXStagingStore(unisonDir: active, fileManager: FailDirRemoveFM())
+        try begin(store, ["ar"+h])          // phase = staging
+        let q = try XCTUnwrap(store.quarantinePath)
+        try store.stage("ar"+h)
+        try store.rollback()                // family restored; record kept
+        XCTAssertThrowsError(try store.discardRecord()) {
+            XCTAssertEqual($0 as? ArchiveStoreError, .discardFailed(q))
+        }
+        XCTAssertEqual(store.quarantinePath, q, "in-memory state retained — no false success")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: q), "undeletable quarantine remains")
+        // The leftover is now a lock-free, non-blocking record.
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
+        XCTAssertEqual(abandoned.first?.manifest.phase, StagingManifest.phaseAborted)
+        XCTAssertTrue(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active).isEmpty,
+                      "an aborted, lock-free leftover does not permanently block")
     }
 }
