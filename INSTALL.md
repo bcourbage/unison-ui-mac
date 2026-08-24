@@ -136,7 +136,7 @@ build the binary yourself, see
 ```sh
 # 1. Get build prerequisites (one time)
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
 
 # 2. Clone this repo
 cd ~/somewhere
@@ -256,7 +256,7 @@ brew install --cask bcourbage/tap/unison-ui-mac
 
 ```sh
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 (e.g. opam switch create 5.5.0), ABI-locked, enforced by check-ocaml-version
+brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
 make install
 ```
 
