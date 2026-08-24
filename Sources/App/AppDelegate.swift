@@ -214,6 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private var scanSawRemoteWait = false
     private var pendingSync: (SessionID, OperationID)?
     private var pendingClose: (SessionID, OperationID)?
+    /// The in-flight diff op (PR-4). A diff runs the OCaml engine off-main on
+    /// `connectQueue`, so like scan/sync it needs a non-overlap slot; the
+    /// coordinator is `.diffing` for its lifetime.
+    private var pendingDiff: (SessionID, OperationID)?
+    /// Fires if an in-flight diff runs too long (wedged on a dead remote
+    /// transport). Recovery tears the connection down to unblock the engine lane.
+    private var diffWatchdog: DispatchWorkItem?
+    /// How long a diff may run before the wedged-diff watchdog fires.
+    private let diffStallTimeout: TimeInterval = 45
     /// The session whose successful Ignore is awaiting its dedicated completion.
     /// Identity token (separate from `pendingScan`) so an Ignore completion can
     /// never satisfy a pending scan/rescan, and a stale/duplicate completion for
@@ -272,6 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             driveBeginScan(s, op)
         case .beginSync(let s, let op):
             driveBeginSync(s, op)
+        case .beginDiff(let s, let op, let row):
+            driveBeginDiff(s, op, row: row)
         case .closeConnection(let s, let op):
             driveCloseConnection(s, op)
         case .abortSync(let s, let op):
@@ -376,33 +387,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         )
     }
 
-    /// Issue a diff for `row` on behalf of `session` through the app-global
-    /// broker. Records the owner so the async result is routed back to THIS
-    /// session's window, never to whatever session is current when it lands.
+    /// Issue a diff for `row` on behalf of `session`. Engine ownership is taken
+    /// through the coordinator (`.diffing`) so a diff can neither overlap nor be
+    /// misordered against scan/sync/rescan/mutation (PR-4); the app-global broker
+    /// routes the async result back to THIS session's window and drains an
+    /// abandoned one. The bridge call runs OFF the main thread (`driveBeginDiff`),
+    /// so a slow/wedged remote transfer never beachballs the app.
     private func requestDiff(session s: SessionID, row: Int) -> DiffRequestResult {
+        // Broker first (cheap, revertible): sets up result routing for this owner.
         switch diffBroker.request(owner: s.raw) {
         case .refuseInFlight, .refuseDraining:
             return .refused
         case .issue:
-            diffRequestOwner = s
-            // Synchronous dispatch; the result (if any) arrives async via the
-            // diff/diff-err handler. A false return means the OCaml dispatch
-            // raised: no result will arrive, so clear the pending request.
-            if unison_bridge_run_show_diffs(Int32(row)) {
-                return .issued
+            // Coordinator gate: a diff runs only from `.ready`. If the engine is
+            // busy (opening/scanning/syncing/diffing/…), refuse and undo the broker.
+            let effects = engine.requestDiff(row: row)
+            guard !effects.isEmpty else {
+                diffBroker.abandon(owner: s.raw)
+                return .refused
             }
-            diffBroker.requestRaised(owner: s.raw)
-            diffRequestOwner = nil
-            return .raised
+            diffRequestOwner = s
+            run(effects)                    // → driveBeginDiff (off-main)
+            return .issued
+        }
+    }
+
+    /// Run the diff bridge call OFF the main thread on the serial engine lane, then
+    /// release engine ownership. The diff TEXT (or an error) is delivered
+    /// asynchronously by the diff/diff-err handlers; here we only learn whether the
+    /// OCaml call raised and, on failure, surface a narrow diff error.
+    private func driveBeginDiff(_ s: SessionID, _ op: OperationID, row: Int) {
+        pendingDiff = (s, op)
+        armDiffWatchdog(s, op)
+        connectQueue.async { [weak self] in
+            let can = unison_bridge_can_diff(Int32(row))
+            let ok = can && unison_bridge_run_show_diffs(Int32(row))
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
+                self.pendingDiff = nil
+                self.cancelDiffWatchdog()
+                if !ok {
+                    // No async result will arrive: drain the broker's outstanding
+                    // request and show a narrow error in this session's diff window.
+                    self.diffBroker.requestRaised(owner: s.raw)
+                    if self.diffRequestOwner == s { self.diffRequestOwner = nil }
+                    self.windowBySession[s]?.showDiffError(can
+                        ? "Unison could not produce a diff for this item."
+                        : "This item can’t be diffed — it’s a directory, a symlink, had only "
+                          + "metadata changes, or hit a problem during update detection.")
+                }
+                // Release engine ownership (→ `.ready`, or the deferred close if the
+                // session was abandoned while the diff ran).
+                self.run(self.engine.diffCompleted(session: s, op: op))
+            }
         }
     }
 
     /// The session's diff window closed, or the session itself is being torn
     /// down. If it owns the outstanding diff, the broker enters draining so the
-    /// still-in-flight result is discarded before any new diff can be issued.
+    /// still-in-flight result is discarded before any new diff can be issued. The
+    /// diff keeps engine ownership until its bridge call actually returns (the lane
+    /// isn't free until then); `diffCompleted` releases it.
     private func abandonDiff(session s: SessionID) {
         diffBroker.abandon(owner: s.raw)
         if diffRequestOwner == s { diffRequestOwner = nil }
+    }
+
+    // MARK: - Wedged-diff watchdog
+
+    /// Arm a one-shot timer for the in-flight diff. A diff normally completes in
+    /// well under a second; if it runs past `diffStallTimeout` it is wedged on a
+    /// dead/slow remote transport.
+    ///
+    /// Wedged-diff SPECIFICATION (PR-4): the diff runs SYNCHRONOUSLY on the single
+    /// OCaml worker, so the engine lane cannot be freed until `run_show_diffs`
+    /// returns — an in-process close/abort would deadlock behind it. The safe,
+    /// honest behavior is therefore: the wedged diff KEEPS engine ownership
+    /// (`.diffing`), so scan/sync/rescan/mutation stay refused and can never
+    /// overlap or misorder against it; the UI stays fully responsive (the block is
+    /// off-main); and the user is told the diff stalled and can Quit. Ownership is
+    /// released only when the bridge call finally returns (`diffCompleted`). The
+    /// still-outstanding result is drained so a very-late result isn't misattributed.
+    /// (A future option: `unison_bridge_reap_transport_children()` can SIGKILL the
+    /// ssh child off the worker to force the read to fail — but a hard mid-session
+    /// transport kill is a connection-lifecycle change deferred pending review.)
+    private func armDiffWatchdog(_ s: SessionID, _ op: OperationID) {
+        cancelDiffWatchdog()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.pendingDiff.map({ $0 == (s, op) }) ?? false else { return }
+            self.log.write("diff (\(s)/\(op)) still running past \(self.diffStallTimeout)s — likely wedged")
+            self.diffBroker.abandon(owner: s.raw)   // drop a very-late result
+            self.windowBySession[s]?.showDiffError(
+                "This diff is taking unusually long — the remote connection may be stalled. "
+                + "Other actions stay disabled until it finishes; you can Quit if it never does.")
+        }
+        diffWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + diffStallTimeout, execute: work)
+    }
+
+    private func cancelDiffWatchdog() {
+        diffWatchdog?.cancel()
+        diffWatchdog = nil
     }
 
     /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or

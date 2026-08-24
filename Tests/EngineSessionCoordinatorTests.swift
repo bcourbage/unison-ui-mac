@@ -25,6 +25,9 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     private func closeOp(_ e: [Effect]) -> (C.SessionID, C.OperationID)? {
         for x in e { if case let .closeConnection(s, op) = x { return (s, op) } }; return nil
     }
+    private func beginDiff(_ e: [Effect]) -> (C.SessionID, C.OperationID, Int)? {
+        for x in e { if case let .beginDiff(s, op, row) = x { return (s, op, row) } }; return nil
+    }
     private func waitingID(_ e: [Effect]) -> C.OpenRequestID? {
         for x in e { if case let .showWaiting(id, _) = x { return id } }; return nil
     }
@@ -70,6 +73,72 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         let sync = beginSync(e)
         XCTAssertNotNil(sync)
         XCTAssertEqual(sync?.0, s)
+    }
+
+    // MARK: - PR-4: Diff takes engine ownership (.diffing)
+
+    func test_requestDiff_fromReady_takesOwnership_andAuthorizesDiff() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let e = c.requestDiff(row: 3)
+        let diff = beginDiff(e)
+        XCTAssertNotNil(diff)
+        XCTAssertEqual(diff?.0, s); XCTAssertEqual(diff?.2, 3)
+        XCTAssertEqual(c.phase, .diffing(s, diff!.1), "the engine is now owned by the diff")
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation, "no destructive mutation while diffing")
+        XCTAssertEqual(c.currentSession, s)
+    }
+
+    func test_requestDiff_whenNotReady_isRefused() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        _ = c.requestSync()                       // now .syncing
+        XCTAssertTrue(c.requestDiff(row: 0).isEmpty, "a diff can't start while syncing")
+        _ = s
+    }
+
+    func test_whileDiffing_syncAndRescan_areRefused() {
+        let c = C()
+        let (_, _) = openToReady(c)
+        _ = c.requestDiff(row: 0)                  // .diffing
+        XCTAssertTrue(c.requestSync().isEmpty, "sync refused during a diff — no overlap")
+        XCTAssertTrue(c.requestRescan().isEmpty, "rescan refused during a diff")
+        XCTAssertFalse(c.allowsDestructiveArchiveMutation)
+    }
+
+    func test_diffCompleted_matching_returnsToReady() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let (_, op, _) = beginDiff(c.requestDiff(row: 0))!
+        XCTAssertEqual(c.diffCompleted(session: s, op: op), [])
+        XCTAssertEqual(c.phase, .ready(s), "engine ownership released back to ready")
+        // A stale/duplicate completion is a no-op.
+        XCTAssertEqual(c.diffCompleted(session: s, op: op), [])
+        XCTAssertEqual(c.phase, .ready(s))
+    }
+
+    func test_diffCompleted_staleOp_isIgnored() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let (_, op, _) = beginDiff(c.requestDiff(row: 0))!
+        // A completion for a different op must not release the real diff.
+        let bogus = C.OperationID(raw: op.raw &+ 999)
+        XCTAssertEqual(c.diffCompleted(session: s, op: bogus), [])
+        XCTAssertEqual(c.phase, .diffing(s, op), "still owned by the real diff")
+    }
+
+    func test_abandonDuringDiff_defersClose_untilDiffCompletes() {
+        let c = C()
+        let (s, _) = openToReady(c)
+        let (_, op, _) = beginDiff(c.requestDiff(row: 0))!
+        // Window closed while the diff is still in flight: the engine is NOT idled
+        // (the bridge call still owns the lane) — the close is deferred.
+        XCTAssertEqual(c.abandon(reason: "window closed"), [])
+        XCTAssertEqual(c.phase, .diffing(s, op), "still diffing — engine not idled mid-call")
+        // When the diff finally returns, the deferred close runs.
+        let closed = closeOp(c.diffCompleted(session: s, op: op))
+        XCTAssertNotNil(closed, "the deferred close starts once the diff returns")
+        XCTAssertEqual(closed?.0, s)
     }
 
     // MARK: - Abandonment (the core race)

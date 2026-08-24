@@ -1463,46 +1463,16 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // address the wrong OCaml root) or a restart is required.
         guard actionGate.allows(.diff) else { NSSound.beep(); return }
         let path = items[row].path
-        // Defensive re-check — the menu validation calls canDiff too,
-        // but a context-menu click on a row that changed since
-        // validation could slip through. Bridge call is cheap.
-        guard unison_bridge_can_diff(Int32(row)) else {
-            TraceLog.shared.write("ReconcileWindow: canDiff=false for row \(row) (\(path))")
-            // Surface a brief alert rather than silently beeping —
-            // user clicked Diff, expects feedback.
-            let alert = NSAlert()
-            alert.alertStyle = .informational
-            alert.messageText = "Can't diff “\(path)”"
-            // canDiff filters: directories, symlinks, problem rows
-            // (e.g. access errors), and rows where both sides are
-            // PropsChanged-only or one side is Unchanged + the other
-            // is PropsChanged-only. Binary files DO pass canDiff;
-            // they just produce uninformative output from `diff -u`
-            // ("Binary files differ") — so we don't mention binary
-            // in the alert text, since user can technically click
-            // Diff on a binary file and Unison will return that.
-            alert.informativeText =
-                "Unison can only diff rows whose content differs on both " +
-                "sides and that are actual files (not directories or " +
-                "symlinks). This row is either a directory, a symlink, " +
-                "had only metadata changes, or hit a problem during " +
-                "update detection."
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-        // Issue through the APP-GLOBAL broker (via AppDelegate). It serializes
-        // globally — at most one diff outstanding across the whole app — and
-        // records this session as the owner so the async result is routed back
-        // to THIS window, never to whatever session happens to be current when
-        // it lands. A second request while one is outstanding (or while an
-        // abandoned request is still draining) is refused with brief feedback.
-        // `onDiffRequest` performs the `run_show_diffs` dispatch internally.
+        // Issue through the coordinator (engine ownership) + app-global broker
+        // (result routing) via AppDelegate. Both the `canDiff` precondition and the
+        // diff itself now run OFF the main thread (PR-4), so a slow/wedged remote
+        // transfer can't beachball the app. A refusal means the engine is busy with
+        // another operation, or an abandoned diff is still draining.
         let outcome = onDiffRequest(row)
         switch outcome {
         case .refused:
             NSSound.beep()
-            TraceLog.shared.write("ReconcileWindow: diff refused (in-flight/draining) for row \(row)")
+            TraceLog.shared.write("ReconcileWindow: diff refused (engine busy/draining) for row \(row)")
             return
         case .issued, .raised:
             break
@@ -1519,17 +1489,9 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         }
         diffWindowController?.surfaceForLoading(path: path)
         TraceLog.shared.write("ReconcileWindow: diff requested for row \(row) (\(path))")
-
-        if outcome == .raised {
-            // The diff dispatch raised in OCaml; no async result will arrive.
-            // The engine stays valid (a diff is a read-only per-row query), so
-            // surface a narrow diff error in the diff window rather than escalate.
-            TraceLog.shared.write("ReconcileWindow: run_show_diffs raised for row \(row)")
-            diffWindowController?.showError(
-                "Unison could not produce a diff for this row.")
-        }
-        // On success the result arrives via AppDelegate's diff handler (routed
-        // to this window by the broker) → showDiff, or → showDiffError.
+        // The result arrives via AppDelegate's diff handler (routed to this window
+        // by the broker) → showDiff; or the async completion → showDiffError
+        // (raised, not diffable, or wedged).
     }
 
     // MARK: - Select Conflicts / Revert to Recommendation
