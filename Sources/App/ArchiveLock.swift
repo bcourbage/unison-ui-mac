@@ -24,11 +24,23 @@ enum ArchiveLock {
         /// True only for `.acquired`. Every other outcome must block mutation.
         var didAcquire: Bool { self == .acquired }
 
-        /// True only for `.alreadyHeld`: a lock file actually EXISTS on disk
-        /// (a live Unison or a stale lock). The other failures — `.exception`,
-        /// `.invalidHash`, `.bridgeMissing` — do NOT prove a lock exists, so they
-        /// must not be reported as "another Unison holds the archive."
-        var provesLockExists: Bool { self == .alreadyHeld }
+        /// What this result establishes about the lock file on disk. Crucially,
+        /// a failure to acquire is NOT proof the lock is absent: `.exception`
+        /// (OCaml raised — patch 0006 returns code 2 without checking state) and
+        /// `.bridgeMissing`/`.invalidHash` (can't check at all) are UNKNOWN, not
+        /// unlocked. Only `.alreadyHeld` proves a lock exists.
+        enum LockEvidence: Equatable {
+            case held      // a lock file exists (foreign or stale)
+            case absent    // the lock is known not to exist (we just acquired it)
+            case unknown   // could not be established — treat conservatively
+        }
+        var lockEvidence: LockEvidence {
+            switch self {
+            case .acquired:                                return .absent
+            case .alreadyHeld:                             return .held
+            case .exception, .invalidHash, .bridgeMissing: return .unknown
+            }
+        }
     }
 
     enum LockState: Equatable {

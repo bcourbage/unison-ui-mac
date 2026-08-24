@@ -242,10 +242,11 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertTrue(ArchiveMutationError.rollbackIncomplete(quarantine: "/q").requiresArchiveBlockRefresh)
         XCTAssertTrue(ArchiveMutationError.lockRetainedAfterAbort(hashes: ["a"], quarantine: "/q").requiresArchiveBlockRefresh)
         XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .alreadyHeld).requiresArchiveBlockRefresh)
-        // The non-alreadyHeld lockUnavailable reasons prove no lock → no refresh.
-        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .exception).requiresArchiveBlockRefresh)
-        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .invalidHash).requiresArchiveBlockRefresh)
-        XCTAssertFalse(ArchiveMutationError.lockUnavailable(hash: "a", reason: .bridgeMissing).requiresArchiveBlockRefresh)
+        // The non-alreadyHeld reasons leave the lock state UNKNOWN (not proven
+        // absent), so they refresh conservatively too.
+        XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .exception).requiresArchiveBlockRefresh)
+        XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .invalidHash).requiresArchiveBlockRefresh)
+        XCTAssertTrue(ArchiveMutationError.lockUnavailable(hash: "a", reason: .bridgeMissing).requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.revalidationFailed.requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.stagingFailed(file: "x").requiresArchiveBlockRefresh)
         XCTAssertFalse(ArchiveMutationError.beginStagingFailed.requiresArchiveBlockRefresh)
@@ -258,25 +259,23 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             ArchiveMutationError.revalidationFailed))
     }
 
-    // SF1: a matrix over all four lock-acquisition failure reasons, each combined
-    // with a discard failure. Only `.alreadyHeld` proves a foreign lock and so
-    // preserves the primary; every other reason surfaces the lock-free leftover
-    // (abortedCleanupIncomplete) rather than masking it behind "another Unison".
-    func test_lockFailureMatrix_onlyAlreadyHeldProvesLock_others_surfaceLeftover() {
+    // SF2: a matrix over all four lock-acquisition failure reasons, each combined
+    // with a discard failure. A failed acquisition never proves the lock ABSENT, so
+    // EVERY reason preserves the lockUnavailable primary and requires a block
+    // refresh — none is downgraded to a "lock-free leftover" that would falsely
+    // claim the archive is unlocked.
+    func test_lockFailureMatrix_everyReasonPreservesPrimary_neverClaimsUnlocked() {
         let reasons: [ArchiveLock.AcquireResult] = [.alreadyHeld, .exception, .invalidHash, .bridgeMissing]
         for reason in reasons {
             let h = String(repeating: "a", count: 32); let files = ["ar"+h]
             let store = FakeStore(present: Set(files)); store.discardThrows = true
             let lock = FakeLocking(); lock.failWith = [h: reason]
             XCTAssertThrowsError(try run(plan([h], files), locking: lock, store: store)) { err in
-                let e = err as? ArchiveMutationError
-                if reason == .alreadyHeld {
-                    XCTAssertEqual(e, .lockUnavailable(hash: h, reason: .alreadyHeld),
-                                   "a proven lock preserves the primary")
-                } else {
-                    XCTAssertEqual(e, .abortedCleanupIncomplete(quarantine: "/fake/quarantine"),
-                                   "\(reason): no lock proven → surface the lock-free leftover, not a foreign-lock claim")
-                }
+                XCTAssertEqual(err as? ArchiveMutationError,
+                               .lockUnavailable(hash: h, reason: reason),
+                               "\(reason): acquisition failure preserved, not masked as unlocked")
+                XCTAssertTrue((err as? ArchiveMutationError)?.requiresArchiveBlockRefresh ?? false,
+                              "\(reason): held or unknown → refresh the block")
             }
             XCTAssertNotNil(store.manifest, "record retained on every discard failure")
         }

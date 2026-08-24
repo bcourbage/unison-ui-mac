@@ -92,6 +92,18 @@ struct StagingManifest: Codable, Equatable {
     var isPreCommit: Bool { phase == StagingManifest.phaseStaging }
     /// An intent record: locks were being acquired but no payload was moved.
     var isAcquiring: Bool { phase == StagingManifest.phaseAcquiring }
+
+    static let knownPhases: Set<String> =
+        [phaseAcquiring, phaseStaging, phaseCommitted, phaseAborted]
+
+    /// A record this build fully understands. A FUTURE version (written by a newer
+    /// app) or an unrecognized phase must be treated as fail-closed manual review —
+    /// its quarantine may hold payload requiring restoration that this build cannot
+    /// reason about, so it is never restored or Trashed automatically (SF3).
+    var isRecognized: Bool {
+        version >= 1 && version <= StagingManifest.currentVersion
+            && StagingManifest.knownPhases.contains(phase)
+    }
 }
 
 extension StagingManifest {
@@ -182,14 +194,14 @@ enum ArchiveMutationError: Error, Equatable {
     /// the profile in-session (not only after restart):
     ///  - `rollbackIncomplete`: staging record retained, app locks kept HELD.
     ///  - `lockRetainedAfterAbort`: app lock could not be confirmed released.
-    ///  - `lockUnavailable(.alreadyHeld)`: a foreign lock actually EXISTS; if the
-    ///    intent record could not be removed it blocks on restart. The other
-    ///    `lockUnavailable` reasons (exception/invalidHash/bridgeMissing) do not
-    ///    prove a lock and require no refresh.
+    ///  - `lockUnavailable`: `.alreadyHeld` proves a foreign lock (blocks); the
+    ///    other reasons (exception/invalidHash/bridgeMissing) leave the lock state
+    ///    UNKNOWN — refresh conservatively rather than assuming unlocked. Only a
+    ///    result that proves the lock ABSENT would skip the refresh.
     var requiresArchiveBlockRefresh: Bool {
         switch self {
         case .rollbackIncomplete, .lockRetainedAfterAbort: return true
-        case .lockUnavailable(_, let reason): return reason.provesLockExists
+        case .lockUnavailable(_, let reason): return reason.lockEvidence != .absent
         default: return false
         }
     }
@@ -293,15 +305,14 @@ enum ArchiveMutation {
                 throw primary
             case .lockFree(let q):
                 // Every APP-owned lock was released, but the record could not be
-                // removed. Keep the primary ONLY when it proves a lock still exists
-                // (`.alreadyHeld`): that foreign lock makes the leftover block on
-                // restart, so the truthful headline is the lock condition (SF2).
-                // For every other cause — including `lockUnavailable` from an
-                // exception/invalid-hash/bridge failure — no lock is proven, so the
-                // leftover is genuinely lock-free and must be surfaced (not masked).
-                if case .lockUnavailable(_, let reason) = primary, reason.provesLockExists {
-                    throw primary
-                }
+                // removed. Any `lockUnavailable` primary keeps precedence: whether
+                // a foreign lock is proven (`.alreadyHeld`) or the lock state is
+                // UNKNOWN (exception/bridge/invalidHash), we must NOT claim the
+                // archive is unlocked — the acquisition failure is the truthful
+                // headline and the retained record is recovered on restart (SF2).
+                // Only a genuinely lock-free abort (revalidation/staging failure,
+                // which released every acquired lock) reports the leftover folder.
+                if case .lockUnavailable = primary { throw primary }
                 throw ArchiveMutationError.abortedCleanupIncomplete(quarantine: q)
             case .locked(let hs, let q):
                 throw ArchiveMutationError.lockRetainedAfterAbort(hashes: hs, quarantine: q)
@@ -427,12 +438,13 @@ enum AbandonedStagingScan {
 
     /// Archive hashes that must block their profiles from opening until explicit
     /// recovery. Cases:
+    ///  - UNRECOGNIZED (future version or unknown phase): fail closed — always
+    ///    block; this build can't reason about the record (SF3).
     ///  - PRE-COMMIT staging: the family may be split and the lock is held →
     ///    always block.
-    ///  - ACQUIRING or COMMITTED whose `lk<hash>` still EXISTS on disk: no family
-    ///    is split (acquiring: nothing moved yet; committed: removal finished), but
-    ///    a lock survived → block until it is resolved. Such a record whose lock is
-    ///    already gone does not block (just an orphan folder to clean up).
+    ///  - ACQUIRING / COMMITTED / ABORTED whose `lk<hash>` still EXISTS on disk:
+    ///    no family is split, but a lock survived → block until it is resolved.
+    ///    Such a record whose lock is already gone does not block (orphan folder).
     /// This function NEVER removes a lock.
     static func blockedHashes(_ abandoned: [AbandonedStaging],
                               unisonDir: String,
@@ -440,7 +452,9 @@ enum AbandonedStagingScan {
         var blocked = Set<String>()
         for a in abandoned {
             for h in a.manifest.hashes {
-                if !a.manifest.blocksOnlyIfLocked {
+                if !a.manifest.isRecognized {
+                    blocked.insert(h)   // unknown version/phase → fail closed (SF3)
+                } else if !a.manifest.blocksOnlyIfLocked {
                     blocked.insert(h)   // staging: family may be split → always block
                 } else if fm.fileExists(
                     atPath: (unisonDir as NSString).appendingPathComponent("lk" + h)) {

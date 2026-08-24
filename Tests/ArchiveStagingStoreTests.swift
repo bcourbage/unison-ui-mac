@@ -236,6 +236,29 @@ final class ArchiveStagingStoreTests: XCTestCase {
                        "an acquiring record whose lock survived blocks its hash")
     }
 
+    // SF3: an unrecognized record (unknown phase or future version) blocks its
+    // hashes even with NO lock on disk — fail closed for manual review.
+    func test_blockedHashes_unrecognizedRecord_alwaysBlocks_evenLockFree() throws {
+        let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
+        // Unknown phase, no lk present.
+        let store = POSIXStagingStore(unisonDir: active)
+        try store.beginIntent(manifest([], phase: "frobnicate"))
+        let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
+        XCTAssertEqual(abandoned.count, 1)
+        XCTAssertEqual(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active), [h],
+                       "unknown phase blocks despite no lock (fail closed)")
+
+        // A future version likewise blocks.
+        let active2 = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active2) }
+        var future = manifest([], phase: StagingManifest.phaseCommitted)
+        future.version = StagingManifest.currentVersion + 1
+        let store2 = POSIXStagingStore(unisonDir: active2)
+        try store2.beginIntent(future)
+        let ab2 = AbandonedStagingScan.find(inUnisonDir: active2)
+        XCTAssertEqual(AbandonedStagingScan.blockedHashes(ab2, unisonDir: active2), [h],
+                       "future version blocks despite no lock (fail closed)")
+    }
+
     func test_discardRecord_removesQuarantine() throws {
         let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
         let store = POSIXStagingStore(unisonDir: active)

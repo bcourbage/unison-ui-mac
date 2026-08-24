@@ -42,10 +42,12 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
     /// the lock gone. Fresh-acquire is modelled here (no real file created).
     private final class FakeLocking: ArchiveLocking {
         var heldByOthers: Set<String> = []
+        var failWith: [String: ArchiveLock.AcquireResult] = [:]   // force a reason
         var releaseConfirmed = true
         private(set) var acquired: [String] = []
         private(set) var released: [String] = []
         func acquire(hash: String) -> ArchiveLock.AcquireResult {
+            if let forced = failWith[hash] { return forced }
             if heldByOthers.contains(hash) { return .alreadyHeld }
             acquired.append(hash); return .acquired
         }
@@ -274,5 +276,89 @@ final class ArchiveStagingRecoveryTests: XCTestCase {
 
         guard case .cleanupOnly = outcome else { return XCTFail("expected .cleanupOnly, got \(outcome)") }
         XCTAssertFalse(exists(active, "lk"+h), "lock genuinely released — profile not blocked")
+    }
+
+    // MARK: - Blocker: overlapping records must not be auto-recovered
+
+    func test_overlapGroups_partitionsBySharedHashes() {
+        let r1 = preCommit("/q1", hashes: [h1], payloads: [])
+        let r2 = committed("/q2", hashes: [h1], payloads: [])        // shares h1 with r1
+        let r3 = preCommit("/q3", hashes: [h2], payloads: [])        // disjoint
+        let groups = ArchiveStagingRecovery.overlapGroups([r1, r2, r3])
+        XCTAssertEqual(groups.count, 2, "one overlap group {r1,r2}, one singleton {r3}")
+        XCTAssertTrue(groups.contains { $0.count == 2 })
+        XCTAssertTrue(groups.contains { $0.count == 1 && $0.first?.quarantineDir == "/q3" })
+    }
+
+    /// The exact Blocker scenario: an aborted lock-free leftover and a LATER staging
+    /// record share a hash whose `lk` protects the staging record's split family.
+    /// Recovering the aborted record must NOT run — its cleanup branch would unlink
+    /// the staging record's barrier. The overlap grouping refuses the whole group.
+    func test_overlap_abortedLeftoverPlusLaterStaging_refusesGroup_barrierUntouched() throws {
+        let active = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active) }
+        write(active, "lk"+h)                        // the staging record's live barrier
+        var aborted = committed("/old-aborted-q", hashes: [h], payloads: [])
+        aborted = AbandonedStaging(quarantineDir: "/old-aborted-q",
+                                   manifest: { var m = aborted.manifest; m.phase = StagingManifest.phaseAborted; return m }())
+        let staging = preCommit("/new-staging-q", hashes: [h], payloads: ["ar"+h])
+
+        // Both records share hash h → a single overlap group of size 2 → refused.
+        let groups = ArchiveStagingRecovery.overlapGroups([aborted, staging])
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.count, 2, "shared hash → one group; caller must refuse it")
+        // The barrier is never touched by a grouping decision.
+        XCTAssertTrue(exists(active, "lk"+h), "the staging record's lock is untouched")
+    }
+
+    // MARK: - SF2: unknown lock state is not "another Unison holds it"
+
+    func test_recover_missingLock_acquireException_warnsUnprotected_notForeignHeld() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(q, "ar"+h)                             // split family, NO lk on disk
+        let lk = FakeLocking(); lk.failWith = [h: .exception]   // acquire raises → unknown
+
+        let outcome = ArchiveStagingRecovery.recover(
+            preCommit(q, hashes: [h], payloads: ["ar"+h]), activeDir: active, locking: lk)
+
+        guard case .aborted(let why) = outcome else { return XCTFail("expected .aborted, got \(outcome)") }
+        XCTAssertTrue(why.contains("UNPROTECTED"), "unknown lock state warns of an unprotected archive")
+        XCTAssertFalse(why.contains("another Unison holds"), "must not claim a foreign lock is held")
+        XCTAssertTrue(exists(q, "ar"+h), "nothing restored — family untouched")
+    }
+
+    // MARK: - SF3: unrecognized records are fail-closed manual review
+
+    func test_recover_unknownPhase_isManualReview_touchesNothing() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(active, "lk"+h); write(q, "ar"+h)
+        var m = StagingManifest(operation: "test", hashes: [h], payloadFiles: ["ar"+h],
+                                createdAtISO8601: "2026-08-23T00:00:00Z")
+        m.phase = "frobnicate"                        // unknown phase
+        let rec = AbandonedStaging(quarantineDir: q, manifest: m)
+
+        let lk = FakeLocking()
+        let outcome = ArchiveStagingRecovery.recover(rec, activeDir: active, locking: lk)
+
+        guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertEqual(lk.acquired, [], "no lock touched for an unrecognized record")
+        XCTAssertTrue(exists(active, "lk"+h)); XCTAssertTrue(exists(q, "ar"+h), "nothing moved")
+    }
+
+    func test_recover_futureVersion_isManualReview() throws {
+        let active = try tempDir(); let q = try tempDir()
+        defer { try? FileManager.default.removeItem(atPath: active); try? FileManager.default.removeItem(atPath: q) }
+        write(q, "ar"+h)
+        var m = StagingManifest(operation: "test", hashes: [h], payloadFiles: ["ar"+h],
+                                createdAtISO8601: "2026-08-23T00:00:00Z")
+        m.version = StagingManifest.currentVersion + 1   // written by a newer app
+        m.phase = StagingManifest.phaseStaging
+        let rec = AbandonedStaging(quarantineDir: q, manifest: m)
+
+        let outcome = ArchiveStagingRecovery.recover(rec, activeDir: active, locking: FakeLocking())
+        guard case .needsManualReview = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertTrue(exists(q, "ar"+h), "a future-version record is never restored or trashed")
     }
 }

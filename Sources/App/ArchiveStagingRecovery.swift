@@ -50,6 +50,32 @@ enum ArchiveStagingRecovery {
         !Set(profileHashes).isDisjoint(with: blocked)
     }
 
+    /// Partition records into connected groups where two records are connected
+    /// when their hash sets intersect. When several records share a hash, an
+    /// `lk<hash>` on disk CANNOT be attributed to any one of them, so recovering
+    /// one could unlink a lock that protects another's split family (Blocker). The
+    /// caller must refuse automatic recovery of any group with more than one member
+    /// and only auto-recover singleton groups. Pure and order-independent.
+    static func overlapGroups(_ records: [AbandonedStaging]) -> [[AbandonedStaging]] {
+        guard !records.isEmpty else { return [] }
+        var parent = Array(0..<records.count)
+        func find(_ x: Int) -> Int {
+            var r = x
+            while parent[r] != r { parent[r] = parent[parent[r]]; r = parent[r] }
+            return r
+        }
+        func union(_ a: Int, _ b: Int) { parent[find(a)] = find(b) }
+        let sets = records.map { Set($0.manifest.hashes) }
+        for i in 0..<records.count {
+            for j in (i + 1)..<records.count where !sets[i].isDisjoint(with: sets[j]) {
+                union(i, j)
+            }
+        }
+        var groups: [Int: [AbandonedStaging]] = [:]
+        for i in 0..<records.count { groups[find(i), default: []].append(records[i]) }
+        return Array(groups.values)
+    }
+
     enum RecoverOutcome: Equatable {
         case recovered                    // fully resolved; record retired; locks released
         case aborted(String)              // a lock couldn't be secured; nothing touched; all locked
@@ -68,6 +94,16 @@ enum ArchiveStagingRecovery {
                         activeDir: String,
                         locking: ArchiveLocking,
                         fileManager fm: FileManager = .default) -> RecoverOutcome {
+        // 0. Fail closed on a record this build does not fully understand (a future
+        //    version or an unknown phase): never restore or Trash it — its
+        //    quarantine may hold payload requiring restoration we can't reason about
+        //    (SF3). Keep it blocked for manual review.
+        guard a.manifest.isRecognized else {
+            return .needsManualReview("\(a.quarantineDir): unrecognized record (version "
+                + "\(a.manifest.version), phase '\(a.manifest.phase)') — left untouched; "
+                + "archives remain blocked for manual review")
+        }
+
         let hashes = a.manifest.hashes.sorted()
         func lkPath(_ h: String) -> String {
             (activeDir as NSString).appendingPathComponent("lk" + h)
@@ -81,11 +117,20 @@ enum ArchiveStagingRecovery {
         for h in hashes {
             if fm.fileExists(atPath: lkPath(h)) {
                 barrier[h] = .existing
-            } else if locking.acquire(hash: h) == .acquired {
+                continue
+            }
+            let r = locking.acquire(hash: h)
+            switch r.lockEvidence {
+            case .absent:   // .acquired — we established a fresh barrier
                 barrier[h] = .fresh
-            } else {
+            case .held:     // another Unison grabbed it since our check
                 return .aborted("another Unison holds archive \(h); recovery deferred — "
-                    + "all affected archives remain locked")
+                    + "that archive stays locked. Quit every Unison and try again")
+            case .unknown:  // acquire raised or the bridge is unavailable — we could
+                            // NOT establish a barrier, and the lock file was absent
+                return .aborted("could NOT establish a lock on archive \(h) (\(r)); recovery "
+                    + "stopped. WARNING: this archive may be UNPROTECTED — quit every Unison "
+                    + "and try recovery again")
             }
         }
 

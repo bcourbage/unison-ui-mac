@@ -2409,28 +2409,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        var cleared = Set<String>()      // fully unlocked → safe to unblock
-        var problems: [String] = []      // still locked → stay blocked
+        var problems: [String] = []      // still locked / refused → stay blocked
         var cleanupNotes: [String] = []  // unlocked, only a leftover folder to delete
-        for a in abandoned {
+
+        // Blocker: when several records share a hash, an `lk<hash>` on disk cannot
+        // be attributed to any one of them — recovering one could unlink a lock that
+        // protects another's split family. Refuse automatic recovery of any
+        // overlapping group; recover only records that share hashes with no other.
+        for group in ArchiveStagingRecovery.overlapGroups(abandoned) {
+            guard group.count == 1, let a = group.first else {
+                let dirs = group.map { "    – \($0.quarantineDir)" }.joined(separator: "\n")
+                problems.append("  • \(group.count) interrupted operations share the same "
+                    + "archive(s); they can't be recovered automatically without risking "
+                    + "another's lock. Resolve manually:\n\(dirs)")
+                continue
+            }
             let outcome = ArchiveStagingRecovery.recover(
                 a, activeDir: unisonDirectory, locking: SystemArchiveLocking())
             log.write("recovery: \(a.quarantineDir) -> \(outcome)")
             switch outcome {
             case .recovered:
-                cleared.formUnion(a.manifest.hashes)
+                break
             case .cleanupOnly(let note):
-                cleared.formUnion(a.manifest.hashes)   // locks are gone → unblock
                 cleanupNotes.append("  • \(note)")
             case .aborted(let why), .needsManualReview(let why):
                 problems.append("  • \(why)")
             }
         }
 
-        // Clear blocks for stagings whose locks are fully gone (recovered OR only
-        // a benign cleanup leftover); the rest stay blocked and detectable.
-        blockedArchiveHashes.subtract(cleared)
-        abandonedStagings.removeAll { cleared.isSuperset(of: $0.manifest.hashes) }
+        // Recompute the block state from DISK — authoritative — rather than
+        // subtracting a union of "cleared" hashes (which could wrongly unblock a
+        // hash a second, still-blocked record also owns).
+        refreshBlockedArchiveState()
 
         if !problems.isEmpty {
             let a2 = NSAlert()
