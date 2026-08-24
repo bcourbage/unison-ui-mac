@@ -73,12 +73,19 @@ struct StagingManifest: Codable, Equatable {
 /// Interprocess archive locking (injectable for tests).
 protocol ArchiveLocking {
     func acquire(hash: String) -> ArchiveLock.AcquireResult
-    func release(hash: String)
+    /// Release the lock and CONFIRM it is gone. Returns false if a lock for this
+    /// hash still exists afterward (the release failed, or another process
+    /// re-acquired) — the caller must then treat it as NOT safely released and
+    /// retain a blocking recovery record.
+    @discardableResult func release(hash: String) -> Bool
 }
 
 struct SystemArchiveLocking: ArchiveLocking {
     func acquire(hash: String) -> ArchiveLock.AcquireResult { ArchiveLock.acquire(hash: hash) }
-    func release(hash: String) { ArchiveLock.release(hash: hash) }
+    @discardableResult func release(hash: String) -> Bool {
+        ArchiveLock.release(hash: hash)
+        return ArchiveLock.isLocked(hash: hash) == .unlocked
+    }
 }
 
 /// Staging-based payload store (injectable for tests). Implements the phase
@@ -92,10 +99,13 @@ protocol ArchivePayloadStore {
     /// Phase 3: restore every staged file to the active dir and remove the
     /// quarantine dir + manifest. Called only on a staging failure.
     func rollback() throws
-    /// Phase 5: move the ENTIRE quarantine dir to Trash as one unit and clear
-    /// state. Throws on cleanup failure, having RETAINED the complete quarantine
-    /// dir (never restored).
-    func commit() throws
+    /// Phase 4: durably mark the manifest committed (the whole family is now
+    /// staged out of the active dir). The logical commit point.
+    func markCommitted() throws
+    /// Phase 6: move the ENTIRE quarantine dir to Trash as one unit and clear
+    /// state. Throws on cleanup failure, RETAINING the complete quarantine dir.
+    /// Call ONLY after every owned lock has been confirmed released.
+    func trashQuarantine() throws
     /// The quarantine directory path (for reporting a retained quarantine).
     var quarantinePath: String? { get }
 }
@@ -115,10 +125,14 @@ enum ArchiveMutationError: Error, Equatable {
 
 struct ArchiveMutationOutcome: Equatable {
     let hashes: [String]                 // families removed from the active dir
-    /// Non-nil iff the Trash cleanup (phase 5) failed: the complete family is
-    /// safe in this retained quarantine dir. The removal still succeeded; the
-    /// caller must report the path.
+    /// Non-nil iff the quarantine was retained rather than Trashed — either the
+    /// Trash cleanup failed (locks already released → non-blocking leftover), or
+    /// a lock could not be confirmed released (see `locksNotReleased` → blocking).
     let quarantineRetained: String?
+    /// Hashes whose lock could NOT be confirmed released after the commit. The
+    /// committed-manifest quarantine is retained and these profiles stay blocked
+    /// (lock present) until explicit recovery. Empty on the normal path.
+    var locksNotReleased: [String] = []
 }
 
 enum ArchiveMutation {
@@ -193,14 +207,42 @@ enum ArchiveMutation {
             throw ArchiveMutationError.stagingFailed(file: "\(error)")
         }
 
-        // 4. Logical commit: the whole family is absent from the active dir.
-        // 5. Move the entire quarantine dir to Trash as one unit.
+        // 4. Logical commit: durably mark the manifest committed (family absent
+        //    from the active dir). If even marking fails, roll back.
+        do { try store.markCommitted() }
+        catch {
+            do { try store.rollback() }
+            catch {
+                releaseLocks = false
+                throw ArchiveMutationError.rollbackIncomplete(quarantine: store.quarantinePath ?? "?")
+            }
+            throw ArchiveMutationError.stagingFailed(file: "markCommitted: \(error)")
+        }
+
+        // 5. Release every owned lock and CONFIRM it is gone, BEFORE Trashing —
+        //    so a committed record is never retired while a lock might survive.
+        //    We handle release here (not via defer) to observe status.
+        releaseLocks = false
+        var unreleased: [String] = []
+        for h in owned.reversed() where !locking.release(hash: h) { unreleased.append(h) }
+        owned.removeAll()
+
+        guard unreleased.isEmpty else {
+            // A lock could not be confirmed released. RETAIN the committed
+            // quarantine (still detectable) — those hashes stay blocked (lock
+            // present) until explicit recovery. Never Trash in this state.
+            return ArchiveMutationOutcome(hashes: plan.hashes,
+                                          quarantineRetained: store.quarantinePath,
+                                          locksNotReleased: unreleased.sorted())
+        }
+
+        // 6. All locks released — now it is safe to Trash the quarantine. A Trash
+        //    failure leaves a committed-manifest, lock-free leftover (recoverable,
+        //    non-blocking).
         do {
-            try store.commit()
+            try store.trashQuarantine()
             return ArchiveMutationOutcome(hashes: plan.hashes, quarantineRetained: nil)
         } catch {
-            // Cleanup failed: retain the complete quarantine dir, report it.
-            // Do NOT restore — the removal is already committed.
             return ArchiveMutationOutcome(hashes: plan.hashes,
                                           quarantineRetained: store.quarantinePath)
         }
@@ -239,12 +281,29 @@ enum AbandonedStagingScan {
         return found
     }
 
-    /// Archive hashes locked by a PRE-COMMIT abandoned mutation — profiles whose
-    /// archives intersect this set must be blocked from starting until explicit
-    /// recovery (the `lk` locks are still held and ownership cannot be proven).
-    /// A post-commit leftover does not block (its removal completed and its locks
-    /// were released). This function NEVER removes a lock.
-    static func blockedHashes(_ abandoned: [AbandonedStaging]) -> Set<String> {
-        Set(abandoned.filter { $0.manifest.isPreCommit }.flatMap { $0.manifest.hashes })
+    /// Archive hashes that must block their profiles from opening until explicit
+    /// recovery. Two cases:
+    ///  - PRE-COMMIT staging: the family is split and the lock is held → always
+    ///    block.
+    ///  - COMMITTED staging whose `lk<hash>` still EXISTS on disk: the family was
+    ///    removed but a lock survived (release failed, or was never confirmed) →
+    ///    block until the lock is resolved. A committed leftover whose lock is
+    ///    already gone does not block (just orphan files to clean up).
+    /// This function NEVER removes a lock.
+    static func blockedHashes(_ abandoned: [AbandonedStaging],
+                              unisonDir: String,
+                              fileManager fm: FileManager = .default) -> Set<String> {
+        var blocked = Set<String>()
+        for a in abandoned {
+            for h in a.manifest.hashes {
+                if a.manifest.isPreCommit {
+                    blocked.insert(h)
+                } else if fm.fileExists(
+                    atPath: (unisonDir as NSString).appendingPathComponent("lk" + h)) {
+                    blocked.insert(h)
+                }
+            }
+        }
+        return blocked
     }
 }

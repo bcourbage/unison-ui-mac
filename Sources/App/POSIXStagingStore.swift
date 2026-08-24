@@ -91,15 +91,18 @@ final class POSIXStagingStore: ArchivePayloadStore {
 
     // MARK: phase 4+5 — mark committed, then whole-dir Trash (retain on failure)
 
-    func commit() throws {
+    func markCommitted() throws {
         guard let q = quarantinePath, var m = manifest else { throw ArchiveStoreError.notStaging }
-        // Phase 4: durably flip the manifest to committed BEFORE the Trash, so a
-        // crash here leaves a post-commit leftover (removal done, locks released),
-        // not a pre-commit block.
+        // Durably flip the manifest to committed — the logical commit point. The
+        // caller releases the locks (confirmed) BEFORE trashing, so a committed
+        // record is never retired while a lock might survive.
         m.phase = StagingManifest.phaseCommitted
         try writeManifestDurably(m, inQuarantine: q)
         self.manifest = m
-        // Phase 5: move the whole quarantine dir to Trash as one unit.
+    }
+
+    func trashQuarantine() throws {
+        guard let q = quarantinePath else { return }
         do {
             var out: NSURL?
             try fm.trashItem(at: URL(fileURLWithPath: q), resultingItemURL: &out)

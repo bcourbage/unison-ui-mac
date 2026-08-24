@@ -13,11 +13,14 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         var heldByOthers: Set<String> = []
         private(set) var acquired: [String] = []
         private(set) var released: [String] = []
+        var releaseConfirmed = true   // whether release() reports the lock gone
         func acquire(hash: String) -> ArchiveLock.AcquireResult {
             if heldByOthers.contains(hash) { return .alreadyHeld }
             acquired.append(hash); return .acquired
         }
-        func release(hash: String) { released.append(hash) }
+        @discardableResult func release(hash: String) -> Bool {
+            released.append(hash); return releaseConfirmed
+        }
     }
 
     private enum StoreErr: Error { case begin, stage, commit, missing }
@@ -56,7 +59,9 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             staged.removeAll()
             manifest = nil
         }
-        func commit() throws {
+        private(set) var markedCommitted = false
+        func markCommitted() throws { markedCommitted = true }
+        func trashQuarantine() throws {
             if commitFail { throw StoreErr.commit }   // retain quarantine; keep staged
             committedWholeDir = true
             staged.removeAll()
@@ -183,7 +188,24 @@ final class ArchiveMutationTransactionTests: XCTestCase {
         XCTAssertFalse(store.committedWholeDir)
         XCTAssertTrue(store.present.isEmpty, "the ORIGINAL location has no partial family")
         XCTAssertEqual(store.staged, Set(files), "the whole family is safe in the retained quarantine")
-        XCTAssertEqual(lock.released, [h])
+        XCTAssertEqual(lock.released, [h], "locks released BEFORE the Trash attempt")
+        XCTAssertEqual(out.locksNotReleased, [], "locks were released; leftover is non-blocking")
+    }
+
+    // MARK: SF3 — a lock that can't be confirmed released keeps a BLOCKING record
+
+    func test_lockReleaseUnconfirmed_retainsBlockingQuarantine_notTrashed() throws {
+        let h = String(repeating: "a", count: 32)
+        let files = ["ar"+h, "fp"+h]
+        let store = FakeStore(present: Set(files))
+        let lock = FakeLocking(); lock.releaseConfirmed = false   // release can't be confirmed
+        let out = try run(plan([h], files), locking: lock, store: store)
+        XCTAssertEqual(out.locksNotReleased, [h], "unconfirmed release reported as blocking")
+        XCTAssertEqual(out.quarantineRetained, "/fake/quarantine", "committed quarantine retained")
+        XCTAssertFalse(store.committedWholeDir, "NOT trashed while a lock may survive")
+        XCTAssertTrue(store.markedCommitted, "manifest durably marked committed before release")
+        XCTAssertTrue(store.present.isEmpty, "family removed from the active dir (committed)")
+        XCTAssertEqual(lock.released, [h], "release was attempted")
     }
 
     // MARK: Blocker 2 — payload set derived UNDER the locks
@@ -196,7 +218,7 @@ final class ArchiveMutationTransactionTests: XCTestCase {
             let onAcquire: () -> Void
             init(_ f: @escaping () -> Void) { onAcquire = f }
             func acquire(hash: String) -> ArchiveLock.AcquireResult { onAcquire(); return .acquired }
-            func release(hash: String) {}
+             func release(hash: String) -> Bool { true }
         }
         var existing: Set<String> = ["ar"+h]
         let store = FakeStore(present: ["ar"+h, "fp"+h])

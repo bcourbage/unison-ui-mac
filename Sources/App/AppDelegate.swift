@@ -2340,7 +2340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         guard !unisonDirectory.isEmpty else { return }
         let abandoned = AbandonedStagingScan.find(inUnisonDir: unisonDirectory)
         abandonedStagings = abandoned.filter { $0.manifest.isPreCommit }
-        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned)
+        blockedArchiveHashes = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: unisonDirectory)
         guard !abandonedStagings.isEmpty else { return }
         log.write("abandoned pre-commit archive staging detected: "
             + "\(abandonedStagings.count) dir(s), blocked hashes="

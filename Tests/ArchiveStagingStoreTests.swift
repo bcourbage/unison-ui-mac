@@ -102,7 +102,8 @@ final class ArchiveStagingStoreTests: XCTestCase {
         try store.beginStaging(manifest(["ar"+h, "fp"+h]))
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h); try store.stage("fp"+h)
-        try store.commit()
+        try store.markCommitted()
+        try store.trashQuarantine()
         XCTAssertEqual(fm.trashed.count, 1, "exactly ONE trash call — the whole dir, not per-file")
         XCTAssertEqual(fm.trashed.first?.path, q, "trashed the quarantine DIRECTORY")
         XCTAssertFalse(FileManager.default.fileExists(atPath: q), "quarantine gone from active dir")
@@ -119,7 +120,8 @@ final class ArchiveStagingStoreTests: XCTestCase {
         try store.beginStaging(manifest(["ar"+h]))
         let q = try XCTUnwrap(store.quarantinePath)
         try store.stage("ar"+h)
-        XCTAssertThrowsError(try store.commit()) {
+        try store.markCommitted()
+        XCTAssertThrowsError(try store.trashQuarantine()) {
             XCTAssertEqual($0 as? ArchiveStoreError, .trashFailed(q))
         }
         XCTAssertEqual(store.quarantinePath, q, "quarantine retained + reported")
@@ -131,7 +133,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
         XCTAssertEqual(abandoned.count, 1)
         XCTAssertEqual(abandoned.first?.manifest.phase, StagingManifest.phaseCommitted)
-        XCTAssertTrue(AbandonedStagingScan.blockedHashes(abandoned).isEmpty,
+        XCTAssertTrue(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active).isEmpty,
                       "a committed leftover does not block any profile")
     }
 
@@ -148,7 +150,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
         XCTAssertEqual(abandoned.count, 1)
         XCTAssertEqual(abandoned.first?.manifest.phase, StagingManifest.phaseStaging)
-        XCTAssertEqual(AbandonedStagingScan.blockedHashes(abandoned), [h],
+        XCTAssertEqual(AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active), [h],
                        "a pre-commit abandoned mutation blocks its hashes (fail closed)")
     }
 
@@ -162,7 +164,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
         try store.beginStaging(manifest(["ar"+h]))
 
         let abandoned = AbandonedStagingScan.find(inUnisonDir: active)
-        _ = AbandonedStagingScan.blockedHashes(abandoned)
+        _ = AbandonedStagingScan.blockedHashes(abandoned, unisonDir: active)
         XCTAssertTrue(exists(active, "lk"+h),
                       "detection must never delete the lock — recovery is explicit")
     }
@@ -177,7 +179,7 @@ final class ArchiveStagingStoreTests: XCTestCase {
 
         final class NoopLocking: ArchiveLocking {
             func acquire(hash: String) -> ArchiveLock.AcquireResult { .acquired }
-            func release(hash: String) {}
+             func release(hash: String) -> Bool { true }
         }
         let out = try ArchiveMutation.execute(
             operation: "clean-stale", hashes: [h], nowISO8601: "2026-08-23T00:00:00Z",
