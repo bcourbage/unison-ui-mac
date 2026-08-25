@@ -127,6 +127,17 @@ final class VersionCheckTests: XCTestCase {
         XCTAssertEqual(VersionCheck.parseVersionString(withBanner), "2.54.0")
     }
 
+    func test_parseVersion_bannerLineAlsoLabelled_takesCommandOutputLine() {
+        // The banner line itself carries a "Unison version …" phrase; only the
+        // LAST line-anchored label (the command's own output, after the banner)
+        // is the real version.
+        let motd = """
+        MOTD: Unison version 2.51 will be retired
+        unison version 2.54.0 (ocaml 5.5.0)
+        """
+        XCTAssertEqual(VersionCheck.parseVersionString(motd), "2.54.0")
+    }
+
     func test_parseVersion_noMatch_returnsNil() {
         XCTAssertNil(VersionCheck.parseVersionString("could not connect"))
         XCTAssertNil(VersionCheck.parseVersionString(""))

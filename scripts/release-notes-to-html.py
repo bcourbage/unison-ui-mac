@@ -31,21 +31,34 @@ _CODE = re.compile(r"`([^`]+?)`")
 _LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 
 
-def _inline(text: str) -> str:
-    """Escape HTML, then re-introduce the allowed inline markup as tags.
-
-    Escaping first means link URLs and text are safe; the markup regexes run on
-    the escaped string and emit tags whose inner text is already escaped.
-    """
+def _inline_no_links(text: str) -> str:
+    """Escape HTML and apply the non-link inline markup (bold/emphasis/code)."""
     out = html.escape(text, quote=False)
-    out = _LINK.sub(
-        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
-        out,
-    )
     out = _BOLD.sub(r"<strong>\1</strong>", out)
     out = _EMPH.sub(r"<em>\1</em>", out)
     out = _CODE.sub(r"<code>\1</code>", out)
     return out
+
+
+def _inline(text: str) -> str:
+    """Re-introduce the allowed inline markup as tags.
+
+    Links are parsed from the RAW text and each component (the URL, the label,
+    the surrounding prose) is escaped EXACTLY ONCE — escaping the whole line first
+    and then re-escaping the already-escaped URL would double-encode a query
+    string (`&` -> `&amp;` -> `&amp;amp;`). Bold/emphasis/code apply only to the
+    non-link segments, so a `&` inside a URL is never touched by them either.
+    """
+    parts: list[str] = []
+    pos = 0
+    for m in _LINK.finditer(text):
+        parts.append(_inline_no_links(text[pos:m.start()]))
+        url = html.escape(m.group(2), quote=True)
+        label = html.escape(m.group(1), quote=False)
+        parts.append(f'<a href="{url}">{label}</a>')
+        pos = m.end()
+    parts.append(_inline_no_links(text[pos:]))
+    return "".join(parts)
 
 
 def convert(md: str) -> str:

@@ -59,6 +59,12 @@ check("emphasis alongside bold", "<em>soft words</em>" in mix)
 lk = run("See [the page](https://example.com/x).\n")
 check("link", '<a href="https://example.com/x">the page</a>' in lk)
 
+# A query string's `&` must be escaped EXACTLY once (not `&amp;amp;`): links are
+# parsed from the raw text so the URL isn't escaped a second time.
+q = run("[query](https://example.com/?a=1&b=2)\n")
+check("link query single-escaped",
+      'href="https://example.com/?a=1&amp;b=2"' in q and "&amp;amp;" not in q)
+
 esc = run("A < B & C > D, not <body> or <!DOCTYPE html>.\n")
 check("escapes angle brackets", "&lt;" in esc and "&gt;" in esc)
 check("escapes ampersand", "&amp;" in esc)

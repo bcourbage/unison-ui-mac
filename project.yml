@@ -79,8 +79,9 @@ targets:
       # AppDelegate.openUnisonProjectHelp(_:) opens it via NSWorkspace.
       # Version comes from ${UNISON_VERSION} (exported by the Makefile) so this
       # stays in lockstep with VENDORED_MANUAL rather than drifting on an engine
-      # bump. `make build`/`make xcodeproj` set it; a bare `xcodegen generate`
-      # falls back to the default in the Makefile via the environment.
+      # bump. Generate via `make xcodeproj` (or `make build`), which exports it —
+      # a bare `xcodegen generate` can't inherit the Makefile default and fails on
+      # the unset variable, so export UNISON_VERSION first if you run xcodegen by hand.
       - path: vendor/unison-manual-${UNISON_VERSION}.html
         buildPhase: resources
       # GPLv3 §5 obligation: a conveyed copy must "give all recipients

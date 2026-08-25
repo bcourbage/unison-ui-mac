@@ -23,9 +23,10 @@ review.
 | 0003 close-and-drain | `remote.ml` (+36/−0), `remote.mli` (+17/−0), `test.ml` (+96/−0), `uicommon.ml` (+4/−13) | **No** | general engine | **High** |
 | 0004 transport-child reaper | `remote.ml` (+41/−0), `remote.mli` (+11/−0), `uimacbridge.ml` (+10/−0) | **Yes** | general hooks + macUI policy | Medium (hooks half) |
 | 0005 sync-completion snapshot | `uimacbridge.ml` (+11/−2) | **No** | macUI bridge | Low (macUI perf) |
+| 0006 register-lock | `uimacbridge.ml` (+59/−0) | **Yes** | macUI bridge | Low (macUI-only) |
 
-Two of the four are strictly additive (0002, 0004). The two non-additive ones
-each change a small, well-scoped piece of existing code (see below).
+Three of the five are strictly additive (0002, 0004, 0006). The two non-additive
+ones each change a small, well-scoped piece of existing code (see below).
 
 ---
 
@@ -93,6 +94,21 @@ each change a small, well-scoped piece of existing code (see below).
 - **Upstream relevance: LOW.** A macUI-bridge performance change, and it alters
   a bridge external's ABI — only relevant if upstream evolves the native macUI.
 
+## 0006 — `uimacbridge-register-lock`
+
+- **Additive only: YES** — `src/uimacbridge.ml` +59 / −0. Pure new callback
+  registration; touches no existing lines.
+- **What:** registers a NARROW per-archive lock capability —
+  `Callback.register "unisonLockAcquire" / "unisonLockRelease" /
+  "unisonLockIsLocked"`. Each takes ONLY a validated 32-char lowercase-hex
+  archive hash and builds `Util.fileInUnisonDir ("lk" ^ hash)` in OCaml over the
+  raw `Lock` module (`src/lock.ml`), so the app's archive-mutation transaction
+  can acquire the very `lk<hash>` a live Unison uses. The C/Swift side can never
+  pass an arbitrary path or a wrong prefix, and `is_locked` is diagnostic-only.
+- **Upstream relevance: LOW.** macUI-bridge-only surface; matters upstream only
+  if the native macUI is to coordinate with the engine's per-archive locks. The
+  underlying `Lock` module it wraps is already upstream.
+
 ---
 
 ## Contribution decomposition
@@ -104,8 +120,8 @@ Group by generality, which is the natural PR split:
      Flag the `uicommon.ml` behavioral hunk explicitly.
    - **0004's `remote.ml`/`.mli` hook half** — additive, no-op defaults; could
      be proposed independently of the macUI wiring.
-2. **macUI-bridge only (lower value, harder to land):** 0002, 0005, and 0004's
-   `uimacbridge.ml` wiring — relevant only if upstream evolves the
+2. **macUI-bridge only (lower value, harder to land):** 0002, 0005, 0006, and
+   0004's `uimacbridge.ml` wiring — relevant only if upstream evolves the
    largely-unmaintained native macUI.
 
 ## Caveats before investing

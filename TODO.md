@@ -621,8 +621,9 @@ landed across the bring-up and follow-on sessions.*
 - **The fork relationship with upstream Unison**: `unison-blob.o` is
   built from a local checkout of `bcpierce00/unison`, with our
   `patches/` applied first, currently `0002` (closeConnection),
-  `0003` (close-and-drain), `0004` (transport-child reaper), and
-  `0005` (sync-completion snapshot). These stay local for now;
+  `0003` (close-and-drain), `0004` (transport-child reaper),
+  `0005` (sync-completion snapshot), and `0006` (register-lock).
+  These stay local for now;
   upstreaming any individual maintainer-authored patch remains
   possible on its own merits (as `abortAll`/`0001` was, merged via
   PR #1198 and then retired here). `make apply-patches` uses

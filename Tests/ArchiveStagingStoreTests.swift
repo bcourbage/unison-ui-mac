@@ -220,40 +220,39 @@ final class ArchiveStagingStoreTests: XCTestCase {
                       "no abandoned staging remains after a clean commit")
     }
 
-    // Coverage: a selected Clean-Stale row whose family also has an on-disk lock
-    // (lk<hash>), removed while the engine is IDLE. The lock must never be part of
-    // the removal plan and must survive; the rest of the family is trashed as one
-    // unit. (Combines the lk-exclusion and idle-removal guarantees end to end.)
-    func test_integration_familyWithLockOnDisk_atIdle_removesFamily_keepsLock() throws {
+    // Coverage: a selected Clean-Stale row whose family has an on-disk lock
+    // (lk<hash>) while the engine is IDLE. A pre-existing lock means a live Unison
+    // or a stale lock holds the family, so acquire returns .alreadyHeld and the
+    // removal must REFUSE — trashing nothing and leaving the ENTIRE family (ar,
+    // fp, AND lk) intact, not trashing ar/fp while retaining lk.
+    func test_integration_foreignLockOnDisk_atIdle_refusesAndKeepsWholeFamily() throws {
         let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
         write(active, "ar"+h); write(active, "fp"+h); write(active, "lk"+h)
         let fm = RecordingTrashFM()
         let store = POSIXStagingStore(unisonDir: active, fileManager: fm)
 
-        final class NoopLocking: ArchiveLocking {
-            func acquire(hash: String) -> ArchiveLock.AcquireResult { .acquired }
+        // A pre-existing lock: real acquisition reports it held by another.
+        final class ForeignLocking: ArchiveLocking {
+            func acquire(hash: String) -> ArchiveLock.AcquireResult { .alreadyHeld }
             func release(hash: String) -> Bool { true }
-            func identity(hash: String) -> LockIdentity? {
-                LockIdentity(dev: 1, ino: 1, ctimeSec: 0, ctimeNsec: 0)
-            }
+            func identity(hash: String) -> LockIdentity? { nil }
         }
-        let out = try ArchiveMutation.execute(
+        XCTAssertThrowsError(try ArchiveMutation.execute(
             operation: "clean-stale", hashes: [h], nowISO8601: "2026-08-23T00:00:00Z",
             isEngineIdle: { true },
             fileExists: { self.exists(active, $0) },
-            revalidate: {
-                XCTAssertFalse($0.payloadFiles.contains("lk"+h),
-                               "the lock is never part of the removal plan")
-                XCTAssertEqual(Set($0.payloadFiles), Set(["ar"+h, "fp"+h]))
-                return true
-            },
-            locking: NoopLocking(), store: store)
+            revalidate: { _ in XCTFail("must not stage while the lock is held"); return false },
+            locking: ForeignLocking(), store: store)) { error in
+            guard case ArchiveMutationError.lockUnavailable(_, let reason) = error else {
+                return XCTFail("expected .lockUnavailable, got \(error)")
+            }
+            XCTAssertEqual(reason, .alreadyHeld)
+        }
 
-        XCTAssertNil(out.quarantineRetained)
-        XCTAssertEqual(fm.trashed.count, 1, "one whole-dir Trash")
-        XCTAssertFalse(exists(active, "ar"+h)); XCTAssertFalse(exists(active, "fp"+h))
+        XCTAssertEqual(fm.trashed.count, 0, "nothing is trashed when the lock is held")
+        XCTAssertTrue(exists(active, "ar"+h)); XCTAssertTrue(exists(active, "fp"+h))
         XCTAssertTrue(exists(active, "lk"+h),
-                      "the lock is preserved — idle removal never trashes it")
+                      "the whole family, including the lock, is preserved")
     }
 
     // MARK: SF1 — an intent record written BEFORE locks is detectable on restart
