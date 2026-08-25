@@ -209,6 +209,87 @@ COPY_SCRIPT = """<script>
   });
   targets.forEach(enhance);
 })();
+
+// Reveal: the "Install with Homebrew" button shows/hides its command block.
+// Progressive enhancement: the block is visible without JS; JS collapses it on
+// load, then toggles it, so the button and the command are never both showing
+// the same thing at once.
+(function () {
+  var toggle = document.getElementById("brew-toggle");
+  var box = document.getElementById("brew-box");
+  if (!toggle || !box) return;
+  function set(open) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.classList.toggle("active", open);
+    box.hidden = !open;
+  }
+  set(false);
+  toggle.addEventListener("click", function () {
+    set(toggle.getAttribute("aria-expanded") !== "true");
+  });
+})();
+
+// Lightbox: click a screenshot to view it full size. Left/right move between
+// screenshots and STOP at the ends (no wrap): the arrows disable at the first
+// and last image.
+(function () {
+  var shots = document.querySelector(".shots");
+  if (!shots) return;
+  var imgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
+  if (!imgs.length) return;
+
+  var overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.hidden = true;
+  overlay.innerHTML =
+    '<button class="lb-close" type="button" aria-label="Close">✕</button>' +
+    '<button class="lb-prev" type="button" aria-label="Previous screenshot">‹</button>' +
+    '<img class="lb-img" alt="">' +
+    '<button class="lb-next" type="button" aria-label="Next screenshot">›</button>';
+  document.body.appendChild(overlay);
+
+  var big = overlay.querySelector(".lb-img");
+  var prev = overlay.querySelector(".lb-prev");
+  var next = overlay.querySelector(".lb-next");
+  var close = overlay.querySelector(".lb-close");
+  var idx = 0;
+
+  function show(i) {
+    idx = i;
+    big.src = imgs[i].currentSrc || imgs[i].src;
+    big.alt = imgs[i].alt || "";
+    prev.disabled = i <= 0;
+    next.disabled = i >= imgs.length - 1;
+  }
+  function open(i) {
+    show(i);
+    overlay.hidden = false;
+    document.body.style.overflow = "hidden";
+    close.focus();
+  }
+  function shut() {
+    overlay.hidden = true;
+    document.body.style.overflow = "";
+    big.removeAttribute("src");
+  }
+  imgs.forEach(function (el, i) {
+    el.style.cursor = "zoom-in";
+    el.addEventListener("click", function () { open(i); });
+  });
+  prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
+  next.addEventListener("click", function () { if (idx < imgs.length - 1) show(idx + 1); });
+  close.addEventListener("click", shut);
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) shut(); });
+  document.addEventListener("keydown", function (e) {
+    if (overlay.hidden) return;
+    var k = e.key;
+    if (k === "Escape" || k === "Esc") shut();
+    else if ((k === "ArrowLeft" || k === "Left") && idx > 0) show(idx - 1);
+    else if ((k === "ArrowRight" || k === "Right") && idx < imgs.length - 1) show(idx + 1);
+  });
+})();
 </script>"""
 
 

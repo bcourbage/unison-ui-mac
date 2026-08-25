@@ -26,6 +26,15 @@ and later on Apple Silicon and adds built-in Sparkle updates from a signed feed.
 the upstream app and its history, see the
 [Unison project](https://github.com/bcpierce00/unison).
 
+## Why does this exist when Unison already ships a macOS app?
+
+The goal was a modern, native experience on current macOS: a Swift and AppKit
+interface targeting macOS 15 and Apple Silicon, with a focused conflict-review
+workflow, native notifications, and built-in updates from a signed feed. Starting
+from a fresh Swift and AppKit codebase, rather than building on the bundled Cocoa
+app, made those goals easier to pursue and maintain. Both run the same Unison
+engine, so synchronization behaves the way Unison is known for.
+
 ## What are the system requirements?
 
 macOS 15 (Sequoia) or later, on Apple Silicon. It is free and open source under the

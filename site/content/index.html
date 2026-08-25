@@ -5,11 +5,12 @@
   <p class="badges">Two-way file synchronization between local folders and remote machines over SSH, with visual conflict review before synchronized files are changed.</p>
   <div class="cta">
     <a class="btn" href="{{REPO}}/releases/latest">Download the .app</a>
-    <a class="btn secondary" href="install/">Install with Homebrew</a>
+    <button class="btn secondary" type="button" id="brew-toggle" aria-expanded="false" aria-controls="brew-box">Install with Homebrew</button>
     <a class="btn secondary" href="{{REPO}}">View on GitHub</a>
   </div>
-  <p class="install-label">Or install with Homebrew:</p>
-  <pre class="install" data-copyable><code>{{CASK}}</code></pre>
+  <div id="brew-box" class="brew-box">
+    <pre class="install" data-copyable><code>{{CASK}}</code></pre>
+  </div>
   <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships <a href="https://github.com/bcpierce00/unison/releases">Unison&nbsp;2.54.0</a>.</p>
 </section>
 
