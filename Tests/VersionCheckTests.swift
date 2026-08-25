@@ -109,24 +109,35 @@ final class VersionCheckTests: XCTestCase {
         XCTAssertEqual(VersionCheck.parseVersionString("unison version 2.51"), "2.51")
     }
 
-    func test_parseVersion_extractsFirstMatch() {
-        // If the string mentions multiple version-like substrings,
-        // the FIRST match wins — matches both the bridge format
-        // (version → ocaml) and the cli format (unison version → ocaml).
+    func test_parseVersion_cliFormat_labelAnchored() {
+        // The "unison version X" label anchors the match; the trailing
+        // "(ocaml 4.14.3)" is not mistaken for the version.
         let cli = "unison version 2.54.0 (ocaml 4.14.3)"
         XCTAssertEqual(VersionCheck.parseVersionString(cli), "2.54.0")
+    }
+
+    func test_parseVersion_ignoresLoginBannerBeforeUnisonLabel() {
+        // A remote `unison -version` can be preceded by an SSH login banner
+        // containing its own dotted number. The label anchor must pick Unison's
+        // version, not the banner's.
+        let withBanner = """
+        Last login: Tue; system 2.7.18 — authorized use only.
+        unison version 2.54.0 (ocaml 5.4.1)
+        """
+        XCTAssertEqual(VersionCheck.parseVersionString(withBanner), "2.54.0")
     }
 
     func test_parseVersion_noMatch_returnsNil() {
         XCTAssertNil(VersionCheck.parseVersionString("could not connect"))
         XCTAssertNil(VersionCheck.parseVersionString(""))
         XCTAssertNil(VersionCheck.parseVersionString("ocaml version"))
-        // "ocaml 5.4.1" alone (no Unison context) is NOT a real
-        // unison-version output — but our parser is loose enough
-        // that it'd extract "5.4.1". That's a false positive; we
-        // accept it because the alternative (require "unison" prefix)
-        // would reject the bridge's "2.54.0 (ocaml ...)" format too.
-        // Documented; not currently fixed.
+        // "ocaml 5.4.1" alone (no "unison version" label, version not leading)
+        // is NOT real unison output. The anchored parser now REJECTS it rather
+        // than extracting "5.4.1" as a false positive.
+        XCTAssertNil(VersionCheck.parseVersionString("ocaml 5.4.1"))
+        // A bare dotted number sitting mid-string (e.g. inside a banner with no
+        // Unison label) is likewise rejected.
+        XCTAssertNil(VersionCheck.parseVersionString("motd: welcome to host 2.7.18"))
     }
 
     // MARK: - Suppression

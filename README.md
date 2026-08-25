@@ -126,9 +126,9 @@ feature set:
   testing.
 
 See [TODO.md](TODO.md) for the full prioritized status and what's still
-open. The top open item is the highest-priority file-integrity hardening
-(#94, structurally removing the dormant scan-interruption machinery); the
-remainder is mostly P3 hygiene.
+open. The top open item is upstreaming the connection close/reopen support
+(rebasing the vendored patches in dependency order); the remainder is mostly
+P3 hygiene.
 
 ## Build and install
 

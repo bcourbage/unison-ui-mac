@@ -22,6 +22,11 @@ import re
 import sys
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
+# Single-asterisk emphasis, run AFTER _BOLD so `**bold**` is already consumed. The
+# content excludes `*` (so it can't span across a bold run) and can't be
+# space-hugging, and neither delimiter may be adjacent to another `*` — so a
+# stray or paired asterisk isn't turned into <em>.
+_EMPH = re.compile(r"(?<![\\*])\*(?!\s)([^*]+?)(?<!\s)\*(?!\*)")
 _CODE = re.compile(r"`([^`]+?)`")
 _LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 
@@ -38,6 +43,7 @@ def _inline(text: str) -> str:
         out,
     )
     out = _BOLD.sub(r"<strong>\1</strong>", out)
+    out = _EMPH.sub(r"<em>\1</em>", out)
     out = _CODE.sub(r"<code>\1</code>", out)
     return out
 

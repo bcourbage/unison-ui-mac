@@ -148,6 +148,23 @@ final class ArchiveCleanupTests: XCTestCase {
                        "//Demeter//Users/bcourbage, //Heracles//Users/bcourbage")
     }
 
+    func test_parseArchiveHeader_longRoots_pushSecondLinePastAKilobyte() throws {
+        // Two near-PATH_MAX canonical roots make the second header line far
+        // exceed 1 KiB. A fixed one-kilobyte read truncated it and returned nil,
+        // silently hiding the archive from cleanup/reset; the header parse must
+        // read through the second newline and still extract both roots.
+        let longLocal = "//Heracles//Users/bcourbage/" + String(repeating: "a", count: 980)
+        let longRemote = "//Demeter//Users/bcourbage/" + String(repeating: "b", count: 980)
+        let rootsName = "\(longRemote), \(longLocal)"
+        // Sanity: the second line really is past the old 1024-byte bound.
+        XCTAssertGreaterThan(
+            "Archive for root \(longLocal) synchronizing roots \(rootsName)".utf8.count, 1024)
+        let written = try writeArchive(thisRoot: longLocal, rootsName: rootsName)
+        let header = ArchiveCleanup.parseArchiveHeader(at: written.url)
+        XCTAssertEqual(header?.thisRoot, longLocal)
+        XCTAssertEqual(header?.rootsName, rootsName)
+    }
+
     func test_parseArchiveHeader_nonArchiveFile_returnsNil() throws {
         let url = try touch("arNotReally")
         XCTAssertNil(ArchiveCleanup.parseArchiveHeader(at: url))

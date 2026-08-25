@@ -632,12 +632,31 @@ enum VersionCheck {
     ///
     /// Returns just the `X.Y[.Z]` part. Returns nil if no recognizable
     /// version pattern is found.
+    ///
+    /// The remote probe runs `unison -version` over SSH, whose output can be
+    /// preceded by a login banner (MOTD). To keep a dotted number in that banner
+    /// (e.g. `2.7.18`) from being mistaken for the version, we ANCHOR: prefer a
+    /// version introduced by Unison's own "unison version" label (what
+    /// `unison -version` prints); only if there is no such label do we accept a
+    /// bare version — and then only at the very START of the trimmed string, the
+    /// `2.54.0 (ocaml …)` form the local bridge returns. A bare dotted number
+    /// sitting mid-string is never accepted.
     static func parseVersionString(_ raw: String) -> String? {
-        let pattern = #"(\d+\.\d+(?:\.\d+)?)"#
+        // Labelled form, banner-proof: "... unison version X.Y[.Z] ...".
+        if let v = firstCapture(#"(?i)unison\s+version\s+(\d+\.\d+(?:\.\d+)?)"#, in: raw) {
+            return v
+        }
+        // Bare local form: the version must lead the (trimmed) string.
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return firstCapture(#"^(\d+\.\d+(?:\.\d+)?)"#, in: trimmed)
+    }
+
+    /// Return capture group 1 of the first match of `pattern` in `s`, or nil.
+    private static func firstCapture(_ pattern: String, in s: String) -> String? {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = raw as NSString
+        let ns = s as NSString
         guard let match = regex.firstMatch(
-            in: raw,
+            in: s,
             range: NSRange(location: 0, length: ns.length)
         ), match.numberOfRanges >= 2 else { return nil }
         return ns.substring(with: match.range(at: 1))
