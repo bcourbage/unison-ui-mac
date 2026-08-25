@@ -1,0 +1,165 @@
+# Deploy the product site to GitHub Pages (the gh-pages branch).
+#
+# The site and the signed Sparkle appcast SHARE this one Pages host. The appcast
+# is the auto-update feed for every installed copy of the app; corrupting or
+# dropping it breaks updates for all users and is only recoverable by hand. So the
+# hard invariant of this workflow is: deploying the site preserves `appcast.xml`
+# BYTE-FOR-BYTE and never removes it.
+#
+# How that invariant is enforced (fail-closed):
+#   1. The build (scripts/build-site.py) never emits appcast.xml; asserted below.
+#   2. The rsync that lays the site over gh-pages EXCLUDES appcast.xml and .git,
+#      so the feed file is physically untouched.
+#   3. Gate 1 proves it anyway: appcast.xml's sha256 is identical before and after
+#      the sync (and still present). Any drift fails the job before pushing.
+#   4. Gate 2 proves the LIVE served feed is byte-identical to the preserved file
+#      after the deploy settles. Byte-identity is the whole guarantee here: these
+#      are the exact bytes the release workflow generated AND cryptographically
+#      verified with Sparkle's own sign_update at publish time, so an unchanged
+#      feed still authenticates. This workflow deliberately holds NO signing key
+#      (least privilege); the cryptographic verify lives in release.yml, which
+#      owns the feed and has the key + archive.
+#
+# Deployment happens only on push to main touching the site sources. Pull requests
+# are validated by the `site` job in ci.yml, which builds but never deploys.
+
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "MANUAL.md"
+      - "scripts/build-site.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Needs to push the gh-pages branch.
+permissions:
+  contents: write
+
+# Share release.yml's group so a site deploy and a release never push gh-pages at
+# the same time. cancel-in-progress: false so an in-flight publish is never killed.
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Markdown
+        run: python -m pip install "markdown==3.7"
+
+      - name: Build the site
+        run: python scripts/build-site.py _site
+
+      - name: Assert the build did not emit a feed
+        run: |
+          set -euo pipefail
+          if [ -e _site/appcast.xml ]; then
+            echo "::error::site build emitted appcast.xml — the feed must come only from the release workflow"; exit 1
+          fi
+
+      - name: Clone the gh-pages branch
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pages="$RUNNER_TEMP/pages"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          # gh-pages is a prerequisite. Fail loudly rather than reconstruct it — a
+          # botched reconstruct is exactly how the whole feed would be lost.
+          git clone --branch gh-pages --depth 1 "$url" "$pages" \
+            || { echo "::error::gh-pages branch missing; create it before deploying the site"; exit 1; }
+          echo "PAGES=$pages" >> "$GITHUB_ENV"
+
+      - name: Record the feed baseline (before)
+        run: |
+          set -euo pipefail
+          feed="$PAGES/appcast.xml"
+          if [ -f "$feed" ]; then
+            sha="$(sha256sum "$feed" | awk '{print $1}')"
+            echo "FEED_PRESENT=1" >> "$GITHUB_ENV"
+            echo "FEED_SHA_BEFORE=$sha" >> "$GITHUB_ENV"
+            cp "$feed" "$RUNNER_TEMP/appcast.before.xml"
+            echo "feed baseline sha256=$sha"
+          else
+            # No feed yet (e.g. before the first release). Nothing to preserve, but
+            # record that fact so the gate can assert the deploy did not CREATE one.
+            echo "FEED_PRESENT=0" >> "$GITHUB_ENV"
+            echo "no appcast.xml on gh-pages yet; nothing to preserve"
+          fi
+
+      - name: Sync the site over gh-pages (preserving the feed)
+        run: |
+          set -euo pipefail
+          # --delete removes site files that no longer exist, keeping the branch a
+          # clean mirror of the build — but appcast.xml and .git are EXCLUDED, so
+          # the feed and git metadata are never added, changed, or deleted.
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='appcast.xml' \
+            _site/ "$PAGES/"
+
+      - name: Gate 1 — website publication preserves the feed byte-for-byte
+        run: |
+          set -euo pipefail
+          feed="$PAGES/appcast.xml"
+          if [ "${FEED_PRESENT}" = "1" ]; then
+            test -f "$feed" || { echo "::error::appcast.xml disappeared during the site sync"; exit 1; }
+            after="$(sha256sum "$feed" | awk '{print $1}')"
+            if [ "$after" != "${FEED_SHA_BEFORE}" ]; then
+              echo "::error::site deploy changed appcast.xml (before=${FEED_SHA_BEFORE} after=${after})"; exit 1
+            fi
+            echo "Gate 1 OK: appcast.xml byte-identical (sha256=${after})"
+          else
+            if [ -e "$feed" ]; then echo "::error::site deploy created an appcast.xml; the feed must come from the release workflow"; exit 1; fi
+            echo "Gate 1 OK: no feed existed and the deploy did not create one"
+          fi
+
+      - name: Commit and push the site
+        run: |
+          set -euo pipefail
+          git -C "$PAGES" config user.name "github-actions[bot]"
+          git -C "$PAGES" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$PAGES" add -A
+          # Defense in depth: appcast.xml must never be in the staged change set.
+          if git -C "$PAGES" diff --cached --name-only | grep -qx 'appcast.xml'; then
+            echo "::error::appcast.xml is staged for change; aborting before it reaches the feed"; exit 1
+          fi
+          if git -C "$PAGES" diff --cached --quiet; then
+            echo "site unchanged; nothing to deploy."
+          else
+            git -C "$PAGES" commit -m "site: deploy ${GITHUB_SHA:0:12}"
+            git -C "$PAGES" push origin gh-pages
+          fi
+
+      - name: Gate 2 — served feed unchanged (and still authenticates)
+        if: env.FEED_PRESENT == '1'
+        run: |
+          set -euo pipefail
+          feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
+          got="$RUNNER_TEMP/appcast.served.xml"
+          # Pages deploys asynchronously; poll until the LIVE feed is byte-identical
+          # to the feed we preserved. Identical bytes == the release-verified,
+          # still-signed feed, so sign_update verification still holds.
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o "$got" -w '%{http_code}' "$feedurl" || echo 000)
+            if [ "$code" = "200" ] && cmp -s "$got" "$RUNNER_TEMP/appcast.before.xml"; then ok=1; break; fi
+            echo "waiting for Pages to settle (attempt $i, http $code)..."; sleep 10
+          done
+          test "$ok" = "1" || { echo "::error::served feed is not byte-identical to the preserved appcast at ${feedurl}"; exit 1; }
+          echo "Gate 2 OK: served feed byte-identical to the preserved, release-signed appcast"

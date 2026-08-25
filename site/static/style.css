@@ -1,0 +1,104 @@
+/* Unison UI for macOS — product site. Self-contained, theme-aware. */
+:root {
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0066cc;
+  --accent-fg: #ffffff;
+  --card: #f5f5f7;
+  --border: #d2d2d7;
+  --code-bg: #f5f5f7;
+  --maxw: 960px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1d1f;
+    --fg: #f5f5f7;
+    --muted: #a1a1a6;
+    --accent: #2997ff;
+    --accent-fg: #00223f;
+    --card: #2a2a2d;
+    --border: #3a3a3d;
+    --code-bg: #26262a;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; height: auto; }
+
+.site-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  max-width: var(--maxw); margin: 0 auto; padding: 1rem 1.25rem;
+}
+.brand { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; color: var(--fg); }
+.brand img { border-radius: 6px; }
+.site-nav { display: flex; gap: 1.1rem; flex-wrap: wrap; }
+.site-nav a { color: var(--muted); font-size: .95rem; }
+.site-nav a.active, .site-nav a:hover { color: var(--fg); }
+
+main { max-width: var(--maxw); margin: 0 auto; padding: 1rem 1.25rem 3rem; }
+
+.hero { text-align: center; padding: 1.5rem 0 1rem; }
+.hero img.appicon { width: 96px; height: 96px; border-radius: 20px; }
+.hero h1 { font-size: 2.2rem; line-height: 1.15; margin: .8rem 0 .4rem; letter-spacing: -.02em; }
+.hero .tagline { font-size: 1.25rem; color: var(--muted); max-width: 40ch; margin: 0 auto 1rem; }
+.badges { color: var(--muted); font-size: .95rem; margin: .5rem 0 1.2rem; }
+
+.cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; margin: 1rem 0; }
+.btn {
+  display: inline-block; padding: .6rem 1.1rem; border-radius: 980px;
+  background: var(--accent); color: var(--accent-fg); font-weight: 600;
+}
+.btn:hover { text-decoration: none; opacity: .92; }
+.btn.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+
+pre.install {
+  max-width: 520px; margin: 1rem auto; padding: .85rem 1rem;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+  overflow-x: auto; font-size: .95rem;
+}
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+:not(pre) > code { background: var(--code-bg); padding: .1em .35em; border-radius: 5px; font-size: .9em; }
+
+.shots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin: 2rem 0; }
+.shots figure { margin: 0; }
+.shots img { border: 1px solid var(--border); border-radius: 10px; display: block; }
+.shots figcaption { color: var(--muted); font-size: .9rem; margin-top: .4rem; text-align: center; }
+@media (max-width: 640px) { .shots { grid-template-columns: 1fr; } }
+
+.features { list-style: none; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.5rem; margin: 1.5rem 0; }
+.features li { padding-left: 0; }
+.features strong { display: block; }
+.features span { color: var(--muted); font-size: .95rem; }
+@media (max-width: 640px) { .features { grid-template-columns: 1fr; } }
+
+h2 { font-size: 1.5rem; margin: 2rem 0 .6rem; letter-spacing: -.01em; }
+h3 { font-size: 1.2rem; margin: 1.4rem 0 .4rem; }
+.reqs { color: var(--muted); }
+
+/* Documentation pages (rendered markdown) */
+.doc { }
+.doc h1 { font-size: 2rem; margin: .5rem 0 1rem; }
+.doc h2 { border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+.doc table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.doc th, .doc td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; }
+.doc pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1rem; overflow-x: auto; }
+.doc blockquote { border-left: 3px solid var(--border); margin: 1rem 0; padding: .2rem 1rem; color: var(--muted); }
+.doc img { border: 1px solid var(--border); border-radius: 8px; }
+.doc-note { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .7rem 1rem; color: var(--muted); font-size: .95rem; }
+
+.site-footer {
+  max-width: var(--maxw); margin: 0 auto; padding: 2rem 1.25rem 3rem;
+  border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem;
+}
+.site-footer a { color: var(--muted); }
+.site-footer a:hover { color: var(--fg); }

@@ -45,6 +45,13 @@ on:
 permissions:
   contents: read
 
+# Serialize with the product-site deploy (pages.yml shares this group): both push
+# the gh-pages branch, and a release's appcast publish must never race a site
+# deploy. cancel-in-progress: false so neither is killed mid-publish — they queue.
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
 # SF11: XcodeGen pinned + checksum-verified (in lockstep with ci.yml and
 # vendor-blob.yml) so a floating tool can't change the generated .xcodeproj on the
 # signed release path. The signature covers whatever project.yml generated, so the
@@ -532,6 +539,14 @@ jobs:
           git -C "$pages" config user.name "github-actions[bot]"
           git -C "$pages" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$pages" add appcast.xml
+          # Gate — release publication preserves all website files. The product
+          # site shares this gh-pages host; a release must publish ONLY the feed
+          # and leave every site file untouched. Prove it: the staged change set
+          # is exactly appcast.xml (or empty). Anything else fails the release.
+          staged="$(git -C "$pages" diff --cached --name-only)"
+          if [ -n "$staged" ] && [ "$staged" != "appcast.xml" ]; then
+            echo "::error::release would change files other than appcast.xml on gh-pages:"; echo "$staged"; exit 1
+          fi
           if git -C "$pages" diff --cached --quiet; then
             echo "appcast unchanged; nothing to publish."
           else

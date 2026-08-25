@@ -1,0 +1,53 @@
+<section class="hero">
+  <img class="appicon" src="assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="96" height="96">
+  <h1>Unison UI for macOS</h1>
+  <p class="tagline">A native macOS GUI for the Unison File Synchronizer.</p>
+  <p class="badges">Two-way file synchronization between local folders and remote machines over SSH, with visual conflict review before synchronized files are changed.</p>
+  <pre class="install"><code>{{CASK}}</code></pre>
+  <div class="cta">
+    <a class="btn" href="install/">Install</a>
+    <a class="btn secondary" href="{{REPO}}/releases/latest">Download the .app</a>
+    <a class="btn secondary" href="{{REPO}}">View on GitHub</a>
+  </div>
+  <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships Unison&nbsp;2.54.0.</p>
+</section>
+
+<section class="shots" aria-label="Screenshots">
+  <figure>
+    <img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
+    <figcaption>Review changes before syncing — conflicts and per-item direction.</figcaption>
+  </figure>
+  <figure>
+    <img src="assets/screenshot-profile-editor.png" alt="Editing a profile's local and remote (SSH) synchronization roots" loading="lazy">
+    <figcaption>Configure a profile — local and remote (SSH) roots.</figcaption>
+  </figure>
+  <figure>
+    <img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion" loading="lazy">
+    <figcaption>Sync-completion notifications in Settings.</figcaption>
+  </figure>
+  <figure>
+    <img src="assets/screenshot-settings-reconcile.png" alt="Settings: reconcile window layout options" loading="lazy">
+    <figcaption>Reconcile display options in Settings.</figcaption>
+  </figure>
+</section>
+
+<h2>Features</h2>
+<ul class="features">
+  <li><strong>Two-way synchronization</strong><span>Keep files and folders current on both sides.</span></li>
+  <li><strong>Local and remote roots over SSH</strong><span>Sync a folder on this Mac against another machine.</span></li>
+  <li><strong>Conflict review</strong><span>Every proposed change is shown before it is applied to either root.</span></li>
+  <li><strong>Per-item control</strong><span>Flip the sync direction of any item, or skip it, in the results.</span></li>
+  <li><strong>Native macOS GUI</strong><span>Real menus, notifications, and keyboard control — no terminal required.</span></li>
+  <li><strong>Self-contained</strong><span>The Unison File Synchronizer engine is embedded; no separate <code>unison</code> CLI needed.</span></li>
+  <li><strong>Built-in updates</strong><span>Delivered through Sparkle from a cryptographically signed feed.</span></li>
+  <li><strong>Signed &amp; notarized</strong><span>Release builds are Developer ID-signed and notarized by Apple.</span></li>
+</ul>
+
+<h2>What it is</h2>
+<p>Unison UI for macOS is a fresh, native re-implementation of a graphical front end
+for the <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>,
+written in Swift and AppKit. It embeds Unison's compiled engine, so it does the same
+two-way synchronization Unison is known for — local or over SSH — with a modern macOS
+interface and a clear conflict-review step. See the <a href="manual/">manual</a> for a
+feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions. It is an
+independent, personal project and is not affiliated with upstream Unison.</p>

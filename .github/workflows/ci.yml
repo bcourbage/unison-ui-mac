@@ -240,3 +240,51 @@ jobs:
           # Don't keep these forever — they're large and only useful
           # for the immediate failure investigation.
           retention-days: 7
+
+  site:
+    name: Build product site
+    # Pure-Python static-site build; no Xcode toolchain, so a cheap ubuntu
+    # runner. This job VALIDATES the site build on every PR and push — it never
+    # deploys (deployment lives in pages.yml, gated on push to main only).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Markdown
+        # Pinned in lockstep with pages.yml so the rendered HTML is reproducible
+        # between validation here and the actual deploy.
+        run: python -m pip install "markdown==3.7"
+
+      - name: Build the site
+        run: python scripts/build-site.py _site
+
+      - name: Validate the build (SEO + appcast safety)
+        run: |
+          set -euo pipefail
+          # The build must NEVER emit appcast.xml: the Sparkle feed lives on the
+          # same Pages host and is owned solely by the release workflow.
+          if [ -e _site/appcast.xml ]; then
+            echo "::error::site build emitted appcast.xml — the feed must never come from the site build"; exit 1
+          fi
+          for f in _site/index.html _site/install/index.html _site/faq/index.html \
+                   _site/manual/index.html _site/style.css _site/sitemap.xml \
+                   _site/robots.txt _site/.nojekyll; do
+            test -f "$f" || { echo "::error::missing built file: $f"; exit 1; }
+          done
+          # Every JSON-LD block must be valid JSON, and no fabricated rating.
+          python - <<'PY'
+          import re, json, glob, sys
+          for path in glob.glob("_site/**/index.html", recursive=True):
+              html = open(path, encoding="utf-8").read()
+              for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S):
+                  obj = json.loads(block)  # raises on invalid JSON
+                  if "aggregateRating" in obj or "review" in obj:
+                      sys.exit(f"::error::fabricated rating in JSON-LD at {path}")
+          print("site build validated: no appcast.xml, all pages present, JSON-LD valid")
+          PY
