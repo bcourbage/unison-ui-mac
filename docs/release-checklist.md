@@ -1,16 +1,25 @@
 # Release checklist
 
 Validation steps for a release, grouped by **when** they can actually run under
-the current single-job `release.yml` (tag → build → sign → notarize → create
-public Release → publish live feed, with **no pause or artifact hand-off** for
-manual testing):
+the current `release.yml`. That workflow is split into three jobs: **build**
+(unsigned Release + tests, uploads the app artifact), **smoke-macos15** (launches
+that exact artifact on a macOS 15 runner and *gates* the release), and
+**release** (signs the **same** artifact with Developer ID, notarizes, staples,
+then creates the public Release and publishes the live feed). So the bytes the
+smoke job validated are the bytes that get signed, and the macOS-15 launch is a
+real pre-publication gate — but there is still no pause for *manual* testing
+before publication:
 
 - **Pre-tag checks** (repo state, before you tag): `main` is green; the vendored
   blob checksum matches `vendor/README.md`.
-- **Pre-publication gates** (automated, *inside* the release job — a failure
-  fails the job, so nothing is published): Developer ID signing, notarization +
-  stapling, appcast **seed-authentication**, **build-monotonicity**, and the
-  in-job `verify-appcast.py`.
+- **Pre-publication gates** (automated, *inside* the release run — a failure
+  fails the run, so nothing is published): the app and its embedded OCaml runtime
+  are built for the macOS 15 minimum (`verify-runtime-minos`, zero
+  deployment-version linker warnings) and the built bundle's Mach-O floors are
+  verified (`verify-bundle-minos`); the **exact** unsigned Release artifact
+  launches cleanly on a macOS 15 runner (`smoke-macos15`); then Developer ID
+  signing, notarization + stapling, appcast **seed-authentication**,
+  **build-monotonicity**, and the in-job `verify-appcast.py`.
 - **Post-publication canaries** (require the built, signed, notarized artifact,
   which exists only as the job's **output** — by the time you can inspect it, the
   Release and live feed are already public): every manual check against the
@@ -36,6 +45,57 @@ workflow → Homebrew cask bump) is in the release runbook.
       Debug/autotest symbols. (The signing/notarization steps that PRODUCE this
       are pre-publication gates in the job; inspecting the finished artifact
       happens after it is published.)
+
+## 0.6.0
+
+Build **21** (v0.6.0), on top of 0.5.1 (build 20). No profile/settings migration.
+
+### macOS 15 deployment baseline — PRE-PUBLICATION GATES (new in 0.6.0)
+0.6.0 makes the macOS 15 minimum genuine (the OCaml runtime is built *for* 15, not
+relabelled) and wires it into `release.yml` as real gates that block publication.
+Confirm from the release run's logs (these fail the run if they regress, so a
+green run is the confirmation; the manual bullet is a belt-and-suspenders check):
+
+- [ ] **(pre-publication gate — in-job)** `verify-runtime-minos` passed (every
+      linked OCaml runtime archive is `minos 15.0`) and the Release build emitted
+      **zero** "was built for newer macOS version" linker warnings.
+- [ ] **(pre-publication gate — in-job)** `smoke-macos15` launched the **exact**
+      unsigned Release artifact on a macOS 15 runner and it exited cleanly, before
+      the `release` job signed that same artifact.
+- [ ] **(post-publication canary)** On the finished signed `.app`, every Mach-O in
+      the bundle is `minos <= 15.0` and the main binary is exactly `15.0`
+      (`scripts/verify-bundle-minos.sh <app>` — the in-job step, re-runnable on the
+      artifact).
+
+### First 0.5.1 → 0.6.0 Sparkle auto-update — POST-PUBLICATION CANARY
+Second end-to-end exercise of the update + appcast **seed-authentication /
+build-monotonicity** paths against the published feed (0.5.1 was the first).
+
+- [ ] **(pre-publication gate — in-job)** The release job authenticated the
+      published `appcast.xml` and passed build-monotonicity (build **21** > 20),
+      rather than any first-release/404 path. (Failure fails the run; nothing is
+      published.)
+- [ ] **(post-publication canary)** On a machine running an **installed 0.5.1**:
+      App menu ▸ Check for Updates finds 0.6.0, downloads it, verifies the EdDSA
+      signature, and installs it through the app (no Gatekeeper prompt on the
+      Sparkle-delivered update).
+- [ ] **(post-publication canary)** After the update, the About panel shows
+      **0.6.0 (build 21)**.
+
+### Manual installer hardening (optional spot-check)
+0.6.0 hardened `install.sh` (Release-only, atomic stage-then-swap, verified
+quarantine strip). Homebrew-cask users are unaffected; if validating the manual
+path:
+
+- [ ] `./install.sh` with only a Debug build present fails with a clear "no
+      Release build" message (no Debug fallback).
+- [ ] A normal `make install` replaces an existing install atomically and the app
+      launches without a Gatekeeper quarantine prompt.
+
+### Carried-forward canaries (still apply)
+The 0.5.1 scan-interruption artifact assertions and lifecycle re-runs (TC9b /
+TC11 / TC13, and the symbol/string checks) are unchanged in 0.6.0 — re-run them
+against the signed 0.6.0 RC as documented under **0.5.1** below.
 
 ## 0.5.1
 

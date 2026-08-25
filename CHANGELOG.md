@@ -9,7 +9,10 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
-## [Unreleased]
+## [0.6.0] — 2026-08-25
+
+A safety, correctness, and robustness release on top of 0.5.1. (Build 21.)
+Existing profiles and settings continue to work without migration.
 
 ### Security / Safety
 - **Archive maintenance is crash-safe and protects live and in-use archives.**
@@ -33,6 +36,46 @@ across releases per Apple's bundle-version rules.
   for an orphan.
 - The lock file (`lk…`) is never listed for deletion or trashed; it is
   synchronization state, held across the operation, not a payload.
+- **`install.sh` installs atomically and only from a Release build.** The manual
+  installer stages a validated copy of the app and then swaps it into place in a
+  single atomic step, so a failed or interrupted install can never leave you with
+  no working app. It clears the download quarantine and verifies the attribute is
+  actually gone (rather than assuming success), and it accepts only a Release
+  build. (Homebrew-cask installs are unaffected.)
+
+### Fixed
+- **Editing a profile preserves a symlinked `.prf` and the file's structure.**
+  Saving a profile no longer replaces a symlinked profile (e.g. one linked from a
+  dotfiles repository) with a regular file, and it round-trips comments, ordering,
+  and escaping faithfully instead of rewriting them.
+- **Diffing a file no longer freezes the reconcile window.** The window stays
+  responsive while an external diff runs, and a diff that hangs is detected so the
+  window recovers instead of locking up.
+- **Ignore and Diff act on the item you mean.** From the menu bar they act on the
+  current selection; from the right-click menu they act on the row you clicked
+  (not a stale one). **Select Conflicts** now reveals conflicts hidden inside
+  collapsed folders instead of silently skipping them.
+- **No false version-mismatch warning from an SSH login banner.** The remote
+  Unison-version check reads Unison's own `unison version` line, so a login banner
+  that happens to contain a version number no longer triggers a spurious
+  compatibility warning.
+- **Archives with very long root paths are read correctly.** The archive-header
+  parser no longer truncates on near-`PATH_MAX` roots, so such archives are still
+  attributed to their profile in Clean Stale rather than hidden.
+
+### Changed
+- **Genuinely built for the macOS 15 minimum.** The app and its embedded Unison
+  runtime are now compiled *for* the macOS 15 deployment target (not merely
+  labelled as such), so the stated minimum is real and verified on macOS 15
+  before any release is published.
+
+### Documentation
+- README opening rewritten for discoverability ("Unison UI for macOS", value
+  proposition, requirements, install, features, screenshots).
+- Provenance and maintainer docs refreshed: the vendored-patch reference now
+  covers all five local patches, and the Sparkle EdDSA key-rotation limitation is
+  documented (in-band rotation is not supported by the current single-feed
+  pipeline; recovery is a manual reinstallation).
 
 ## [0.5.1] — 2026-08-22
 
@@ -765,7 +808,7 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...HEAD
+[0.6.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.1...v0.4.2
