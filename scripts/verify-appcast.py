@@ -22,13 +22,18 @@ Two checks, both fail-closed:
   * --feed-only: verify just the feed-level signature — to authenticate a seed
     feed before reuse, or the published feed.
 
-The Ed25519 private key (base64) is read on stdin and passed to each
-`sign_update` invocation on its stdin — never argv, never disk.
+Ed25519 key material (base64) is read on stdin and passed to each `sign_update`
+invocation on its stdin — never argv, never disk. It is EITHER the private signing
+key (release-time signing/verification) OR a verifier-only public-key blob (feed
+authentication with no private key; see make-verifier-key.py). Feed authentication
+needs only the verifier-only key: do NOT add the private signing secret where the
+public-key blob suffices (e.g. the Pages deploy).
 
 Usage:
   SPARKLE_BIN=<dir> verify-appcast.py <appcast.xml> \
       [--archive PATH --expected-url URL] [--feed-only]
-  # private key (base64) on stdin
+  # base64 key material on stdin: the private signing key, or a verifier-only
+  # public-key blob for --feed-only authentication
 """
 import argparse
 import os
@@ -59,7 +64,7 @@ def main():
 
     key = sys.stdin.read().strip()
     if not key:
-        sys.stderr.write("error: empty private key on stdin\n")
+        sys.stderr.write("error: empty Ed25519 key material on stdin\n")
         return 2
 
     def su_verify(*extra):

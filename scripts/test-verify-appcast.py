@@ -138,6 +138,37 @@ with tempfile.TemporaryDirectory() as d:
     check("foreign-prefixed <evil:enclosure> at URL rejected",
           run(feed, key, "--archive", arc, "--expected-url", URL).returncode != 0)
 
+# --- verifier-only public-key construction (pages.yml feed authentication) ---
+# The site-deploy job authenticates the feed WITHOUT the private key, using a
+# verifier-only key from make-verifier-key.py (64 zero bytes || 32-byte public
+# key). Regression-test that construction against real sign_update with a
+# committed fixture signed by a DEDICATED throwaway key (its seed was discarded):
+# a genuinely signed feed authenticates, and a tampered feed or a wrong public
+# key fail closed.
+print("verifier-only key construction (make-verifier-key.py):")
+FIXTURE = HERE / "fixtures" / "verifier" / "appcast-signed.xml"
+FIXTURE_PUB = (HERE / "fixtures" / "verifier" / "ed-public-key.txt").read_text().strip()
+MAKE_VERIFIER = HERE / "make-verifier-key.py"
+
+
+def verifier_key(pub_b64):
+    return subprocess.run([sys.executable, str(MAKE_VERIFIER), pub_b64],
+                          capture_output=True, text=True, check=True).stdout
+
+
+vk = verifier_key(FIXTURE_PUB)
+check("verifier-only key authenticates signed feed", run(FIXTURE, vk, "--feed-only").returncode == 0)
+
+with tempfile.TemporaryDirectory() as d:
+    original = FIXTURE.read_bytes()
+    tampered = pathlib.Path(d) / "appcast.xml"
+    tampered.write_bytes(original.replace(b"<title>", b"<title>x", 1))
+    assert tampered.read_bytes() != original, "tamper must change the feed bytes"
+    check("verifier-only key rejects tampered feed", run(tampered, vk, "--feed-only").returncode != 0)
+
+wrong_vk = verifier_key(base64.b64encode(bytes(range(32))).decode())
+check("verifier-only key (wrong public key) rejected", run(FIXTURE, wrong_vk, "--feed-only").returncode != 0)
+
 if failures:
     print(f"VERIFY-APPCAST TESTS FAILED ({failures})", file=sys.stderr)
     sys.exit(1)

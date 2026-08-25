@@ -11,7 +11,8 @@ real pre-publication gate — but there is still no pause for *manual* testing
 before publication:
 
 - **Pre-tag checks** (repo state, before you tag): `main` is green; the vendored
-  blob checksum matches `vendor/README.md`.
+  blob checksum matches `vendor/README.md`; the product-site pages are current for
+  the release.
 - **Pre-publication gates** (automated, *inside* the release run — a failure
   fails the run, so nothing is published): the app and its embedded OCaml runtime
   are built for the macOS 15 minimum (`verify-runtime-minos`, zero
@@ -36,6 +37,12 @@ workflow → Homebrew cask bump) is in the release runbook.
 
 - [ ] **(pre-tag)** `main` is green.
 - [ ] **(pre-tag)** Vendored blob checksum matches `vendor/README.md`.
+- [ ] **(pre-tag)** The product-site pages are accurate for this release. Review the
+      landing page, Install, FAQ, and Credits (under `site/`) and update screenshots,
+      feature/FAQ copy, and install steps as needed. `/manual/` and version fields
+      regenerate from `MANUAL.md` and `project.yml` / `Makefile` on deploy; the rest
+      is manual. The site deploys from `main` via `pages.yml`, which preserves
+      `appcast.xml` byte-for-byte, so this is independent of the feed publish.
 - [ ] **(pre-publication gate — in-job)** The release build (`release.yml`,
       Release configuration) is built from the exact tagged commit. (Cannot be
       confirmed before the tag exists; it is the job's checkout/build guarantee.)
