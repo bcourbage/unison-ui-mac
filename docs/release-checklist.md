@@ -24,8 +24,8 @@ before publication:
   which exists only as the job's **output** — by the time you can inspect it, the
   Release and live feed are already public): every manual check against the
   artifact — version/signature/notarization inspection, the symbol/string
-  assertions, the TC9b/TC11/TC13 lifecycle runs, and the installed-0.5.0 update
-  test. A failure here is an **incident handled by rollback**, not a blocked
+  assertions, the TC9b/TC11/TC13 lifecycle runs, and the installed previous-
+  version update test. A failure here is an **incident handled by rollback**, not a blocked
   publication. Making any of these a true gate would require splitting the
   workflow with a protected manual-promotion stage.
 
@@ -81,6 +81,36 @@ build-monotonicity** paths against the published feed (0.5.1 was the first).
       Sparkle-delivered update).
 - [ ] **(post-publication canary)** After the update, the About panel shows
       **0.6.0 (build 21)**.
+
+#### If the 0.6.0 canary fails (installer / Gatekeeper / update problem)
+`release.yml` creates the public Release and publishes the live appcast **before**
+the installed-0.5.1 manual test can run, so by the time this fails, 0.6.0 is
+already being offered to users. Treat a failure as an incident and withdraw it in
+this exact order (restore the served feed **before** removing the asset, or
+clients are left a signed 0.6.0 enclosure pointing at a deleted archive):
+
+1. **Restore the exact last-good v0.5.1 signed feed.** Put the last-good (v0.5.1)
+   signed `appcast.xml` back on the `gh-pages` branch verbatim — its trailing
+   `<!-- sparkle-signatures -->` block must be intact — and push. The *served*
+   feed is what clients poll.
+2. **Verify propagation before touching the asset.** Pages deploys
+   asynchronously, so poll the live feed until it is byte-identical to the
+   restored file, then cryptographically verify the served bytes (`SPARKLE_BIN`
+   is the checksum-pinned Sparkle tools dir; `sign_update --verify` reads the
+   maintainer key from the login Keychain):
+   ```sh
+   feed=https://bcourbage.github.io/unison-ui-mac/appcast.xml
+   good=/path/to/last-good/appcast.xml        # the exact v0.5.1 bytes pushed in step 1
+   until curl -fsS "$feed" -o served.xml && cmp -s served.xml "$good"; do sleep 5; done
+   "$SPARKLE_BIN/sign_update" --verify served.xml   # must report a valid feed signature
+   ```
+   Only once the restored feed is actually served do clients stop being offered 0.6.0.
+3. **Then remove the 0.6.0 download.** `gh release delete-asset` the 0.6.0 archive
+   (or `gh release delete` the whole release). **Marking it a prerelease is NOT
+   sufficient** — prerelease assets stay downloadable.
+4. **Do not merge the Homebrew cask bump** for 0.6.0; if it was already merged,
+   **revert it** so `brew install --cask` stops offering 0.6.0.
+5. **Fix forward as v0.6.1 (build 22).** Never delete or reuse the `v0.6.0` tag.
 
 ### Manual installer hardening (optional spot-check)
 0.6.0 hardened `install.sh` (Release-only, atomic stage-then-swap, verified
