@@ -68,6 +68,45 @@ SCREENSHOTS = [
     "screenshot-settings-reconcile.png",
 ]
 
+
+def png_info(path):
+    """Return (width_px, height_px, dpi) from a PNG's IHDR and pHYs chunks.
+    Pure-stdlib so it runs on the CI runner without Pillow."""
+    with open(path, "rb") as f:
+        data = f.read()
+    w = int.from_bytes(data[16:20], "big")   # IHDR is always the first chunk
+    h = int.from_bytes(data[20:24], "big")
+    dpi = 72.0                                # macOS point base; 1x if no pHYs
+    i = 8
+    while i + 12 <= len(data):
+        length = int.from_bytes(data[i:i + 4], "big")
+        ctype = data[i + 4:i + 8]
+        if ctype == b"pHYs":
+            chunk = data[i + 8:i + 8 + length]
+            ppu_x, unit = int.from_bytes(chunk[0:4], "big"), chunk[8]
+            if unit == 1 and ppu_x:           # pixels per metre -> dpi
+                dpi = ppu_x * 0.0254
+            break
+        if ctype == b"IDAT":                  # pHYs precedes image data
+            break
+        i += 12 + length
+    return w, h, dpi
+
+
+def screenshot_display_sizes():
+    """CSS display size (logical points) for each screenshot, so the lightbox
+    shows it at true 1:1 — a 2x Retina capture (144 dpi) renders at half its
+    pixel size, i.e. the size the window actually was on screen."""
+    sizes = {}
+    for name in SCREENSHOTS:
+        w, h, dpi = png_info(os.path.join(ROOT, "assets", name))
+        scale = (dpi / 72.0) or 1.0
+        sizes[name] = [round(w / scale), round(h / scale)]
+    return sizes
+
+
+LB_SIZES = screenshot_display_sizes()
+
 # --- Pages ------------------------------------------------------------------
 # Each page: slug ("" = homepage), nav label, <title>, meta description, and the
 # content source (an HTML fragment under site/content/, a markdown file, or the
@@ -286,6 +325,10 @@ COPY_SCRIPT = """<script>
     idx = i;
     big.src = imgs[i].currentSrc || imgs[i].src;
     big.alt = imgs[i].alt || "";
+    // 1:1 at the screenshot's logical (point) size, not its 2x pixel size.
+    var s = (window.__LB_SIZES || {})[(big.src || "").split("/").pop()];
+    if (s) { big.style.width = s[0] + "px"; big.style.height = s[1] + "px"; }
+    else { big.style.width = ""; big.style.height = ""; }
     prev.disabled = i <= 0;
     next.disabled = i >= imgs.length - 1;
     overlay.scrollTop = 0;
@@ -395,6 +438,8 @@ def build(outdir: str) -> None:
     os.makedirs(outdir, exist_ok=True)
 
     ogimage = f"{SITE_URL}/assets/social-preview.png"
+    sizes_script = ("<script>window.__LB_SIZES="
+                    + json.dumps(LB_SIZES, separators=(",", ":")) + ";</script>\n")
     urls = []
     for page in PAGES:
         slug = page["slug"]
@@ -411,7 +456,7 @@ def build(outdir: str) -> None:
             mainclass="home" if slug == "" else "page",
             jsonld=jsonld_block(page["jsonld"]),
             content=load_content(page),
-            script=COPY_SCRIPT,
+            script=sizes_script + COPY_SCRIPT,
         )
         dest_dir = outdir if slug == "" else os.path.join(outdir, slug)
         os.makedirs(dest_dir, exist_ok=True)
