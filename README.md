@@ -17,7 +17,7 @@
 **Unison UI for macOS** is a native macOS GUI for the
 [Unison File Synchronizer](https://github.com/bcpierce00/unison): two-way
 file synchronization between local folders and remote machines over SSH,
-with visual conflict review before anything is written to disk.
+with visual conflict review before synchronized files are changed.
 
 <a id="system-requirements"></a>
 
@@ -38,15 +38,16 @@ Other install paths (signed `.app` download, build from source) are in
 - **Two-way synchronization** of files and folders, keeping both sides current.
 - **Local and remote roots over SSH** — sync a folder on this Mac against
   another machine.
-- **Conflict review** — every proposed change is shown before anything is
-  written, so you decide what wins.
+- **Conflict review** — every proposed change is shown before changes are
+  applied to either root, so you decide what wins.
 - **Per-item control** — flip the sync direction of any item, or skip it,
   directly in the results.
 - **Native macOS GUI** — real menus, notifications, and keyboard control, with
   no terminal required.
 - **Self-contained** — the Unison File Synchronizer engine is embedded in the
   app, so the `unison` CLI does not have to be installed separately.
-- **Automatic updates** through Sparkle, over a signed and notarized feed.
+- **Built-in updates** through Sparkle from a cryptographically signed feed;
+  release builds are Developer ID-signed and notarized.
 
 ## Screenshots
 
