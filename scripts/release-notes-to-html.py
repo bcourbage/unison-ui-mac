@@ -9,7 +9,7 @@ release notes use:
     # H1 / ## H2 headings
     - bullet lists (one item per line; blank line or non-"- " line ends the list)
     paragraphs (blank-line separated)
-    inline **bold**, `code`, and [text](url) links
+    inline **bold**, *emphasis*, `code`, and [text](url) links
 
 It is intentionally not a general markdown engine: it covers the house style in
 release-notes/*.md and nothing else, so the output is predictable and testable.

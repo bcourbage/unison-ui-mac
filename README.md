@@ -191,7 +191,7 @@ regenerate the blob itself (`make vendor-blob`), a maintainer-only step.
 ### Local fork patches
 
 This project applies a small set of patches to the upstream Unison
-source, currently **four** (see [`patches/`](patches/) and the
+source, currently **five** (see [`patches/`](patches/) and the
 authoritative list in [`vendor/README.md`](vendor/README.md)):
 `0002` registers a `closeConnection` callback for connection teardown
 on leave; `0003` adds `Remote.drainDroppedConnectionThreads` and
@@ -199,7 +199,10 @@ drives it from the close paths; `0004` adds transport-child reaper
 hooks (the bridge tracks the exact ssh child PID and SIGKILLs it at
 teardown; see [`docs/ssh-reaper-design.md`](docs/ssh-reaper-design.md));
 `0005` carries a post-sync state snapshot on `syncComplete` to avoid
-per-row bridge round-trips. The patches are already baked into the
+per-row bridge round-trips; `0006` registers a narrow archive-lock
+callback (acquire/release/is-locked over a validated `lk<hash>`) so the
+app's archive-mutation transaction takes the same per-archive lock a
+live Unison uses. The patches are already baked into the
 vendored `unison-blob.o`; you only need to re-apply them if you're
 rebuilding the blob from an upstream clone (`make vendor-blob` does this
 automatically as a prereq). These patch files are local implementation
