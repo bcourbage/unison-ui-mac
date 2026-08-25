@@ -100,9 +100,12 @@ class VerifierKey(unittest.TestCase):
         self.assertEqual(len(base64.b64decode(out)), 96)
 
     def test_rejects_invalid_base64(self):
-        # A valid key with stray characters must fail, not be silently normalized
-        # to the clean bytes (Sparkle rejects it, so the gate must too).
-        good = base64.b64encode(bytes(32)).decode().rstrip("=")
+        # A correctly padded key with stray characters must fail, not be silently
+        # normalized to the clean bytes (Sparkle rejects it, so the gate must too).
+        # Padding is RETAINED so the input is valid to permissive b64decode: this
+        # locks validate=True — remove it and permissive decoding accepts, so this
+        # assertion fails.
+        good = base64.b64encode(bytes(32)).decode()   # keep the "=" padding
         with self.assertRaises(SystemExit):
             mvk.verifier_key(good + "!!!!")
 

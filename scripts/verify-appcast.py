@@ -64,7 +64,7 @@ def main():
 
     key = sys.stdin.read().strip()
     if not key:
-        sys.stderr.write("error: empty private key on stdin\n")
+        sys.stderr.write("error: empty Ed25519 key material on stdin\n")
         return 2
 
     def su_verify(*extra):
