@@ -288,3 +288,14 @@ jobs:
                       sys.exit(f"::error::fabricated rating in JSON-LD at {path}")
           print("site build validated: no appcast.xml, all pages present, JSON-LD valid")
           PY
+
+      - name: Upload the built site for preview
+        # Lets the site be previewed without a local build: download this artifact
+        # from the run, unzip it, and serve it (e.g. `python3 -m http.server` in the
+        # folder). Serve rather than open via file:// so the directory-style links
+        # (/install/, /faq/) resolve.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: product-site
+          path: _site
+          retention-days: 14
