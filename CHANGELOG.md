@@ -9,7 +9,7 @@ The `MARKETING_VERSION` (visible in the About panel) tracks releases on this
 list; the `CURRENT_PROJECT_VERSION` (CFBundleVersion) increases monotonically
 across releases per Apple's bundle-version rules.
 
-## [0.6.0] — 2026-08-25
+## [0.6.0] — 2026-08-24
 
 A safety, correctness, and robustness release on top of 0.5.1. (Build 21.)
 Existing profiles and settings continue to work without migration.
