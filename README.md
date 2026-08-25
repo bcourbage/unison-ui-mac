@@ -1,11 +1,11 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/Unison-macOS-Dark-512x512@1x.png">
-    <img src="assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI app icon" width="128">
+    <img src="assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="128">
   </picture>
 </p>
 
-# Unison-UI-Mac
+# Unison UI for macOS
 
 [![CI](https://github.com/bcourbage/unison-ui-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/bcourbage/unison-ui-mac/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/bcourbage/unison-ui-mac?label=release)](https://github.com/bcourbage/unison-ui-mac/releases)
@@ -14,23 +14,59 @@
 [![Arch: arm64](https://img.shields.io/badge/arch-arm64-orange.svg)](#system-requirements)
 [![Embeds Unison 2.54.0](https://img.shields.io/badge/Unison-2.54.0-success.svg)](https://github.com/bcpierce00/unison/releases/tag/v2.54.0)
 
-A native macOS GUI for the [Unison File Synchronizer](https://github.com/bcpierce00/unison),
-written in Swift + AppKit. Personal project; deliberately not for upstream
-contribution (see [NOTICE.md](NOTICE.md) for the license and attribution
-trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of engagement
-on this fork).
+**Unison UI for macOS** is a native macOS GUI for the
+[Unison File Synchronizer](https://github.com/bcpierce00/unison): two-way
+file synchronization between local folders and remote machines over SSH,
+with visual conflict review before anything is written to disk.
 
-> **Install** (recommended):
->
-> ```sh
-> brew install --cask bcourbage/tap/unison-ui-mac
-> ```
->
-> Other install paths (manual zip, build from source) live in
-> [INSTALL.md](INSTALL.md).
->
-> **For a feature-by-feature user guide, see [MANUAL.md](MANUAL.md).**
-> **Release history:** [CHANGELOG.md](CHANGELOG.md).
+<a id="system-requirements"></a>
+
+- **Requirements:** macOS 15 (Sequoia) or later, Apple Silicon.
+- **Free and open source**, released under the GPLv3.
+
+## Install
+
+```sh
+brew install --cask bcourbage/tap/unison-ui-mac
+```
+
+Other install paths (signed `.app` download, build from source) are in
+[INSTALL.md](INSTALL.md).
+
+## Features
+
+- **Two-way synchronization** of files and folders, keeping both sides current.
+- **Local and remote roots over SSH** — sync a folder on this Mac against
+  another machine.
+- **Conflict review** — every proposed change is shown before anything is
+  written, so you decide what wins.
+- **Per-item control** — flip the sync direction of any item, or skip it,
+  directly in the results.
+- **Native macOS GUI** — real menus, notifications, and keyboard control, with
+  no terminal required.
+- **Self-contained** — the Unison File Synchronizer engine is embedded in the
+  app, so the `unison` CLI does not have to be installed separately.
+- **Automatic updates** through Sparkle, over a signed and notarized feed.
+
+## Screenshots
+
+| | |
+| :---: | :---: |
+| **Review changes before syncing**<br>conflicts and per-item direction<br><img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, including a conflict and per-item direction"> | **Configure a profile**<br>local and remote (SSH) roots<br><img src="assets/screenshot-profile-editor.png" alt="Editing a profile's two synchronization roots"> |
+| **Sync notifications**<br>Settings<br><img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion"> | **Reconcile display**<br>Settings<br><img src="assets/screenshot-settings-reconcile.png" alt="Settings: reconcile window layout options"> |
+
+For a feature-by-feature guide, see [MANUAL.md](MANUAL.md).
+Release history is in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## About this project
+
+A native macOS GUI for the Unison File Synchronizer, written in Swift + AppKit.
+This is an independent, personal project and is deliberately not intended for
+upstream contribution (see [NOTICE.md](NOTICE.md) for the license and
+attribution trail, and [CONTRIBUTING.md](CONTRIBUTING.md) for the rules of
+engagement on this fork).
 
 > [!IMPORTANT]
 > **Bug reports for this UI go to
