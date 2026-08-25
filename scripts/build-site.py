@@ -44,6 +44,21 @@ def marketing_version() -> str:
 
 VERSION = marketing_version()
 
+
+def unison_version() -> str:
+    """Read the embedded Unison version from the Makefile (single source of
+    truth: `UNISON_VERSION ?= X`), so the site never hardcodes it."""
+    with open(os.path.join(ROOT, "Makefile"), encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r'\s*UNISON_VERSION\s*\??=\s*(\S+)', line)
+            if m:
+                return m.group(1)
+    raise SystemExit("error: UNISON_VERSION not found in Makefile")
+
+
+UNISON_VERSION = unison_version()
+UNISON_TAG_URL = f"https://github.com/bcpierce00/unison/releases/tag/v{UNISON_VERSION}"
+
 # Screenshots shipped in the repo's assets/, reused by the landing page and the
 # SoftwareApplication JSON-LD.
 SCREENSHOTS = [
@@ -122,6 +137,16 @@ PAGES = [
         "source": ("manual", os.path.join(ROOT, "MANUAL.md")),
         "jsonld": [],
     },
+    {
+        "slug": "credits",
+        "nav": "Credits",
+        "in_nav": False,  # reachable from the footer, not the top nav
+        "title": f"Credits — {APP_NAME}",
+        "desc": ("Acknowledgements and licenses for Unison UI for macOS: the Unison "
+                 "File Synchronizer (GPLv3) and the Sparkle update framework (MIT)."),
+        "source": ("md", os.path.join(CONTENT, "credits.md")),
+        "jsonld": [],
+    },
 ]
 
 TEMPLATE = """<!doctype html>
@@ -164,6 +189,7 @@ TEMPLATE = """<!doctype html>
   engine, with thanks to that project's maintainers.</p>
   <p><a href="{repo}">GitHub</a> · <a href="{root}/install/">Install</a> ·
   <a href="{root}/faq/">FAQ</a> · <a href="{root}/manual/">Manual</a> ·
+  <a href="{root}/credits/">Credits</a> ·
   <a href="{repo}/blob/main/CHANGELOG.md">Changelog</a></p>
 </footer>
 {script}
@@ -246,7 +272,7 @@ COPY_SCRIPT = """<script>
   overlay.innerHTML =
     '<button class="lb-close" type="button" aria-label="Close">✕</button>' +
     '<button class="lb-prev" type="button" aria-label="Previous screenshot">‹</button>' +
-    '<img class="lb-img" alt="">' +
+    '<div class="lb-stage"><img class="lb-img" alt=""></div>' +
     '<button class="lb-next" type="button" aria-label="Next screenshot">›</button>';
   document.body.appendChild(overlay);
 
@@ -262,6 +288,8 @@ COPY_SCRIPT = """<script>
     big.alt = imgs[i].alt || "";
     prev.disabled = i <= 0;
     next.disabled = i >= imgs.length - 1;
+    overlay.scrollTop = 0;
+    overlay.scrollLeft = 0;
   }
   function open(i) {
     show(i);
@@ -305,6 +333,8 @@ def rel_href(target_slug: str, active_slug: str) -> str:
 def nav_html(active_slug: str) -> str:
     items = []
     for p in PAGES:
+        if not p.get("in_nav", True):
+            continue
         href = rel_href(p["slug"], active_slug)
         cls = ' class="active"' if p["slug"] == active_slug else ""
         items.append(f'<a href="{href}"{cls}>{html.escape(p["nav"])}</a>')
@@ -324,7 +354,9 @@ def substitute_tokens(text: str) -> str:
     """Version/cask/repo live in one place; pages reference them as tokens."""
     return (text.replace("{{VERSION}}", VERSION)
                 .replace("{{CASK}}", html.escape(CASK))
-                .replace("{{REPO}}", REPO_URL))
+                .replace("{{REPO}}", REPO_URL)
+                .replace("{{UNISON_VERSION}}", UNISON_VERSION)
+                .replace("{{UNISON_TAG_URL}}", UNISON_TAG_URL))
 
 
 def load_content(page) -> str:

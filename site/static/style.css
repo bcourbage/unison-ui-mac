@@ -56,7 +56,9 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 1rem 1.25rem 3rem; }
 .cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; margin: 1rem 0; }
 .btn {
   display: inline-block; padding: .6rem 1.1rem; border-radius: 980px;
-  background: var(--accent); color: var(--accent-fg); font-weight: 600;
+  background: var(--accent); color: var(--accent-fg);
+  /* <button> does not inherit the page font; make every .btn match. */
+  font: inherit; font-weight: 600; line-height: 1.2; cursor: pointer;
 }
 .btn:hover { text-decoration: none; opacity: .92; }
 .btn.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
@@ -113,28 +115,35 @@ h3 { font-size: 1.2rem; margin: 1.4rem 0 .4rem; }
 
 /* Screenshot lightbox (a photo viewer; dark in every theme) */
 .lightbox {
-  position: fixed; inset: 0; z-index: 100;
-  display: flex; align-items: center; justify-content: center;
-  padding: 2rem; background: rgba(0, 0, 0, .85);
+  position: fixed; inset: 0; z-index: 100; overflow: auto;
+  background: rgba(0, 0, 0, .9);
 }
 .lightbox[hidden] { display: none; }
+/* The stage is at least a full viewport so small images center; a larger image
+   grows the stage and the overlay scrolls. */
+.lb-stage {
+  min-height: 100%; box-sizing: border-box; padding: 3.5rem;
+  display: flex; align-items: center; justify-content: center;
+}
+/* 1:1 — each screenshot shows at its natural pixel size, so every one is at the
+   same zoom regardless of its dimensions. */
 .lb-img {
-  max-width: 84vw; max-height: 86vh; width: auto; height: auto;
+  display: block; width: auto; height: auto; max-width: none; max-height: none;
   border-radius: 8px; box-shadow: 0 12px 48px rgba(0, 0, 0, .5);
 }
 .lb-prev, .lb-next, .lb-close {
-  position: absolute; border: none; cursor: pointer; color: #fff;
-  background: rgba(255, 255, 255, .14); border-radius: 999px;
+  position: fixed; border: none; cursor: pointer; color: #fff;
+  background: rgba(255, 255, 255, .16); border-radius: 999px;
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
 .lb-prev, .lb-next { top: 50%; transform: translateY(-50%); width: 48px; height: 48px; font-size: 2rem; }
 .lb-prev { left: 1rem; }
 .lb-next { right: 1rem; }
 .lb-close { top: 1rem; right: 1rem; width: 40px; height: 40px; font-size: 1.2rem; }
-.lb-prev:hover:not(:disabled), .lb-next:hover:not(:disabled), .lb-close:hover { background: rgba(255, 255, 255, .28); }
+.lb-prev:hover:not(:disabled), .lb-next:hover:not(:disabled), .lb-close:hover { background: rgba(255, 255, 255, .3); }
 .lb-prev:disabled, .lb-next:disabled { opacity: .3; cursor: default; }
 @media (max-width: 640px) {
-  .lightbox { padding: 1rem; }
+  .lb-stage { padding: 3rem .5rem; }
   .lb-prev, .lb-next { width: 40px; height: 40px; font-size: 1.6rem; }
   .lb-prev { left: .35rem; }
   .lb-next { right: .35rem; }

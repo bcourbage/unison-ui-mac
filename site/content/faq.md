@@ -28,12 +28,15 @@ the upstream app and its history, see the
 
 ## Why does this exist when Unison already ships a macOS app?
 
-The goal was a modern, native experience on current macOS: a Swift and AppKit
-interface targeting macOS 15 and Apple Silicon, with a focused conflict-review
-workflow, native notifications, and built-in updates from a signed feed. Starting
-from a fresh Swift and AppKit codebase, rather than building on the bundled Cocoa
-app, made those goals easier to pursue and maintain. Both run the same Unison
-engine, so synchronization behaves the way Unison is known for.
+Part of the motivation is practical: the upstream maintainers have noted that they
+are not able to test the macOS build themselves, so a separately maintained native
+app can respond to Mac-specific issues more directly. Beyond that, the goal was a
+modern, native experience on current macOS: a Swift and AppKit interface targeting
+macOS 15 and Apple Silicon, with a focused conflict-review workflow, native
+notifications, and built-in updates from a signed feed. Starting from a fresh Swift
+and AppKit codebase, rather than building on the bundled Cocoa app, made those goals
+easier to pursue and maintain. Both run the same Unison engine, so synchronization
+behaves the way Unison is known for.
 
 ## What are the system requirements?
 
@@ -62,18 +65,43 @@ with conflicts surfaced for review. This is Unison's model, not a one-way mirror
 Through [Sparkle](https://sparkle-project.org/), over a cryptographically signed
 appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
+## What data does the app send?
+
+There is no analytics or usage tracking. The only information the app can send is an
+optional anonymous system profile that Sparkle attaches to an update check. When it
+is included, the profile is sent only while checking for updates, at most once a
+week, and contains just: macOS version, Mac model, CPU, memory, app version, and
+preferred language. It carries no name or account, no file names or contents, and no
+record of what you sync or how you use the app.
+
+An "Include an anonymous system profile with update checks" checkbox controls it, on
+the first-launch update prompt and in Settings. The checkbox is selected by default
+on that prompt, so accepting the defaults includes the profile; clear it there or in
+Settings to turn it off. Nothing is sent before you answer the prompt. Checking for
+updates at all contacts the update feed, the same as any app that updates itself.
+
+Synchronization never routes your data through this project: files move directly
+between the two roots over SSH, not through any server operated by the app.
+
 ## Which version of Unison does it use?
 
 It currently embeds upstream Unison
-[2.54.0](https://github.com/bcpierce00/unison/releases). The wire-protocol
-compatibility boundary is Unison 2.52.0, so it interoperates with SSH peers running
-2.52.0 or newer.
+[{{UNISON_VERSION}}]({{UNISON_TAG_URL}}). The wire-protocol compatibility boundary is
+Unison 2.52.0, so it interoperates with SSH peers running 2.52.0 or newer.
 
 ## Is this an official Unison project?
 
 No. It is an independent, personal project, not affiliated with upstream Unison.
 Report issues with this UI to its
 [own issue tracker]({{REPO}}/issues), not to the upstream Unison project.
+
+## How do I get help or report a bug?
+
+Support happens on GitHub. Open a bug report or feature request on the
+[issue tracker]({{REPO}}/issues), searching first in case it is already filed. This
+is an independently maintained personal project, so help is best-effort. Clear
+reproduction steps and the app version (from **App menu ▸ About Unison UI for
+macOS**) make a report much easier to act on.
 
 ## Where is the full manual?
 
