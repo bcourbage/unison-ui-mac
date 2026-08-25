@@ -14,11 +14,19 @@ scripts/test-verify-appcast.py.
 Usage: make-verifier-key.py <SUPublicEDKey-base64>   # prints the verifier key
 """
 import base64
+import binascii
 import sys
 
 
 def verifier_key(public_key_b64: str) -> str:
-    pub = base64.b64decode(public_key_b64)
+    # Strict decode (outer whitespace trimmed, no other stray characters), matching
+    # how Sparkle decodes SUPublicEDKey. Python's default b64decode is permissive
+    # and would silently normalize e.g. "validkey!!!!" to the clean bytes, so the
+    # gate could authenticate with a key Sparkle clients reject.
+    try:
+        pub = base64.b64decode(public_key_b64.strip(), validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise SystemExit(f"invalid base64 public key: {e}")
     if len(pub) != 32:
         raise SystemExit(f"public key is {len(pub)} bytes, expected 32")
     return base64.b64encode(b"\x00" * 64 + pub).decode()

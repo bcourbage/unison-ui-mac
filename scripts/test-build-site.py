@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for build-site.py. Run: python scripts/test-build-site.py"""
+import base64
 import importlib.util
 import os
 import shutil
@@ -18,6 +19,7 @@ def _load(name, filename):
 
 bs = _load("build_site", "build-site.py")
 links = _load("check_site_links", "check-site-links.py")
+mvk = _load("make_verifier_key", "make-verifier-key.py")
 
 
 class RmtreeSafety(unittest.TestCase):
@@ -89,6 +91,24 @@ class LinkChecker(unittest.TestCase):
             self.assertEqual(issues, [])
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class VerifierKey(unittest.TestCase):
+    def test_accepts_valid_public_key(self):
+        good = base64.b64encode(bytes(32)).decode()   # 32 bytes, valid base64
+        out = mvk.verifier_key(good)
+        self.assertEqual(len(base64.b64decode(out)), 96)
+
+    def test_rejects_invalid_base64(self):
+        # A valid key with stray characters must fail, not be silently normalized
+        # to the clean bytes (Sparkle rejects it, so the gate must too).
+        good = base64.b64encode(bytes(32)).decode().rstrip("=")
+        with self.assertRaises(SystemExit):
+            mvk.verifier_key(good + "!!!!")
+
+    def test_rejects_wrong_length(self):
+        with self.assertRaises(SystemExit):
+            mvk.verifier_key(base64.b64encode(bytes(16)).decode())
 
 
 if __name__ == "__main__":
