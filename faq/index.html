@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ — Unison UI for macOS</title>
+<meta name="description" content="Frequently asked questions about Unison UI for macOS: requirements, two-way synchronization, SSH remotes, conflict review, updates, and its relationship to the upstream Unison File Synchronizer.">
+<link rel="canonical" href="https://bcourbage.github.io/unison-ui-mac/faq/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Unison UI for macOS">
+<meta property="og:title" content="FAQ — Unison UI for macOS">
+<meta property="og:description" content="Frequently asked questions about Unison UI for macOS: requirements, two-way synchronization, SSH remotes, conflict review, updates, and its relationship to the upstream Unison File Synchronizer.">
+<meta property="og:url" content="https://bcourbage.github.io/unison-ui-mac/faq/">
+<meta property="og:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="FAQ — Unison UI for macOS">
+<meta name="twitter:description" content="Frequently asked questions about Unison UI for macOS: requirements, two-way synchronization, SSH remotes, conflict review, updates, and its relationship to the upstream Unison File Synchronizer.">
+<meta name="twitter:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
+<link rel="icon" href="../assets/Unison-macOS-Default-512x512@1x.png">
+<link rel="stylesheet" href="../style.css">
+<script>try{var t=localStorage.getItem("ui-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="../">
+    <img src="../assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="28" height="28">
+    <span>Unison UI for macOS</span>
+  </a>
+  <nav class="site-nav"><a href="../">Home</a>
+<a href="../install/">Install</a>
+<a href="../faq/" class="active">FAQ</a>
+<a href="../manual/">Manual</a>
+<a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a><button class="theme-toggle" type="button" hidden aria-label="Switch color theme"></button></nav>
+</header>
+<main class="page">
+<article class="doc">
+<h1 id="frequently-asked-questions">Frequently asked questions</h1>
+<h2 id="what-is-unison-ui-for-macos">What is Unison UI for macOS?</h2>
+<p>It is a native macOS app that gives the
+<a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a> a modern graphical
+interface. Unison does reliable <strong>two-way</strong> file synchronization, keeping two
+replicas in sync and detecting conflicts. This app wraps that engine in a
+Swift and AppKit interface with a visual conflict-review step.</p>
+<h2 id="how-is-it-different-from-the-unison-command-line-tool">How is it different from the <code>unison</code> command-line tool?</h2>
+<p>It is the same engine with a different front end. The app embeds Unison's compiled
+core, so the <code>unison</code> CLI does not need to be installed for the app to run, and
+everything happens through the macOS interface instead of a terminal: choosing
+profiles, reviewing changes, and resolving conflicts.</p>
+<h2 id="how-does-it-compare-to-the-macos-app-included-with-unison">How does it compare to the macOS app included with Unison?</h2>
+<p>Upstream Unison ships its own front ends, including a native macOS Cocoa app (built
+from the <code>uimac</code> sources in the Unison repository) alongside the text and GTK
+interfaces. Unison UI for macOS is a separate, independently maintained app. It runs
+the same Unison engine, but its interface is an independent Swift and AppKit
+implementation, not derived from the upstream Cocoa app's code. It targets macOS 15
+and later on Apple Silicon and adds built-in Sparkle updates from a signed feed. For
+the upstream app and its history, see the
+<a href="https://github.com/bcpierce00/unison">Unison project</a>.</p>
+<h2 id="why-does-this-exist-when-unison-already-ships-a-macos-app">Why does this exist when Unison already ships a macOS app?</h2>
+<p>Part of the motivation is practical: the upstream maintainers have noted that they
+are not able to test the macOS build themselves, so a separately maintained native
+app can respond to Mac-specific issues more directly. A concrete example is staying
+responsive under trouble: in the bundled Cocoa app, cancelling a sync or a scan can
+leave it stuck and needing a force quit. This app takes a different approach.
+Stopping a running sync aborts it cleanly at the next checkpoint, and during a scan
+you can return to the profile list instead of watching a frozen window. Recovering
+from a remote connection that has gone silent can still mean quitting and relaunching,
+but the interface stays usable rather than locking up. Beyond that, the goal was a
+modern, native experience on current macOS: a Swift and AppKit interface targeting
+macOS 15 and Apple Silicon, with a focused conflict-review workflow, native
+notifications, and built-in updates from a signed feed. Starting from a fresh Swift
+and AppKit codebase, rather than building on the bundled Cocoa app, made those goals
+easier to pursue and maintain. Both run the same Unison engine, so synchronization
+behaves the way Unison is known for.</p>
+<h2 id="what-are-the-system-requirements">What are the system requirements?</h2>
+<p>macOS 15 (Sequoia) or later, on Apple Silicon. It is free and open source under the
+GPLv3.</p>
+<h2 id="can-it-sync-to-another-machine-over-ssh">Can it sync to another machine over SSH?</h2>
+<p>Yes. A profile's two roots can each be a local folder or a remote root of the form
+<code>ssh://user@host//path</code>. The app runs Unison over SSH just as the command-line tool
+does, including key-based authentication and host-key prompts.</p>
+<h2 id="does-this-app-have-a-gui-to-help-configure-sync-profiles">Does this app have a GUI to help configure sync profiles?</h2>
+<p>Yes. A graphical profile editor sets a profile's two roots, the paths to include,
+ignore patterns, file-handling options, and more, so there is no configuration file
+to hand-edit. The profiles it reads and writes are ordinary Unison profiles
+(standard <code>.prf</code> files in your Unison directory), so they work with the <code>unison</code>
+command-line tool in exactly the same way. Nothing about a profile is specific to
+this app's interface.</p>
+<h2 id="what-happens-when-there-is-a-conflict">What happens when there is a conflict?</h2>
+<p>Nothing is written until you decide. After scanning, the reconcile window lists
+every proposed change with its direction. Flip the direction of any item, skip it, or
+diff two versions before anything is applied to either root.</p>
+<h2 id="is-it-two-way-bidirectional-synchronization-or-one-way-backup">Is it two-way (bidirectional) synchronization or one-way backup?</h2>
+<p>Two-way. Changes made on either side are detected and can be propagated to the other,
+with conflicts surfaced for review. This is Unison's model, not a one-way mirror.</p>
+<h2 id="how-does-it-update-itself">How does it update itself?</h2>
+<p>Through <a href="https://sparkle-project.org/">Sparkle</a>, over a cryptographically signed
+appcast feed. Check manually any time from <strong>App menu ▸ Check for Updates</strong>.</p>
+<h2 id="what-data-does-the-app-send">What data does the app send?</h2>
+<p>There is no analytics or usage tracking. The only information the app can send is an
+optional anonymous system profile that Sparkle attaches to an update check. When it
+is included, the profile is sent only while checking for updates, at most once a
+week, and contains just: macOS version, Mac model, CPU, memory, app version, and
+preferred language. It carries no name or account, no file names or contents, and no
+record of what you sync or how you use the app.</p>
+<p>An "Include an anonymous system profile with update checks" checkbox controls it, on
+the first-launch update prompt and in Settings. The checkbox is selected by default
+on that prompt, so accepting the defaults includes the profile; clear it there or in
+Settings to turn it off. Nothing is sent before you answer the prompt. Checking for
+updates at all contacts the update feed, the same as any app that updates itself.</p>
+<p>Synchronization never routes your data through this project: files move directly
+between the two roots over SSH, not through any server operated by the app.</p>
+<h2 id="which-version-of-unison-does-it-use">Which version of Unison does it use?</h2>
+<p>It currently embeds upstream Unison
+<a href="https://github.com/bcpierce00/unison/releases/tag/v2.54.0">2.54.0</a>. The wire-protocol compatibility boundary is
+Unison 2.52.0, so it interoperates with SSH peers running 2.52.0 or newer.</p>
+<h2 id="is-this-an-official-unison-project">Is this an official Unison project?</h2>
+<p>No. It is an independent, personal project, not affiliated with upstream Unison.
+Report issues with this UI to its
+<a href="https://github.com/bcourbage/unison-ui-mac/issues">own issue tracker</a>, not to the upstream Unison project.</p>
+<h2 id="how-do-i-get-help-or-report-a-bug">How do I get help or report a bug?</h2>
+<p>Support happens on GitHub. Open a bug report or feature request on the
+<a href="https://github.com/bcourbage/unison-ui-mac/issues">issue tracker</a>, searching first in case it is already filed. This
+is an independently maintained personal project, so help is best-effort. Clear
+reproduction steps and the app version (from <strong>App menu ▸ About Unison UI for
+macOS</strong>) make a report much easier to act on.</p>
+<h2 id="where-is-the-full-manual">Where is the full manual?</h2>
+<p>See the <a href="../manual/">manual</a>, which is the same feature-by-feature guide bundled in
+the app's Help menu.</p>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Unison UI for macOS is an independent, open-source project (GPLv3), not affiliated with the
+  upstream <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>.
+  It is built on Unison and depends on its actively maintained synchronization
+  engine, with thanks to that project's maintainers.</p>
+  <p><a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a> · <a href="../install/">Install</a> ·
+  <a href="../faq/">FAQ</a> · <a href="../manual/">Manual</a> ·
+  <a href="../credits/">Credits</a> ·
+  <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/CHANGELOG.md">Changelog</a></p>
+</footer>
+<script>window.__LB_SIZES={"screenshot-sync-review.png":[960,702],"screenshot-profile-editor.png":[700,430],"screenshot-settings-sync.png":[540,240],"screenshot-settings-reconcile.png":[540,258]};</script>
+<script>
+(function () {
+  var ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  function enhance(pre) {
+    var code = pre.querySelector("code") || pre;
+    var text = code.textContent.trim();
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy-btn";
+    btn.setAttribute("aria-label", "Copy command to clipboard");
+    btn.innerHTML = ICON + '<span class="copy-label">Copy</span>';
+    btn.addEventListener("click", function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(function () {
+        var label = btn.querySelector(".copy-label");
+        var prev = label.textContent;
+        label.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(function () { label.textContent = prev; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+    var box = document.createElement("div");
+    box.className = "install-box";
+    pre.parentNode.insertBefore(box, pre);
+    box.appendChild(pre);
+    box.appendChild(btn);
+  }
+  var targets = [];
+  document.querySelectorAll("pre[data-copyable]").forEach(function (p) { targets.push(p); });
+  document.querySelectorAll("code.copyable").forEach(function (c) {
+    var pre = c.parentElement;
+    if (pre && pre.tagName === "PRE" && targets.indexOf(pre) === -1) targets.push(pre);
+  });
+  targets.forEach(enhance);
+})();
+
+// Reveal: the "Install with Homebrew" button shows/hides its command block.
+// Progressive enhancement: the block is visible without JS; JS collapses it on
+// load, then toggles it, so the button and the command are never both showing
+// the same thing at once.
+(function () {
+  var toggle = document.getElementById("brew-toggle");
+  var box = document.getElementById("brew-box");
+  if (!toggle || !box) return;
+  function set(open) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.classList.toggle("active", open);
+    box.hidden = !open;
+  }
+  set(false);
+  toggle.addEventListener("click", function () {
+    set(toggle.getAttribute("aria-expanded") !== "true");
+  });
+})();
+
+// Lightbox: click a screenshot to view it full size. Left/right move between
+// screenshots and STOP at the ends (no wrap): the arrows disable at the first
+// and last image.
+(function () {
+  var shots = document.querySelector(".shots");
+  if (!shots) return;
+  var imgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
+  if (!imgs.length) return;
+
+  var overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Screenshot viewer");
+  overlay.hidden = true;
+  overlay.innerHTML =
+    '<button class="lb-close" type="button" aria-label="Close">✕</button>' +
+    '<button class="lb-prev" type="button" aria-label="Previous screenshot">‹</button>' +
+    '<div class="lb-stage"><img class="lb-img" alt=""></div>' +
+    '<button class="lb-next" type="button" aria-label="Next screenshot">›</button>';
+  document.body.appendChild(overlay);
+
+  var big = overlay.querySelector(".lb-img");
+  var prev = overlay.querySelector(".lb-prev");
+  var next = overlay.querySelector(".lb-next");
+  var close = overlay.querySelector(".lb-close");
+  var idx = 0;
+
+  function show(i) {
+    idx = i;
+    big.src = imgs[i].currentSrc || imgs[i].src;
+    big.alt = imgs[i].alt || "";
+    // 1:1 at the screenshot's logical (point) size, not its 2x pixel size.
+    var s = (window.__LB_SIZES || {})[(big.src || "").split("/").pop()];
+    if (s) { big.style.width = s[0] + "px"; big.style.height = s[1] + "px"; }
+    else { big.style.width = ""; big.style.height = ""; }
+    prev.disabled = i <= 0;
+    next.disabled = i >= imgs.length - 1;
+    overlay.scrollTop = 0;
+    overlay.scrollLeft = 0;
+  }
+  var opener = null;
+  function open(i) {
+    opener = document.activeElement;
+    show(i);
+    overlay.hidden = false;
+    document.body.style.overflow = "hidden";
+    close.focus();
+  }
+  function shut() {
+    overlay.hidden = true;
+    document.body.style.overflow = "";
+    big.removeAttribute("src");
+    if (opener && typeof opener.focus === "function") opener.focus();
+    opener = null;
+  }
+  // Keep focus inside the dialog while it is open, so background links are not
+  // reachable by Tab.
+  function trapTab(e) {
+    var order = [close, prev, next].filter(function (b) { return !b.disabled; });
+    var first = order[0], last = order[order.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (order.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
+  }
+  // Each screenshot is a real, keyboard-operable control.
+  imgs.forEach(function (el, i) {
+    el.style.cursor = "zoom-in";
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-label", (el.alt || "Screenshot") + " (view larger)");
+    el.addEventListener("click", function () { open(i); });
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(i); }
+    });
+  });
+  prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
+  next.addEventListener("click", function () { if (idx < imgs.length - 1) show(idx + 1); });
+  close.addEventListener("click", shut);
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) shut(); });
+  document.addEventListener("keydown", function (e) {
+    if (overlay.hidden) return;
+    var k = e.key;
+    if (k === "Escape" || k === "Esc") shut();
+    else if (k === "Tab") trapTab(e);
+    else if ((k === "ArrowLeft" || k === "Left") && idx > 0) show(idx - 1);
+    else if ((k === "ArrowRight" || k === "Right") && idx < imgs.length - 1) show(idx + 1);
+  });
+})();
+
+// Theme toggle: cycle Auto (follows system) -> Light -> Dark, remembered in
+// localStorage. The no-flash applier in <head> has already set data-theme on
+// load; this wires the button's icon/label and the click behavior.
+(function () {
+  var btn = document.querySelector(".theme-toggle");
+  if (!btn) return;
+  var root = document.documentElement;
+  var SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>';
+  var MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>';
+  var AUTO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"></path></svg>';
+  var ICON = { auto: AUTO, light: SUN, dark: MOON };
+  var LABEL = { auto: "Theme: Auto (follows system)", light: "Theme: Light", dark: "Theme: Dark" };
+  function current() {
+    try { var t = localStorage.getItem("ui-theme"); return (t === "light" || t === "dark") ? t : "auto"; }
+    catch (e) { return "auto"; }
+  }
+  function apply(mode) {
+    if (mode === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", mode);
+    btn.innerHTML = ICON[mode];
+    btn.setAttribute("aria-label", LABEL[mode]);
+    btn.setAttribute("title", LABEL[mode]);
+  }
+  apply(current());
+  btn.hidden = false;
+  btn.addEventListener("click", function () {
+    var order = ["auto", "light", "dark"];
+    var next = order[(order.indexOf(current()) + 1) % order.length];
+    try { if (next === "auto") localStorage.removeItem("ui-theme"); else localStorage.setItem("ui-theme", next); }
+    catch (e) {}
+    apply(next);
+  });
+})();
+</script>
+</body>
+</html>
