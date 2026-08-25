@@ -6,6 +6,43 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.6.0</title>
+            <pubDate>Tue, 25 Aug 2026 03:14:23 +0000</pubDate>
+            <sparkle:version>21</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 0.6.0</h1>
+<p>Version 0.6.0 is a safety, correctness, and robustness release on top of 0.5.1. Existing profiles and settings continue to work without migration.</p>
+<h2>Safety</h2>
+<ul>
+<li><strong>Archive maintenance is crash-safe.</strong> Clean Stale Archives, Reset Archives, and archive recovery now run as a single locked transaction: they take the same per-archive lock a live Unison uses, stage everything, and only then move the removed set to the Trash as one unit. Before the removal is committed, any failure rolls back the staged files; a crash is detected on the next launch and recovered — restoring the files if it had not yet committed, or finishing the removal if the whole set was already committed — with the locks released only after you confirm no other Unison is running.</li>
+<li><strong>Clean Stale Archives only offers provably superseded copies.</strong> Orphans, "probably old" copies, anything involving a remote replica, and any archive whose roots can't be read unambiguously are now shown for reference only, never selectable and never preselected.</li>
+<li><strong>The manual installer (<code>install.sh</code>) is safer.</strong> It installs atomically, so a failed install can never leave you without a working app, verifies that the download quarantine was actually cleared, and accepts only a Release build. (Homebrew-cask installs are unaffected.)</li>
+<li><strong>Fixed a rare crash or corrupted results at the end of a sync</strong>, caused by values in the end-of-sync snapshot moving under the garbage collector before they were read.</li>
+<li><strong>"Rescan Ignoring Archives…" can no longer overlap in-flight work.</strong> It runs only from a ready state, so it can't start on top of a connection, scan, or sync already in progress.</li>
+</ul>
+<h2>Fixed</h2>
+<ul>
+<li><strong>Editing a profile preserves a symlinked <code>.prf</code>.</strong> Saving no longer replaces a symlinked profile (for example one linked from a dotfiles repository) with a regular file, and it keeps the file's comments, ordering, and escaping intact.</li>
+<li><strong>A profile the app can't read is protected.</strong> An unreadable or non-UTF-8 <code>.prf</code> is not opened as an editable empty form, so a Save can't overwrite it with a blank profile.</li>
+<li><strong>Diffing a file no longer freezes the reconcile window.</strong> The window stays responsive while a diff runs; a stalled diff is reported, and other engine actions stay disabled until it returns. If it never does, quit and reopen the app.</li>
+<li><strong>Ignore and Diff act on the item you mean</strong> — the selection from the menu bar, the clicked row from the right-click menu — and <strong>Select Conflicts</strong> now reveals conflicts hidden inside collapsed folders.</li>
+<li><strong>No false version warning from an SSH login banner.</strong> The remote Unison-version check reads Unison's own version line, so a login banner that mentions a version number no longer triggers a spurious compatibility warning.</li>
+</ul>
+<h2>Changed</h2>
+<ul>
+<li><strong>Genuinely built for macOS 15.</strong> The app and its embedded Unison engine are now compiled for the macOS 15 minimum and verified on macOS 15 before release.</li>
+</ul>
+<h2>Compatibility</h2>
+<ul>
+<li>No profile or settings migration is required. Same system requirements as 0.5.1: macOS 15 or later, Apple Silicon.</li>
+<li>If automatic update <em>checking</em> is enabled, Sparkle notifies you when 0.6.0 is available; whether it then downloads and installs automatically or only after you confirm depends on the separate automatic-download choice from the first-launch prompt. You can also update any time from App menu ▸ Check for Updates.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.6.0/unison-ui-mac-0.6.0.app.zip" length="5177077" type="application/octet-stream" sparkle:edSignature="qu0rK5paQfRQqIgMKwJnkWytb/onco9sv1dvEiMVwuy6A6yJAZ5eXgpuorDb+oyiXUXQ41RVf41HUVyzb2nEDA=="/>
+        </item>
+        <item>
             <title>0.5.1</title>
             <pubDate>Sun, 23 Aug 2026 01:44:39 +0000</pubDate>
             <sparkle:version>20</sparkle:version>
@@ -68,6 +105,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: NmHOuFSY1C9+KCkSWS+BL65hRUYxHsvkFHhuNue5hJHt2BPQ2bsiFYIZlKNg71a/M0SHMQYytvUM+aloxlxeAA==
-length: 6226
+edSignature: yWeHHTD7E6HM4SImda2mrRSKAjdNUfK1BviEJb6kKUHm17YAmsnc3DcXOxKvAIhT+fSsWlVqKve+T42ZhB71CA==
+length: 10732
 -->
