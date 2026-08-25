@@ -30,13 +30,14 @@ the upstream app and its history, see the
 
 Part of the motivation is practical: the upstream maintainers have noted that they
 are not able to test the macOS build themselves, so a separately maintained native
-app can respond to Mac-specific issues more directly. A concrete example is
-reliability under cancellation: in the bundled Cocoa app, cancelling a sync or a
-scan can leave it stuck and needing a force quit. This app bounds those operations
-with timeouts, so a wedged scan or sync times out and the app stays responsive,
-returning to the profile list or quitting cleanly instead of hanging. Beyond that,
-the goal was a modern, native experience on current macOS: a Swift and AppKit
-interface targeting
+app can respond to Mac-specific issues more directly. A concrete example is staying
+responsive under trouble: in the bundled Cocoa app, cancelling a sync or a scan can
+leave it stuck and needing a force quit. This app takes a different approach.
+Stopping a running sync aborts it cleanly at the next checkpoint, and during a scan
+you can return to the profile list instead of watching a frozen window. Recovering
+from a remote connection that has gone silent can still mean quitting and relaunching,
+but the interface stays usable rather than locking up. Beyond that, the goal was a
+modern, native experience on current macOS: a Swift and AppKit interface targeting
 macOS 15 and Apple Silicon, with a focused conflict-review workflow, native
 notifications, and built-in updates from a signed feed. Starting from a fresh Swift
 and AppKit codebase, rather than building on the bundled Cocoa app, made those goals

@@ -3,25 +3,23 @@
 # The site and the signed Sparkle appcast SHARE this one Pages host. The appcast
 # is the auto-update feed for every installed copy of the app; corrupting or
 # dropping it breaks updates for all users and is only recoverable by hand. So the
-# hard invariant of this workflow is: deploying the site preserves `appcast.xml`
-# BYTE-FOR-BYTE and never removes it.
+# hard invariants are: the feed must EXIST and AUTHENTICATE, and deploying the site
+# preserves it BYTE-FOR-BYTE.
 #
-# How that invariant is enforced (fail-closed):
-#   1. The build (scripts/build-site.py) never emits appcast.xml; asserted below.
-#   2. The rsync that lays the site over gh-pages EXCLUDES appcast.xml and .git,
-#      so the feed file is physically untouched.
-#   3. Gate 1 proves it anyway: appcast.xml's sha256 is identical before and after
-#      the sync (and still present). Any drift fails the job before pushing.
-#   4. Gate 2 proves the LIVE served feed is byte-identical to the preserved file
-#      after the deploy settles. Byte-identity is the whole guarantee here: these
-#      are the exact bytes the release workflow generated AND cryptographically
-#      verified with Sparkle's own sign_update at publish time, so an unchanged
-#      feed still authenticates. This workflow deliberately holds NO signing key
-#      (least privilege); the cryptographic verify lives in release.yml, which
-#      owns the feed and has the key + archive.
+# Two jobs, least privilege:
+#   build  (contents: read, no persisted git credentials, ubuntu): installs the
+#          Markdown dependency hash-locked, builds the site, runs the unit tests
+#          and the link checker, and uploads the built site as an artifact. No
+#          repository write token is ever present while third-party build code runs.
+#   deploy (contents: write, macOS, main only): downloads the prebuilt artifact and
+#          runs no package-managed build code. It authenticates the existing feed
+#          and lays the site over gh-pages, proving the feed is preserved. macOS is
+#          required because Sparkle's `sign_update` verifier is a macOS binary.
 #
-# Deployment happens only on push to main touching the site sources. Pull requests
-# are validated by the `site` job in ci.yml, which builds but never deploys.
+# Feed authentication uses a VERIFIER-ONLY key derived from the public SUPublicEDKey
+# (64 zero bytes + the 32-byte public key), so this workflow authenticates the feed
+# WITHOUT ever holding the private signing key. The private key stays exclusively in
+# the release workflow.
 
 name: Deploy site
 
@@ -32,12 +30,17 @@ on:
       - "site/**"
       - "MANUAL.md"
       - "scripts/build-site.py"
+      - "scripts/check-site-links.py"
+      - "scripts/test-build-site.py"
+      - "requirements-site.txt"
+      - "project.yml"
+      - "Makefile"
+      - "assets/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-# Needs to push the gh-pages branch.
 permissions:
-  contents: write
+  contents: read
 
 # Share release.yml's group so a site deploy and a release never push gh-pages at
 # the same time. cancel-in-progress: false so an in-flight publish is never killed.
@@ -46,32 +49,119 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Build and deploy
+  build:
+    name: Build site
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # No repository write token persisted in git config while third-party
+          # build code (Markdown) is installed and imported.
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
-      - name: Install pinned Markdown
-        run: python -m pip install "markdown==3.7"
+      - name: Install pinned, hash-locked Markdown
+        run: python -m pip install --require-hashes -r requirements-site.txt
+
+      - name: Unit tests
+        run: python scripts/test-build-site.py
 
       - name: Build the site
         run: python scripts/build-site.py _site
 
-      - name: Assert the build did not emit a feed
+      - name: Validate the build (appcast safety + SEO)
         run: |
           set -euo pipefail
           if [ -e _site/appcast.xml ]; then
             echo "::error::site build emitted appcast.xml — the feed must come only from the release workflow"; exit 1
           fi
+          for f in _site/index.html _site/install/index.html _site/faq/index.html \
+                   _site/manual/index.html _site/credits/index.html _site/style.css \
+                   _site/sitemap.xml _site/.nojekyll; do
+            test -f "$f" || { echo "::error::missing built file: $f"; exit 1; }
+          done
+          python - <<'PY'
+          import re, json, glob, sys
+          for path in glob.glob("_site/**/index.html", recursive=True):
+              html = open(path, encoding="utf-8").read()
+              for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S):
+                  obj = json.loads(block)
+                  if "aggregateRating" in obj or "review" in obj:
+                      sys.exit(f"::error::fabricated rating in JSON-LD at {path}")
+          print("validated: no appcast.xml, all pages present, JSON-LD valid")
+          PY
 
-      - name: Clone the gh-pages branch
+      - name: Check internal links
+        run: python scripts/check-site-links.py _site
+
+      - name: Upload the built site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: product-site
+          path: _site
+          include-hidden-files: true   # keep .nojekyll
+          retention-days: 7
+
+  deploy:
+    name: Deploy to gh-pages
+    needs: build
+    # Deploy ONLY from main. A workflow_dispatch on any other ref builds and
+    # validates (the build job) but never publishes.
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest   # Sparkle's sign_update verifier is a macOS binary
+    permissions:
+      contents: write
+    env:
+      SPARKLE_VERSION: "2.9.6"
+      # Keep in lockstep with release.yml / docs/sparkle-updates.md.
+      SPARKLE_SHA256: "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
+      FEED_URL: "https://bcourbage.github.io/unison-ui-mac/appcast.xml"
+      REV_URL: "https://bcourbage.github.io/unison-ui-mac/revision.txt"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false   # gh-pages push uses an explicit token below
+
+      - name: Download the built site
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: product-site
+          path: _site
+
+      - name: Fetch the Sparkle tools (checksum-pinned)
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/sparkle-tools"; mkdir -p "$tools"
+          curl -fL -o "$tools/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          echo "${SPARKLE_SHA256}  $tools/sparkle.tar.xz" | shasum -a 256 -c -
+          tar -xf "$tools/sparkle.tar.xz" -C "$tools"
+          test -x "$tools/bin/sign_update" || { echo "::error::sign_update missing from tarball"; exit 1; }
+          echo "SPARKLE_BIN=$tools/bin" >> "$GITHUB_ENV"
+
+      - name: Build the verifier-only key from SUPublicEDKey
+        run: |
+          set -euo pipefail
+          # SUPublicEDKey is PUBLIC. The verifier key is 64 zero bytes + the 32-byte
+          # public key; Sparkle's sign_update --verify authenticates a feed with it,
+          # with no access to the private signing key. Proven: valid feed -> rc 0,
+          # tampered feed or wrong key -> rc 1.
+          pub="$(awk '/^ *SUPublicEDKey:/{print $2; exit}' project.yml)"
+          test -n "$pub" || { echo "::error::SUPublicEDKey not found in project.yml"; exit 1; }
+          python3 - "$pub" > "$RUNNER_TEMP/verifier.key" <<'PY'
+          import base64, sys
+          pub = base64.b64decode(sys.argv[1])
+          assert len(pub) == 32, f"public key is {len(pub)} bytes, expected 32"
+          sys.stdout.write(base64.b64encode(b"\x00" * 64 + pub).decode())
+          PY
+
+      - name: Clone gh-pages and authenticate the existing feed
         env:
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -79,55 +169,45 @@ jobs:
           set -euo pipefail
           pages="$RUNNER_TEMP/pages"
           url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          # gh-pages is a prerequisite. Fail loudly rather than reconstruct it — a
-          # botched reconstruct is exactly how the whole feed would be lost.
           git clone --branch gh-pages --depth 1 "$url" "$pages" \
             || { echo "::error::gh-pages branch missing; create it before deploying the site"; exit 1; }
+          # The feed must EXIST. "Before the first release" is no longer a valid
+          # state: Sparkle clients already exist, and a missing feed would 404 them.
+          test -f "$pages/appcast.xml" || { echo "::error::appcast.xml is missing on gh-pages; refusing to deploy over a missing feed"; exit 1; }
+          # The baseline feed must cryptographically AUTHENTICATE, so a replaced or
+          # tampered feed can never become the trusted byte-comparison baseline.
+          python3 scripts/verify-appcast.py "$pages/appcast.xml" --feed-only < "$RUNNER_TEMP/verifier.key"
+          cp "$pages/appcast.xml" "$RUNNER_TEMP/appcast.baseline.xml"
+          shasum -a 256 "$pages/appcast.xml" | awk '{print $1}' > "$RUNNER_TEMP/appcast.baseline.sha"
           echo "PAGES=$pages" >> "$GITHUB_ENV"
-
-      - name: Record the feed baseline (before)
-        run: |
-          set -euo pipefail
-          feed="$PAGES/appcast.xml"
-          if [ -f "$feed" ]; then
-            sha="$(sha256sum "$feed" | awk '{print $1}')"
-            echo "FEED_PRESENT=1" >> "$GITHUB_ENV"
-            echo "FEED_SHA_BEFORE=$sha" >> "$GITHUB_ENV"
-            cp "$feed" "$RUNNER_TEMP/appcast.before.xml"
-            echo "feed baseline sha256=$sha"
-          else
-            # No feed yet (e.g. before the first release). Nothing to preserve, but
-            # record that fact so the gate can assert the deploy did not CREATE one.
-            echo "FEED_PRESENT=0" >> "$GITHUB_ENV"
-            echo "no appcast.xml on gh-pages yet; nothing to preserve"
-          fi
+          echo "baseline feed authenticated (sha256 $(cat "$RUNNER_TEMP/appcast.baseline.sha"))"
 
       - name: Sync the site over gh-pages (preserving the feed)
         run: |
           set -euo pipefail
-          # --delete removes site files that no longer exist, keeping the branch a
-          # clean mirror of the build — but appcast.xml and .git are EXCLUDED, so
-          # the feed and git metadata are never added, changed, or deleted.
+          # --delete keeps gh-pages a clean mirror of the build, but appcast.xml,
+          # .git, and the builder sentinel are EXCLUDED, so the feed is untouched.
           rsync -a --delete \
             --exclude='.git' \
             --exclude='appcast.xml' \
+            --exclude='.site-build-marker' \
             _site/ "$PAGES/"
+          # Deployment settle marker: the served copy of this file becoming the
+          # current SHA is proof the NEW site is live (Gate 2), independent of the
+          # deliberately-unchanged feed.
+          printf '%s\n' "${GITHUB_SHA}" > "$PAGES/revision.txt"
 
       - name: Gate 1 — website publication preserves the feed byte-for-byte
         run: |
           set -euo pipefail
           feed="$PAGES/appcast.xml"
-          if [ "${FEED_PRESENT}" = "1" ]; then
-            test -f "$feed" || { echo "::error::appcast.xml disappeared during the site sync"; exit 1; }
-            after="$(sha256sum "$feed" | awk '{print $1}')"
-            if [ "$after" != "${FEED_SHA_BEFORE}" ]; then
-              echo "::error::site deploy changed appcast.xml (before=${FEED_SHA_BEFORE} after=${after})"; exit 1
-            fi
-            echo "Gate 1 OK: appcast.xml byte-identical (sha256=${after})"
-          else
-            if [ -e "$feed" ]; then echo "::error::site deploy created an appcast.xml; the feed must come from the release workflow"; exit 1; fi
-            echo "Gate 1 OK: no feed existed and the deploy did not create one"
+          test -f "$feed" || { echo "::error::appcast.xml disappeared during the site sync"; exit 1; }
+          after="$(shasum -a 256 "$feed" | awk '{print $1}')"
+          before="$(cat "$RUNNER_TEMP/appcast.baseline.sha")"
+          if [ "$after" != "$before" ]; then
+            echo "::error::site deploy changed appcast.xml (before=$before after=$after)"; exit 1
           fi
+          echo "Gate 1 OK: appcast.xml byte-identical (sha256=$after)"
 
       - name: Commit and push the site
         run: |
@@ -135,7 +215,6 @@ jobs:
           git -C "$PAGES" config user.name "github-actions[bot]"
           git -C "$PAGES" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$PAGES" add -A
-          # Defense in depth: appcast.xml must never be in the staged change set.
           if git -C "$PAGES" diff --cached --name-only | grep -qx 'appcast.xml'; then
             echo "::error::appcast.xml is staged for change; aborting before it reaches the feed"; exit 1
           fi
@@ -146,20 +225,25 @@ jobs:
             git -C "$PAGES" push origin gh-pages
           fi
 
-      - name: Gate 2 — served feed unchanged (and still authenticates)
-        if: env.FEED_PRESENT == '1'
+      - name: Gate 2 — served site settled, served feed authenticates and is unchanged
         run: |
           set -euo pipefail
-          feedurl="https://bcourbage.github.io/unison-ui-mac/appcast.xml"
-          got="$RUNNER_TEMP/appcast.served.xml"
-          # Pages deploys asynchronously; poll until the LIVE feed is byte-identical
-          # to the feed we preserved. Identical bytes == the release-verified,
-          # still-signed feed, so sign_update verification still holds.
-          ok=0
-          for i in $(seq 1 30); do
-            code=$(curl -sS -o "$got" -w '%{http_code}' "$feedurl" || echo 000)
-            if [ "$code" = "200" ] && cmp -s "$got" "$RUNNER_TEMP/appcast.before.xml"; then ok=1; break; fi
-            echo "waiting for Pages to settle (attempt $i, http $code)..."; sleep 10
+          # Wait until the LIVE revision marker equals this SHA. Because the feed is
+          # deliberately unchanged, polling the feed alone would match instantly even
+          # while Pages still serves the old site; the marker proves the new site is
+          # actually live before the feed is re-checked.
+          settled=0
+          for i in $(seq 1 40); do
+            got="$(curl -fsS "${REV_URL}?_=${GITHUB_RUN_ID}-$i" || true)"
+            if [ "$got" = "${GITHUB_SHA}" ]; then settled=1; break; fi
+            echo "waiting for Pages to serve revision ${GITHUB_SHA:0:12} (attempt $i, got '${got:0:12}')..."; sleep 10
           done
-          test "$ok" = "1" || { echo "::error::served feed is not byte-identical to the preserved appcast at ${feedurl}"; exit 1; }
-          echo "Gate 2 OK: served feed byte-identical to the preserved, release-signed appcast"
+          test "$settled" = "1" || { echo "::error::site did not settle: revision.txt never became ${GITHUB_SHA}"; exit 1; }
+          # Now authenticate the SERVED feed and confirm it is byte-identical to the
+          # authenticated baseline (i.e. the deploy did not alter what clients poll).
+          served="$RUNNER_TEMP/appcast.served.xml"
+          curl -fsS "$FEED_URL" -o "$served"
+          cmp -s "$served" "$RUNNER_TEMP/appcast.baseline.xml" \
+            || { echo "::error::served feed differs from the preserved baseline at ${FEED_URL}"; exit 1; }
+          python3 scripts/verify-appcast.py "$served" --feed-only < "$RUNNER_TEMP/verifier.key"
+          echo "Gate 2 OK: site settled; served feed byte-identical and authenticated"

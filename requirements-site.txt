@@ -1,0 +1,8 @@
+# Pinned + hash-locked dependencies for the product-site build (scripts/build-site.py).
+# Installed with `pip install --require-hashes -r requirements-site.txt`, so a
+# swapped or newly uploaded distribution cannot be substituted. On Python 3.12
+# Markdown has no runtime dependencies (importlib-metadata is only required on
+# < 3.10), so this is the complete closure.
+markdown==3.7 \
+    --hash=sha256:7eb6df5690b81a1d7942992c97fad2938e956e79df20cbc6186e9c3a77b1c803 \
+    --hash=sha256:2ae2471477cfd02dbbf038d5d9bc226d40def84b4fe2986e49b59b6b472bbed2

@@ -21,3 +21,4 @@ dist/
 
 # Built product site (scripts/build-site.py output)
 /_site/
+__pycache__/

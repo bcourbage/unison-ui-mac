@@ -256,10 +256,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pinned Markdown
-        # Pinned in lockstep with pages.yml so the rendered HTML is reproducible
-        # between validation here and the actual deploy.
-        run: python -m pip install "markdown==3.7"
+      - name: Install pinned, hash-locked Markdown
+        # Hash-locked in lockstep with pages.yml so a swapped distribution cannot
+        # be substituted and the rendered HTML is reproducible between this
+        # validation and the actual deploy.
+        run: python -m pip install --require-hashes -r requirements-site.txt
+
+      - name: Unit tests
+        run: python scripts/test-build-site.py
 
       - name: Build the site
         run: python scripts/build-site.py _site
@@ -273,8 +277,8 @@ jobs:
             echo "::error::site build emitted appcast.xml — the feed must never come from the site build"; exit 1
           fi
           for f in _site/index.html _site/install/index.html _site/faq/index.html \
-                   _site/manual/index.html _site/style.css _site/sitemap.xml \
-                   _site/robots.txt _site/.nojekyll; do
+                   _site/manual/index.html _site/credits/index.html _site/style.css \
+                   _site/sitemap.xml _site/.nojekyll; do
             test -f "$f" || { echo "::error::missing built file: $f"; exit 1; }
           done
           # Every JSON-LD block must be valid JSON, and no fabricated rating.
@@ -289,6 +293,9 @@ jobs:
           print("site build validated: no appcast.xml, all pages present, JSON-LD valid")
           PY
 
+      - name: Check internal links
+        run: python scripts/check-site-links.py _site
+
       - name: Upload the built site for preview
         # Lets the site be previewed without a local build: download this artifact
         # from the run, unzip it, and serve it (e.g. `python3 -m http.server` in the
@@ -298,4 +305,5 @@ jobs:
         with:
           name: product-site
           path: _site
+          include-hidden-files: true   # keep .nojekyll
           retention-days: 14

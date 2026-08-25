@@ -308,6 +308,7 @@ COPY_SCRIPT = """<script>
   overlay.className = "lightbox";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Screenshot viewer");
   overlay.hidden = true;
   overlay.innerHTML =
     '<button class="lb-close" type="button" aria-label="Close">✕</button>' +
@@ -335,7 +336,9 @@ COPY_SCRIPT = """<script>
     overlay.scrollTop = 0;
     overlay.scrollLeft = 0;
   }
+  var opener = null;
   function open(i) {
+    opener = document.activeElement;
     show(i);
     overlay.hidden = false;
     document.body.style.overflow = "hidden";
@@ -345,10 +348,28 @@ COPY_SCRIPT = """<script>
     overlay.hidden = true;
     document.body.style.overflow = "";
     big.removeAttribute("src");
+    if (opener && typeof opener.focus === "function") opener.focus();
+    opener = null;
   }
+  // Keep focus inside the dialog while it is open, so background links are not
+  // reachable by Tab.
+  function trapTab(e) {
+    var order = [close, prev, next].filter(function (b) { return !b.disabled; });
+    var first = order[0], last = order[order.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (order.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
+  }
+  // Each screenshot is a real, keyboard-operable control.
   imgs.forEach(function (el, i) {
     el.style.cursor = "zoom-in";
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-label", (el.alt || "Screenshot") + " (view larger)");
     el.addEventListener("click", function () { open(i); });
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(i); }
+    });
   });
   prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
   next.addEventListener("click", function () { if (idx < imgs.length - 1) show(idx + 1); });
@@ -358,6 +379,7 @@ COPY_SCRIPT = """<script>
     if (overlay.hidden) return;
     var k = e.key;
     if (k === "Escape" || k === "Esc") shut();
+    else if (k === "Tab") trapTab(e);
     else if ((k === "ArrowLeft" || k === "Left") && idx > 0) show(idx - 1);
     else if ((k === "ArrowRight" || k === "Right") && idx < imgs.length - 1) show(idx + 1);
   });
@@ -444,6 +466,19 @@ def substitute_tokens(text: str) -> str:
                 .replace("{{UNISON_TAG_URL}}", UNISON_TAG_URL))
 
 
+# href/src whose target is repository-relative (not absolute, not a fragment, not
+# a scheme). In the rendered MANUAL these are links to repo files (INSTALL.md,
+# README.md) that would 404 under /manual/; rewrite them to GitHub blob URLs.
+_REPO_RELATIVE_LINK = re.compile(
+    r'(?P<attr>href|src)="(?!https?://|#|/|mailto:|data:|tel:)(?P<target>[^"]+)"')
+
+
+def rewrite_repo_relative_links(html_text: str) -> str:
+    return _REPO_RELATIVE_LINK.sub(
+        lambda m: f'{m.group("attr")}="{REPO_URL}/blob/main/{m.group("target")}"',
+        html_text)
+
+
 def load_content(page) -> str:
     kind, ref = page["source"]
     if kind == "html":
@@ -456,6 +491,10 @@ def load_content(page) -> str:
         md_text = substitute_tokens(md_text)
     rendered = render_markdown(md_text)
     if kind == "manual":
+        # The manual's repo-relative links (e.g. INSTALL.md) would 404 under
+        # /manual/; point them at the repository instead. The note's link is
+        # already absolute, so add it after the rewrite.
+        rendered = rewrite_repo_relative_links(rendered)
         note = ('<p class="doc-note">This page is generated from '
                 f'<a href="{REPO_URL}/blob/main/MANUAL.md">MANUAL.md</a> in the '
                 "repository; it is the same guide bundled in the app's Help menu.</p>")
@@ -473,11 +512,33 @@ def jsonld_block(objs) -> str:
     return "\n".join(out)
 
 
+BUILD_SENTINEL = ".site-build-marker"  # excluded from deploy; marks a builder-owned dir
+
+
+def prepare_outdir(outdir: str) -> str:
+    """Return an absolute output dir, safe to (re)build into. Never rmtree a path
+    that is not empty and not a previous build: an existing non-empty directory is
+    accepted ONLY if it carries this builder's sentinel, so a mistyped path such as
+    /tmp or a documents folder is refused rather than recursively deleted."""
+    outdir = os.path.abspath(outdir)
+    if outdir == os.path.sep or outdir in (ROOT, os.path.dirname(ROOT)):
+        raise SystemExit(f"refusing to build into {outdir!r}")
+    if os.path.lexists(outdir):
+        if not os.path.isdir(outdir) or os.path.islink(outdir):
+            raise SystemExit(f"refusing: {outdir!r} is not a plain directory")
+        entries = set(os.listdir(outdir))
+        if entries and BUILD_SENTINEL not in entries:
+            raise SystemExit(
+                f"refusing to overwrite non-empty {outdir!r}: it is not a previous "
+                f"site build (no {BUILD_SENTINEL}). Use an empty or dedicated directory.")
+        shutil.rmtree(outdir)
+    os.makedirs(outdir)
+    open(os.path.join(outdir, BUILD_SENTINEL), "w").close()
+    return outdir
+
+
 def build(outdir: str) -> None:
-    if os.path.abspath(outdir) in (ROOT, os.path.dirname(ROOT)):
-        raise SystemExit("refusing to build into the repo root")
-    shutil.rmtree(outdir, ignore_errors=True)
-    os.makedirs(outdir, exist_ok=True)
+    outdir = prepare_outdir(outdir)
 
     ogimage = f"{SITE_URL}/assets/social-preview.png"
     sizes_script = ("<script>window.__LB_SIZES="
@@ -518,7 +579,10 @@ def build(outdir: str) -> None:
             shutil.copyfile(os.path.join(ROOT, "assets", name),
                             os.path.join(assets_out, name))
 
-    # sitemap.xml + robots.txt + .nojekyll (serve files as-is, no Jekyll).
+    # sitemap.xml + .nojekyll (serve files as-is, no Jekyll). No robots.txt: this
+    # is a project site under /unison-ui-mac/, and crawlers only honor robots.txt
+    # at the host root (bcourbage.github.io/robots.txt), which this project does
+    # not control. The sitemap is submitted through Search Console / Bing instead.
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for u in urls:
@@ -526,10 +590,8 @@ def build(outdir: str) -> None:
     sm.append("</urlset>")
     with open(os.path.join(outdir, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write("\n".join(sm) + "\n")
-    with open(os.path.join(outdir, "robots.txt"), "w", encoding="utf-8") as f:
-        f.write(f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}/sitemap.xml\n")
     open(os.path.join(outdir, ".nojekyll"), "w").close()
-    print(f"wrote sitemap.xml, robots.txt, .nojekyll, {len(SCREENSHOTS)} screenshots")
+    print(f"wrote sitemap.xml, .nojekyll, {len(SCREENSHOTS)} screenshots")
 
 
 if __name__ == "__main__":

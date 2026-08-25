@@ -3,8 +3,10 @@
 **Requirements:** macOS 15 (Sequoia) or later, Apple Silicon. Free and open source
 under the GPLv3.
 
-Two ways to install, whichever fits your setup. Both track the same releases and
-update themselves through Sparkle once installed.
+Two ways to install, whichever fits your setup. Both receive updates through
+Sparkle. Whether the app checks automatically depends on the choice made at first
+launch, and a manual check is always available from **App menu ▸ Check for
+Updates**.
 
 ## Homebrew
 
