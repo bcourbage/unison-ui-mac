@@ -30,8 +30,13 @@ the upstream app and its history, see the
 
 Part of the motivation is practical: the upstream maintainers have noted that they
 are not able to test the macOS build themselves, so a separately maintained native
-app can respond to Mac-specific issues more directly. Beyond that, the goal was a
-modern, native experience on current macOS: a Swift and AppKit interface targeting
+app can respond to Mac-specific issues more directly. A concrete example is
+reliability under cancellation: in the bundled Cocoa app, cancelling a sync or a
+scan can leave it stuck and needing a force quit. This app bounds those operations
+with timeouts, so a wedged scan or sync times out and the app stays responsive,
+returning to the profile list or quitting cleanly instead of hanging. Beyond that,
+the goal was a modern, native experience on current macOS: a Swift and AppKit
+interface targeting
 macOS 15 and Apple Silicon, with a focused conflict-review workflow, native
 notifications, and built-in updates from a signed feed. Starting from a fresh Swift
 and AppKit codebase, rather than building on the bundled Cocoa app, made those goals
@@ -48,6 +53,15 @@ GPLv3.
 Yes. A profile's two roots can each be a local folder or a remote root of the form
 `ssh://user@host//path`. The app runs Unison over SSH just as the command-line tool
 does, including key-based authentication and host-key prompts.
+
+## Does this app have a GUI to help configure sync profiles?
+
+Yes. A graphical profile editor sets a profile's two roots, the paths to include,
+ignore patterns, file-handling options, and more, so there is no configuration file
+to hand-edit. The profiles it reads and writes are ordinary Unison profiles
+(standard `.prf` files in your Unison directory), so they work with the `unison`
+command-line tool in exactly the same way. Nothing about a profile is specific to
+this app's interface.
 
 ## What happens when there is a conflict?
 
