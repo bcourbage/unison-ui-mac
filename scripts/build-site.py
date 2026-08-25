@@ -158,15 +158,58 @@ TEMPLATE = """<!doctype html>
 {content}
 </main>
 <footer class="site-footer">
-  <p>{app} is an independent, open-source project (GPLv3). It is not affiliated
-  with the upstream <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>.</p>
+  <p>{app} is an independent, open-source project (GPLv3), not affiliated with the
+  upstream <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>.
+  It is built on Unison and depends on its actively maintained synchronization
+  engine, with thanks to that project's maintainers.</p>
   <p><a href="{repo}">GitHub</a> · <a href="{root}/install/">Install</a> ·
   <a href="{root}/faq/">FAQ</a> · <a href="{root}/manual/">Manual</a> ·
   <a href="{repo}/blob/main/CHANGELOG.md">Changelog</a></p>
 </footer>
+{script}
 </body>
 </html>
 """
+
+# Site-wide: add a Copy button to any command block marked copyable — a
+# <pre data-copyable> or a <code class="copyable"> (fenced block). Passed to the
+# template as a format VALUE so its braces are never parsed by str.format.
+COPY_SCRIPT = """<script>
+(function () {
+  var ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  function enhance(pre) {
+    var code = pre.querySelector("code") || pre;
+    var text = code.textContent.trim();
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy-btn";
+    btn.setAttribute("aria-label", "Copy command to clipboard");
+    btn.innerHTML = ICON + '<span class="copy-label">Copy</span>';
+    btn.addEventListener("click", function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(function () {
+        var label = btn.querySelector(".copy-label");
+        var prev = label.textContent;
+        label.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(function () { label.textContent = prev; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+    var box = document.createElement("div");
+    box.className = "install-box";
+    pre.parentNode.insertBefore(box, pre);
+    box.appendChild(pre);
+    box.appendChild(btn);
+  }
+  var targets = [];
+  document.querySelectorAll("pre[data-copyable]").forEach(function (p) { targets.push(p); });
+  document.querySelectorAll("code.copyable").forEach(function (c) {
+    var pre = c.parentElement;
+    if (pre && pre.tagName === "PRE" && targets.indexOf(pre) === -1) targets.push(pre);
+  });
+  targets.forEach(enhance);
+})();
+</script>"""
 
 
 def rel_href(target_slug: str, active_slug: str) -> str:
@@ -196,17 +239,23 @@ def render_markdown(md_text: str) -> str:
     )
 
 
+def substitute_tokens(text: str) -> str:
+    """Version/cask/repo live in one place; pages reference them as tokens."""
+    return (text.replace("{{VERSION}}", VERSION)
+                .replace("{{CASK}}", html.escape(CASK))
+                .replace("{{REPO}}", REPO_URL))
+
+
 def load_content(page) -> str:
     kind, ref = page["source"]
     if kind == "html":
         with open(os.path.join(CONTENT, ref), encoding="utf-8") as f:
-            body = f.read()
-        # Substitute a few tokens so version/cask live in one place.
-        return (body.replace("{{VERSION}}", VERSION)
-                    .replace("{{CASK}}", html.escape(CASK))
-                    .replace("{{REPO}}", REPO_URL))
+            return substitute_tokens(f.read())
     with open(ref, encoding="utf-8") as f:
         md_text = f.read()
+    # The MANUAL renders verbatim; site markdown (install, faq) gets tokens.
+    if kind != "manual":
+        md_text = substitute_tokens(md_text)
     rendered = render_markdown(md_text)
     if kind == "manual":
         note = ('<p class="doc-note">This page is generated from '
@@ -249,6 +298,7 @@ def build(outdir: str) -> None:
             mainclass="home" if slug == "" else "page",
             jsonld=jsonld_block(page["jsonld"]),
             content=load_content(page),
+            script=COPY_SCRIPT,
         )
         dest_dir = outdir if slug == "" else os.path.join(outdir, slug)
         os.makedirs(dest_dir, exist_ok=True)

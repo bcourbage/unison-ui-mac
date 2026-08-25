@@ -9,43 +9,18 @@
     <a class="btn secondary" href="{{REPO}}">View on GitHub</a>
   </div>
   <p class="install-label">Or install with Homebrew:</p>
-  <div class="install-box">
-    <pre class="install"><code id="cask-cmd">{{CASK}}</code></pre>
-    <button class="copy-btn" type="button" data-copy="cask-cmd" aria-label="Copy install command to clipboard">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-      </svg>
-      <span class="copy-label">Copy</span>
-    </button>
-  </div>
+  <pre class="install" data-copyable><code>{{CASK}}</code></pre>
   <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships <a href="https://github.com/bcpierce00/unison/releases">Unison&nbsp;2.54.0</a>.</p>
 </section>
-
-<script>
-document.querySelectorAll(".copy-btn").forEach(function (btn) {
-  btn.addEventListener("click", function () {
-    var el = document.getElementById(btn.dataset.copy);
-    if (!el || !navigator.clipboard) return;
-    navigator.clipboard.writeText(el.textContent.trim()).then(function () {
-      var label = btn.querySelector(".copy-label");
-      var prev = label.textContent;
-      label.textContent = "Copied";
-      btn.classList.add("copied");
-      setTimeout(function () { label.textContent = prev; btn.classList.remove("copied"); }, 1500);
-    });
-  });
-});
-</script>
 
 <section class="shots" aria-label="Screenshots">
   <figure>
     <img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
-    <figcaption>Review changes before syncing — conflicts and per-item direction.</figcaption>
+    <figcaption>Review changes before syncing, with conflicts and per-item direction.</figcaption>
   </figure>
   <figure>
     <img src="assets/screenshot-profile-editor.png" alt="Editing a profile's local and remote (SSH) synchronization roots" loading="lazy">
-    <figcaption>Configure a profile — local and remote (SSH) roots.</figcaption>
+    <figcaption>Configure a profile with local and remote (SSH) roots.</figcaption>
   </figure>
   <figure>
     <img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion" loading="lazy">
@@ -63,17 +38,16 @@ document.querySelectorAll(".copy-btn").forEach(function (btn) {
   <li><strong>Local and remote roots over SSH</strong><span>Sync a folder on this Mac against another machine.</span></li>
   <li><strong>Conflict review</strong><span>Every proposed change is shown before it is applied to either root.</span></li>
   <li><strong>Per-item control</strong><span>Flip the sync direction of any item, or skip it, in the results.</span></li>
-  <li><strong>Native macOS GUI</strong><span>Real menus, notifications, and keyboard control — no terminal required.</span></li>
+  <li><strong>Native macOS GUI</strong><span>Real menus, notifications, and keyboard control, with no terminal required.</span></li>
   <li><strong>Self-contained</strong><span>The Unison File Synchronizer engine is embedded; no separate <code>unison</code> CLI needed.</span></li>
   <li><strong>Built-in updates</strong><span>Delivered through Sparkle from a cryptographically signed feed.</span></li>
   <li><strong>Signed &amp; notarized</strong><span>Release builds are Developer ID-signed and notarized by Apple.</span></li>
 </ul>
 
 <h2>What it is</h2>
-<p>Unison UI for macOS is a fresh, native re-implementation of a graphical front end
-for the <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>,
-written in Swift and AppKit. It embeds Unison's compiled engine, so it does the same
-two-way synchronization Unison is known for — local or over SSH — with a modern macOS
-interface and a clear conflict-review step. See the <a href="manual/">manual</a> for a
-feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions. It is an
-independent, personal project and is not affiliated with upstream Unison.</p>
+<p>Unison UI for macOS is a native front end for the
+<a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>, written in
+Swift and AppKit. It embeds Unison's compiled engine, so it performs the same two-way
+synchronization Unison is known for, locally or over SSH, with a modern macOS interface
+and a clear conflict-review step. See the <a href="manual/">manual</a> for a
+feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p>
