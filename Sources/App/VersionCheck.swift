@@ -632,12 +632,42 @@ enum VersionCheck {
     ///
     /// Returns just the `X.Y[.Z]` part. Returns nil if no recognizable
     /// version pattern is found.
+    ///
+    /// The remote probe runs `unison -version` over SSH, whose output can be
+    /// preceded by a login banner (MOTD) that itself mentions a version — even one
+    /// phrased "Unison version 2.51 will be retired". Anchoring to the label
+    /// anywhere isn't enough (it would take the banner's number), so we work
+    /// LINE BY LINE and take the LAST line that BEGINS with Unison's own
+    /// "unison version" label: the command's own output follows the banner. Only
+    /// if no line carries that label do we accept a bare version, and then only a
+    /// line that STARTS with it — the `2.54.0 (ocaml …)` form the local bridge
+    /// returns (last such line wins). A dotted number mid-line is never accepted.
     static func parseVersionString(_ raw: String) -> String? {
-        let pattern = #"(\d+\.\d+(?:\.\d+)?)"#
+        let lines = raw.split(whereSeparator: \.isNewline).map(String.init)
+        // Labelled lines first; the last one is the real command response.
+        var labelled: String?
+        for line in lines {
+            if let v = firstCapture(#"(?i)^\s*unison\s+version\s+(\d+\.\d+(?:\.\d+)?)"#, in: line) {
+                labelled = v
+            }
+        }
+        if let labelled { return labelled }
+        // Bare local form: a version leading a line (last such line wins).
+        var bare: String?
+        for line in lines {
+            if let v = firstCapture(#"^\s*(\d+\.\d+(?:\.\d+)?)"#, in: line) {
+                bare = v
+            }
+        }
+        return bare
+    }
+
+    /// Return capture group 1 of the first match of `pattern` in `s`, or nil.
+    private static func firstCapture(_ pattern: String, in s: String) -> String? {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = raw as NSString
+        let ns = s as NSString
         guard let match = regex.firstMatch(
-            in: raw,
+            in: s,
             range: NSRange(location: 0, length: ns.length)
         ), match.numberOfRanges >= 2 else { return nil }
         return ns.substring(with: match.range(at: 1))

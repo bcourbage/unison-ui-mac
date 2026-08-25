@@ -1051,11 +1051,11 @@ profile.
 ### Stop button: how abort works
 
 Clicking **Stop** in the toolbar (or invoking it through the menu/
-context menu) calls into a local patch in our fork of Unison that
-sets the `Abort.abortAll` flag on the OCaml side. The in-flight sync
-worker observes the flag at its next `Abort.check` checkpoint,
-typically between file transfers, and unwinds by raising the
-internal `Aborted by user request` transient.
+context menu) calls Unison's `Abort.all` on the OCaml side (the
+mid-sync abort was upstreamed in bcpierce00/unison#1198, so this is no
+longer a fork patch). The in-flight sync worker observes the abort at
+its next `Abort.check` checkpoint, typically between file transfers,
+and unwinds by raising the internal `Aborted by user request` transient.
 
 **What you'll see**:
 - One or two more rows may complete naturally before the abort

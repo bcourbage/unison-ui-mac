@@ -46,8 +46,24 @@ check("bold", "<strong>bold</strong>" in b)
 check("inline code", "<code>code</code>" in b)
 check("paragraph wrap", b.strip().startswith("<p>") and b.strip().endswith("</p>"))
 
+# Single-asterisk emphasis (the v0.5.1 `*checking*` regression).
+em = run("If automatic update *checking* is enabled, you are notified.\n")
+check("emphasis", "<em>checking</em>" in em)
+check("emphasis leaves no literal asterisk", "*checking*" not in em)
+# Bold must stay bold, not be mistaken for emphasis of an asterisk-wrapped span.
+mix = run("Both **strong words** and *soft words* render.\n")
+check("bold not turned into em", "<strong>strong words</strong>" in mix
+      and "*" not in mix)
+check("emphasis alongside bold", "<em>soft words</em>" in mix)
+
 lk = run("See [the page](https://example.com/x).\n")
 check("link", '<a href="https://example.com/x">the page</a>' in lk)
+
+# A query string's `&` must be escaped EXACTLY once (not `&amp;amp;`): links are
+# parsed from the raw text so the URL isn't escaped a second time.
+q = run("[query](https://example.com/?a=1&b=2)\n")
+check("link query single-escaped",
+      'href="https://example.com/?a=1&amp;b=2"' in q and "&amp;amp;" not in q)
 
 esc = run("A < B & C > D, not <body> or <!DOCTYPE html>.\n")
 check("escapes angle brackets", "&lt;" in esc and "&gt;" in esc)

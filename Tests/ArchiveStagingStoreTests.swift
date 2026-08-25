@@ -220,6 +220,41 @@ final class ArchiveStagingStoreTests: XCTestCase {
                       "no abandoned staging remains after a clean commit")
     }
 
+    // Coverage: a selected Clean-Stale row whose family has an on-disk lock
+    // (lk<hash>) while the engine is IDLE. A pre-existing lock means a live Unison
+    // or a stale lock holds the family, so acquire returns .alreadyHeld and the
+    // removal must REFUSE — trashing nothing and leaving the ENTIRE family (ar,
+    // fp, AND lk) intact, not trashing ar/fp while retaining lk.
+    func test_integration_foreignLockOnDisk_atIdle_refusesAndKeepsWholeFamily() throws {
+        let active = try makeTempDir(); defer { try? FileManager.default.removeItem(atPath: active) }
+        write(active, "ar"+h); write(active, "fp"+h); write(active, "lk"+h)
+        let fm = RecordingTrashFM()
+        let store = POSIXStagingStore(unisonDir: active, fileManager: fm)
+
+        // A pre-existing lock: real acquisition reports it held by another.
+        final class ForeignLocking: ArchiveLocking {
+            func acquire(hash: String) -> ArchiveLock.AcquireResult { .alreadyHeld }
+            func release(hash: String) -> Bool { true }
+            func identity(hash: String) -> LockIdentity? { nil }
+        }
+        XCTAssertThrowsError(try ArchiveMutation.execute(
+            operation: "clean-stale", hashes: [h], nowISO8601: "2026-08-23T00:00:00Z",
+            isEngineIdle: { true },
+            fileExists: { self.exists(active, $0) },
+            revalidate: { _ in XCTFail("must not stage while the lock is held"); return false },
+            locking: ForeignLocking(), store: store)) { error in
+            guard case ArchiveMutationError.lockUnavailable(_, let reason) = error else {
+                return XCTFail("expected .lockUnavailable, got \(error)")
+            }
+            XCTAssertEqual(reason, .alreadyHeld)
+        }
+
+        XCTAssertEqual(fm.trashed.count, 0, "nothing is trashed when the lock is held")
+        XCTAssertTrue(exists(active, "ar"+h)); XCTAssertTrue(exists(active, "fp"+h))
+        XCTAssertTrue(exists(active, "lk"+h),
+                      "the whole family, including the lock, is preserved")
+    }
+
     // MARK: SF1 — an intent record written BEFORE locks is detectable on restart
 
     func test_abandonedAcquiringIntent_isDetected_blocksOnlyIfLocked() throws {

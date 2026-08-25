@@ -25,6 +25,10 @@ export OCAMLLIBDIR
 # See `vendor/README.md` for the provenance contract (which upstream
 # commit + which patches were applied) and the rebuild recipe.
 UNISON_VERSION ?= 2.54.0
+# Exported so `xcodegen generate` can substitute ${UNISON_VERSION} into
+# project.yml's bundled-manual resource path — keeping it in lockstep with
+# VENDORED_MANUAL below instead of a hardcoded version that drifts on a bump.
+export UNISON_VERSION
 ARCH := $(shell uname -m)
 VENDORED_BLOB := $(CURDIR)/vendor/unison-blob-$(UNISON_VERSION)-$(ARCH).o
 UPSTREAM_BLOB := $(UNISON_SRC)/unison-blob.o
@@ -312,8 +316,10 @@ $(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
 #   - CI (any config): ad-hoc (no cert on runners).
 #   - Every Release build: ad-hoc, even with an override present — a personal
 #     dev cert (expires, not valid for distribution) must never touch a Release
-#     artifact. Both shipping paths ad-hoc-sign anyway (install.sh
-#     `codesign --sign -`; release.yml on a certless runner).
+#     artifact. The local `make install` path ships that ad-hoc signature
+#     (`codesign --sign -`); the release pipeline builds ad-hoc here and then
+#     RE-SIGNS with a Developer ID identity and notarizes in a dedicated step
+#     (release.yml), so this build step never needs a distribution cert.
 # Manual overrides (Debug/`make test` only): `SIGN_IDENTITY=-` forces ad-hoc; a
 # custom identity must be supplied together with a matching `DEV_TEAM`, and the
 # pair is VERIFIED against a single valid keychain record before use (an
@@ -406,6 +412,13 @@ check-signing:
 .PHONY: check-appcast
 check-appcast:
 	@./scripts/test-sparkle-appcast.sh
+
+# sparkle-appcast.sh output-path resolution: it must validate the appcast
+# generate_appcast actually wrote, for the separated AND joined -o/--output-path
+# forms. Pure shell (stubs generate_appcast; no Sparkle tools / no network).
+.PHONY: check-sparkle-output-path
+check-sparkle-output-path:
+	@./scripts/test-sparkle-output-path.sh
 
 # Deterministic guard tests for sign-app.sh (no Xcode / no cert / no network):
 # the fail-fast presence + identity guards against a fake bundle skeleton.

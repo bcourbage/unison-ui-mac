@@ -77,7 +77,12 @@ targets:
       # `make vendor-manual`) versioned alongside the OCaml blob. Xcode
       # copies it into the .app bundle's Resources at build time;
       # AppDelegate.openUnisonProjectHelp(_:) opens it via NSWorkspace.
-      - path: vendor/unison-manual-2.54.0.html
+      # Version comes from ${UNISON_VERSION} (exported by the Makefile) so this
+      # stays in lockstep with VENDORED_MANUAL rather than drifting on an engine
+      # bump. Generate via `make xcodeproj` (or `make build`), which exports it —
+      # a bare `xcodegen generate` can't inherit the Makefile default and fails on
+      # the unset variable, so export UNISON_VERSION first if you run xcodegen by hand.
+      - path: vendor/unison-manual-${UNISON_VERSION}.html
         buildPhase: resources
       # GPLv3 §5 obligation: a conveyed copy must "give all recipients
       # a copy of this License along with the Program." When the .app

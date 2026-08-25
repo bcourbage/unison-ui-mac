@@ -2319,9 +2319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Help for THIS UI specifically. Points at MANUAL.md — the
         // feature-by-feature user guide — rather than the README,
         // which is more developer-oriented (build steps, architecture).
-        // The repo is currently private, so non-collaborators get a
-        // sign-in prompt; flip the repo public to unblock that (see
-        // P3 "Public help target" in TODO.md).
+        // The repo is public, so the link resolves without a sign-in prompt.
         if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md") {
             NSWorkspace.shared.open(url)
         }

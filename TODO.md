@@ -116,7 +116,8 @@ landed across the bring-up and follow-on sessions.*
       base and the local `patches/0001-…` was **retired** (it added
       nothing to the blob). The current local vendor patch set is
       `0002` (closeConnection), `0003` (close-and-drain), `0004`
-      (transport-child reaper), and `0005` (sync-completion snapshot);
+      (transport-child reaper), `0005` (sync-completion snapshot), and
+      `0006` (register-lock);
       they stay local for now, though a future maintainer-authored
       change could still be proposed upstream on its own merits (as
       `abortAll` was).
@@ -441,7 +442,8 @@ landed across the bring-up and follow-on sessions.*
       loudly on a partial/incompatible tree. Requires the documented
       set. Survives a fresh upstream `git clone`. Current patches:
       `0002` (closeConnection), `0003` (close-and-drain), `0004`
-      (transport-child reaper), and `0005` (sync-completion snapshot);
+      (transport-child reaper), `0005` (sync-completion snapshot), and
+      `0006` (register-lock);
       `0001` (abortAll) retired after it merged upstream (PR #1198).
 - [x] **Replace TraceLog with `os.Logger`:** `TraceLog.shared.write`
       forwards to `os.Logger` under subsystem
@@ -621,8 +623,9 @@ landed across the bring-up and follow-on sessions.*
 - **The fork relationship with upstream Unison**: `unison-blob.o` is
   built from a local checkout of `bcpierce00/unison`, with our
   `patches/` applied first, currently `0002` (closeConnection),
-  `0003` (close-and-drain), `0004` (transport-child reaper), and
-  `0005` (sync-completion snapshot). These stay local for now;
+  `0003` (close-and-drain), `0004` (transport-child reaper),
+  `0005` (sync-completion snapshot), and `0006` (register-lock).
+  These stay local for now;
   upstreaming any individual maintainer-authored patch remains
   possible on its own merits (as `abortAll`/`0001` was, merged via
   PR #1198 and then retired here). `make apply-patches` uses

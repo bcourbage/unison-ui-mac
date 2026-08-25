@@ -49,6 +49,13 @@ echo "Generating appcast in: $updates_dir" >&2
 appcast="$updates_dir/appcast.xml"
 prev=""
 for a in "$@"; do
+	# Separated forms (-o FILE / --output-path FILE) via the previous arg, AND the
+	# joined forms (--output-path=FILE / -oFILE) — generate_appcast accepts both,
+	# so recognize both here or we would validate the wrong (default) path.
+	case "$a" in
+		--output-path=*) appcast="${a#*=}" ;;
+		-o?*)            appcast="${a#-o}" ;;
+	esac
 	case "$prev" in
 		-o|--output-path) appcast="$a" ;;
 	esac

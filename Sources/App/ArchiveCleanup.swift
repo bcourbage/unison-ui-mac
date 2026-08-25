@@ -80,6 +80,14 @@ struct ArchiveCleanup {
             return []
         }
         var entries: [ArchiveEntry] = []
+        // Enumeration is anchored on the `ar` archive; siblings (`fp`/`tm`/`sc`,
+        // and the never-trashed `lk`) are derived from its hash. This is safe
+        // against Clean Stale leaving orphans because that path removes a family
+        // ATOMICALLY as a whole quarantine dir (ArchiveMutationTransaction) —
+        // there is no "trashed the ar but not a sibling" partial state to re-scan.
+        // (A sibling orphaned by something OTHER than this app — e.g. an external
+        // Unison run that dropped only the ar — would be invisible to an
+        // ar-anchored scan; that pre-existing case is out of scope here.)
         for name in names where name.hasPrefix("ar") {
             let url = baseDir.appendingPathComponent(name)
             guard let header = Self.parseArchiveHeader(at: url) else { continue }
@@ -103,14 +111,25 @@ struct ArchiveCleanup {
     /// Parse a Unison archive's first two header lines:
     ///   `Unison archive format <N>`
     ///   `Archive for root <thisRoot> synchronizing roots <rootsName>`
-    /// Only the first kilobyte is read (the header is tiny and precedes
-    /// the binary body). Lenient UTF-8 decoding is deliberate: the body
-    /// bytes after the header aren't valid UTF-8, but the ASCII header
+    /// The header is tiny relative to the binary body, but the SECOND line embeds
+    /// BOTH canonical roots — and each can approach `PATH_MAX` (1024) — so a fixed
+    /// one-kilobyte read could truncate it mid-line and silently hide the archive.
+    /// Read through the second newline instead, bounded by a generous cap that no
+    /// realistic two-root header can exceed. Lenient UTF-8 decoding is deliberate:
+    /// the body bytes after the header aren't valid UTF-8, but the ASCII header
     /// lines survive intact, so we never reject a real archive.
     static func parseArchiveHeader(at url: URL) -> ParsedHeader? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 1024)) ?? Data()
+        let newline = UInt8(ascii: "\n")
+        let maxHeaderBytes = 64 * 1024   // >> two PATH_MAX roots + markers
+        var data = Data()
+        var newlines = 0
+        while newlines < 2, data.count < maxHeaderBytes {
+            guard let chunk = try? handle.read(upToCount: 4096), !chunk.isEmpty else { break }
+            newlines += chunk.reduce(0) { $0 + ($1 == newline ? 1 : 0) }
+            data.append(chunk)
+        }
         guard !data.isEmpty else { return nil }
         let text = String(decoding: data, as: UTF8.self)
         let formatMarker = "Unison archive format "

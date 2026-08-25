@@ -153,6 +153,11 @@ jobs:
         # appcast that would break updates for installed clients.
         run: make check-appcast
 
+      - name: Check sparkle-appcast output-path resolution
+        # Pure-shell gate: sparkle-appcast.sh validates the appcast that
+        # generate_appcast actually wrote, for separated and joined -o/--output-path.
+        run: make check-sparkle-output-path
+
       - name: Check sign-app guards
         # Pure-shell gate: sign-app.sh's fail-fast presence + identity guards
         # (required Sparkle components; explicit identity must be Developer ID).

@@ -155,6 +155,6 @@ Intel users would build out of the box.
 
 `unison-blob.o` is a build artifact, not a runtime artifact:
 end users never see it because it's linked into `unison-ui-mac.app`
-at build time. The full `.app` is the right thing to distribute via
-GitHub Releases (and is the planned path; see TODO.md). The vendored
-object here is for the build-from-source workflow.
+at build time. The full `.app` is what we distribute via GitHub Releases
+(Developer ID-signed, notarized, and delivered through Sparkle). The
+vendored object here is for the build-from-source workflow.
