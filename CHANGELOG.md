@@ -25,13 +25,13 @@ Existing profiles and settings continue to work without migration.
   with an atomic same-filesystem move, and only then moves the removed set to
   the Trash as one unit. Before the removal is logically committed, any failure
   rolls back what it staged, and an incomplete rollback retains the quarantine
-  and keeps the locks held rather than deleting. A crash mid-operation leaves the
-  locks in place (safely stopping Unison), blocks the affected profiles, and is
-  detected on the next launch. Recovery then depends on how far the operation
-  got: before commit, it restores the staged files; once the whole family has
-  been committed for removal, it finishes that removal (moving the quarantined
-  copies to the Trash) rather than restoring stale archives. Locks are released
-  only after you confirm no other Unison is running.
+  and keeps the locks held rather than deleting. An interrupted operation leaves
+  a durable recovery record and is detected on the next launch; if the archive
+  family may be split, the affected profiles remain blocked (a surviving lock
+  safely stops Unison). Recovery secures each archive before either restoring a
+  pre-commit staging or finishing an already-committed removal — moving the
+  quarantined copies to the Trash rather than restoring stale archives — and
+  releases the locks only after you confirm no other Unison is running.
 - **Clean Stale Archives only offers provably superseded copies.** An archive is
   removable only when it is attributed to a current profile that has a newer
   live archive replacing it. Orphans, "probably old" copies, anything involving
