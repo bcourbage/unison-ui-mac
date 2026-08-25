@@ -1,0 +1,1586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manual — Unison UI for macOS</title>
+<meta name="description" content="The feature-by-feature user guide for Unison UI for macOS: profiles, roots, the reconcile window, conflict review, diffing, and settings.">
+<link rel="canonical" href="https://bcourbage.github.io/unison-ui-mac/manual/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Unison UI for macOS">
+<meta property="og:title" content="Manual — Unison UI for macOS">
+<meta property="og:description" content="The feature-by-feature user guide for Unison UI for macOS: profiles, roots, the reconcile window, conflict review, diffing, and settings.">
+<meta property="og:url" content="https://bcourbage.github.io/unison-ui-mac/manual/">
+<meta property="og:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Manual — Unison UI for macOS">
+<meta name="twitter:description" content="The feature-by-feature user guide for Unison UI for macOS: profiles, roots, the reconcile window, conflict review, diffing, and settings.">
+<meta name="twitter:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
+<link rel="icon" href="../assets/Unison-macOS-Default-512x512@1x.png">
+<link rel="stylesheet" href="../style.css">
+<script>try{var t=localStorage.getItem("ui-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="../">
+    <img src="../assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="28" height="28">
+    <span>Unison UI for macOS</span>
+  </a>
+  <nav class="site-nav"><a href="../">Home</a>
+<a href="../install/">Install</a>
+<a href="../faq/">FAQ</a>
+<a href="../manual/" class="active">Manual</a>
+<a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a><button class="theme-toggle" type="button" hidden aria-label="Switch color theme"></button></nav>
+</header>
+<main class="page">
+<article class="doc">
+<p class="doc-note">This page is generated from <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md">MANUAL.md</a> in the repository; it is the same guide bundled in the app's Help menu.</p><h1 id="unison-ui-mac-user-manual">Unison-UI-Mac, User Manual</h1>
+<p>A feature-by-feature guide to the macOS app. For install steps see
+<a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>; for architecture overview and a build
+cheatsheet see <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/README.md">README.md</a>. For the underlying
+file-synchronization concepts (profiles, roots, paths, ignore patterns,
+conflict resolution, the <code>merge</code> preference, archive files), the
+authoritative reference is the <strong>upstream Unison documentation</strong>:</p>
+<ul>
+<li><a href="https://github.com/bcpierce00/unison/wiki">Unison File Synchronizer wiki</a></li>
+<li><a href="https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex">Unison user manual (full)</a></li>
+<li><a href="https://github.com/bcpierce00/unison/wiki/Manual">Preferences reference (<code>.prf</code> keys + syntax)</a></li>
+</ul>
+<p>The sections below cover <strong>how the macOS GUI exposes those concepts</strong>, not the
+concepts themselves. When a feature touches a <code>.prf</code> preference, it's
+linked to the section of the upstream docs that defines it.</p>
+<hr>
+<h2 id="table-of-contents">Table of contents</h2>
+<ol>
+<li><a href="#concepts-in-one-paragraph">Concepts in one paragraph</a></li>
+<li><a href="#getting-started">Getting started</a></li>
+<li><a href="#the-profile-picker">The Profile Picker</a></li>
+<li><a href="#the-profile-editor-manager-window">The Profile Editor (manager window)</a></li>
+<li><a href="#the-profile-form-single-profile-content-editor">The Profile Form (single-profile content editor)</a></li>
+<li><a href="#the-reconcile-window">The Reconcile window</a></li>
+<li><a href="#the-diff-viewer">The Diff viewer</a></li>
+<li><a href="#settings">Settings</a></li>
+<li><a href="#the-menu-bar-reference">The menu bar reference</a></li>
+<li><a href="#keyboard-shortcuts">Keyboard shortcuts</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#what-this-app-does-not-do">What this app does NOT do</a></li>
+</ol>
+<hr>
+<h2 id="concepts-in-one-paragraph">Concepts in one paragraph</h2>
+<p>Unison synchronizes a pair of file trees ("<strong>replicas</strong>") rooted at two
+paths ("<strong>roots</strong>"), both can be local directories, or one or both can be
+remote over SSH. A <strong>profile</strong> is a <code>.prf</code> file under
+<code>~/Library/Application Support/Unison/</code> that declares the two roots plus
+any preferences (paths to sync, paths to ignore, merge command, etc.).
+Running a sync involves two phases: <strong>reconcile</strong> (Unison scans both sides
+and lists the differences it found) and <strong>propagate</strong> (Unison applies the
+decisions the user made about each difference). Between reconciles, Unison
+keeps a per-replica <strong>archive file</strong> describing the last-known state so
+the next scan can tell what's changed.</p>
+<hr>
+<h2 id="getting-started">Getting started</h2>
+<h3 id="1-install-unison-on-remote-machines-ssh-profiles-only">1. Install Unison on remote machines (SSH profiles only)</h3>
+<p>The app embeds Unison's OCaml runtime, so the local machine doesn't need a
+separate <code>unison</code> install. But profiles whose root is <code>ssh://…</code> spawn
+<code>unison -server</code> on the remote host, that remote needs Unison installed
+and reachable in <code>$PATH</code> (or via <code>servercmd = …</code> in the profile).</p>
+<p>Install instructions for the remote side:</p>
+<ul>
+<li><strong>macOS</strong>: <code>brew install unison</code></li>
+<li><strong>Debian/Ubuntu</strong>: <code>sudo apt install unison</code></li>
+<li><strong>Other</strong>: see upstream's <a href="https://github.com/bcpierce00/unison/wiki/Downloading-Unison">Downloading Unison</a>
+  page or build from source at <a href="https://github.com/bcpierce00/unison">https://github.com/bcpierce00/unison</a>.</li>
+</ul>
+<p>This project's embedded Unison is <strong>v2.54.0</strong> (see README's "Unison
+version" section for the exact upstream commit). The compatibility
+boundary is Unison's <strong>2.52.0</strong> wire protocol, not an exact version
+match: any remote at <code>&gt;= 2.52.0</code> interoperates (so <code>2.53.x</code> and <code>2.54.x</code>
+work together), while <code>2.51.x</code> and earlier are on the other side of the
+boundary and cannot connect. The app runs a one-shot
+<code>ssh ... unison -version</code> probe on profile open and surfaces a
+suppressible alert only when the two sides straddle that boundary (see
+<a href="#version-mismatch-warning-on-profile-open">Version-mismatch warning</a>
+below).</p>
+<h3 id="2-launch-the-app">2. Launch the app</h3>
+<p>The app opens with the <strong>Profile Picker</strong> (see next section). On first
+launch, if you have no profiles yet, the list will be empty, use
+<code>Edit → Profile Editor…</code> (⌘⇧E) to create one.</p>
+<h3 id="3-pick-a-profile-hit-run">3. Pick a profile, hit Run</h3>
+<p>Double-click a profile (or select it and click Run) to start reconcile.
+The reconcile window opens immediately in "scanning" mode and populates
+when init1+init2 complete.</p>
+<hr>
+<h2 id="the-profile-picker">The Profile Picker</h2>
+<p>The launch view. A simple list of every <code>.prf</code> file in
+<code>~/Library/Application Support/Unison/</code>, sorted by your custom order if
+you've set one (see <a href="#the-profile-editor-manager-window">Profile Editor</a>),
+otherwise alphabetical. Hidden profiles (also a Profile Editor feature)
+don't appear here.</p>
+<p><strong>Run</strong> (⏎ / Enter): selects the highlighted profile and opens the
+reconcile window in scanning mode.</p>
+<p>Double-click also runs.</p>
+<p><strong>Quit</strong>: at the far left of the bottom bar, quits the app (same as
+⌘Q). Placed away from Run so it isn't clicked by reflex.</p>
+<blockquote>
+<p>The button is labeled "Run" rather than "Open" because picking a profile
+kicks off the sync workflow, same verb as the CLI <code>unison &lt;profile&gt;</code>.
+Nothing here opens a document for editing.</p>
+</blockquote>
+<p><strong>Initial selection</strong>:</p>
+<ul>
+<li>First launch (or any time the picker opens with no prior context):
+  the profile named <code>default</code> if you have one, otherwise the top row.</li>
+<li>Returning from the reconcile window: the profile you just had open
+  stays highlighted, so re-running it (or moving on to a different
+  one) is a single click away.</li>
+<li>After a manual click + a <code>windowDidBecomeKey</code> reload (e.g. you
+  switched apps and came back): your last manual selection is
+  preserved if the profile is still on disk.</li>
+</ul>
+<h3 id="profile-creation-editing-deletion-etc">Profile creation, editing, deletion, etc.</h3>
+<p>Not on the picker, those live in the Profile Editor manager. The picker
+is intentionally minimal: list + Run.</p>
+<h3 id="refresh">Refresh</h3>
+<p>The picker re-reads the Unison directory automatically every time its
+window becomes key, so creating a <code>.prf</code> via the CLI, copying one in
+from a backup, or editing a name in Finder is picked up the moment you
+switch back to the app. No manual refresh action on the picker; the
+Profile Editor has an explicit Refresh button (and ⌘R) for the edge case
+where you want a re-read without losing focus.</p>
+<hr>
+<h2 id="the-profile-editor-manager-window">The Profile Editor (manager window)</h2>
+<p>Opens via <code>Edit → Profile Editor…</code> (⌘⇧E).</p>
+<p>A table of every profile, with three columns:</p>
+<ul>
+<li><strong>☰ Drag handle</strong>: grab and drag to reorder the list. The order
+  persists across app launches (stored in <code>UserDefaults</code> under
+  <code>profiles.order</code>). The custom order applies to the picker too. Reorder
+  is <strong>UI-only</strong>: the <code>.prf</code> files themselves aren't touched, and the
+  CLI <code>unison &lt;profile&gt;</code> sees every profile in whatever order Unison's
+  own profile scanner returns.</li>
+<li><strong>👁 / 👁‍🗨 Visibility toggle</strong>: click to hide/unhide. Hidden profiles
+  disappear from the picker (so you don't see profiles you only run
+  rarely or have permanently retired from regular use), but remain on
+  disk and remain visible in the Profile Editor. Stored in
+  <code>UserDefaults</code> under <code>profiles.hidden</code>. Like reorder, it's UI-only,
+  the CLI doesn't know about hidden state.</li>
+<li><strong>Profile name</strong>: the basename of the <code>.prf</code> file. Dimmed when the
+  profile is hidden.</li>
+</ul>
+<p>Above the list, a path line shows the Unison directory. The folder
+glyph at its right opens that directory in Finder, handy for
+inspecting <code>.prf</code> files or archive files directly.</p>
+<p>Bottom-bar buttons (left to right by profile lifecycle):</p>
+<ul>
+<li><strong>New…</strong>: opens the Profile Form with empty fields. Save creates a
+  new <code>&lt;name&gt;.prf</code> in the Unison directory.</li>
+<li><strong>Duplicate…</strong>: copies the selected profile's <code>.prf</code> verbatim to a
+  new name. The new profile inherits everything: roots, paths, ignores,
+  advanced prefs. Defaults the new name to <code>&lt;original&gt; copy</code>, prompts for
+  the actual name. After save, the duplicate is inserted right after its
+  source in the custom order.</li>
+<li><strong>Edit…</strong>: opens the Profile Form for the selected profile. Same form
+  as New, but pre-populated and with the name field pre-filled. Editing
+  the name field and saving performs a rename (see Profile Form below).</li>
+<li><strong>Delete…</strong>: confirmation alert, then moves the <code>.prf</code> (and its
+  <code>.prf.bak</code> sidecar from a prior save, if any) to the Trash via
+  <code>NSFileManager.trashItem</code>. A misclick is recoverable from Finder's
+  Trash.</li>
+</ul>
+<p>If the profile has matching archive files in the Unison directory
+  (<code>ar&lt;hash&gt;</code>, <code>fp&lt;hash&gt;</code>, <code>tm&lt;hash&gt;</code>, <code>sc&lt;hash&gt;</code> — never the lock
+  <code>lk&lt;hash&gt;</code>), the confirmation grows a checkbox: <strong>"Also move N archive
+  file(s) to Trash"</strong>, <em>checked by default</em>. The removal runs through the
+  crash-safe archive-mutation transaction (it acquires each archive's
+  lock, stages the files, and Trashes them as one unit; the lock is held,
+  never trashed). The hash is computed from the profile's roots before the
+  <code>.prf</code> is deleted, so we still know which archives belong to it. If
+  you uncheck the box, the <code>.prf</code> goes but the archives stay; useful
+  when you plan to restore the profile from Trash and resume syncing.
+  When there are no matching archives (e.g. both roots are remote,
+  archives already cleaned up), the checkbox is hidden.
+- <strong>Reset Archives…</strong>: for the selected profile, compute its archive
+  hash (see <a href="https://github.com/bcpierce00/unison/wiki/FAQ#what-are-archive-files-in-unison">archive files</a>
+  in the upstream wiki), find the matching payload files <code>ar&lt;hash&gt;</code>,
+  <code>fp&lt;hash&gt;</code>, <code>tm&lt;hash&gt;</code>, <code>sc&lt;hash&gt;</code> (never the lock <code>lk&lt;hash&gt;</code>) in the
+  Unison directory, and remove them through the crash-safe transaction
+  (acquire lock → stage → Trash as one unit; the lock stays in place).
+  The confirmation dialog lists exactly which files will be moved
+  plus the computed hash (you can cross-check against
+  <code>unison -showArchiveName &lt;profile&gt;</code> on the CLI if you want). The next
+  sync of this profile will then rebuild reconciliation state from
+  scratch, a full re-scan of both replicas. Use this when you want to
+  clean archives but keep the profile itself; Delete's archive-cleanup
+  checkbox is the right tool for "I'm done with this profile entirely."
+- <strong>Refresh</strong> (⌘R): re-reads the <code>.prf</code> directory. The editor also
+  auto-refreshes whenever its window becomes key, so this button is for
+  the edge case where you modify files in another tool without losing
+  focus on the editor (e.g. running a command in Terminal that's already
+  visible in a split with the editor window key).
+- <strong>Done</strong>: closes the manager window. ⏎ activates.</p>
+<p>Hidden profiles are still listed (dimmed) so you can unhide them.</p>
+<p>Footer text: "Hide and reorder only affect this app's picker. The CLI
+<code>unison &lt;profile&gt;</code> still sees every .prf in the directory."</p>
+<hr>
+<h2 id="the-profile-form-single-profile-content-editor">The Profile Form (single-profile content editor)</h2>
+<p>Opens from the manager's <strong>New…</strong> or <strong>Edit…</strong> buttons. A sidebar on the
+left lists the editor's sections, with a search box above it that filters
+the list as you type. A small pop-out button in the window's top-right
+corner opens the raw <code>.prf</code> in your default editor for that file type
+(enabled once the profile has been saved at least once). Each section is
+described below.</p>
+<h3 id="general">General</h3>
+<ul>
+<li><strong>Profile name</strong>: the <code>.prf</code> filename without the extension, editable in
+  both New and Edit modes. Changing it on an existing profile and clicking
+  Save renames the <code>.prf</code> on disk, carrying the <code>.prf.bak</code> sidecar and your
+  hide / custom-order view preferences along. Renaming is benign for
+  Unison's archive state, which is keyed off the roots and host, not the
+  filename. Forbidden characters: <code>/</code>, <code>\</code>, <code>:</code>.</li>
+<li><strong>Show in the profile picker</strong>: mirrors the eye toggle in the Profile
+  Editor. Unchecked hides the profile from the picker. The <code>.prf</code> is
+  untouched.</li>
+</ul>
+<h3 id="roots">Roots</h3>
+<p>Two text fields (First root / Second root), each with a <strong>Browse…</strong> button
+for picking a local directory. Either root can be:</p>
+<ul>
+<li>A local absolute path: <code>/Users/you/Documents</code></li>
+<li>An SSH URL: <code>ssh://user@host//absolute/path</code> (double slash for an
+  absolute remote path, single slash for relative-to-home)</li>
+<li>A socket URL: <code>socket://host:port/path</code></li>
+</ul>
+<p>Both roots can be local. There is no client/server distinction in the
+<code>.prf</code>. "First" and "Second" just match the order of the <code>root = …</code> lines.</p>
+<p><strong>Remote Connection.</strong> When either root is <code>ssh://</code> or <code>socket://</code>, an
+extra group appears with the remote-connection prefs: <code>servercmd</code> (path to
+Unison on the remote), <code>sshcmd</code>, <code>sshargs</code>, and <code>clientHostName</code>. It hides
+again when both roots are local.</p>
+<h3 id="paths">Paths</h3>
+<p>One path per line; each becomes a <code>path = …</code> entry. An empty list means
+"sync everything under the roots." See
+<a href="https://github.com/bcpierce00/unison/wiki/Manual#path-specification">path specification</a>
+in the upstream wiki for the syntax.</p>
+<p>Lines beginning with <code>#</code> are comments and are kept in place across edits.
+When a long line wraps, the continuation is shown with a hanging indent so
+you can tell a wrap apart from a new entry. (The same applies to the Ignore
+and Exceptions fields.)</p>
+<h3 id="ignore">Ignore</h3>
+<ul>
+<li><strong>Ignore patterns</strong>: one pattern per line (<code>Name *.tmp</code>, <code>Path build</code>,
+  <code>Regex \..*</code>, <code>BelowPath foo</code>). The <strong>Add Common…</strong> menu appends typical
+  sets. The reconcile window's right-click Ignore actions append here too.</li>
+<li><strong>Exceptions (override ignore)</strong>: one pattern per line, written as
+  <code>ignorenot</code>. A match keeps a path even when an ignore rule would drop it.</li>
+</ul>
+<h3 id="file-attributes">File Attributes</h3>
+<p>Which file metadata Unison keeps in sync. Each control has a <strong>Default</strong>
+state that leaves the setting out of the profile (Unison's standard
+behavior):</p>
+<ul>
+<li><strong>Modification times</strong>, <strong>Resource forks</strong>, <strong>Owner</strong>, <strong>Group</strong>,
+  <strong>Suppress chmod</strong>: Default / On / Off.</li>
+<li><strong>Permissions</strong>: Default, "Ignore permission differences", or <strong>Custom
+  mask…</strong>, which reveals a field for an octal (<code>0o755</code>), hex (<code>0x1FF</code>), or
+  decimal mask.</li>
+</ul>
+<h3 id="options">Options</h3>
+<p>How a sync runs, as opposed to what is synced:</p>
+<ul>
+<li><strong>Conflict handling</strong>: Default (ask on conflict), or Prefer / Force a
+  root (first, second, newer, or older). "Force" makes one root
+  authoritative and overwrites the other; "Prefer" only breaks ties on
+  conflicting changes.</li>
+<li><strong>Confirm big deletions</strong> (<code>confirmbigdel</code>), <strong>Auto-accept changes</strong>
+  (<code>auto</code>), <strong>Fast update check</strong> (<code>fastcheck</code>), Default / On / Off.</li>
+<li><strong>Write a log file</strong>: toggles <code>log</code>. Which fields appear depends on the
+  global logging mode set in <a href="#logging">Settings → Logging</a>: shared-file
+  mode shows just the checkbox, shared-folder mode adds a file name, and
+  per-profile mode adds a folder and a file name.</li>
+</ul>
+<h3 id="includes">Includes</h3>
+<p>Pull in another prefs file with an <code>include</code> directive. Each row is a file
+name (the dropdown lists the other <code>.prf</code> files in your Unison directory,
+or you can type a name), an optional <strong>comment</strong> line, and a <strong>Top / Bottom</strong>
+position:</p>
+<ul>
+<li><strong>Top</strong>: applied before this profile's own settings, so this profile
+  wins single-value conflicts.</li>
+<li><strong>Bottom</strong>: applied after, so the included file wins.</li>
+</ul>
+<p>For list-valued prefs (ignore, ignorenot, path) the position has no effect;
+they accumulate either way. Use this to share a list across profiles, for
+example a "common" file of ignore patterns. Note that an <code>include</code> pulls in
+the <em>entire</em> target file, so a shared list file should contain only the
+relevant lines. A banner at the top of the editor notes when a profile
+includes others.</p>
+<p>Profile names with spaces are fine, they're written back-slash-escaped
+(<code>include File\ System\ Ignores.prf</code>), which is how Unison reads a name as a
+single word. The <code>.prf</code> extension is added on the saved line for clarity;
+the editor still shows you the bare profile name.</p>
+<h3 id="advanced-other-prefs">Advanced (other prefs)</h3>
+<p>A raw <code>key = value</code> box for any preference the form doesn't surface. One
+entry per line. Unknown keys, comments, and blank lines all survive a
+load-edit-save round trip unchanged. Settings that have their own section
+(and <code>include</code> directives) can't be saved from here: the editor stops you
+and points you to the right section, so nothing is silently dropped.</p>
+<p>Full reference: the <a href="https://github.com/bcpierce00/unison/wiki/Manual#preferences">Preferences section of the upstream
+wiki</a>.</p>
+<h3 id="save-cancel">Save / Cancel</h3>
+<p><code>Save</code> writes the <code>.prf</code> atomically after backing up the previous version
+to <code>.prf.bak</code>. <code>Cancel</code> discards everything.</p>
+<hr>
+<h2 id="the-reconcile-window">The Reconcile window</h2>
+<p>Opens when you click Run on the picker. Initially in "scanning" mode
+showing the indeterminate progress bar; populates with the list of
+differences once Unison's <code>init1</code> + <code>init2</code> complete (init1 sets up the
+roots and any SSH connection, that's where credential prompts appear,
+and init2 walks both replicas to compute differences).</p>
+<h3 id="anatomy">Anatomy</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│ [Profiles] [Rescan] | [← First | → Second | Skip | Merge] | [Go] │ ← toolbar
+├─────────────────────────────────────────────────────────────────────┤
+│ 142 items · 1.2 GB · 3 conflicts · 12 First → Second              │ ← summary
+│ ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░  35%                              │ ← global progress
+├─────────────────────────────────────────────────────────────────────┤
+│ Path                | First | Action | Second | Size | Progress     │ ← columns
+├─────────────────────────────────────────────────────────────────────┤
+│ ▾ 📁 Documents      |   ●   |    →   |        |      |              │
+│   📄 notes.txt      |   ●   |    →   |        | 24 KB|              │ ← row
+│   📄 photo.jpg      |       |    ←   |   ●    | 1 MB │              │
+│ ▸ 📁 Pictures       |   ●   |    →   |   ●    |      │              │
+├─────────────────────────────────────────────────────────────────────┤
+│ /Users/you/Documents/notes.txt                                       │ ← details
+│ ...mtime/size details from Unison...                                │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="columns">Columns</h3>
+<ul>
+<li><strong>Path</strong>: the file's relative path within the replica. Folder rows
+  show a tinted folder icon (system blue); leaf rows show a neutral
+  document icon. Names truncate with <code>byTruncatingMiddle</code>; the full
+  path is available as a hover tooltip when truncation happens.</li>
+<li><strong>First / Second</strong>: SF Symbol status icons summarizing what changed
+  on each side since the last sync:</li>
+<li>➕ Created (green)</li>
+<li>🔵 Modified (hollow blue circle)</li>
+<li>🔘 PropsChanged (dashed blue), only metadata changed</li>
+<li>➖ Deleted (red)</li>
+<li>· Unchanged (tiny gray dot) or absent</li>
+<li><strong>Action</strong>: what the sync will do for this row. The badge shows
+  either the <strong>direction</strong> (→ Second / ← First, green / blue) for
+  auto-resolved rows, OR the <strong>user's decision</strong> when an override is
+  pinned:</li>
+<li>⚠ (orange), auto-detected conflict, needs your attention</li>
+<li>⊖ (gray), user-skipped (Skip applied)</li>
+<li>↺ (brown), Force Older applied (mtime-based decision; arrow hidden
+    on purpose so you can tell forced vs. deliberate left/right)</li>
+<li>↻ (teal), Force Newer applied</li>
+<li>M (purple), Merge will run (requires <code>merge = …</code> in the <code>.prf</code>)</li>
+<li>→ (green), propagate first → second</li>
+<li>← (blue), propagate second → first</li>
+</ul>
+<p>Folder rows show an aggregate badge: same glyph/tint as a leaf when
+  every descendant agrees, empty when descendants disagree.
+- <strong>Size</strong>: file size, formatted by <code>ByteCountFormatter</code>.
+- <strong>Progress</strong>: populated during sync. Shows a standard macOS
+  <code>NSProgressIndicator</code> bar (follows your <strong>System Settings →
+  Appearance → Accent color</strong>) for in-flight rows, full bar when
+  finished, and a bold red <strong><code>⚠</code></strong> marker on rows whose transfer
+  didn't complete. Hover the ⚠ to see the full failure reason in a
+  tooltip; the same text is also shown in the details panel at the
+  bottom of the window when the failed row is selected. Empty when
+  idle.
+- <strong>Type</strong>: <code>FILE</code>, <code>DIR</code>, <code>SYMLINK</code>, etc., as Unison reports.</p>
+<h3 id="summary-line">Summary line</h3>
+<p>Above the row list. Live-updates with status messages from OCaml during
+scanning ("Looking for changes...", "Reconciling...") and shows a count
+summary once the reconcile completes ("142 items · 1.2 GB · 3 conflicts ·
+12 First → Second · 4 Second → First").</p>
+<p>The status word, when there is one, always leads. Six forms:</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ready, items to sync</td>
+<td><code>121 items · 1.2 GB · 121 First → Second</code></td>
+</tr>
+<tr>
+<td>Ready, nothing to do</td>
+<td><code>Everything is up to date</code></td>
+</tr>
+<tr>
+<td><strong>Sync in progress</strong></td>
+<td><code>Synchronizing · 121 items · 1.2 GB · 121 First → Second</code></td>
+</tr>
+<tr>
+<td>Sync complete, all clean</td>
+<td><code>Synchronization complete · 121 items · 1.2 GB · 121 First → Second</code></td>
+</tr>
+<tr>
+<td>Sync complete, partial failure</td>
+<td><code>Synchronization completed with 5 errors · 121 items · 1.2 GB · 121 First → Second</code></td>
+</tr>
+<tr>
+<td>Sync complete, zero items synced</td>
+<td><code>Synchronization complete · nothing to transfer</code></td>
+</tr>
+</tbody>
+</table>
+<p>During an active sync, the summary line stays pinned to the
+<code>Synchronizing · …</code> form so the at-a-glance totals (item count,
+total bytes, direction split) remain visible throughout the
+transfer. The dynamic state, <em>which</em> file is currently moving and
+how far along, is conveyed by the global progress bar above the
+file list and by the per-row Progress column inside it. Mid-sync
+errors that attach to a row surface as the per-row <code>⚠</code> marker
+(hover for reason); the post-sync summary's
+<code>Synchronization completed with N error(s)</code> covers the aggregate
+count. The full raw diagnostic stream (every <code>displayStatus</code>
+message Unison emits) is also logged to Console.app under subsystem
+<code>net.courbage.unison-ui-mac</code> for deeper debugging if needed.</p>
+<p>The profile name is <strong>not</strong> included in the summary; the window
+title carries it (<code>Unison — &lt;profile&gt;</code>). Each direction breakdown reads
+<code>&lt;count&gt; &lt;source&gt; → &lt;destination&gt;</code> so the arrow always points
+left-to-right in reading order, regardless of which side data
+flows toward. "First" and "Second" refer to the two replicas (the
+two <code>root = …</code> lines in the <code>.prf</code>), matching the column headers
+and the toolbar's <code>← First</code> / <code>→ Second</code> buttons.</p>
+<p>When one or more rows failed during sync, the summary prefix
+switches to <code>Synchronization completed with N error(s)</code> and each
+failed row gets a red <code>⚠</code> marker in its Progress column. Hover the
+marker to read the per-row failure reason; the same text is also
+shown in the details panel at the bottom of the window when the
+failed row is selected.</p>
+<p>The size figure between the item count and the breakdown is the <strong>total
+bytes that will move if you hit Go now</strong>. Sum of file sizes for rows
+with a clear direction arrow (<code>←</code> First or <code>→</code> Second); conflicts and
+<code>&lt;-M-&gt;</code> merge rows are excluded, conflicts won't transfer until
+resolved, and merge runs an external command whose byte output isn't
+predictable in advance. User overrides on conflict rows aren't reflected
+in this total (same convention as the count breakdown), rescan refreshes
+the snapshot after manual changes if you want an updated total.</p>
+<p>If a status message has multiple lines (typically SSH connect failures
+dumping stderr), a <strong>"Details…"</strong> button appears next to the summary
+line. Clicking it pops up a scrollable, selectable view with the full
+text. The summary label's hover tooltip also carries the full text as a
+one-hover alternative.</p>
+<h3 id="progress-column">Progress column</h3>
+<p>During a sync, each <strong>file</strong> row shows its own transfer progress in the
+Progress column (a bar that fills as bytes move; <code>done</code> when complete; a
+red <code>⚠</code> on failure, hover for the reason).</p>
+<p>A <strong>collapsed folder</strong> row shows an <em>aggregate</em> bar summarizing the
+transfer of everything hidden beneath it, so you can watch a whole branch
+advance without expanding it. The fraction is byte-weighted, a large file
+contributes more than a small one, and falls back to a simple
+done-count when the folder's items carry no size (e.g. a folder of
+deletions). Expanding the folder clears its aggregate bar (its children
+then show their own); collapsing it again brings the summary back.</p>
+<h3 id="global-progress-bar">Global progress bar</h3>
+<p>Visible during init2 (indeterminate) and during sync (determinate). Hidden
+when idle.</p>
+<h3 id="toolbar">Toolbar</h3>
+<ul>
+<li><strong>Profiles</strong>: return to the picker (closes this reconcile window). During a
+  scan this action reads <strong>Return to Profiles</strong>: it abandons the view and
+  returns to the picker but does <strong>not</strong> cancel the scan, which keeps running in
+  the background until it finishes on its own (for a remote session the app then
+  closes the connection; a local-only session has no connection and simply goes
+  idle). There is no in-place "stop the scan" control; if a remote scan hangs,
+  quit and relaunch.</li>
+<li><strong>Rescan</strong>: re-run init2 without re-initializing the SSH connection.
+  Useful when files have changed on either side and you want a fresh
+  view.</li>
+<li><strong>← First / → Second / Skip / Merge</strong>: direction overrides for the
+  selected leaf rows. Multi-select supported; selecting a folder applies
+  to every leaf under it.</li>
+<li><strong>Go</strong> (green): synchronize. Propagates every row's Action.</li>
+<li><strong>Stop</strong> (red): visible during sync. Aborts the running sync: it
+  signals Unison to stop at its next checkpoint (between files), so a
+  transfer already in flight may finish before the abort takes hold. The
+  window stays open afterward so you can inspect any rows left <code>⚠ FAILED</code>
+  in the Progress column; close it or Rescan when you're ready.</li>
+<li><strong>Quit</strong>: quit the app, identical to <code>⌘Q</code> (runs the clean OCaml
+  bridge shutdown on the way out).</li>
+</ul>
+<h3 id="details-footer">Details footer</h3>
+<p>A non-editable <code>NSTextView</code> at the bottom. Selecting a leaf row shows the
+OCaml-computed details (size, mtime, conflict reason). Selecting a folder
+shows the folder's full path plus the count of items under it.</p>
+<h3 id="row-context-menu-right-click">Row context menu (right-click)</h3>
+<ul>
+<li><strong>Diff</strong> (top: most common right-click intent) → opens the diff viewer.</li>
+<li>(separator)</li>
+<li><strong>Ignore Path / Ignore Extension / Ignore Name</strong>: adds a new <code>ignore</code>
+  pattern to the profile's <code>.prf</code> <em>immediately</em> (no confirmation), then
+  re-filters the row list. <strong>The pattern is permanent</strong>, it persists in
+  the <code>.prf</code> file and applies to the CLI <code>unison &lt;profile&gt;</code> too.</li>
+</ul>
+<hr>
+<h2 id="the-diff-viewer">The Diff viewer</h2>
+<p>Opens via:</p>
+<ul>
+<li><code>Action → Diff</code> menu item (with a row selected, or by right-clicking
+  a row)</li>
+<li>Row context menu → Diff (top item)</li>
+</ul>
+<p><strong>When the Diff item is greyed</strong>: Unison's <code>canDiff</code> predicate rejects
+the row. That happens for directories, symlinks, rows with
+update-detection problems, and rows where the only change on both sides
+is metadata (PropsChanged). It does <strong>not</strong> reject binary files,
+those just produce uninformative output from the configured <code>diff</code>
+command (typically <code>Binary files X and Y differ</code>).</p>
+<p>The diff itself runs through whatever you've configured as Unison's
+<code>diff</code> pref (default <code>diff -u CURRENT1 CURRENT2</code>). With the default, the
+output is unified-diff format, which the diff window colorizes:</p>
+<ul>
+<li>Lines starting with <code>+</code> → green (added)</li>
+<li>Lines starting with <code>-</code> → red (removed)</li>
+<li>Lines starting with <code>@@</code> → blue (hunk header)</li>
+<li><code>+++</code> / <code>---</code> file headers → bold (no tint)</li>
+<li>Everything else → default labelColor</li>
+</ul>
+<p>The diff window:</p>
+<ul>
+<li>Is read-only and selectable (⌘F opens the find bar for searching
+  within the diff).</li>
+<li>Reuses across multiple Diff invocations, clicking Diff on another row
+  updates the same window in place.</li>
+<li>Survives the reconcile window closing (you can keep reading the diff
+  after going back to the picker).</li>
+</ul>
+<p>When <code>displayDiffErr</code> fires (Unison can't produce a diff for some
+reason), the window switches to an error view: red header + raw error
+text. Pick another row's Diff to recover.</p>
+<hr>
+<h2 id="settings">Settings</h2>
+<p>Opens via <code>Unison-UI-Mac → Settings…</code> (⌘,). A toolbar-tab window
+(System Settings style) with six tabs that resize the window to fit:</p>
+<ul>
+<li><strong>Saved State</strong>: <em>implicit</em> state the app remembers and lets you
+  reset: profile picker layout, SSH version-mismatch suppressions, and
+  window &amp; toolbar layout.</li>
+<li><strong>Reconcile</strong>: how the reconcile window renders differences.</li>
+<li><strong>Sync</strong>: the end-of-sync notification and sound (actual on/off
+  preferences you set directly).</li>
+<li><strong>Logging</strong>: how log file locations are chosen across profiles.</li>
+<li><strong>Maintenance</strong>: Archive Maintenance, a <strong>Clean Stale Archives</strong> scan.
+  It lists archives that no current profile uses, but only offers to
+  remove the ones it can prove are a superseded generation (an older copy
+  a current profile has already replaced with a live archive). Orphans,
+  "probably old" copies, anything involving a remote replica, and anything
+  it can't attribute unambiguously are shown for review but are not
+  selectable. Removal is recoverable (Trash) and runs through the
+  crash-safe transaction; live archives are never listed.</li>
+<li><strong>Updates</strong>: Software Updates, direct toggles for whether the app
+  checks for updates automatically and whether it sends an anonymous
+  system profile with the check. Shown only when the Sparkle updater is
+  present in the build.</li>
+</ul>
+<p>Settings and the profile editor can't be open at the same time. Because a
+logging change here can rewrite <code>.prf</code> files, the <strong>Settings</strong> menu item is
+greyed out while a profile is open for editing; and opening a profile editor
+while Settings is open is blocked with a "Close Settings first" prompt
+(Settings is brought forward instead). This prevents a Settings change from
+conflicting with unsaved edits.</p>
+<p>Most of the Saved State items are reset/clear actions on remembered
+state (you hide a profile by clicking its eye icon, dismiss a
+version-mismatch alert via its checkbox, etc.); the <strong>Sync</strong> and
+<strong>Updates</strong> tabs are where you toggle preferences directly.</p>
+<h3 id="profile-picker-layout">Profile picker layout</h3>
+<p>Shows counts ("3 hidden profiles · 7 in custom order") for the keys
+<code>profiles.hidden</code> and <code>profiles.order</code>. The <strong>Reset</strong> button clears
+both, after a reset, every <code>.prf</code> is visible in alphabetical order in
+the picker. The <code>.prf</code> files themselves are untouched; this is purely
+UI presentation state.</p>
+<h3 id="ssh-version-mismatch-suppressions">SSH version-mismatch suppressions</h3>
+<p>A table of <code>(host, this-Mac-version, remote-version)</code> triples that
+you've dismissed via the "Don't remind me again" checkbox on the
+<a href="#version-mismatch-warning-on-profile-open">Version-mismatch warning</a>.
+Each row can be selected and removed individually via <strong>Remove
+Selected</strong>, or wiped en masse via <strong>Clear All</strong> (which has a confirm
+sheet because it's a bulk destructive action; per-row removal doesn't
+prompt, one accidental removal is cheap to re-suppress next time the
+alert fires).</p>
+<p>Removing a suppression doesn't immediately do anything; the next time
+you open a profile whose SSH peer matches the triple, the version-check
+probe runs and re-prompts you with the alert.</p>
+<h3 id="window-toolbar-layout">Window &amp; toolbar layout</h3>
+<p>Counts of how many window-frame autosaves and toolbar configurations
+the app has on file. The <strong>Reset Window Positions</strong> button clears all
+of them; the next time each window reopens, it uses its default
+position and size. Useful when:</p>
+<ul>
+<li>A window has drifted off-screen after a monitor change.</li>
+<li>You want to start fresh after experimenting with the reconcile
+  toolbar layout.</li>
+</ul>
+<p>Currently-open windows are not moved by the reset, autosaves are
+written on close and read on open, so the effect only takes hold the
+next time each window is opened. The reset alert spells this out.</p>
+<h3 id="reconcile-display">Reconcile display</h3>
+<p>Two pickers that control how the reconcile window renders the list of
+differences. Mirrors upstream Unison's "Switch table nesting"
+segmented control plus a smart-expand option that upstream calls
+<code>expandConflictedParent</code>.</p>
+<p><strong>Layout</strong>:</p>
+<ul>
+<li><strong>Nested (collapsed)</strong> <em>(default)</em>: folder tree by path components,
+  with any folder whose only child is another folder merged into a
+  combined-name row (<code>a/b/c/leaf.txt</code> instead of four separate folder
+  rows). Compact for deep paths through otherwise-uninteresting
+  directories.</li>
+<li><strong>Nested (full)</strong>: every folder level is its own row. Most
+  hierarchical, busiest visually.</li>
+<li><strong>Flat list</strong>: every leaf is a top-level row. Sorted list of full
+  paths, no folder nodes, no chevrons. Useful when the user wants
+  to scan "did file X get touched?" without navigating a tree.</li>
+</ul>
+<p><strong>Expand on open</strong> (applies on every fresh populate: initial scan
+or rescan; user-driven expand/collapse during a session is untouched):</p>
+<ul>
+<li><strong>Smart (only branches with conflicts)</strong> <em>(default)</em>: only folders
+  whose subtree contains a row needing the user's attention
+  (unresolved conflict) are pre-expanded. Other folders stay
+  collapsed. The user lands on what needs doing.</li>
+<li><strong>All branches</strong>: every folder is pre-expanded. The Finder-style "outline fully open" behavior.</li>
+<li><strong>Top level only</strong>: nothing pre-expanded; only top-level entries
+  visible. Useful for very large diffs where the user wants to
+  navigate by clicking in.</li>
+</ul>
+<p>Both settings take effect on the <strong>next reconcile populate</strong> (rescan
+or profile open). Already-open reconcile windows aren't re-laid out
+live, the section description in Settings spells this out.</p>
+<p><strong>Post-sync failure reveal.</strong> When a sync finishes with one or more
+failures, the app expands the ancestor chain of every ⚠ FAILED row,
+even when the user's configured policy is <code>Smart</code> or <code>Top level
+only</code> and those rows would otherwise stay collapsed out of view. The
+user's setting isn't mutated; this is a one-shot widening for the
+current sync result, reverted on the next rescan. The configured
+policy still governs the pre-sync (just-rescanned) view.</p>
+<h3 id="sync-completion">Sync completion</h3>
+<p>Two checkboxes controlling the optional cues fired when a sync
+finishes (both <strong>on by default</strong>):</p>
+<ul>
+<li><strong>Show a notification when a sync finishes</strong>: posts a Notification
+  Center banner ("Sync complete", or "Sync finished with N errors").</li>
+<li><strong>Play a sound when a sync finishes</strong>: a chime on a clean sync, the
+  system error tone when there were failures.</li>
+</ul>
+<p>Unlike the other sections (which inspect/reset implicit state), these
+are real, explicitly-set preferences, stored under
+<code>sync.complete.notify</code> and <code>sync.complete.sound</code>.</p>
+<p>Independent of these toggles, the reconcile summary <strong>always</strong> shows
+an inline result badge when a sync ends, a green ✓ (clean) or red ⚠
+(errors), with the summary text tinted to match.</p>
+<blockquote>
+<p><strong>Banner not appearing?</strong> macOS suppresses notification banners
+while you're <strong>screen sharing</strong>, and routes them silently to
+Notification Center when <strong>Scheduled Summary</strong> ("Summarize
+notifications") or a <strong>Focus</strong> filter is active. The notification
+still lands in Notification Center, and the inline ✓/⚠ badge and the
+sound are unaffected. See <a href="#sync-complete-notification-doesnt-pop-up">Troubleshooting</a>.</p>
+</blockquote>
+<h3 id="logging">Logging</h3>
+<p>Controls how each profile's <code>logfile</code> is chosen. A <strong>Mode</strong> popup with
+three choices, and a path field whose label follows the mode:</p>
+<ul>
+<li><strong>All profiles share one log file</strong>: every profile that has logging on
+  writes to the same file. The field is that file's path.</li>
+<li><strong>All profiles share one folder (one file each)</strong>: a shared folder; each
+  profile gets its own file in it (<code>Unison-&lt;profile&gt;.log</code> by default). The
+  field is the folder.</li>
+<li><strong>Each profile has its own location</strong> <em>(default)</em>: every profile sets
+  its own path in its editor. The field is a <strong>default folder</strong> used only
+  to pre-fill a new profile's path; it is never forced and never changes a
+  profile you've already configured.</li>
+</ul>
+<p>The default location is Unison's own directory
+(<code>~/Library/Application Support/Unison</code>), alongside your profiles and
+archives.</p>
+<p>When you switch into a shared mode (or change its file/folder), the app
+asks whether to <strong>apply it to every profile that already has logging on</strong>.
+This is all-or-nothing: choose <strong>Update All</strong> to rewrite those <code>.prf</code>
+files, or <strong>Don't Update</strong> to leave them as they are (new saves still use
+the current shared location). The prompt supports Return (Update All) and
+Escape (Don't Update).</p>
+<p>The <code>logfile</code> line is written into each profile's <code>.prf</code> (which is what
+Unison reads). The matching per-profile controls live in the editor's
+<strong>Options</strong> section: see <a href="#options">Write a log file</a>.</p>
+<h3 id="whats-stored-and-where">What's stored, and where</h3>
+<p>Everything lives in <code>~/Library/Preferences/net.courbage.unison-ui-mac.plist</code>,
+accessed via the standard <code>UserDefaults</code> API. That domain also holds the
+Sparkle-owned update preferences (the <strong>Updates</strong> tab writes them through
+Sparkle, not as app keys of its own). The keys this app writes:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>profiles.hidden</code></td>
+<td>Basenames of profiles hidden from the picker</td>
+</tr>
+<tr>
+<td><code>profiles.order</code></td>
+<td>Custom picker order</td>
+</tr>
+<tr>
+<td><code>versionMismatch.suppressed</code></td>
+<td>List of suppressed <code>host\|local\|remote</code> triples</td>
+</tr>
+<tr>
+<td><code>reconcile.layoutMode</code></td>
+<td><code>flat</code> / <code>nestedCollapsed</code> / <code>nestedFull</code></td>
+</tr>
+<tr>
+<td><code>reconcile.expandPolicy</code></td>
+<td><code>smart</code> / <code>all</code> / <code>rootOnly</code></td>
+</tr>
+<tr>
+<td><code>sync.complete.notify</code></td>
+<td>Show a Notification Center banner on sync completion (default on)</td>
+</tr>
+<tr>
+<td><code>sync.complete.sound</code></td>
+<td>Play a sound on sync completion (default on)</td>
+</tr>
+<tr>
+<td><code>NSWindow Frame &lt;name&gt;</code></td>
+<td>AppKit auto: window position/size per window</td>
+</tr>
+<tr>
+<td><code>NSToolbar Configuration ReconcileToolbar.v6</code></td>
+<td>Reconcile toolbar customization</td>
+</tr>
+</tbody>
+</table>
+<p>Sparkle also manages update keys in this same domain, set from the <strong>Updates</strong>
+tab and the first-launch prompt: <code>SUEnableAutomaticChecks</code> (automatic update
+checks) and <code>SUSendProfileInfo</code> (send the anonymous system profile), plus its
+own bookkeeping (e.g. <code>SULastCheckTime</code>). These are owned by Sparkle; change
+them through the Updates tab rather than by hand.</p>
+<p>You can inspect them directly with <code>defaults read net.courbage.unison-ui-mac</code>,
+or wipe everything in one shot with <code>defaults delete net.courbage.unison-ui-mac</code>,
+but the Settings window gives you fine-grained control by category.</p>
+<hr>
+<h2 id="the-menu-bar-reference">The menu bar reference</h2>
+<h3 id="unison-ui-mac-menu"><code>Unison-UI-Mac</code> menu</h3>
+<p>Standard macOS app menu: About, Check for Updates… (the Sparkle updater),
+Settings… (⌘,), Services, Hide, Quit.
+The menu uses the app's display name (<code>CFBundleDisplayName =
+"Unison-UI-Mac"</code>). The About panel shows the embedded Unison version
+(queried via <code>unison_bridge_get_version</code>). The Settings entry opens
+the inspect-and-reset window described in <a href="#settings">Settings</a> above.</p>
+<h3 id="edit-menu">Edit menu</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Undo</td>
+<td>⌘Z</td>
+<td>Standard responder action</td>
+</tr>
+<tr>
+<td>Redo</td>
+<td>⌘⇧Z</td>
+<td>Standard responder action</td>
+</tr>
+<tr>
+<td>Cut / Copy / Paste / Select All</td>
+<td>⌘X / ⌘C / ⌘V / ⌘A</td>
+<td>Standard text ops</td>
+</tr>
+<tr>
+<td>Ignore Path</td>
+<td>(none)</td>
+<td>Add <code>ignore = Path "&lt;row's path&gt;"</code> to the profile</td>
+</tr>
+<tr>
+<td>Ignore Extension</td>
+<td>(none)</td>
+<td>Add <code>ignore = Name {,.}*"&lt;.ext&gt;"</code></td>
+</tr>
+<tr>
+<td>Ignore Name</td>
+<td>(none)</td>
+<td>Add <code>ignore = Name "&lt;basename&gt;"</code></td>
+</tr>
+<tr>
+<td>Profile Editor…</td>
+<td>⌘⇧E</td>
+<td>Open the manager window</td>
+</tr>
+</tbody>
+</table>
+<p>The three Ignore items dispatch to the reconcile window when it's key;
+otherwise they're greyed.</p>
+<h3 id="action-menu-reconcile-window-operations">Action menu (reconcile-window operations)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Go</td>
+<td>⌘⏎</td>
+<td>Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows.</td>
+</tr>
+<tr>
+<td>Stop</td>
+<td>⌘.</td>
+<td>Abort a running sync. Disabled when no sync is running. (See <a href="#stop-button-how-abort-works">Stop button</a> for the abort semantics.)</td>
+</tr>
+<tr>
+<td>Rescan</td>
+<td>⌘⇧R</td>
+<td>Re-run init2 against the current profile. Disabled mid-sync.</td>
+</tr>
+<tr>
+<td>Rescan Ignoring Archives…</td>
+<td>(none)</td>
+<td>Re-open the profile with a one-shot <code>ignorearchives</code> to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See <a href="#archive-inconsistency-fatal-mid-reconcile">Troubleshooting</a>.</td>
+</tr>
+<tr>
+<td>Show Profile Picker</td>
+<td>⌘⇧P</td>
+<td>Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync, use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead.</td>
+</tr>
+<tr>
+<td>→ Second</td>
+<td><code>&gt;</code></td>
+<td>Propagate first → second for selected leaves</td>
+</tr>
+<tr>
+<td>← First</td>
+<td><code>&lt;</code></td>
+<td>Propagate second → first</td>
+</tr>
+<tr>
+<td>Skip</td>
+<td><code>/</code></td>
+<td>Mark selected leaves as user-skipped</td>
+</tr>
+<tr>
+<td>Merge</td>
+<td>(none)</td>
+<td>Run the configured <code>merge</code> command on selected leaves (greyed if <code>merge</code> pref isn't set)</td>
+</tr>
+<tr>
+<td>Force Older</td>
+<td>(none)</td>
+<td>Pick the older-mtime side for each selected leaf</td>
+</tr>
+<tr>
+<td>Force Newer</td>
+<td>(none)</td>
+<td>Pick the newer-mtime side</td>
+</tr>
+<tr>
+<td>Diff</td>
+<td>(none)</td>
+<td>Open the diff viewer for the selected (or right-clicked) leaf</td>
+</tr>
+<tr>
+<td>Select Conflicts</td>
+<td>(none)</td>
+<td>Select every leaf row that's still unresolved (<code>&lt;-?-&gt;</code> with no user override)</td>
+</tr>
+<tr>
+<td>Revert to Unison's Recommendation</td>
+<td>(none)</td>
+<td>Clear user overrides on selected leaves</td>
+</tr>
+</tbody>
+</table>
+<p>All items dispatch via the responder chain to <code>ReconcileWindowController</code>
+when the reconcile window is key. Disabled when no reconcile window is
+key. Direction items are disabled during sync.</p>
+<p>The three workflow shortcuts follow macOS conventions:
+<strong>⌘⏎ "submit / run"</strong> (matches Mail's Send and similar primary actions),
+<strong>⌘.</strong> for "cancel currently running operation" (system-wide since
+System 6), and <strong>⌘⇧R</strong> for Rescan, parallel to Safari/Mail's "Reload"
+and distinct from Profile Editor's ⌘R refresh so the two never collide.</p>
+<h3 id="window-menu">Window menu</h3>
+<p>Standard: Minimize, Zoom, Bring All to Front.</p>
+<h3 id="help-menu">Help menu</h3>
+<ul>
+<li><code>Unison-UI-Mac Help</code> (⌘?), opens this app's MANUAL (this document) on
+  GitHub in the browser.</li>
+<li><code>Unison File Synchronizer Manual</code>, opens the full upstream Unison
+  reference manual, rendered to HTML and bundled with the app (works
+  offline). The HTML is the hevea-rendered output of upstream's
+  <code>doc/unison-manual.tex</code> at the Unison version this app embeds; see
+  the About panel for the exact version. Falls back to the upstream
+  wiki if the bundled resource is missing.</li>
+<li><code>Report an Issue</code>, opens GitHub's new-issue form for this repo
+  with an Environment block pre-filled (app version, embedded Unison
+  version, macOS version, architecture). The repo's bug-report
+  template provides the rest of the structure. You'll need a GitHub
+  account to file the issue itself.</li>
+<li><code>Donate</code>, opens the project's GitHub Sponsors page in the browser.</li>
+</ul>
+<p>No File menu, this isn't a document-based app. ⌘W still closes the
+focused window via the standard responder action.</p>
+<hr>
+<h2 id="keyboard-shortcuts">Keyboard shortcuts</h2>
+<table>
+<thead>
+<tr>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>⏎ (in picker)</td>
+<td>Run selected profile</td>
+</tr>
+<tr>
+<td>⌘⇧E</td>
+<td>Profile Editor…</td>
+</tr>
+<tr>
+<td>⌘R (in Profile Editor)</td>
+<td>Refresh profile list</td>
+</tr>
+<tr>
+<td>⌘,</td>
+<td>Settings…</td>
+</tr>
+<tr>
+<td>⌘⏎ (in reconcile window)</td>
+<td>Go (start sync)</td>
+</tr>
+<tr>
+<td>⌘. (in reconcile window)</td>
+<td>Stop (abort sync)</td>
+</tr>
+<tr>
+<td>⌘⇧R (in reconcile window)</td>
+<td>Rescan</td>
+</tr>
+<tr>
+<td><code>&gt;</code> / <code>&lt;</code> (in reconcile window)</td>
+<td>Set selected rows to → Second / ← First</td>
+</tr>
+<tr>
+<td><code>/</code> (in reconcile window)</td>
+<td>Skip selected rows</td>
+</tr>
+<tr>
+<td>⌘⇧P (in reconcile window)</td>
+<td>Show Profile Picker</td>
+</tr>
+<tr>
+<td>⌘?</td>
+<td>App help</td>
+</tr>
+<tr>
+<td>⌘W</td>
+<td>Close focused window</td>
+</tr>
+<tr>
+<td>⌘M</td>
+<td>Minimize focused window</td>
+</tr>
+<tr>
+<td>⌘Q</td>
+<td>Quit</td>
+</tr>
+<tr>
+<td>⌘F (in diff window)</td>
+<td>Find bar</td>
+</tr>
+</tbody>
+</table>
+<p>No keyboard shortcuts on Action-menu items by design, they're frequently
+applied to multi-row selections where a mouse is usually already in
+play. Add custom shortcuts via System Settings → Keyboard → Keyboard
+Shortcuts → App Shortcuts if you want them.</p>
+<hr>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<h3 id="archive-inconsistency-fatal-mid-reconcile">"Archive inconsistency" fatal mid-reconcile</h3>
+<p>Unison detected that its archive files are out of sync (typically from a
+crashed sync). A modal alert appears with the offending archive list,
+offering two recoveries:</p>
+<ul>
+<li><strong>Retry Ignoring Archives</strong>: always available. Unison rebuilds its
+  state by comparing the two replicas directly, ignoring the saved
+  archive for one scan. Use this when the missing or extra archive is
+  on the remote host (nothing local to delete), or whenever you just
+  want to get going again. The scan may show more rows than usual, so
+  review them before you sync. Your profile file is not changed.</li>
+<li><strong>Delete N Orphan Archive(s) and Retry</strong>: shown only when orphaned
+  archive files exist on this Mac. Removes them and retries.</li>
+</ul>
+<p>You can also trigger the first option yourself any time from <strong>Action →
+Rescan Ignoring Archives…</strong>. For pre-emptive cleanup (no error yet, but
+suspect): use <strong>Reset Archives…</strong> in the Profile Editor.</p>
+<h3 id="ssh-permission-denied-host-key-changed">SSH "permission denied" / "host key changed"</h3>
+<p>Unison runs SSH with whatever your <code>sshcmd</code> / <code>sshargs</code> prefs specify,
+and the macOS system SSH config. If you need a specific key or non-
+default host, set them in the Advanced field of the Profile Form. The
+multi-line error appears in the reconcile window's summary line, click
+<strong>Details…</strong> for the full text (especially useful when the SSH client
+returns a multi-line key fingerprint check or similar).</p>
+<p>If you are re-entering your password on every reconnect, switch that profile to
+SSH key authentication instead of passwords: see <a href="#avoiding-repeated-password-prompts-recommended-ssh-setup">Avoiding repeated password
+prompts</a> below.</p>
+<h3 id="avoiding-repeated-password-prompts-recommended-ssh-setup">Avoiding repeated password prompts (recommended SSH setup)</h3>
+<p>unison-ui-mac never stores or replays your credentials. Every SSH prompt is
+passed straight through from the system <code>ssh</code>, and the app cannot tell whether a
+given prompt is a password, a key passphrase, or a one-time code. So the place to
+stop re-entering a password on every reconnect is your SSH configuration, not the
+app: switch the profile to <strong>public-key authentication</strong> with Apple's system
+client at <code>/usr/bin/ssh</code>, and let macOS hold the key's passphrase.</p>
+<p>The steps below call the tools by their explicit <code>/usr/bin/</code> paths on purpose.
+<code>UseKeychain</code> and <code>--apple-use-keychain</code> are features of Apple's OpenSSH; a
+non-Apple OpenSSH earlier in your <code>PATH</code> does not honor them. Such a client
+rejects <code>UseKeychain</code> in a config it reads (hence the <code>IgnoreUnknown</code> guard
+below), and <code>ssh-add --apple-use-keychain</code> fails on the unknown option rather
+than caching the passphrase. A bare <code>ssh</code> / <code>ssh-add</code> could be that wrong client.</p>
+<p><strong>1. Create a key</strong> (skip if you already have one):</p>
+<pre><code>/usr/bin/ssh-keygen -t ed25519
+</code></pre>
+<p><strong>2. Verify the server's host key before sending any secret.</strong> Connect once by
+hand and check the fingerprint against one you obtained through a trusted channel
+(the server's administrator, or <code>ssh-keygen -lf &lt;host-key-file&gt;</code> run on the
+server itself):</p>
+<pre><code>/usr/bin/ssh my-user@server.example.com
+</code></pre>
+<p>ssh prints the host-key fingerprint and waits; answer <code>yes</code> only once it matches.
+It then asks for your account password, which now goes to a host you have
+verified. This order matters: never accept an unseen host key and type a password
+in the same breath, or a machine-in-the-middle could capture it.</p>
+<p><strong>3. Install your public key</strong> so future logins use the key, not the password.
+The host is already trusted from step 2, so this does not re-prompt for it.
+<code>ssh-copy-id</code> resolves its own child <code>ssh</code> through <code>PATH</code> (its script sets
+<code>SSH="ssh -a -x"</code>), so pin <code>PATH</code> to the system directories for this one command:</p>
+<pre><code>PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  /usr/bin/ssh-copy-id -i ~/.ssh/id_ed25519.pub my-user@server.example.com
+</code></pre>
+<p><strong>4. Add a host block to <code>~/.ssh/config</code>:</strong></p>
+<pre><code>Host my-server
+    HostName server.example.com
+    User my-user
+    IdentityFile ~/.ssh/id_ed25519
+    AddKeysToAgent yes
+    UseKeychain yes
+</code></pre>
+<p><strong>5. Store the key's passphrase in the macOS Keychain, once:</strong></p>
+<pre><code>/usr/bin/ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+</code></pre>
+<p><strong>6. Confirm key-based login works, using the alias:</strong></p>
+<pre><code>/usr/bin/ssh my-server
+</code></pre>
+<p>It should log in with no password prompt. If it still asks for a password, the
+key most likely was not installed or accepted (this command already pins the
+client, so it is not a <code>PATH</code> issue): run <code>/usr/bin/ssh -v my-server</code> and check
+that the server's <code>~/.ssh/authorized_keys</code> contains your public key, that
+<code>~/.ssh</code> and <code>authorized_keys</code> have safe permissions (<code>700</code> and <code>600</code>), and that
+the identity being offered is the one you installed.</p>
+<p><strong>7. Point the profile at the alias, not the raw host.</strong> In the app, set the
+remote root to use the <code>my-server</code> alias, for example
+<code>ssh://my-server//Users/me/data</code>. Using <code>server.example.com</code> directly does <strong>not</strong>
+match the <code>Host my-server</code> block, so the <code>IdentityFile</code> and <code>UseKeychain</code> settings
+would not apply and you would be back to password prompts. If the app is using a
+non-Apple <code>ssh</code> from your <code>PATH</code>, set the profile's <code>sshcmd</code> to <code>/usr/bin/ssh</code>, or
+rely on the agent from step 5 (any client can use a key already loaded there).</p>
+<p><strong>What is and isn't stored.</strong> The macOS Keychain holds your <em>private key's
+passphrase</em>, never the remote account's password. unison-ui-mac itself stores
+nothing and replays nothing; all key handling belongs to OpenSSH and macOS.</p>
+<p>If you share <code>~/.ssh/config</code> with a non-Apple OpenSSH (for example on Linux),
+guard the macOS-only option so those clients don't reject the file:</p>
+<pre><code>Host my-server
+    IgnoreUnknown UseKeychain
+    UseKeychain yes
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+</code></pre>
+<p>Avoid these "shortcuts"; each trades real protection for convenience:</p>
+<ul>
+<li>Disabling host-key verification (<code>StrictHostKeyChecking no</code>): removes the
+  guarantee that you are connecting to the intended server.</li>
+<li>Leaving the private key unencrypted (no passphrase): an encrypted key held by
+  the agent is just as convenient and far safer.</li>
+<li><code>UserKnownHostsFile=/dev/null</code>: discards host-key memory entirely, so a
+  machine-in-the-middle cannot be detected.</li>
+</ul>
+<h3 id="a-profile-wont-open-from-the-gui-but-works-from-the-cli">A profile won't open from the GUI but works from the CLI</h3>
+<p>Likely cause: the <code>.prf</code> references <code>~</code> or relative paths that resolve
+differently in the GUI's process environment. Use absolute paths in the
+Profile Form's root fields.</p>
+<p>Also: any preference that requires interactive CLI flags (e.g.,
+<code>-ignorearchives</code>) won't work here, those are command-line-only and
+this app builds its own argv. Put their equivalent in the <code>.prf</code> if
+possible.</p>
+<h3 id="the-merge-button-is-missing">The Merge button is missing</h3>
+<p>The Merge toolbar item and <code>Action → Merge</code> menu item are hidden /
+greyed when the active profile's <code>.prf</code> doesn't declare a <code>merge</code>
+preference. Add a <code>merge = …</code> line to the profile's Advanced field
+(see <a href="#advanced-other-prefs">Profile Form &gt; Advanced</a>) and re-open the
+profile.</p>
+<h3 id="stop-button-how-abort-works">Stop button: how abort works</h3>
+<p>Clicking <strong>Stop</strong> in the toolbar (or invoking it through the menu/
+context menu) calls Unison's <code>Abort.all</code> on the OCaml side (the
+mid-sync abort was upstreamed in bcpierce00/unison#1198, so this is no
+longer a fork patch). The in-flight sync worker observes the abort at
+its next <code>Abort.check</code> checkpoint, typically between file transfers,
+and unwinds by raising the internal <code>Aborted by user request</code> transient.</p>
+<p><strong>What you'll see</strong>:
+- One or two more rows may complete naturally before the abort
+  takes effect (any file already in mid-transfer at the moment Stop
+  was clicked).
+- Queued rows that haven't started yet show <strong>FAILED</strong> in the
+  Progress column.
+- The reconcile window <strong>stays open</strong> so you can inspect the FAILED
+  rows. The progress bar disappears; the summary line shows that
+  the sync was aborted.
+- Clicking Stop again is a no-op (the abort flag is already set).
+- You can then rescan to see the post-abort state of both replicas,
+  or close the window manually.</p>
+<p><strong>What it does NOT do</strong>:
+- Doesn't roll back partial transfers. If a file was mid-write when
+  the abort propagated, it's in whatever state OCaml's transfer
+  layer left it (typically the destination has a partial copy plus
+  Unison's <code>.unison.tmp</code> sidecar). Unison's next reconcile will see
+  the difference and let you decide how to fix it.
+- Doesn't kill the OCaml worker. It just sets a flag; the worker
+  exits its current task cooperatively, then idles in
+  <code>bridgeThreadWait</code> ready for the next bridge call.</p>
+<p>If you close the reconcile window mid-sync via ⌘W (or the red close
+button), you get a three-option prompt: <strong>Keep Syncing</strong> /
+<strong>Abort &amp; Close</strong> / <strong>Close (let it run)</strong>. The third option closes
+the window but lets the sync continue in the background until natural
+completion, useful when you want to reclaim screen space but not
+interrupt the transfer.</p>
+<h3 id="sync-complete-notification-doesnt-pop-up">Sync-complete notification doesn't pop up</h3>
+<p>You finished a sync but never saw the banner. This is almost always
+macOS holding it, not the app failing to send it, the notification
+still lands in <strong>Notification Center</strong> (click the clock to check). The
+common causes:</p>
+<ul>
+<li><strong>Screen sharing.</strong> macOS suppresses <em>all</em> notification banners
+  while you're sharing your screen (a privacy feature). They appear
+  silently in Notification Center instead.</li>
+<li><strong>Scheduled Summary</strong> ("Summarize notifications", in System Settings
+  → Notifications). When the app is included in a summary, individual
+  banners are held and batched. Exclude Unison-UI-Mac from the summary
+  (or turn the summary off) for immediate banners.</li>
+<li><strong>Focus.</strong> An active Focus filter can route the banner straight to
+  Notification Center.</li>
+</ul>
+<p>The inline green ✓ / red ⚠ badge in the reconcile window and the
+completion sound don't depend on any of this, they always fire (when
+the sound toggle is on). See <a href="#sync-completion">Settings → Sync completion</a>.</p>
+<h3 id="the-app-starts-slowly-ocaml-takes-time-to-spin-up">The app starts slowly / OCaml takes time to spin up</h3>
+<p>First launch involves <code>caml_startup</code> and a few hundred milliseconds of
+OCaml runtime setup. Subsequent launches reuse the same <code>.app</code> bundle.</p>
+<h3 id="how-do-i-read-this-apps-diagnostic-logs">How do I read this app's diagnostic logs?</h3>
+<p>The app emits diagnostic info to macOS Unified Logging under subsystem
+<code>net.courbage.unison-ui-mac</code>. View it via Console.app (filter the
+"Subsystem" column) or the <code>log</code> CLI:</p>
+<pre><code class="language-sh"># Live tail of everything the app is logging:
+log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot;'
+
+# Filter to just bridge events (OCaml↔Swift):
+log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;bridge&quot;'
+
+# Or just the OCaml status messages forwarded from displayStatus:
+log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;ocaml-status&quot;'
+
+# Last hour of everything, in one shot:
+log show --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot;' --last 1h
+</code></pre>
+<p>Categories: <code>lifecycle</code> (app/window open-close), <code>bridge</code>
+(OCaml↔Swift events), <code>reconcile</code> (reconcile-window state),
+<code>ocaml-status</code> (status messages forwarded from Unison's
+<code>displayStatus</code>), <code>version-check</code> (the SSH version probe; see below),
+<code>general</code> (the legacy <code>TraceLog</code> catch-all).</p>
+<p>Unified Logging gives you filterable categories, structured search, and
+persistence across reboots without the disk-hygiene problem of a stray
+/tmp file.</p>
+<h3 id="version-mismatch-warning-on-profile-open">Version-mismatch warning on profile open</h3>
+<p>When you open a profile that has an <code>ssh://…</code> root, the app spawns a
+one-shot <code>ssh -o BatchMode=yes host servercmd -version</code> in the
+background and compares the result with the locally-embedded Unison
+version. <strong>You only see a warning when the two sides straddle Unison's
+2.52.0 wire-protocol boundary</strong>, i.e., the local side is &gt;= 2.52.0
+and the remote is &lt; 2.52.0, or vice versa. Same-side-of-boundary
+differences (e.g., <code>2.54.0</code> ↔ <code>2.53.8</code>) negotiate features through
+the new wire protocol and don't warn.</p>
+<p>The alert looks like:</p>
+<blockquote>
+<p><strong>Unison wire-protocol incompatibility</strong><br>
+This Mac has Unison 2.54.0. The remote (server.example.com) is
+running 2.51.5. Unison changed its wire protocol at version 2.52.0,
+and the two sides here are on opposite sides of that change, they
+cannot connect to each other. Update the older side to a release</p>
+<blockquote>
+<p>= 2.52.0.</p>
+</blockquote>
+<p>☐ Don't remind me again for this host (until either version changes)</p>
+</blockquote>
+<p>The checkbox persists per <code>(host, localVersion, remoteVersion)</code> triple.
+Once you suppress it, you won't see it again for that exact combination,
+but as soon as you upgrade either side, the triple changes and you'll
+see the alert again so you can re-confirm.</p>
+<p><strong>Rationale for the 2.52 boundary</strong>: Unison 2.52.0 introduced the
+"new wire protocol" with feature negotiation, so any pair of versions</p>
+<blockquote>
+<p>= 2.52.0 interoperates regardless of which exact minor release each
+side runs. The app alerts only when the wire protocol itself is
+incompatible.</p>
+</blockquote>
+<p><strong>The probe is silent in normal operation</strong>:
+- Uses <code>BatchMode=yes</code>, won't prompt for a password. If the remote
+  requires password auth, the probe fails silently and no alert
+  appears (Unison's own connection will prompt as usual for the
+  actual sync).
+- Uses <code>ConnectTimeout=5</code> for the TCP/SSH connection; the overall probe
+  has a 20-second wall-clock deadline for the remote work, after which it
+  is terminated and reported as a timeout.
+- <code>StrictHostKeyChecking=yes</code>: the probe never adds or changes a host key,
+  so it cannot alter your trust state. A first-time or changed host key
+  makes the probe fail (no alert); Unison's own connection then handles
+  host-key acceptance for the actual sync.</p>
+<p><strong>Limitations</strong>:
+- Honors an <strong>absolute</strong> <code>sshcmd</code> and the profile's <code>sshargs</code> (so it
+  authenticates like the real sync, including an <code>-i &lt;key&gt;</code> in <code>sshargs</code>);
+  a bare, non-absolute <code>sshcmd</code> falls back to <code>/usr/bin/ssh</code>. If your
+  Unison SSH config differs significantly from your shell SSH config, the
+  probe still mirrors the profile's own settings.
+- Doesn't check <code>socket://</code> profiles. There's no <code>-version</code> probe
+  for socket-mode Unison servers without going through the actual
+  Unison protocol.
+- Only checks the FIRST <code>ssh://</code> root in the profile. The pathological
+  case of two <code>ssh://</code> roots pointing at different hosts is not
+  fully covered.</p>
+<h3 id="what-happens-when-a-new-version-of-unison-is-released">What happens when a new version of Unison is released?</h3>
+<p>Two halves of the answer, for the <strong>local</strong> side (the embedded Unison)
+and for the <strong>remote</strong> side (any <code>ssh://…</code> peer).</p>
+<p><strong>Local side (the embedded copy).</strong> This app links in the committed
+vendored blob (<code>vendor/unison-blob-&lt;version&gt;-&lt;arch&gt;.o</code>); the version is
+frozen at build time. An ordinary <code>make build</code> uses that committed blob,
+so it does <strong>not</strong> recompile from a local upstream checkout and does
+<strong>not</strong> change the embedded version.</p>
+<ul>
+<li><strong>Ordinary users</strong> receive embedded-engine upgrades through app
+  releases (the in-app Sparkle update, or a fresh download). There is
+  nothing to do locally.</li>
+<li><strong>Maintainers</strong> bump the embedded engine deliberately: check out a
+  reviewed upstream commit under <code>UNISON_SRC</code>, run <code>make vendor-blob</code>
+  (and <code>make vendor-manual</code> to refresh the bundled Help manual), update
+  the provenance and SHA-256 in <code>vendor/README.md</code>, then rebuild and
+  commit the refreshed blob. See <code>docs/vendored-patches-upstream.md</code> and
+  the vendor-bump checklist.</li>
+</ul>
+<p>The About panel shows the embedded version so you can verify after an
+upgrade.</p>
+<p><strong>Remote side (<code>ssh://…</code> profiles).</strong> Unrelated to local rebuilds. You
+update the remote Unison the way you'd update any CLI on that machine
+(<code>brew upgrade unison</code>, <code>apt upgrade unison</code>, etc.). The two Unisons
+negotiate compatibility at connection, see the upstream wiki's
+<a href="https://github.com/bcpierce00/unison/blob/master/doc/unison-manual.tex">Cross-Platform Issues / Compatibility</a>
+section. As a rule of thumb:</p>
+<ul>
+<li>Versions on the same side of the 2.52.0 wire-protocol boundary
+  (e.g., <code>2.52.0</code> ↔ <code>2.54.0</code>, or <code>2.54.0</code> ↔ <code>2.54.3</code>) interoperate
+  via feature negotiation in the new wire protocol.</li>
+<li>Versions straddling 2.52.0 (e.g., <code>2.51</code> ↔ <code>2.54</code>) do NOT
+  interoperate: Unison 2.54.0 removed the old wire protocol
+  entirely. The UI surfaces a warning for this case, only for the
+  actual incompatibility.</li>
+</ul>
+<p>If you have multiple Unison versions on the remote and need to pin a
+specific one for a profile, set <code>servercmd = /path/to/unison-X.Y</code> in
+the Advanced field of the Profile Form.</p>
+<p><strong>Archive format compatibility.</strong> Unison's archive files have an
+internal format version (currently <code>23</code>). When upstream bumps this in
+a future release, existing archives become unreadable and Unison
+forces a full re-scan to rebuild them. Two consequences for this app:</p>
+<ol>
+<li>Existing archives from before the version bump get orphaned. Use
+   <code>Reset Archives…</code> in the Profile Editor to clean them up after the
+   update.</li>
+<li>This app's <code>ArchiveHash.swift</code> has <code>archiveFormat = 23</code> pinned. If
+   upstream bumps it and we don't update, the <code>Reset Archives</code> button
+   will compute the wrong hash and miss the orphaned files. The fix
+   is a one-line change to <code>ArchiveHash.archiveFormat</code>; the unit
+   tests (using <code>md5(1)</code>-verified reference values) will fail loudly
+   on a stale constant.</li>
+</ol>
+<p>For day-to-day usage: a remote at <code>&gt;= 2.52.0</code> interoperates with this
+app's embedded 2.54.0, so upgrading the remote (<code>brew upgrade unison</code>,
+etc.) does <strong>not</strong> require rebuilding the app. You would only need a
+newer embedded engine (a maintainer vendor-blob bump, delivered in an
+app release) if a remote is stuck below 2.52.0 and cannot be upgraded.</p>
+<h3 id="profile-wont-sync-but-cli-unison-profile-works">Profile won't sync but CLI <code>unison &lt;profile&gt;</code> works</h3>
+<p>Three things to check, in order of likelihood:</p>
+<p><strong>1. <code>clientHostName</code> divergence.</strong> If you've set this pref in your
+<code>.prf</code> to a value that differs from what <code>gethostname()</code> reports
+(which is what <code>ProcessInfo.hostName</code> returns), the archive hashes
+diverge between CLI and GUI. Either remove the <code>clientHostName</code>
+override, or set <code>UNISONLOCALHOSTNAME=&lt;your-hostname&gt;</code> in the launch
+environment so both pick up the same value.</p>
+<p><strong>2. Command-line argument overrides.</strong> This app launches OCaml with
+<code>argv = [program_name]</code>, no CLI args propagate from your shell to
+Unison. So if you typically run <code>unison -opt=val &lt;profile&gt;</code> to
+override a preference at the command line, the GUI won't apply that
+override (it only sees the <code>.prf</code> content). Put the override in the
+<code>.prf</code> itself via the Advanced field of the Profile Form to bring
+the GUI into parity.</p>
+<p><strong>3. Multi-profile session quirk.</strong> If you switch profiles within
+one GUI session (via the picker), the GUI doesn't re-parse the
+command line for the new profile, only on first launch. The CLI
+re-parses on every profile open. For our app this is moot (we
+don't accept user CLI args anyway), but it's a documented
+divergence from upstream's <code>Uicommon.initPrefs</code> that matters if
+we ever start accepting CLI overrides at the app's launch
+arguments. See the audit comment near
+<code>Prefs.parseCmdLine</code> in <code>unison/src/uimacbridge.ml</code>:
+<code>do_unisonInit1</code> runs <code>parseCmdLine</code> only on <code>firstTime</code>, while
+upstream <code>Uicommon.initPrefs</code> runs it unconditionally (per the
+"JV (6/09): always reparse the command line" note in that file).</p>
+<hr>
+<h2 id="what-this-app-does-not-do">What this app does NOT do</h2>
+<ul>
+<li><strong>Edit conflicts inline.</strong> You set the direction for a conflicted row;
+  Unison handles the actual byte propagation. To merge byte-by-byte, use
+  the <code>merge</code> pref + an external merge tool (FileMerge, kdiff3, etc.).</li>
+<li><strong>Show file content beyond Diff.</strong> No preview pane, no quick-look-style
+  inspector. Use the Diff viewer for textual differences or open the file
+  in its native application.</li>
+<li><strong>Edit <code>.prf</code> syntax it doesn't understand.</strong> Unknown keys round-trip
+  through the Advanced field unchanged, but the form doesn't validate
+  them. Garbage-in, garbage-Unison-error-out.</li>
+<li><strong>Roll back partial transfers.</strong> The Stop button aborts cooperatively
+  (see <a href="#stop-button-how-abort-works">Stop button</a> in troubleshooting):
+  a file mid-write at abort time stays partial. Unison's next reconcile
+  will surface the difference for you to resolve.</li>
+<li><strong>Replace the upstream Unison CLI for scripting.</strong> The CLI is still the
+  right tool for <code>crontab</code> / <code>launchd</code> automation. This GUI is for
+  interactive use.</li>
+<li><strong>Run as a menu-bar status item or background daemon.</strong> Foreground app
+  only, one reconcile window per profile open at a time.</li>
+</ul>
+<hr>
+<p>For everything else, the <a href="https://github.com/bcpierce00/unison/wiki">upstream
+wiki</a> is the authoritative
+reference. This GUI is just a way of driving Unison; the synchronization
+semantics, the <code>.prf</code> format, the conflict-resolution rules, all of
+that is Unison.</p>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Unison UI for macOS is an independent, open-source project (GPLv3), not affiliated with the
+  upstream <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>.
+  It is built on Unison and depends on its actively maintained synchronization
+  engine, with thanks to that project's maintainers.</p>
+  <p><a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a> · <a href="../install/">Install</a> ·
+  <a href="../faq/">FAQ</a> · <a href="../manual/">Manual</a> ·
+  <a href="../credits/">Credits</a> ·
+  <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/CHANGELOG.md">Changelog</a></p>
+</footer>
+<script>window.__LB_SIZES={"screenshot-sync-review.png":[960,702],"screenshot-profile-editor.png":[700,430],"screenshot-settings-sync.png":[540,240],"screenshot-settings-reconcile.png":[540,258]};</script>
+<script>
+(function () {
+  var ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  function enhance(pre) {
+    var code = pre.querySelector("code") || pre;
+    var text = code.textContent.trim();
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy-btn";
+    btn.setAttribute("aria-label", "Copy command to clipboard");
+    btn.innerHTML = ICON + '<span class="copy-label">Copy</span>';
+    btn.addEventListener("click", function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(function () {
+        var label = btn.querySelector(".copy-label");
+        var prev = label.textContent;
+        label.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(function () { label.textContent = prev; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+    var box = document.createElement("div");
+    box.className = "install-box";
+    pre.parentNode.insertBefore(box, pre);
+    box.appendChild(pre);
+    box.appendChild(btn);
+  }
+  var targets = [];
+  document.querySelectorAll("pre[data-copyable]").forEach(function (p) { targets.push(p); });
+  document.querySelectorAll("code.copyable").forEach(function (c) {
+    var pre = c.parentElement;
+    if (pre && pre.tagName === "PRE" && targets.indexOf(pre) === -1) targets.push(pre);
+  });
+  targets.forEach(enhance);
+})();
+
+// Reveal: the "Install with Homebrew" button shows/hides its command block.
+// Progressive enhancement: the block is visible without JS; JS collapses it on
+// load, then toggles it, so the button and the command are never both showing
+// the same thing at once.
+(function () {
+  var toggle = document.getElementById("brew-toggle");
+  var box = document.getElementById("brew-box");
+  if (!toggle || !box) return;
+  function set(open) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.classList.toggle("active", open);
+    box.hidden = !open;
+  }
+  set(false);
+  toggle.addEventListener("click", function () {
+    set(toggle.getAttribute("aria-expanded") !== "true");
+  });
+})();
+
+// Lightbox: click a screenshot to view it full size. Left/right move between
+// screenshots and STOP at the ends (no wrap): the arrows disable at the first
+// and last image.
+(function () {
+  var shots = document.querySelector(".shots");
+  if (!shots) return;
+  var imgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
+  if (!imgs.length) return;
+
+  var overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Screenshot viewer");
+  overlay.hidden = true;
+  overlay.innerHTML =
+    '<button class="lb-close" type="button" aria-label="Close">✕</button>' +
+    '<button class="lb-prev" type="button" aria-label="Previous screenshot">‹</button>' +
+    '<div class="lb-stage"><img class="lb-img" alt=""></div>' +
+    '<button class="lb-next" type="button" aria-label="Next screenshot">›</button>';
+  document.body.appendChild(overlay);
+
+  var big = overlay.querySelector(".lb-img");
+  var prev = overlay.querySelector(".lb-prev");
+  var next = overlay.querySelector(".lb-next");
+  var close = overlay.querySelector(".lb-close");
+  var idx = 0;
+
+  function show(i) {
+    idx = i;
+    big.src = imgs[i].currentSrc || imgs[i].src;
+    big.alt = imgs[i].alt || "";
+    // 1:1 at the screenshot's logical (point) size, not its 2x pixel size.
+    var s = (window.__LB_SIZES || {})[(big.src || "").split("/").pop()];
+    if (s) { big.style.width = s[0] + "px"; big.style.height = s[1] + "px"; }
+    else { big.style.width = ""; big.style.height = ""; }
+    prev.disabled = i <= 0;
+    next.disabled = i >= imgs.length - 1;
+    overlay.scrollTop = 0;
+    overlay.scrollLeft = 0;
+  }
+  var opener = null;
+  function open(i) {
+    opener = document.activeElement;
+    show(i);
+    overlay.hidden = false;
+    document.body.style.overflow = "hidden";
+    close.focus();
+  }
+  function shut() {
+    overlay.hidden = true;
+    document.body.style.overflow = "";
+    big.removeAttribute("src");
+    if (opener && typeof opener.focus === "function") opener.focus();
+    opener = null;
+  }
+  // Keep focus inside the dialog while it is open, so background links are not
+  // reachable by Tab.
+  function trapTab(e) {
+    var order = [close, prev, next].filter(function (b) { return !b.disabled; });
+    var first = order[0], last = order[order.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (order.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
+  }
+  // Each screenshot is a real, keyboard-operable control.
+  imgs.forEach(function (el, i) {
+    el.style.cursor = "zoom-in";
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-label", (el.alt || "Screenshot") + " (view larger)");
+    el.addEventListener("click", function () { open(i); });
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(i); }
+    });
+  });
+  prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
+  next.addEventListener("click", function () { if (idx < imgs.length - 1) show(idx + 1); });
+  close.addEventListener("click", shut);
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) shut(); });
+  document.addEventListener("keydown", function (e) {
+    if (overlay.hidden) return;
+    var k = e.key;
+    if (k === "Escape" || k === "Esc") shut();
+    else if (k === "Tab") trapTab(e);
+    else if ((k === "ArrowLeft" || k === "Left") && idx > 0) show(idx - 1);
+    else if ((k === "ArrowRight" || k === "Right") && idx < imgs.length - 1) show(idx + 1);
+  });
+})();
+
+// Theme toggle: cycle Auto (follows system) -> Light -> Dark, remembered in
+// localStorage. The no-flash applier in <head> has already set data-theme on
+// load; this wires the button's icon/label and the click behavior.
+(function () {
+  var btn = document.querySelector(".theme-toggle");
+  if (!btn) return;
+  var root = document.documentElement;
+  var SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>';
+  var MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>';
+  var AUTO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"></path></svg>';
+  var ICON = { auto: AUTO, light: SUN, dark: MOON };
+  var LABEL = { auto: "Theme: Auto (follows system)", light: "Theme: Light", dark: "Theme: Dark" };
+  function current() {
+    try { var t = localStorage.getItem("ui-theme"); return (t === "light" || t === "dark") ? t : "auto"; }
+    catch (e) { return "auto"; }
+  }
+  function apply(mode) {
+    if (mode === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", mode);
+    btn.innerHTML = ICON[mode];
+    btn.setAttribute("aria-label", LABEL[mode]);
+    btn.setAttribute("title", LABEL[mode]);
+  }
+  apply(current());
+  btn.hidden = false;
+  btn.addEventListener("click", function () {
+    var order = ["auto", "light", "dark"];
+    var next = order[(order.indexOf(current()) + 1) % order.length];
+    try { if (next === "auto") localStorage.removeItem("ui-theme"); else localStorage.setItem("ui-theme", next); }
+    catch (e) {}
+    apply(next);
+  });
+})();
+</script>
+</body>
+</html>

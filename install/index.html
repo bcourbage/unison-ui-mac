@@ -3,105 +3,79 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unison UI for macOS — Native GUI for Unison File Synchronizer</title>
-<meta name="description" content="A native macOS app for two-way file synchronization: a modern Swift and AppKit interface for the Unison File Synchronizer, with local and SSH roots and visual conflict review. macOS 15+, Apple Silicon, free and open source.">
-<link rel="canonical" href="https://bcourbage.github.io/unison-ui-mac/">
+<title>Install — Unison UI for macOS</title>
+<meta name="description" content="How to install Unison UI for macOS: a one-line Homebrew cask, a signed and notarized .app download, or build from source. macOS 15 or later, Apple Silicon.">
+<link rel="canonical" href="https://bcourbage.github.io/unison-ui-mac/install/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Unison UI for macOS">
-<meta property="og:title" content="Unison UI for macOS — Native GUI for Unison File Synchronizer">
-<meta property="og:description" content="A native macOS app for two-way file synchronization: a modern Swift and AppKit interface for the Unison File Synchronizer, with local and SSH roots and visual conflict review. macOS 15+, Apple Silicon, free and open source.">
-<meta property="og:url" content="https://bcourbage.github.io/unison-ui-mac/">
+<meta property="og:title" content="Install — Unison UI for macOS">
+<meta property="og:description" content="How to install Unison UI for macOS: a one-line Homebrew cask, a signed and notarized .app download, or build from source. macOS 15 or later, Apple Silicon.">
+<meta property="og:url" content="https://bcourbage.github.io/unison-ui-mac/install/">
 <meta property="og:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Unison UI for macOS — Native GUI for Unison File Synchronizer">
-<meta name="twitter:description" content="A native macOS app for two-way file synchronization: a modern Swift and AppKit interface for the Unison File Synchronizer, with local and SSH roots and visual conflict review. macOS 15+, Apple Silicon, free and open source.">
+<meta name="twitter:title" content="Install — Unison UI for macOS">
+<meta name="twitter:description" content="How to install Unison UI for macOS: a one-line Homebrew cask, a signed and notarized .app download, or build from source. macOS 15 or later, Apple Silicon.">
 <meta name="twitter:image" content="https://bcourbage.github.io/unison-ui-mac/assets/social-preview.png">
-<link rel="icon" href="./assets/Unison-macOS-Default-512x512@1x.png">
-<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="../assets/Unison-macOS-Default-512x512@1x.png">
+<link rel="stylesheet" href="../style.css">
 <script>try{var t=localStorage.getItem("ui-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Unison UI for macOS","url":"https://bcourbage.github.io/unison-ui-mac/"}</script>
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Unison UI for macOS","operatingSystem":"macOS 15","applicationCategory":"UtilitiesApplication","softwareVersion":"0.6.0","url":"https://bcourbage.github.io/unison-ui-mac/","downloadUrl":"https://github.com/bcourbage/unison-ui-mac/releases/latest","softwareHelp":"https://bcourbage.github.io/unison-ui-mac/manual/","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.gnu.org/licenses/gpl-3.0.html","screenshot":["https://bcourbage.github.io/unison-ui-mac/assets/screenshot-sync-review.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-profile-editor.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-sync.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-reconcile.png"]}</script>
+
 </head>
 <body>
 <header class="site-header">
-  <a class="brand" href="./">
-    <img src="./assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="28" height="28">
+  <a class="brand" href="../">
+    <img src="../assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="28" height="28">
     <span>Unison UI for macOS</span>
   </a>
-  <nav class="site-nav"><a href="./" class="active">Home</a>
-<a href="install/">Install</a>
-<a href="faq/">FAQ</a>
-<a href="manual/">Manual</a>
+  <nav class="site-nav"><a href="../">Home</a>
+<a href="../install/" class="active">Install</a>
+<a href="../faq/">FAQ</a>
+<a href="../manual/">Manual</a>
 <a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a><button class="theme-toggle" type="button" hidden aria-label="Switch color theme"></button></nav>
 </header>
-<main class="home">
-<section class="hero">
-  <img class="appicon" src="assets/Unison-macOS-Default-512x512@1x.png" alt="Unison UI for macOS app icon" width="96" height="96">
-  <h1>Unison UI for macOS</h1>
-  <p class="tagline">A native macOS GUI for the Unison File Synchronizer.</p>
-  <p class="badges">Two-way file synchronization between local folders and remote machines over SSH, with visual conflict review before synchronized files are changed.</p>
-  <div class="cta">
-    <a class="btn" href="https://github.com/bcourbage/unison-ui-mac/releases/latest">Download the .app</a>
-    <button class="btn secondary" type="button" id="brew-toggle" aria-expanded="false" aria-controls="brew-box">Install with Homebrew</button>
-    <a class="btn secondary" href="https://github.com/bcourbage/unison-ui-mac">View on GitHub</a>
-  </div>
-  <div id="brew-box" class="brew-box">
-    <pre class="install" data-copyable><code>brew install --cask bcourbage/tap/unison-ui-mac</code></pre>
-  </div>
-  <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships <a href="https://github.com/bcpierce00/unison/releases/tag/v2.54.0">Unison&nbsp;2.54.0</a>.</p>
-</section>
+<main class="page">
+<article class="doc">
+<h1 id="install-unison-ui-for-macos">Install Unison UI for macOS</h1>
+<p><strong>Requirements:</strong> macOS 15 (Sequoia) or later, Apple Silicon. Free and open source
+under the GPLv3.</p>
+<p>Two ways to install, whichever fits your setup. Both receive updates through
+Sparkle. Whether the app checks automatically depends on the choice made at first
+launch, and a manual check is always available from <strong>App menu ▸ Check for
+Updates</strong>.</p>
+<h2 id="homebrew">Homebrew</h2>
+<pre class="install" data-copyable><code>brew install --cask bcourbage/tap/unison-ui-mac</code></pre>
 
-<section class="shots" aria-label="Screenshots">
-  <figure>
-    <img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
-    <figcaption>Review changes before syncing, with conflicts and per-item direction.</figcaption>
-  </figure>
-  <figure>
-    <img src="assets/screenshot-profile-editor.png" alt="Editing a profile's local and remote (SSH) synchronization roots" loading="lazy">
-    <figcaption>Configure a profile with local and remote (SSH) roots.</figcaption>
-  </figure>
-  <figure>
-    <img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion" loading="lazy">
-    <figcaption>Sync-completion notifications in Settings.</figcaption>
-  </figure>
-  <figure>
-    <img src="assets/screenshot-settings-reconcile.png" alt="Settings: reconcile window layout options" loading="lazy">
-    <figcaption>Reconcile display options in Settings.</figcaption>
-  </figure>
-</section>
-
-<h2>Features</h2>
-<ul class="features">
-  <li><strong>Two-way synchronization</strong><span>Keep files and folders current on both sides.</span></li>
-  <li><strong>Local and remote roots over SSH</strong><span>Sync a folder on this Mac against another machine.</span></li>
-  <li><strong>GUI profile editor</strong><span>Set a profile's roots, paths, ignore rules, and options in a form, with no configuration file to hand-edit.</span></li>
-  <li><strong>Conflict review</strong><span>Every proposed change is shown before it is applied to either root.</span></li>
-  <li><strong>Per-item control</strong><span>Flip the sync direction of any item, or skip it, in the results.</span></li>
-  <li><strong>Stale archive cleanup</strong><span>Reclaim superseded Unison archive files safely, moved to the Trash, leaving live sync state untouched.</span></li>
-  <li><strong>Native macOS GUI</strong><span>Real menus, notifications, and keyboard control, with no terminal required.</span></li>
-  <li><strong>Keyboard shortcuts</strong><span>Run, stop, rescan, flip a row's direction, and skip, all from the keyboard.</span></li>
-  <li><strong>Self-contained</strong><span>The Unison File Synchronizer engine is embedded; no separate <code>unison</code> CLI needed.</span></li>
-  <li><strong>Built-in updates</strong><span>Delivered through Sparkle from a cryptographically signed feed.</span></li>
-  <li><strong>Signed &amp; notarized</strong><span>Release builds are Developer ID-signed and notarized by Apple.</span></li>
+<p>The app keeps itself up to date through Sparkle, so there is no need to re-run
+Homebrew to update.</p>
+<h2 id="direct-app-download">Direct .app download</h2>
+<p>Download the latest <code>unison-ui-mac-&lt;version&gt;.app.zip</code> from the
+<a href="https://github.com/bcourbage/unison-ui-mac/releases/latest">GitHub Releases page</a>, unzip it, and move
+<code>unison-ui-mac.app</code> to the Applications folder.</p>
+<h2 id="build-from-source">Build from source</h2>
+<p>Full build instructions are in
+<a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>. In short: install Xcode, <code>xcodegen</code>,
+and OCaml 5.5.0 built for the macOS 15 deployment target, then run <code>make build</code> (or
+<code>make install</code>). A prebuilt OCaml engine is vendored, so an everyday build compiles
+Swift and links in a few seconds rather than compiling Unison from source.</p>
+<h2 id="updating">Updating</h2>
+<p>Once installed, the app checks for updates through Sparkle over a cryptographically
+signed feed. Check any time from <strong>App menu ▸ Check for Updates</strong>.</p>
+<h2 id="uninstalling">Uninstalling</h2>
+<ul>
+<li>Homebrew: <code>brew uninstall --cask unison-ui-mac</code></li>
+<li>Manual: move <code>unison-ui-mac.app</code> to the Trash. To also remove saved settings, run
+  <code>defaults delete net.courbage.unison-ui-mac</code>.</li>
 </ul>
-
-<h2>What it is</h2>
-<p>Unison UI for macOS is a native front end for the
-<a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>, written in
-Swift and AppKit. It embeds Unison's compiled engine, so it performs the same two-way
-synchronization Unison is known for, locally or over SSH, with a modern macOS interface
-and a clear conflict-review step. See the <a href="manual/">manual</a> for a
-feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p>
-
+</article>
 </main>
 <footer class="site-footer">
   <p>Unison UI for macOS is an independent, open-source project (GPLv3), not affiliated with the
   upstream <a href="https://github.com/bcpierce00/unison">Unison File Synchronizer</a>.
   It is built on Unison and depends on its actively maintained synchronization
   engine, with thanks to that project's maintainers.</p>
-  <p><a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a> · <a href="./install/">Install</a> ·
-  <a href="./faq/">FAQ</a> · <a href="./manual/">Manual</a> ·
-  <a href="./credits/">Credits</a> ·
+  <p><a href="https://github.com/bcourbage/unison-ui-mac">GitHub</a> · <a href="../install/">Install</a> ·
+  <a href="../faq/">FAQ</a> · <a href="../manual/">Manual</a> ·
+  <a href="../credits/">Credits</a> ·
   <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/CHANGELOG.md">Changelog</a></p>
 </footer>
 <script>window.__LB_SIZES={"screenshot-sync-review.png":[960,702],"screenshot-profile-editor.png":[700,430],"screenshot-settings-sync.png":[540,240],"screenshot-settings-reconcile.png":[540,258]};</script>
