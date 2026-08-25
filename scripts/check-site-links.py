@@ -43,15 +43,20 @@ def parse(path):
     return c
 
 
-def is_external(link):
-    return link.startswith(EXTERNAL_PREFIXES)
+def link_kind(link):
+    if not link or link.startswith(EXTERNAL_PREFIXES):
+        return "external"
+    # A single leading slash is a host-root link. On this PROJECT Pages site
+    # (served under /unison-ui-mac/) it resolves to the wrong place — e.g.
+    # href="/install/" points at bcourbage.github.io/install/, not the project
+    # subpath — so it is a bug to catch, not to skip.
+    if link.startswith("/"):
+        return "root-absolute"
+    return "internal"
 
 
 def resolve(html_path, link):
-    """Return (target_path, fragment) for an internal link, or (None, None) to
-    skip (external or domain-absolute, which can't be resolved on disk)."""
-    if not link or is_external(link) or link.startswith("/"):
-        return (None, None)
+    """(target_path, fragment) for an internal (relative) link."""
     base, frag = urldefrag(link)
     if base == "":                       # same-page fragment
         return (html_path, frag or None)
@@ -61,7 +66,7 @@ def resolve(html_path, link):
     return (target, frag or None)
 
 
-def main(site_dir):
+def find_issues(site_dir):
     site_dir = os.path.abspath(site_dir)
     html_files = []
     for dirpath, _, names in os.walk(site_dir):
@@ -74,9 +79,13 @@ def main(site_dir):
     for path, coll in sorted(parsed.items()):
         rel = os.path.relpath(path, site_dir)
         for link in coll.links:
-            target, frag = resolve(path, link)
-            if target is None:
+            kind = link_kind(link)
+            if kind == "external":
                 continue
+            if kind == "root-absolute":
+                issues.append((rel, link, "root-absolute"))
+                continue
+            target, frag = resolve(path, link)
             if os.path.commonpath([site_dir, os.path.abspath(target)]) != site_dir:
                 issues.append((rel, link, "escapes-site"))
                 continue
@@ -87,10 +96,14 @@ def main(site_dir):
                 tcoll = parsed.get(target) or parse(target)
                 if frag not in tcoll.ids:
                     issues.append((rel, link, "missing-fragment"))
+    return len(html_files), issues
 
+
+def main(site_dir):
+    n_pages, issues = find_issues(site_dir)
     for rel, link, kind in issues:
         print(f"{rel}: {link} -> {kind}")
-    print(f"checked {len(html_files)} pages, issues={len(issues)}")
+    print(f"checked {n_pages} pages, issues={len(issues)}")
     return 1 if issues else 0
 
 

@@ -7,9 +7,17 @@ import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_spec = importlib.util.spec_from_file_location("build_site", os.path.join(_HERE, "build-site.py"))
-bs = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bs)
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, filename))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+bs = _load("build_site", "build-site.py")
+links = _load("check_site_links", "check-site-links.py")
 
 
 class RmtreeSafety(unittest.TestCase):
@@ -54,6 +62,33 @@ class LinkRewrite(unittest.TestCase):
         html = ('<a href="https://x.example">x</a><a href="#top">t</a>'
                 '<a href="mailto:a@b.example">m</a><img src="/a.png">')
         self.assertEqual(bs.rewrite_repo_relative_links(html), html)
+
+
+class LinkChecker(unittest.TestCase):
+    def _site(self, tmp, body):
+        with open(os.path.join(tmp, "index.html"), "w") as f:
+            f.write("<html><body>" + body + "</body></html>")
+        return links.find_issues(tmp)
+
+    def test_flags_root_absolute_internal_link(self):
+        d = tempfile.mkdtemp()
+        try:
+            # A host-root link is wrong on a project subpath site and must be caught.
+            _, issues = self._site(d, '<a href="/install/">bad</a>')
+            self.assertTrue(any(kind == "root-absolute" for _, _, kind in issues))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_accepts_relative_and_external(self):
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, "faq"))
+            with open(os.path.join(d, "faq", "index.html"), "w") as f:
+                f.write("<html><body>ok</body></html>")
+            _, issues = self._site(d, '<a href="faq/">ok</a><a href="https://x.example">x</a>')
+            self.assertEqual(issues, [])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

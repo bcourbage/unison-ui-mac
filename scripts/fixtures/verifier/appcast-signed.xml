@@ -1,0 +1,16 @@
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Unison UI for macOS (test fixture)</title>
+        <item>
+            <title>0.0.0</title>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.0.0</sparkle:shortVersionString>
+            <enclosure url="https://example.invalid/fixture-0.0.0.app.zip" length="123" type="application/octet-stream" sparkle:edSignature="AA=="></enclosure>
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: ynm15lo8ReYj5moFvb6NpHBqAWsL1OLbpPp25VY4XmEJwfWVE9YvAK48Bwvzyu75AU0P7R5IRz5e5E+2ksRIAA==
+length: 803
+-->

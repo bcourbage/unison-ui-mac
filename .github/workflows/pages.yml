@@ -154,12 +154,9 @@ jobs:
           # tampered feed or wrong key -> rc 1.
           pub="$(awk '/^ *SUPublicEDKey:/{print $2; exit}' project.yml)"
           test -n "$pub" || { echo "::error::SUPublicEDKey not found in project.yml"; exit 1; }
-          python3 - "$pub" > "$RUNNER_TEMP/verifier.key" <<'PY'
-          import base64, sys
-          pub = base64.b64decode(sys.argv[1])
-          assert len(pub) == 32, f"public key is {len(pub)} bytes, expected 32"
-          sys.stdout.write(base64.b64encode(b"\x00" * 64 + pub).decode())
-          PY
+          # Shared with scripts/test-verify-appcast.py, which regression-tests this
+          # construction against real sign_update (valid pass, tamper/wrong-key fail).
+          python3 scripts/make-verifier-key.py "$pub" > "$RUNNER_TEMP/verifier.key"
 
       - name: Clone gh-pages and authenticate the existing feed
         env:
