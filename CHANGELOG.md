@@ -11,6 +11,11 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-24
+
+A safety, correctness, and robustness release on top of 0.5.1. (Build 21.)
+Existing profiles and settings continue to work without migration.
+
 ### Security / Safety
 - **Archive maintenance is crash-safe and protects live and in-use archives.**
   Every destructive archive operation — Clean Stale Archives, Reset Archives,
@@ -18,12 +23,15 @@ across releases per Apple's bundle-version rules.
   transaction that acquires the same per-archive lock a live Unison uses (so a
   running sync, in this app or another process, blocks it), stages each file
   with an atomic same-filesystem move, and only then moves the removed set to
-  the Trash as one unit. If any step fails it restores what it staged; if even
-  that restore can't complete, it retains everything and keeps the locks held
-  rather than deleting. A crash mid-operation leaves the locks in place (safely
-  stopping Unison), blocks the affected profiles, and is detected on next
-  launch, which offers to restore the files — never to delete them — and removes
-  the locks only after you confirm no other Unison is running.
+  the Trash as one unit. Before the removal is logically committed, any failure
+  rolls back what it staged, and an incomplete rollback retains the quarantine
+  and keeps the locks held rather than deleting. An interrupted operation leaves
+  a durable recovery record and is detected on the next launch; if the archive
+  family may be split, the affected profiles remain blocked (a surviving lock
+  safely stops Unison). Recovery secures each archive before either restoring a
+  pre-commit staging or finishing an already-committed removal — moving the
+  quarantined copies to the Trash rather than restoring stale archives — and
+  releases the locks only after you confirm no other Unison is running.
 - **Clean Stale Archives only offers provably superseded copies.** An archive is
   removable only when it is attributed to a current profile that has a newer
   live archive replacing it. Orphans, "probably old" copies, anything involving
@@ -33,6 +41,57 @@ across releases per Apple's bundle-version rules.
   for an orphan.
 - The lock file (`lk…`) is never listed for deletion or trashed; it is
   synchronization state, held across the operation, not a payload.
+- **`install.sh` installs atomically and only from a Release build.** The manual
+  installer stages a validated copy of the app and then swaps it into place in a
+  single atomic step, so a failed or interrupted install can never leave you with
+  no working app. It clears the download quarantine and verifies the attribute is
+  actually gone (rather than assuming success), and it accepts only a Release
+  build. (Homebrew-cask installs are unaffected.)
+- **Fixed a rare crash or corrupted results at the end of a sync.** The values in
+  the end-of-sync completion snapshot could move under the OCaml garbage collector
+  before the app read them; they are now GC-rooted, so the final per-row results
+  are always read correctly.
+- **"Rescan Ignoring Archives…" can no longer overlap in-flight engine work.** It
+  runs only from a ready state, so it can't start while a connection, scan, or
+  sync is already in progress and clobber it.
+- **A profile the app can't read is handled fail-closed.** An unreadable or
+  non-UTF-8 `.prf` is not loaded as an editable empty form, so a Save can't
+  silently overwrite it with a blank profile.
+
+### Fixed
+- **Editing a profile preserves a symlinked `.prf` and the file's structure.**
+  Saving a profile no longer replaces a symlinked profile (e.g. one linked from a
+  dotfiles repository) with a regular file, and it round-trips comments, ordering,
+  and escaping faithfully instead of rewriting them.
+- **Diffing a file no longer freezes the reconcile window.** The window stays
+  responsive while an external diff runs. A stalled diff is reported, and other
+  engine actions stay disabled until it returns; if it never does, quit and
+  reopen the app.
+- **Ignore and Diff act on the item you mean.** From the menu bar they act on the
+  current selection; from the right-click menu they act on the row you clicked
+  (not a stale one). **Select Conflicts** now reveals conflicts hidden inside
+  collapsed folders instead of silently skipping them.
+- **No false version-mismatch warning from an SSH login banner.** The remote
+  Unison-version check reads Unison's own `unison version` line, so a login banner
+  that happens to contain a version number no longer triggers a spurious
+  compatibility warning.
+- **Archives with very long root paths are read correctly.** The archive-header
+  parser no longer truncates on near-`PATH_MAX` roots, so such archives are still
+  attributed to their profile in Clean Stale rather than hidden.
+
+### Changed
+- **Genuinely built for the macOS 15 minimum.** The app and its embedded Unison
+  runtime are now compiled *for* the macOS 15 deployment target (not merely
+  labelled as such), so the stated minimum is real and verified on macOS 15
+  before any release is published.
+
+### Documentation
+- README opening rewritten for discoverability ("Unison UI for macOS", value
+  proposition, requirements, install, features, screenshots).
+- Provenance and maintainer docs refreshed: the vendored-patch reference now
+  covers all five local patches, and the Sparkle EdDSA key-rotation limitation is
+  documented (in-band rotation is not supported by the current single-feed
+  pipeline; recovery is a manual reinstallation).
 
 ## [0.5.1] — 2026-08-22
 
@@ -765,7 +824,8 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.1...v0.4.2
