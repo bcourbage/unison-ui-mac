@@ -208,6 +208,7 @@ TEMPLATE = """<!doctype html>
 <meta name="twitter:image" content="{ogimage}">
 <link rel="icon" href="{root}/assets/Unison-macOS-Default-512x512@1x.png">
 <link rel="stylesheet" href="{root}/style.css">
+{headscript}
 {jsonld}
 </head>
 <body>
@@ -216,7 +217,7 @@ TEMPLATE = """<!doctype html>
     <img src="{root}/assets/Unison-macOS-Default-512x512@1x.png" alt="{app} app icon" width="28" height="28">
     <span>{app}</span>
   </a>
-  <nav class="site-nav">{nav}</nav>
+  <nav class="site-nav">{nav}<button class="theme-toggle" type="button" hidden aria-label="Switch color theme"></button></nav>
 </header>
 <main class="{mainclass}">
 {content}
@@ -361,7 +362,48 @@ COPY_SCRIPT = """<script>
     else if ((k === "ArrowRight" || k === "Right") && idx < imgs.length - 1) show(idx + 1);
   });
 })();
+
+// Theme toggle: cycle Auto (follows system) -> Light -> Dark, remembered in
+// localStorage. The no-flash applier in <head> has already set data-theme on
+// load; this wires the button's icon/label and the click behavior.
+(function () {
+  var btn = document.querySelector(".theme-toggle");
+  if (!btn) return;
+  var root = document.documentElement;
+  var SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>';
+  var MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>';
+  var AUTO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"></path></svg>';
+  var ICON = { auto: AUTO, light: SUN, dark: MOON };
+  var LABEL = { auto: "Theme: Auto (follows system)", light: "Theme: Light", dark: "Theme: Dark" };
+  function current() {
+    try { var t = localStorage.getItem("ui-theme"); return (t === "light" || t === "dark") ? t : "auto"; }
+    catch (e) { return "auto"; }
+  }
+  function apply(mode) {
+    if (mode === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", mode);
+    btn.innerHTML = ICON[mode];
+    btn.setAttribute("aria-label", LABEL[mode]);
+    btn.setAttribute("title", LABEL[mode]);
+  }
+  apply(current());
+  btn.hidden = false;
+  btn.addEventListener("click", function () {
+    var order = ["auto", "light", "dark"];
+    var next = order[(order.indexOf(current()) + 1) % order.length];
+    try { if (next === "auto") localStorage.removeItem("ui-theme"); else localStorage.setItem("ui-theme", next); }
+    catch (e) {}
+    apply(next);
+  });
+})();
 </script>"""
+
+
+# Applied synchronously in <head> before first paint, so a saved Light/Dark choice
+# does not flash the system theme first. Passed to the template as a format VALUE.
+HEAD_SCRIPT = ('<script>try{var t=localStorage.getItem("ui-theme");'
+               'if(t==="light"||t==="dark")'
+               'document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>')
 
 
 def rel_href(target_slug: str, active_slug: str) -> str:
@@ -456,6 +498,7 @@ def build(outdir: str) -> None:
             mainclass="home" if slug == "" else "page",
             jsonld=jsonld_block(page["jsonld"]),
             content=load_content(page),
+            headscript=HEAD_SCRIPT,
             script=sizes_script + COPY_SCRIPT,
         )
         dest_dir = outdir if slug == "" else os.path.join(outdir, slug)

@@ -10,8 +10,10 @@
   --code-bg: #f5f5f7;
   --maxw: 960px;
 }
+/* Dark tokens. Applied when the system prefers dark (unless the visitor forced
+   light), and whenever the visitor forces dark via the theme toggle. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1d1d1f;
     --fg: #f5f5f7;
     --muted: #a1a1a6;
@@ -21,6 +23,16 @@
     --border: #3a3a3d;
     --code-bg: #26262a;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #1d1d1f;
+  --fg: #f5f5f7;
+  --muted: #a1a1a6;
+  --accent: #2997ff;
+  --accent-fg: #00223f;
+  --card: #2a2a2d;
+  --border: #3a3a3d;
+  --code-bg: #26262a;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -41,9 +53,18 @@ img { max-width: 100%; height: auto; }
 }
 .brand { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; color: var(--fg); }
 .brand img { border-radius: 6px; }
-.site-nav { display: flex; gap: 1.1rem; flex-wrap: wrap; }
+.site-nav { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; }
 .site-nav a { color: var(--muted); font-size: .95rem; }
 .site-nav a.active, .site-nav a:hover { color: var(--fg); }
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0; cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--border); border-radius: 999px;
+  transition: color .15s, border-color .15s;
+}
+.theme-toggle:hover { color: var(--fg); border-color: var(--fg); }
+.theme-toggle svg { display: block; width: 17px; height: 17px; }
 
 main { max-width: var(--maxw); margin: 0 auto; padding: 1rem 1.25rem 3rem; }
 
