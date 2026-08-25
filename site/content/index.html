@@ -3,14 +3,40 @@
   <h1>Unison UI for macOS</h1>
   <p class="tagline">A native macOS GUI for the Unison File Synchronizer.</p>
   <p class="badges">Two-way file synchronization between local folders and remote machines over SSH, with visual conflict review before synchronized files are changed.</p>
-  <pre class="install"><code>{{CASK}}</code></pre>
   <div class="cta">
-    <a class="btn" href="install/">Install</a>
-    <a class="btn secondary" href="{{REPO}}/releases/latest">Download the .app</a>
+    <a class="btn" href="{{REPO}}/releases/latest">Download the .app</a>
+    <a class="btn secondary" href="install/">Install with Homebrew</a>
     <a class="btn secondary" href="{{REPO}}">View on GitHub</a>
   </div>
-  <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships Unison&nbsp;2.54.0.</p>
+  <p class="install-label">Or install with Homebrew:</p>
+  <div class="install-box">
+    <pre class="install"><code id="cask-cmd">{{CASK}}</code></pre>
+    <button class="copy-btn" type="button" data-copy="cask-cmd" aria-label="Copy install command to clipboard">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <span class="copy-label">Copy</span>
+    </button>
+  </div>
+  <p class="reqs">Requires macOS 15 (Sequoia) or later, Apple Silicon. Free and open source under the GPLv3. Currently ships <a href="https://github.com/bcpierce00/unison/releases">Unison&nbsp;2.54.0</a>.</p>
 </section>
+
+<script>
+document.querySelectorAll(".copy-btn").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var el = document.getElementById(btn.dataset.copy);
+    if (!el || !navigator.clipboard) return;
+    navigator.clipboard.writeText(el.textContent.trim()).then(function () {
+      var label = btn.querySelector(".copy-label");
+      var prev = label.textContent;
+      label.textContent = "Copied";
+      btn.classList.add("copied");
+      setTimeout(function () { label.textContent = prev; btn.classList.remove("copied"); }, 1500);
+    });
+  });
+});
+</script>
 
 <section class="shots" aria-label="Screenshots">
   <figure>
