@@ -93,6 +93,22 @@ class LinkChecker(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class SearchConsoleVerification(unittest.TestCase):
+    TAG = ('<meta name="google-site-verification" '
+           'content="WgoMIFcciganucm7IXMz08v1ElGDwMrWaM7ZBufqmT4" />')
+
+    def test_homepage_has_verification_tag(self):
+        d = tempfile.mkdtemp()
+        try:
+            out = os.path.join(d, "site")
+            bs.build(out)
+            with open(os.path.join(out, "index.html"), encoding="utf-8") as f:
+                home = f.read()
+            self.assertIn(self.TAG, home)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class VerifierKey(unittest.TestCase):
     def test_accepts_valid_public_key(self):
         good = base64.b64encode(bytes(32)).decode()   # 32 bytes, valid base64
