@@ -278,7 +278,7 @@ jobs:
           fi
           for f in _site/index.html _site/install/index.html _site/faq/index.html \
                    _site/manual/index.html _site/credits/index.html _site/style.css \
-                   _site/sitemap.xml _site/robots.txt _site/.nojekyll; do
+                   _site/sitemap.xml _site/.nojekyll; do
             test -f "$f" || { echo "::error::missing built file: $f"; exit 1; }
           done
           # Every JSON-LD block must be valid JSON, and no fabricated rating.

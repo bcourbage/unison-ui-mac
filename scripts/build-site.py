@@ -3,8 +3,8 @@
 
 Renders a small set of pages from `site/content/` (and the repository's
 `MANUAL.md`) into a shared template with per-page SEO metadata and JSON-LD, then
-copies the shared stylesheet and image assets and emits `sitemap.xml`,
-`robots.txt`, and `.nojekyll`.
+copies the shared stylesheet and image assets and emits `sitemap.xml` and
+`.nojekyll`.
 
 It NEVER produces `appcast.xml`: the Sparkle feed lives on the same GitHub Pages
 host and is published only by the release workflow. The deploy workflow syncs
@@ -580,11 +580,10 @@ def build(outdir: str) -> None:
             shutil.copyfile(os.path.join(ROOT, "assets", name),
                             os.path.join(assets_out, name))
 
-    # sitemap.xml + robots.txt + .nojekyll (serve files as-is, no Jekyll).
-    # NOTE: this is a project site under /unison-ui-mac/, so this robots.txt is
-    # NOT authoritative — crawlers only honor robots.txt at the host root
-    # (bcourbage.github.io/robots.txt), which this project does not control. It is
-    # emitted on request; the sitemap is submitted through Search Console / Bing.
+    # sitemap.xml + .nojekyll (serve files as-is, no Jekyll). No robots.txt: this
+    # is a project site under /unison-ui-mac/, and crawlers only honor robots.txt
+    # at the host root (bcourbage.github.io/robots.txt), which this project does
+    # not control. The sitemap is submitted through Search Console / Bing instead.
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for u in urls:
@@ -592,10 +591,8 @@ def build(outdir: str) -> None:
     sm.append("</urlset>")
     with open(os.path.join(outdir, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write("\n".join(sm) + "\n")
-    with open(os.path.join(outdir, "robots.txt"), "w", encoding="utf-8") as f:
-        f.write(f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n")
     open(os.path.join(outdir, ".nojekyll"), "w").close()
-    print(f"wrote sitemap.xml, robots.txt, .nojekyll, {len(SCREENSHOTS)} screenshots")
+    print(f"wrote sitemap.xml, .nojekyll, {len(SCREENSHOTS)} screenshots")
 
 
 if __name__ == "__main__":

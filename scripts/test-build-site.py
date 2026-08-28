@@ -109,21 +109,6 @@ class SearchConsoleVerification(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
-class RobotsTxt(unittest.TestCase):
-    EXPECTED = ("User-agent: *\nAllow: /\n\n"
-                "Sitemap: https://bcourbage.github.io/unison-ui-mac/sitemap.xml\n")
-
-    def test_robots_txt_exact_content(self):
-        d = tempfile.mkdtemp()
-        try:
-            out = os.path.join(d, "site")
-            bs.build(out)
-            with open(os.path.join(out, "robots.txt"), encoding="utf-8") as f:
-                self.assertEqual(f.read(), self.EXPECTED)
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-
-
 class VerifierKey(unittest.TestCase):
     def test_accepts_valid_public_key(self):
         good = base64.b64encode(bytes(32)).decode()   # 32 bytes, valid base64
