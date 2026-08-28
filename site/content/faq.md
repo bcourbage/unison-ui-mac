@@ -100,8 +100,9 @@ the hosting provider.
 An "Include an anonymous system profile with update checks" checkbox controls the
 profile, on the first-launch update prompt and in Settings. The checkbox is selected
 by default on that prompt, so accepting the defaults includes the profile; clear it
-there or in Settings to turn it off. With it off, update checks still reach the
-endpoint, the same as any app that updates itself, but nothing is recorded.
+there or in Settings to turn it off. With it off, update checks still reach
+Cloudflare (the same as any app that updates itself), but the project creates no
+telemetry record for the check.
 
 Your synced files never route through this project: they move directly between the
 two roots over SSH.
