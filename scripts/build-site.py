@@ -580,10 +580,11 @@ def build(outdir: str) -> None:
             shutil.copyfile(os.path.join(ROOT, "assets", name),
                             os.path.join(assets_out, name))
 
-    # sitemap.xml + .nojekyll (serve files as-is, no Jekyll). No robots.txt: this
-    # is a project site under /unison-ui-mac/, and crawlers only honor robots.txt
-    # at the host root (bcourbage.github.io/robots.txt), which this project does
-    # not control. The sitemap is submitted through Search Console / Bing instead.
+    # sitemap.xml + robots.txt + .nojekyll (serve files as-is, no Jekyll).
+    # NOTE: this is a project site under /unison-ui-mac/, so this robots.txt is
+    # NOT authoritative — crawlers only honor robots.txt at the host root
+    # (bcourbage.github.io/robots.txt), which this project does not control. It is
+    # emitted on request; the sitemap is submitted through Search Console / Bing.
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for u in urls:
@@ -591,8 +592,10 @@ def build(outdir: str) -> None:
     sm.append("</urlset>")
     with open(os.path.join(outdir, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write("\n".join(sm) + "\n")
+    with open(os.path.join(outdir, "robots.txt"), "w", encoding="utf-8") as f:
+        f.write(f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n")
     open(os.path.join(outdir, ".nojekyll"), "w").close()
-    print(f"wrote sitemap.xml, .nojekyll, {len(SCREENSHOTS)} screenshots")
+    print(f"wrote sitemap.xml, robots.txt, .nojekyll, {len(SCREENSHOTS)} screenshots")
 
 
 if __name__ == "__main__":
