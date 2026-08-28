@@ -124,16 +124,17 @@ targets:
         # Sparkle in-app updater. These MUST be declared here, not only in
         # Resources/Info.plist, because xcodegen regenerates the plist on every
         # build (same reason as the version strings above).
-        #   SUFeedURL              — appcast location (HTTPS). The GitHub Pages
-        #                            feed below points at the updates.courbage.net
-        #                            Cloudflare Worker, a transparent proxy that logs
-        #                            the anonymous update-check profile and returns
-        #                            the GitHub Pages appcast BYTE-FOR-BYTE (feed
+        #   SUFeedURL              — appcast location (HTTPS). Points at the
+        #                            updates.courbage.net Cloudflare Worker, a
+        #                            transparent proxy that logs the anonymous
+        #                            update-check profile and fetches the GitHub
+        #                            Pages appcast, returning it BYTE-FOR-BYTE (feed
         #                            signature intact). GitHub Pages remains the
-        #                            signed origin (first published with v0.5.0) and
-        #                            is what pre-0.6.1 clients still poll directly.
-        #                            Local testing uses a local appcast without
-        #                            touching either (see docs/sparkle-updates.md).
+        #                            signed origin (first published with v0.5.0);
+        #                            builds released before this change poll it
+        #                            directly. Local testing uses a local appcast
+        #                            without touching either (see
+        #                            docs/sparkle-updates.md).
         #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
         #                            REAL key. Its private half's canonical copy
         #                            is in the maintainer's login keychain, and a

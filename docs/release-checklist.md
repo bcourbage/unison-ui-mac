@@ -111,13 +111,30 @@ clients are left a signed 0.6.0 enclosure pointing at a deleted archive):
    until curl -fsS "$feed" -o served.xml && cmp -s served.xml "$good"; do sleep 5; done
    "$SPARKLE_BIN/sign_update" --verify served.xml   # must report a valid feed signature
    ```
-   Only once the restored feed is actually served do clients stop being offered 0.6.0.
-3. **Then remove the 0.6.0 download.** `gh release delete-asset` the 0.6.0 archive
+   Restoring the origin is necessary but NOT sufficient: current builds poll the
+   Worker, not GitHub Pages directly.
+3. **Verify the client-facing proxy before touching the asset.** Builds released
+   with the new `SUFeedURL` poll
+   `https://updates.courbage.net/unison-ui-mac/appcast.xml`, a Cloudflare Worker
+   that caches the origin for 60s and sends `Cache-Control: max-age=60`. After the
+   origin is restored, purge the Cloudflare cache (or wait past the full TTL), then
+   poll the proxy until it is byte-identical to the restored feed and
+   cryptographically verify those exact proxy-served bytes:
+   ```sh
+   proxy=https://updates.courbage.net/unison-ui-mac/appcast.xml
+   sleep 90   # > the 60s Worker cache TTL + margin; or purge the CF cache instead
+   until curl -fsS "$proxy" -o proxy.xml && cmp -s proxy.xml "$good"; do sleep 5; done
+   "$SPARKLE_BIN/sign_update" --verify proxy.xml   # valid signature over the PROXY bytes
+   ```
+   Only once the proxy serves the restored feed do new clients stop being offered
+   0.6.0. A single check right after restore is not enough if other edge locations
+   may still hold the old response; prefer an explicit purge or a full-TTL wait.
+4. **Then remove the 0.6.0 download.** `gh release delete-asset` the 0.6.0 archive
    (or `gh release delete` the whole release). **Marking it a prerelease is NOT
    sufficient** — prerelease assets stay downloadable.
-4. **Do not merge the Homebrew cask bump** for 0.6.0; if it was already merged,
+5. **Do not merge the Homebrew cask bump** for 0.6.0; if it was already merged,
    **revert it** so `brew install --cask` stops offering 0.6.0.
-5. **Fix forward as v0.6.1 (build 22).** Never delete or reuse the `v0.6.0` tag.
+6. **Fix forward as v0.6.1 (build 22).** Never delete or reuse the `v0.6.0` tag.
 
 ### Manual installer hardening (optional spot-check)
 0.6.0 hardened `install.sh` (Release-only, atomic stage-then-swap, verified
@@ -169,12 +186,24 @@ a deleted archive):
    until curl -fsS "$feed" -o served.xml && cmp -s served.xml "$good"; do sleep 5; done
    "$SPARKLE_BIN/sign_update" --verify served.xml   # must report a valid feed signature
    ```
-   Only once the restored feed is actually being served do clients stop being
-   offered 0.5.1.
-3. **Then remove the 0.5.1 download.** `gh release delete-asset` the 0.5.1
+   Restoring the origin is necessary but NOT sufficient once `SUFeedURL` points at
+   the Worker: current builds poll the proxy, not GitHub Pages directly.
+3. **Verify the client-facing proxy before touching the asset.** Builds released
+   with the Worker `SUFeedURL` poll
+   `https://updates.courbage.net/unison-ui-mac/appcast.xml` (Cloudflare Worker, 60s
+   cache). After the origin is restored, purge the Cloudflare cache (or wait past
+   the full TTL), then poll the proxy until byte-identical to the restored feed and
+   cryptographically verify those exact proxy-served bytes:
+   ```sh
+   proxy=https://updates.courbage.net/unison-ui-mac/appcast.xml
+   sleep 90   # > the 60s Worker cache TTL + margin; or purge the CF cache instead
+   until curl -fsS "$proxy" -o proxy.xml && cmp -s proxy.xml "$good"; do sleep 5; done
+   "$SPARKLE_BIN/sign_update" --verify proxy.xml
+   ```
+4. **Then remove the 0.5.1 download.** `gh release delete-asset` the 0.5.1
    archive (or `gh release delete` the whole release). **Marking it a prerelease
    is NOT sufficient** — prerelease assets stay downloadable.
-4. **Fix forward as v0.5.2** (build 21). Never delete or reuse the `v0.5.1` tag.
+5. **Fix forward as v0.5.2** (build 21). Never delete or reuse the `v0.5.1` tag.
 
 If a true pre-publication gate is ever required, add a staged-feed / manual-
 promotion step to `release.yml` (publish to a staging feed, verify, then promote

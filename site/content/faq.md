@@ -82,25 +82,27 @@ appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
 ## What data does the app send?
 
-The app has no per-user tracking. The only information it can send is an optional
-anonymous system profile that Sparkle attaches to an update check. When it is
-included, the profile is sent only while checking for updates, at most once a week,
-and contains just: macOS version, Mac model, CPU, memory, app version, and preferred
-language. It carries no name or account, no file names or contents, and no record of
-what you sync or how you use the app.
+The app has no per-user tracking. When it checks for updates, the request goes to
+the project's update endpoint. A record is created only when a check includes the
+optional anonymous system profile. Sparkle attaches that profile at most once every
+seven days, and only if the checkbox is on. Checks without the profile, including
+every check after you opt out and the routine checks in between, are not recorded.
 
-An "Include an anonymous system profile with update checks" checkbox controls it, on
-the first-launch update prompt and in Settings. The checkbox is selected by default
-on that prompt, so accepting the defaults includes the profile; clear it there or in
-Settings to turn it off. Nothing is sent before you answer the prompt.
+Each record holds only the check time, a coarse country that Cloudflare derives from
+the connection, and the profile fields: macOS version, Mac model, CPU, memory, app
+version, and preferred language. It carries no name, account, IP address, cookie, or
+stable per-user identifier, and no file names, contents, or record of what you sync.
+The records are per-check rows, kept for at most six months and used only to produce
+aggregate statistics. Cloudflare processes the request as the hosting provider.
 
-Update checks are served through an endpoint operated for this project, which records
-the anonymous profile in aggregate to see which app versions and systems are in use.
-The records hold only the profile fields above plus a coarse country; no IP address
-and no per-user identity are stored.
+An "Include an anonymous system profile with update checks" checkbox controls the
+profile, on the first-launch update prompt and in Settings. The checkbox is selected
+by default on that prompt, so accepting the defaults includes the profile; clear it
+there or in Settings to turn it off. With it off, update checks still reach the
+endpoint, the same as any app that updates itself, but nothing is recorded.
 
 Your synced files never route through this project: they move directly between the
-two roots over SSH. Only the update-check metadata above reaches the update endpoint.
+two roots over SSH.
 
 ## Which version of Unison does it use?
 

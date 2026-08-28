@@ -573,3 +573,27 @@ jobs:
           test "$ok" = "1" || { echo "::error::published feed did not become byte-identical to the generated appcast at ${feedurl}"; exit 1; }
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$pub" --feed-only
           echo "Published appcast verified (byte-identical + signed) at ${feedurl}"
+
+      - name: Verify the client-facing feed (SUFeedURL)
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          # Clients poll SUFeedURL from the built app's Info.plist, not the origin.
+          # Derive it from project.yml so this canary can never drift from the app,
+          # then poll it until byte-identical to the generated appcast and verify the
+          # signature over those exact client-served bytes. When SUFeedURL is the
+          # Cloudflare Worker, this also proves the proxy is up and serving the new
+          # release (its short cache may lag the origin by up to its TTL). This is an
+          # availability gate; SURequireSignedFeed still rejects any forged content.
+          feedurl="$(awk '/^ *SUFeedURL:/{print $2; exit}' project.yml)"
+          test -n "$feedurl" || { echo "::error::SUFeedURL not found in project.yml"; exit 1; }
+          served="$RUNNER_TEMP/client-served.xml"
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o "$served" -w '%{http_code}' "$feedurl" || echo 000)
+            if [ "$code" = "200" ] && cmp -s "$served" "$APPCAST_PATH"; then ok=1; break; fi
+            echo "waiting for the client feed to serve the new appcast (attempt $i, http $code)..."; sleep 10
+          done
+          test "$ok" = "1" || { echo "::error::client feed did not become byte-identical to the generated appcast at ${feedurl}"; exit 1; }
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 scripts/verify-appcast.py "$served" --feed-only
+          echo "Client-facing feed verified (byte-identical + signed) at ${feedurl}"
