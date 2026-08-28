@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://bcourbage.github.io/unison-ui-mac/sitemap.xml
