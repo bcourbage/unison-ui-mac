@@ -125,9 +125,15 @@ targets:
         # Resources/Info.plist, because xcodegen regenerates the plist on every
         # build (same reason as the version strings above).
         #   SUFeedURL              — appcast location (HTTPS). The GitHub Pages
-        #                            feed below is LIVE (first published with
-        #                            v0.5.0). Local testing uses a local appcast
-        #                            without touching it (see docs/sparkle-updates.md).
+        #                            feed below points at the updates.courbage.net
+        #                            Cloudflare Worker, a transparent proxy that logs
+        #                            the anonymous update-check profile and returns
+        #                            the GitHub Pages appcast BYTE-FOR-BYTE (feed
+        #                            signature intact). GitHub Pages remains the
+        #                            signed origin (first published with v0.5.0) and
+        #                            is what pre-0.6.1 clients still poll directly.
+        #                            Local testing uses a local appcast without
+        #                            touching either (see docs/sparkle-updates.md).
         #   SUPublicEDKey          — Sparkle's EdDSA (ed25519) PUBLIC key; the
         #                            REAL key. Its private half's canonical copy
         #                            is in the maintainer's login keychain, and a
@@ -192,7 +198,7 @@ targets:
         # ever changing SUPublicEDKey or the SPARKLE_ED_PRIVATE_KEY secret.
         SURequireSignedFeed: true
         SUSignedFeedFailureExpirationInterval: 0
-        SUFeedURL: https://bcourbage.github.io/unison-ui-mac/appcast.xml
+        SUFeedURL: https://updates.courbage.net/unison-ui-mac/appcast.xml
         SUPublicEDKey: /jLGv/pL0qFJOHFm/kpxONcqkeo8KOBH+oxDLTuCwt8=
         SUVerifyUpdateBeforeExtraction: true
         SUEnableSystemProfiling: true

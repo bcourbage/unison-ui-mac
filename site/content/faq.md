@@ -82,21 +82,25 @@ appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
 ## What data does the app send?
 
-There is no analytics or usage tracking. The only information the app can send is an
-optional anonymous system profile that Sparkle attaches to an update check. When it
-is included, the profile is sent only while checking for updates, at most once a
-week, and contains just: macOS version, Mac model, CPU, memory, app version, and
-preferred language. It carries no name or account, no file names or contents, and no
-record of what you sync or how you use the app.
+The app has no per-user tracking. The only information it can send is an optional
+anonymous system profile that Sparkle attaches to an update check. When it is
+included, the profile is sent only while checking for updates, at most once a week,
+and contains just: macOS version, Mac model, CPU, memory, app version, and preferred
+language. It carries no name or account, no file names or contents, and no record of
+what you sync or how you use the app.
 
 An "Include an anonymous system profile with update checks" checkbox controls it, on
 the first-launch update prompt and in Settings. The checkbox is selected by default
 on that prompt, so accepting the defaults includes the profile; clear it there or in
-Settings to turn it off. Nothing is sent before you answer the prompt. Checking for
-updates at all contacts the update feed, the same as any app that updates itself.
+Settings to turn it off. Nothing is sent before you answer the prompt.
 
-Synchronization never routes your data through this project: files move directly
-between the two roots over SSH, not through any server operated by the app.
+Update checks are served through an endpoint operated for this project, which records
+the anonymous profile in aggregate to see which app versions and systems are in use.
+The records hold only the profile fields above plus a coarse country; no IP address
+and no per-user identity are stored.
+
+Your synced files never route through this project: they move directly between the
+two roots over SSH. Only the update-check metadata above reaches the update endpoint.
 
 ## Which version of Unison does it use?
 
