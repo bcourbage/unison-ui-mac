@@ -583,8 +583,9 @@ jobs:
           # then poll it until byte-identical to the generated appcast and verify the
           # signature over those exact client-served bytes. When SUFeedURL is the
           # Cloudflare Worker, this also proves the proxy is up and serving the new
-          # release (its short cache may lag the origin by up to its TTL). This is an
-          # availability gate; SURequireSignedFeed still rejects any forged content.
+          # release (its short cache may lag the origin by up to its TTL). This runs
+          # AFTER publication, so it is an automated post-publication canary / incident
+          # detector, not a gate; SURequireSignedFeed still rejects any forged content.
           feedurl="$(awk '/^ *SUFeedURL:/{print $2; exit}' project.yml)"
           test -n "$feedurl" || { echo "::error::SUFeedURL not found in project.yml"; exit 1; }
           served="$RUNNER_TEMP/client-served.xml"

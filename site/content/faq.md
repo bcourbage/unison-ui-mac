@@ -92,8 +92,10 @@ Each record holds only the check time, a coarse country that Cloudflare derives 
 the connection, and the profile fields: macOS version, Mac model, CPU, memory, app
 version, and preferred language. It carries no name, account, IP address, cookie, or
 stable per-user identifier, and no file names, contents, or record of what you sync.
-The records are per-check rows, kept for at most six months and used only to produce
-aggregate statistics. Cloudflare processes the request as the hosting provider.
+The records are per-check rows, deleted once they are older than 180 days by a
+cleanup that runs weekly (so a record may persist up to about a week beyond that),
+and used only to produce aggregate statistics. Cloudflare processes the request as
+the hosting provider.
 
 An "Include an anonymous system profile with update checks" checkbox controls the
 profile, on the first-launch update prompt and in Settings. The checkbox is selected

@@ -202,7 +202,9 @@ that the release job publishes to; `SUFeedURL`
 (`https://updates.courbage.net/unison-ui-mac/appcast.xml`) is the **client-facing**
 URL baked into the app, a Cloudflare Worker that fetches the origin and returns it
 BYTE-FOR-BYTE (feed signature intact) while logging the anonymous update-check
-profile (see `Sources/unison-updates-worker`). Builds released before that switch
+profile (its source is the separate private repo
+[`bcourbage/unison-updates-worker`](https://github.com/bcourbage/unison-updates-worker),
+not part of this repository). Builds released before that switch
 poll GitHub Pages directly.
 
 On a pushed `v*` tag, the `release` job in `.github/workflows/release.yml` produces
