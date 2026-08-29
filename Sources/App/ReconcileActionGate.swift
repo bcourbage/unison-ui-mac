@@ -42,7 +42,7 @@ struct ReconcileActionGate: Equatable {
         case details      // ri_get_details for the selection
         case sync         // Go
         case rescan       // Rescan (init2)
-        case stop         // Stop (abort sync / Return to Profiles during connect/scan)
+        case stop         // Stop (abort a running sync; sync-only, issue #117)
         case profiles     // navigate back to picker / close window
         case quit         // quit the app
     }
@@ -61,10 +61,13 @@ struct ReconcileActionGate: Equatable {
             // a restart, or an in-flight sync.
             return true
         case .stop:
-            // Meaningful only while a sync or scan is actually running; disabled
-            // once a restart is required. (No sync/scan runs during an Ignore
-            // gap, so this is naturally false then.)
-            return !restartRequired && (isSyncing || isScanning)
+            // Stop means exactly one thing: abort a running synchronization. It
+            // is available only while a sync is in flight, and disabled once a
+            // restart is required. Leaving during a connect/scan is the Profiles
+            // control's job, not Stop's (issue #117), so `isScanning` does NOT
+            // enable this. (No sync runs during an Ignore gap, so this is
+            // naturally false then.)
+            return !restartRequired && isSyncing
         case .direction, .sync, .diff:
             return isActionable
         case .ignore:
@@ -83,9 +86,12 @@ struct ReconcileActionGate: Equatable {
             // and while diffing (the bridge call would block the main thread).
             return !restartRequired && !mutationInFlight && !resultsUnavailable && !diffInFlight
         case .rescan:
-            // Allowed post-sync (.done) too, but never during a sync, a restart,
-            // an Ignore publication gap, or a diff.
-            return !restartRequired && !mutationInFlight && !isSyncing && !diffInFlight
+            // Allowed post-sync (.done) too, but never while an operation is
+            // already running: not during a connect/scan (a rescan would double-
+            // drive the engine), not during a sync, a restart, an Ignore
+            // publication gap, or a diff.
+            return !restartRequired && !mutationInFlight
+                && !isScanning && !isSyncing && !diffInFlight
         }
     }
 }

@@ -14,12 +14,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     typealias CloseHandler = @MainActor () -> Void
     typealias RescanRequest = @MainActor () -> Void
-    /// Invoked when the user presses "Return to Profiles" while a connect/scan
-    /// (not a sync) is in flight. The owner (AppDelegate) abandons the
-    /// presentation and returns to the picker; it does NOT cancel the scan,
-    /// which continues in the background until its own terminal (the coordinator
-    /// retains the engine lease and closes on that terminal).
-    typealias CancelScanRequest = @MainActor () -> Void
     /// Owner veto for a window-close: returns true to ALLOW the close, false to
     /// intercept it. In-place scan interruption was withdrawn (issue #53 / #94),
     /// so the owner allows the close during a connect/scan and handles it via the
@@ -91,7 +85,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let profile: String
     private let onClose: CloseHandler
     private let onRescanRequested: RescanRequest
-    private let onCancelScan: CancelScanRequest
     private let onWindowShouldClose: WindowShouldCloseRequest
     private let onProfilesRequested: ProfilesRequest
 
@@ -129,11 +122,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Rescan refreshes state. Cleared when a rescan begins.
     private var syncResultsUnavailable = false
     /// True between `beginScanning` and `endRescan` — i.e. while the
-    /// initial connect/scan (or a rescan) is in flight. Gates the Stop
-    /// button, which during a connect/scan is "Return to Profiles": it
-    /// abandons the presentation and returns to the picker (the scan winds
-    /// down in the background; it is not cancelled). Distinct from `isSyncing`
-    /// (a running file transfer).
+    /// initial connect/scan (or a rescan) is in flight. Used by the gate to
+    /// disable Rescan while a scan is already running, and to select the
+    /// Profiles item's connect/scan help text. Leaving during a scan is the
+    /// Profiles control's job (issue #117); Stop is sync-only and stays disabled
+    /// here. Distinct from `isSyncing` (a running file transfer).
     private(set) var isScanning = false
     private let outlineView = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
@@ -222,7 +215,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          mergeConfigured: Bool,
          onClose: @escaping CloseHandler,
          onRescanRequested: @escaping RescanRequest,
-         onCancelScan: @escaping CancelScanRequest,
          onWindowShouldClose: @escaping WindowShouldCloseRequest = { true },
          onProfilesRequested: @escaping ProfilesRequest = { false },
          onSyncStart: @escaping SyncStartRequest,
@@ -236,7 +228,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.mergeConfigured = mergeConfigured
         self.onClose = onClose
         self.onRescanRequested = onRescanRequested
-        self.onCancelScan = onCancelScan
         self.onWindowShouldClose = onWindowShouldClose
         self.onProfilesRequested = onProfilesRequested
         self.onSyncStart = onSyncStart
@@ -639,23 +630,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// unwinds. `finalizeSyncUI` fires once OCaml has fully wound
     /// down and resets the UI to "done" state.
     func cancelSync() {
-        // Stop during the connect/scan phase (pre-sync): hand off to the owner,
-        // which abandons the presentation and returns to the picker. It does NOT
-        // cancel the scan (that continues in the background until its own
-        // terminal); it lets the user leave a slow/wedged connect without
-        // waiting for the watchdog timeout.
-        if isScanning && !isSyncing {
-            // The connect/scan-phase Stop item is the honest "Return to
-            // Profiles": it abandons the connect/scan and returns to the picker
-            // (no sync to abort; the scan winds down in the background). In-place
-            // scan interruption was withdrawn (issue #53 / #94). See
-            // StopItemAppearance.
-            Log.reconcile.notice("user requested Return to Profiles during connect/scan")
-            TraceLog.shared.write("ReconcileWindow: Return to Profiles during connect/scan")
-            setSummary(StopItemAppearance.returnToProfiles.progressSummary)
-            onCancelScan()
-            return
-        }
+        // Stop is a sync-only control (issue #117): it aborts a running sync and
+        // nothing else. Leaving during a connect/scan is the Profiles control's
+        // job. This guard is the method-boundary backstop for the gate that only
+        // enables Stop while syncing — if reached in any other phase it is a
+        // no-op beep.
         guard isSyncing else { NSSound.beep(); return }
         userRequestedStop = true   // finalizeSyncUI reads this for the "stopped" summary
         Log.reconcile.notice("user requested Stop — routing abort through the coordinator")
@@ -1705,13 +1684,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             return isActionable
         }
         if menuItem.action == #selector(stopMenuAction(_:)) {
-            // Stop is meaningful mid-sync (abort the sync) OR mid connect/scan
-            // (Return to Profiles: abandon presentation and go back to the
-            // picker; the scan winds down in the background). Disabled once the
-            // engine needs a restart.
-            if restartRequired { return false }
-            if case .syncing = phase { return true }
-            return isScanning
+            // Stop (⌘.) aborts a running sync and nothing else (issue #117):
+            // enabled only while syncing, disabled once a restart is required.
+            // Same shared gate as the toolbar item, so menu, toolbar, keyboard,
+            // and method boundary can't drift.
+            return actionGate.allows(.stop)
         }
         if menuItem.action == #selector(rescanMenuAction(_:)) {
             // Rescan is the way out of .done back to .ready — enabled post-sync.
@@ -1791,13 +1768,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         window?.toolbar?.validateVisibleItems()
     }
 
-    /// Phase-appropriate copy for the Stop toolbar item. Read by the toolbar
-    /// delegate during validation so the item is relabelled "Return to
-    /// Profiles" during the connect/scan phase (where it does not abort a
-    /// sync) and "Stop" during an actual sync. Pure decision in
-    /// `StopItemAppearance`.
-    var stopItemAppearance: StopItemAppearance {
-        StopItemAppearance.forPhase(isScanning: isScanning, isSyncing: isSyncing)
+    /// Phase-appropriate help text for the Profiles toolbar item. The item's
+    /// label and position never change; only the tooltip/accessibility help
+    /// varies, to state what leaving does in each phase (issue #117). Pure
+    /// decision in `ProfilesHelp`.
+    var profilesHelp: ProfilesHelp {
+        ProfilesHelp.forPhase(isScanning: isScanning, isSyncing: isSyncing)
     }
 
     /// True when the current *selection* (ignoring any clicked row) is
@@ -1822,10 +1798,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// gates as `validateMenuItem(_:)`; both paths share the
     /// `isActionable` helper so they can't drift.
     func canPerformToolbarAction(_ identifier: NSToolbarItem.Identifier) -> Bool {
-        let syncing: Bool = {
-            if case .syncing = phase { return true }
-            return false
-        }()
         switch identifier {
         case DirectionAction.goIdentifier:
             // Go: same gate as direction overrides. Disabled during sync, after
@@ -1833,12 +1805,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // unavailable (`isActionable` now folds in `resultsUnavailable`).
             return isActionable
         case DirectionAction.stopIdentifier:
-            // Stop is meaningful while a sync is in flight OR while the
-            // connect/scan is running — during a sync it aborts; during a
-            // connect/scan it is "Return to Profiles" (abandon the presentation
-            // and go back to the picker; the scan winds down in the background).
-            // Disabled once the engine needs a restart (nothing to act on).
-            return !restartRequired && (syncing || isScanning)
+            // Stop aborts a running sync and nothing else (issue #117): enabled
+            // only while syncing, disabled once a restart is required. Leaving
+            // during a connect/scan is the Profiles control's job. Single
+            // authority: the shared gate.
+            return actionGate.allows(.stop)
         case DirectionAction.rescanIdentifier:
             // Rescan is the way out of `.done` back to `.ready` — explicitly
             // available after completion. Blocked while OCaml is running a sync,

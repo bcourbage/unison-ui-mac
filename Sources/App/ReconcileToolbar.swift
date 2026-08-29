@@ -197,7 +197,9 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
             return makeWorkflowItem(itemIdentifier,
                                     label: "Profiles",
                                     paletteLabel: "Choose Profile",
-                                    toolTip: "Return to the profile picker",
+                                    // Phase-specific help is applied in
+                                    // validateToolbarItem; this is the idle default.
+                                    toolTip: "Return to Profiles.",
                                     symbol: "list.bullet",
                                     tint: nil,
                                     action: #selector(profilesAction(_:)))
@@ -215,7 +217,10 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
                                     paletteLabel: "Cancel sync",
                                     toolTip: "Cancel the running synchronization",
                                     symbol: "stop.fill",
-                                    tint: .systemRed,
+                                    // Neutral by default (not syncing at open);
+                                    // validateToolbarItem tints it red while a
+                                    // sync is in flight.
+                                    tint: nil,
                                     action: #selector(stopAction(_:)))
         case DirectionAction.rescanIdentifier:
             return makeWorkflowItem(itemIdentifier,
@@ -368,25 +373,35 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
 
     @MainActor
     @objc func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        // The Stop item is relabelled AND re-iconed per phase: during connect/
-        // scan it is "Return to Profiles" with a neutral back glyph and normal
-        // tint (it abandons the connect, aborts no sync); during an actual sync
-        // it is the red "Stop" that aborts. Validation fires on every phase
-        // transition (via `validateVisibleItems()`), so this stays in sync.
-        // Pure decision in `StopItemAppearance`.
-        if item.itemIdentifier == DirectionAction.stopIdentifier,
-           let appearance = controller?.stopItemAppearance {
-            item.label = appearance.label
+        let enabled = controller?.canPerformToolbarAction(item.itemIdentifier) ?? false
+        switch item.itemIdentifier {
+        case DirectionAction.stopIdentifier:
+            // Stop is a fixed "Stop" control (issue #117): constant title, so the
+            // item is a constant width and Go never reflows. Presentation is
+            // derived from the SAME `enabled` verdict returned below (the gate's
+            // `.stop`), so a disabled Stop is never painted destructive-red.
+            // Validation fires on every phase transition via
+            // `validateVisibleItems()`.
+            let appearance = StopItemAppearance(canStop: enabled)
+            item.label = appearance.title
             item.toolTip = appearance.toolTip
-            let tint: NSColor?
-            switch appearance.tint {
-            case .destructive: tint = .systemRed
-            case .normal:      tint = nil
-            }
+            let tint: NSColor? = appearance.tint == .destructive ? .systemRed : nil
             item.image = symbolImage(appearance.systemSymbol,
-                                     accessibility: appearance.label, tint: tint)
+                                     accessibility: appearance.title, tint: tint)
+        case DirectionAction.profilesIdentifier:
+            // Profiles' label and position never change; only its help text
+            // varies by phase to state what leaving does (issue #117). The
+            // tooltip serves as AXHelp for a standard toolbar item; also set the
+            // backing view's accessibility help when one exists, so the two track
+            // if the item later gains a custom view. Spatially inert.
+            if let help = controller?.profilesHelp {
+                item.toolTip = help.toolTip
+                item.view?.setAccessibilityHelp(help.accessibilityHelp)
+            }
+        default:
+            break
         }
-        return controller?.canPerformToolbarAction(item.itemIdentifier) ?? false
+        return enabled
     }
 }
 

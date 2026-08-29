@@ -11,7 +11,7 @@ final class ReconcileDiffGatingTests: XCTestCase {
     private func makeController() -> ReconcileWindowController {
         ReconcileWindowController(
             profile: "T", mergeConfigured: false,
-            onClose: {}, onRescanRequested: {}, onCancelScan: {},
+            onClose: {}, onRescanRequested: {},
             onSyncStart: {}, onSyncExit: { _ in }, onEngineUncertain: { _ in },
             onIgnore: { _, _ in UNISON_OP_INVALID },
             onDiffRequest: { _ in .refused }, onDiffAbandon: {})

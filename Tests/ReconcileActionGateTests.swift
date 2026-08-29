@@ -78,7 +78,7 @@ final class ReconcileActionGateTests: XCTestCase {
         XCTAssertTrue(g.allows(.profiles))
     }
 
-    func test_scanning_allowsStop_blocksRowActions() {
+    func test_scanning_blocksStopAndRescan_andRowActions() {
         var g = ready()
         g.isScanning = true
         g.hasItems = false   // rows cleared while a (re)scan runs
@@ -86,10 +86,41 @@ final class ReconcileActionGateTests: XCTestCase {
         for a in [Gate.Action.direction, .ignore, .diff, .sync] {
             XCTAssertFalse(g.allows(a), "\(a) must be blocked mid-scan")
         }
-        // Stop cancels the scan; Rescan (scan ≠ sync) and Details are not blocked
-        // by a scan alone — matching prior behavior. The ignore-gap test proves
-        // they ARE blocked when it matters (mutationInFlight).
-        XCTAssertTrue(g.allows(.stop), "Stop must be available mid-scan")
+        // Issue #117: Stop is sync-only — it does NOT act during a connect/scan
+        // (leaving is the Profiles control's job). If someone re-adds
+        // `|| isScanning` to the `.stop` rule, this assertion fails.
+        XCTAssertFalse(g.allows(.stop),
+                       "Stop must be disabled mid-scan (sync-only, #117)")
+        // Issue #117: a rescan must not double-drive the engine while a scan is
+        // already running. If someone drops `!isScanning` from the `.rescan`
+        // rule, this assertion fails.
+        XCTAssertFalse(g.allows(.rescan),
+                       "Rescan must be disabled while a scan is already running (#117)")
+        // Details is read-only and not blocked by a scan alone; navigation stays.
+        XCTAssertTrue(g.allows(.details))
+        XCTAssertTrue(g.allows(.profiles))
+        XCTAssertTrue(g.allows(.quit))
+    }
+
+    // MARK: - Issue #117: Stop is available iff a sync is in flight
+
+    /// The exact iff the toolbar/menu/keyboard/method-boundary all consume. Stop
+    /// is enabled only while syncing, and never once a restart is required — even
+    /// mid-sync (refinement #2: a disabled Stop must never be painted red, which
+    /// only holds if the gate itself is false here).
+    func test_stop_isAvailableIffSyncingAndNoRestart() {
+        // Idle-ready: no.
+        XCTAssertFalse(ready().allows(.stop))
+        // Syncing: yes.
+        var syncing = ready(); syncing.isSyncing = true; syncing.phase = .syncing
+        XCTAssertTrue(syncing.allows(.stop))
+        // Syncing but restart required: no (drives neutral tint via canStop).
+        var syncingRestart = syncing; syncingRestart.restartRequired = true
+        XCTAssertFalse(syncingRestart.allows(.stop),
+                       "restart required must disable Stop even mid-sync")
+        // Done: no.
+        var done = ready(); done.phase = .done
+        XCTAssertFalse(done.allows(.stop))
     }
 
     func test_details_needsNoItems_butBlockedInGap() {

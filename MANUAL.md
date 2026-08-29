@@ -495,25 +495,27 @@ when idle.
 
 ### Toolbar
 
-- **Profiles**: return to the picker (closes this reconcile window). During a
-  scan this action reads **Return to Profiles**: it abandons the view and
-  returns to the picker but does **not** cancel the scan, which keeps running in
-  the background until it finishes on its own (for a remote session the app then
-  closes the connection; a local-only session has no connection and simply goes
-  idle). There is no in-place "stop the scan" control; if a remote scan hangs,
-  quit and relaunch.
+- **Profiles**: return to the picker (closes this reconcile window). Its
+  label and position never change. Leaving during a connect or scan does
+  **not** cancel it; the connection or scan keeps running in the background
+  until it finishes on its own (for a remote session the app then closes the
+  connection; a local-only session has no connection and simply goes idle).
+  There is no in-place "stop the scan" control; if a remote scan hangs, quit
+  and relaunch. Leaving during a sync raises a confirmation first (see Stop).
 - **Rescan**: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
-  view.
+  view. Disabled while a scan or sync is already running.
 - **← First / → Second / Skip / Merge**: direction overrides for the
   selected leaf rows. Multi-select supported; selecting a folder applies
   to every leaf under it.
 - **Go** (green): synchronize. Propagates every row's Action.
-- **Stop** (red): visible during sync. Aborts the running sync: it
-  signals Unison to stop at its next checkpoint (between files), so a
-  transfer already in flight may finish before the abort takes hold. The
-  window stays open afterward so you can inspect any rows left `⚠ FAILED`
-  in the Progress column; close it or Rescan when you're ready.
+- **Stop**: the sync-abort control, always in the same position. It is
+  enabled and red only while a sync is running, and disabled and neutral
+  otherwise. Aborting signals Unison to stop at its next checkpoint (between
+  files), so a transfer already in flight may finish before the abort takes
+  hold. The window stays open afterward so you can inspect any rows left
+  `⚠ FAILED` in the Progress column; close it or Rescan when you're ready.
+  To leave during a connect or scan, use Profiles, not Stop.
 - **Quit**: quit the app, identical to `⌘Q` (runs the clean OCaml
   bridge shutdown on the way out).
 

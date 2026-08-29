@@ -41,6 +41,17 @@ Return-to-Profiles behavior described below is unchanged; the references to the
 now-deleted flag/phase are retained as the historical account of how the
 interim mitigation worked.
 
+**Update (#117):** the scan-phase leave is now driven by the **Profiles**
+toolbar item, not by a relabelled Stop item. The **Stop** item is sync-only: it
+is enabled and red only during a synchronization and disabled/neutral otherwise,
+and it no longer relabels to "Return to Profiles" during a connect/scan. The
+`onCancelScan` hook was removed; the single scan-leave path is now
+`leaveSession` reached through the window-close route (`performClose` →
+`windowShouldClose` → `handleWindowClosed`). The leave *semantics* are unchanged
+(abandon presentation, retain the engine lease); only the control that triggers
+them changed. Where the text below says the scan-phase "Stop" or "Return to
+Profiles" performs the leave, read that as the **Profiles** item today.
+
 Every leave takes the Return-to-Profiles fallback (this is the current, post-#94
 behavior; symbols are named rather than line-anchored, since exact lines drift):
 
@@ -225,13 +236,16 @@ empirical unknowns.
   `operationFailed(engineIsQuiescent:false)` → the coordinator's
   `.restartRequired`.
 - **Escape hatches:** credential-sheet **Cancel** exits credential entry; in
-  the no-sheet connect/scan phase, **Stop** performs `onCancelScan` →
-  `leaveSession` → `engine.abandon()` → picker.
+  the no-sheet connect/scan phase, **Profiles** performs the leave (`performClose`
+  → `windowShouldClose` → `handleWindowClosed` → `leaveSession` →
+  `engine.abandon()` → picker). Post-#117 the Stop item is sync-only and takes no
+  part in the scan-phase leave; `onCancelScan` was removed.
 - **Recovery from a wedge:** quit and reopen.
 
 ## 3. The residual gap (corrected from v1)
 
-None of Cancel / Stop / the detector unwinds the already-issued OCaml scan.
+None of Cancel / Profiles (the scan-phase leave) / the detector unwinds the
+already-issued OCaml scan.
 `unison_bridge_init2()` **launches** the asynchronous scan worker
 (`unisonInit2` → `doInOtherThread (do_unisonInit2)`; `uimacbridge.ml:405`) and
 returns after the synchronous dispatch — `_ocaml_init2`'s comment: "Scan runs
