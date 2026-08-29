@@ -11,6 +11,41 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-29
+
+A small user-interface and update-infrastructure release on top of 0.6.0.
+(Build 22.) Existing profiles and settings continue to work without migration.
+
+### Changed
+- **Stop is a sync-only toolbar control, and the reconcile toolbar is spatially
+  stable.** The Stop button keeps its "Stop" title and its position in every
+  phase and is enabled (red) only during a synchronization, when it aborts that
+  sync. It no longer relabels to "Return to Profiles" during a connect/scan, so
+  the Go button no longer shifts between phases. Returning to the profile list
+  during a scan is the Profiles control's job; leaving does not cancel the scan,
+  which continues in the background (quit and relaunch if it does not finish).
+  Rescan is now disabled while a scan or sync is already running. Enablement for
+  Stop, Rescan, the toolbar, the menu, the keyboard, and the action-method
+  boundaries is driven by one shared gate. (#117, #118)
+- **Update checks route through `updates.courbage.net`.** Builds from 0.6.1
+  onward check for updates through a privacy-scoped Cloudflare Worker that proxies
+  the signed GitHub Pages appcast byte-for-byte (the EdDSA feed signature is
+  intact and `SURequireSignedFeed` still fails closed). GitHub Pages remains the
+  signed origin; a 0.6.0 install still discovers 0.6.1 through its existing feed.
+  A bounded per-check telemetry row (the shared profile fields and coarse country,
+  no IP, user agent, cookie, or user identifier) is recorded only when anonymous
+  system-profile sharing is enabled, and nothing is recorded when it is disabled;
+  see [what data the app sends](https://bcourbage.github.io/unison-ui-mac/faq/#what-data-does-the-app-send)
+  in the FAQ. (#116)
+
+### Fixed
+- **The reconcile toolbar no longer shifts position between phases** — Go moving
+  to where another control had been after a scan finished. (#117)
+
+### Internal
+- Synced the tracked generated `Resources/Info.plist` with `project.yml` so its
+  `SUFeedURL` matches. (#119)
+
 ## [0.6.0] — 2026-08-24
 
 A safety, correctness, and robustness release on top of 0.5.1. (Build 21.)
@@ -824,7 +859,8 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.4.2...v0.5.0
