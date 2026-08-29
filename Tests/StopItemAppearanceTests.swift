@@ -1,102 +1,49 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// Pure-logic coverage for the Stop toolbar item's phase-aware copy. The
+/// Pure-logic coverage for the Stop toolbar/menu item's presentation. The
 /// decision lives in `StopItemAppearance` so it's testable without an AppKit
-/// toolbar-validation harness. See issue #24 follow-up (honest scan-phase
-/// copy).
+/// toolbar-validation harness.
+///
+/// Post issue #117 the item is sync-only: the title is always "Stop", and both
+/// enablement (at the call site) and the destructive tint derive from a single
+/// `canStop` verdict, so a disabled Stop can never be painted red.
 final class StopItemAppearanceTests: XCTestCase {
 
-    // MARK: - Phase mapping
+    // MARK: - Title is constant
 
-    func test_scanning_notSyncing_isReturnToProfiles() {
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: false),
-            .returnToProfiles)
+    func test_title_isAlwaysStop() {
+        XCTAssertEqual(StopItemAppearance(canStop: true).title, "Stop")
+        XCTAssertEqual(StopItemAppearance(canStop: false).title, "Stop")
     }
 
-    func test_syncing_isStopSync() {
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: false, isSyncing: true),
-            .stopSync)
+    func test_symbol_isAlwaysStopFill() {
+        XCTAssertEqual(StopItemAppearance(canStop: true).systemSymbol, "stop.fill")
+        XCTAssertEqual(StopItemAppearance(canStop: false).systemSymbol, "stop.fill")
     }
 
-    func test_syncTakesPrecedence_whenBothFlagsSet() {
-        // During the scan→sync transition isScanning can still read true; a
-        // running sync must win so the item is a real sync-abort, not a
-        // return-to-profiles.
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: true),
-            .stopSync)
+    // MARK: - Tint tracks the single verdict
+
+    func test_canStop_isDestructive() {
+        XCTAssertEqual(StopItemAppearance(canStop: true).tint, .destructive)
     }
 
-    func test_neitherPhase_defaultsToStopSync() {
-        // Item is disabled outside sync/scan anyway; the label just shouldn't
-        // claim "Return to Profiles" when nothing is connecting.
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: false, isSyncing: false),
-            .stopSync)
+    func test_cannotStop_isNeutral() {
+        XCTAssertEqual(StopItemAppearance(canStop: false).tint, .normal)
     }
 
-    // MARK: - Copy is honest and em-dash-free
-
-    func test_returnToProfiles_copy() {
-        let a = StopItemAppearance.returnToProfiles
-        XCTAssertEqual(a.label, "Return to Profiles")
-        XCTAssertEqual(a.toolTip, "Return to the profile list")
-        XCTAssertEqual(a.progressSummary, "Returning to profiles…")
-        // Must not claim to stop/cancel a sync that isn't running.
-        XCTAssertFalse(a.label.lowercased().contains("stop"))
-        XCTAssertFalse(a.toolTip.lowercased().contains("synchronization"))
+    /// The whole point of #117 refinement #2: presentation is a pure function of
+    /// the gate verdict, so tint and enablement cannot disagree. A disabled item
+    /// (canStop == false) is never destructive.
+    func test_tint_isNeverDestructiveWhenDisabled() {
+        XCTAssertNotEqual(StopItemAppearance(canStop: false).tint, .destructive)
     }
 
-    func test_stopSync_copy() {
-        let a = StopItemAppearance.stopSync
-        XCTAssertEqual(a.label, "Stop")
-        XCTAssertEqual(a.toolTip, "Cancel the running synchronization")
-    }
+    // MARK: - Copy is non-empty in both states
 
-    // MARK: - Icon + tint
-
-    func test_returnToProfiles_icon_isNeutralNavGlyph_normalTint() {
-        let a = StopItemAppearance.returnToProfiles
-        // A neutral back-navigation glyph, NOT the red stop sign — the action
-        // does not interrupt the scan.
-        XCTAssertEqual(a.systemSymbol, "chevron.backward")
-        XCTAssertNotEqual(a.systemSymbol, "stop.fill")
-        XCTAssertEqual(a.tint, .normal)
-        XCTAssertNotEqual(a.tint, .destructive)
-    }
-
-    func test_stopSync_icon_isRedStop() {
-        let a = StopItemAppearance.stopSync
-        XCTAssertEqual(a.systemSymbol, "stop.fill")
-        XCTAssertEqual(a.tint, .destructive)
-    }
-
-    func test_phasesDifferInIconAndTint() {
-        // The two phases must be visually distinct, not just relabelled.
-        XCTAssertNotEqual(StopItemAppearance.returnToProfiles.systemSymbol,
-                          StopItemAppearance.stopSync.systemSymbol)
-        XCTAssertNotEqual(StopItemAppearance.returnToProfiles.tint,
-                          StopItemAppearance.stopSync.tint)
-    }
-
-    func test_noEmDashInAnyCopy() {
-        for a in [StopItemAppearance.stopSync, .returnToProfiles] {
-            for s in [a.label, a.toolTip, a.progressSummary] {
-                XCTAssertFalse(s.contains("—"), "em-dash in user-facing copy: \(s)")
-            }
+    func test_toolTip_isPresentInBothStates() {
+        for canStop in [true, false] {
+            XCTAssertFalse(StopItemAppearance(canStop: canStop).toolTip.isEmpty)
         }
-    }
-
-    // MARK: - Scan phase is always the honest Return to Profiles (issue #53/#94)
-
-    func test_scanning_isReturnToProfiles() {
-        // In-place scan interruption was withdrawn: the scan-phase Stop item is
-        // always the honest Return to Profiles (never a "Stop Scan").
-        XCTAssertEqual(
-            StopItemAppearance.forPhase(isScanning: true, isSyncing: false),
-            .returnToProfiles)
     }
 }

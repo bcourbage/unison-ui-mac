@@ -240,13 +240,15 @@ Run against the **final signed Release** `.app` binary
 - [ ] **Shared transport-child registry/reaper symbols are PRESENT.**
       `nm <binary> | grep -E 'transport_child_terminated|reap_transport_children|track_child|retire_child'`
       → all four present (the connect-prompt classifier and shutdown reaping need them).
-- [ ] **Scan-phase UI offers only Return to Profiles.** During a running scan the
-      toolbar Stop control reads **Return to Profiles** (never "Stop Scan"), and
-      invoking it returns to the picker without cancelling the scan (it winds down
-      in the background). Cross-check with TC11.
-- [ ] **Sync-time Stop still operates normally.** During an actual sync, Stop
-      aborts the running transfer via `Abort.all` (unwinds at the next
-      checkpoint), unchanged.
+- [ ] **Scan-phase leave is Profiles; Stop is disabled (issue #117).** During a
+      running scan the toolbar **Profiles** control leaves to the picker without
+      cancelling the scan (it winds down in the background), and the **Stop**
+      control is **disabled and neutral** (never "Return to Profiles", never
+      "Stop Scan"). Stop's title stays "Stop" and its position does not move.
+      Cross-check with TC11.
+- [ ] **Sync-time Stop still operates normally.** During an actual sync, Stop is
+      enabled and red and aborts the running transfer via `Abort.all` (unwinds at
+      the next checkpoint), unchanged.
 
 ### Lifecycle re-runs on the signed Release candidate (post-publication canaries)
 Behavior changed around scan-leave (#94) and TC11 was rewritten, so re-run these
@@ -256,9 +258,9 @@ against the **final signed RC** (not just a Debug build):
       running: the new open waits for the abandoned scan, then starts; the first
       profile's connection is closed, not leaked or clobbered.
 - [ ] **TC11** (`docs/manual-test-step2b.md`) — post-auth transport wedge during
-      a scan: reaches restart-required within the scan timeout; the toolbar shows
-      **Return to Profiles** only (no "Stop Scan"); a waiting replacement profile
-      is carried to restart-required; quit + reopen recovers cleanly.
+      a scan: reaches restart-required within the scan timeout; **Profiles** leaves
+      to the picker (Stop is disabled, no "Stop Scan"); a waiting replacement
+      profile is carried to restart-required; quit + reopen recovers cleanly.
 - [ ] **TC13** (`docs/manual-test-step2b.md`) — auth prompt field style: the
       host-key yes/no question renders a **plain** field and every secret
       (password/passphrase/OTP) renders a **masked** secure field. (The combined

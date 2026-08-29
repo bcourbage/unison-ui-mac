@@ -208,7 +208,7 @@ This is the step-3 behavior. Two sub-cases.
 
 **TC9b — pick while a scan is running:**
 1. Open a profile whose scan takes a few seconds (large tree).
-2. While it's still scanning, click **Return to Profiles** (or close the window) to return to the picker.
+2. While it's still scanning, click **Profiles** (or close the window) to return to the picker.
 3. Immediately pick another profile.
 4. **Expect:** same as above — the new open waits for the abandoned scan to finish, then starts. No crash, no double-drive.
 
@@ -239,12 +239,12 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. While the scan is running, freeze the server on the remote: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
 3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**. No credential sheet.
-4. During the frozen scan the toolbar action is **"Return to Profiles"** (neutral, back glyph). In v0.5.1 the in-place scan-interruption machinery has been **removed entirely** (#94) — there is no policy gate or `.interruptingScan` state left, so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe — see issue #53 / #94 and the CHANGELOG. Do not expect it here.)
-5. Click **Return to Profiles** → returns to the picker; the scan winds down in the background; it is **not** cancelled; the retained scan-stall detector still drives the abandoned op to **restart-required**.
+4. During the frozen scan the leave control is **Profiles**; the **Stop** control is **disabled and neutral** (its title stays "Stop" and it does not move) — Stop is sync-only (issue #117). In v0.5.1 the in-place scan-interruption machinery has been **removed entirely** (#94): there is no policy gate or `.interruptingScan` state left, so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe. See issue #53 / #94 and the CHANGELOG. Do not expect it here.)
+5. Click **Profiles** → returns to the picker; the scan winds down in the background; it is **not** cancelled; the retained scan-stall detector still drives the abandoned op to **restart-required**.
 6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
-7. After returning to the picker via **Return to Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
+7. After returning to the picker via **Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
 
-**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Return to Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; **Stop Scan** is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
+**PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
 ### TC12 — Interactive auth failure (live)
 
@@ -303,9 +303,9 @@ followed by a password prompt is masked, never plain.
   mitigation **will not be implemented** — the spike was transport-positive but
   app-inconclusive (see `docs/ssh-keepalive-spike-results.md`).
 - **In-app exits do not unwind a genuinely wedged op.** No UI control unwinds a
-  scan in-process. During scanning the only leave is **Return to Profiles**
-  (abandonment), and **sheet Cancel** / **Stop** cancel credential entry or a
-  running sync; recovery from a wedged scan is quit + reopen. The v0.4.0 in-place
+  scan in-process. During scanning the only leave is **Profiles**
+  (abandonment); **Stop** is disabled (sync-only, issue #117) and **sheet Cancel**
+  cancels credential entry; recovery from a wedged scan is quit + reopen. The v0.4.0 in-place
   **Stop Scan** (kill the transport, then reuse the engine) was withdrawn because
   forced-interruption engine reuse was never proven safe; in v0.5.1 the machinery
   has been **removed entirely** (#94, merged) — there is no `ScanInterruptPolicy`
@@ -336,7 +336,7 @@ followed by a password prompt is masked, never plain.
 | TC9a | gate: pick during background sync | | |
 | TC9b | gate: pick during scan | | |
 | TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
-| TC11 | post-auth scan wedge (frozen remote) | PASS | scan-stall detector fires at the 120 s bound → restart-required; **Return to Profiles** abandons to the picker with the retained detector still driving restart-required; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). |
+| TC11 | post-auth scan wedge (frozen remote) | PASS (stall mechanics); UI re-confirm pending for #117 | scan-stall detector fires at the 120 s bound → restart-required; the leave-to-picker path (now **Profiles**) drives restart-required via the retained detector; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). Under #117 re-confirm the toolbar delta: **Profiles** leaves, **Stop** stays disabled/neutral (was the relabelled "Return to Profiles"). |
 | TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
 | TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
 

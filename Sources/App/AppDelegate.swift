@@ -355,13 +355,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 }
                 self.run(self.engine.requestRescan())
             },
-            // Stop during connect/scan: tear the window down to the picker now
-            // (leaving the lease with the in-flight op), rather than leaving it
-            // spinning on "Cancelling…" until the background op settles.
-            onCancelScan: { [weak self] in
-                self?.leaveSession(s, profile: profile, closeWindow: true,
-                                   reason: "Stop during connect/scan")
-            },
             onWindowShouldClose: { [weak self] in self?.windowShouldCloseSession(s) ?? true },
             onProfilesRequested: { [weak self] in self?.profilesRequested(s) ?? false },
             onSyncStart: { [weak self] in
@@ -424,15 +417,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         diffLifecycle.abandon(owner: s.raw)
     }
 
-    /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
-    /// the ✕ / ⌘W path only). Reached from `windowWillClose` — i.e. AFTER
+    /// The user closed a live session's reconcile window (the ✕ button or ⌘W).
+    /// Reached from `windowWillClose` — i.e. AFTER
     /// `windowShouldClose` (see `windowShouldCloseSession`) already ALLOWED the
     /// close. `windowShouldClose` always allows during a connect/scan now
     /// (in-place interruption withdrawn, #53 / #94), so this is the honest
     /// leave-to-picker for every case: it abandons presentation while the
     /// coordinator retains the scan lease.
     private func handleWindowClosed(session s: SessionID, profile: String) {
-        leaveSession(s, profile: profile, closeWindow: false, reason: "window closed")
+        leaveSession(s, profile: profile, reason: "window closed")
     }
 
     /// `NSWindowDelegate.windowShouldClose` for a session. In-place scan
@@ -464,9 +457,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return false
     }
 
-    /// Single, idempotent session→picker teardown, shared by the user closing
-    /// the window (`handleWindowClosed`, `closeWindow: false`) and pressing
-    /// Stop during connect/scan (`onCancelScan`, `closeWindow: true`).
+    /// Single, idempotent session→picker teardown. Reached when the user closes
+    /// the reconcile window (the ✕ / ⌘W / Profiles path, via `handleWindowClosed`).
+    /// Leaving during a connect/scan is the Profiles control's job now
+    /// (issue #117); Stop no longer tears the session down (its scan-phase role
+    /// was removed), so there is a single entry point.
     ///
     /// Ordering matters: detach the window's delegate FIRST so closing it
     /// can't re-enter `handleWindowClosed` (no double `abandon`), then drop
@@ -476,16 +471,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// callback (guarded by the coordinator's phase-exact checks) releases it.
     /// Idempotent via the `windowBySession[s]` guard: a second call for an
     /// already-torn-down session is a no-op.
-    private func leaveSession(_ s: SessionID, profile: String,
-                              closeWindow: Bool, reason: String) {
+    private func leaveSession(_ s: SessionID, profile: String, reason: String) {
         guard let w = windowBySession[s] else { return }
-        // Cancel THIS session's in-flight version probe here, in the common
-        // session-leave path. Both entry points route through leaveSession:
-        // the user closing the window (handleWindowClosed) and pressing Stop
-        // during connect/scan (onCancelScan). Because leaveSession detaches the
-        // window delegate before closing (so windowWillClose/handleWindowClosed
-        // never re-fires), cancelling here is the only place that also covers
-        // the programmatic Stop path — otherwise its probe would leak.
+        // Cancel THIS session's in-flight version probe here, in the session-leave
+        // path, so a probe started during a connect/scan can't leak when the user
+        // leaves before it lands.
         if versionProbeSession == s {
             activeVersionProbe?.cancel()
             activeVersionProbe = nil
@@ -497,7 +487,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
-        if closeWindow { w.close() }
         run(engine.abandon(reason: reason))
         showProfilePicker(select: profile)
     }
@@ -663,7 +652,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.showProfilePicker(select: profile)
             },
             onRescanRequested: {},
-            onCancelScan: {},
             onSyncStart: {},
             onSyncExit: { _ in },
             onEngineUncertain: { _ in },

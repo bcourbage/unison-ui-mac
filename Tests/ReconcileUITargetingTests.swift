@@ -24,7 +24,7 @@ final class ReconcileUITargetingTests: XCTestCase {
     ) -> ReconcileWindowController {
         ReconcileWindowController(
             profile: "T", mergeConfigured: false,
-            onClose: {}, onRescanRequested: {}, onCancelScan: {},
+            onClose: {}, onRescanRequested: {},
             onSyncStart: {}, onSyncExit: { _ in }, onEngineUncertain: { _ in },
             onIgnore: { _, row in onIgnoreRow(row); return UNISON_OP_INVALID },
             onDiffRequest: { row in onDiffRow(row); return .refused },
