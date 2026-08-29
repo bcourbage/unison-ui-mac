@@ -98,19 +98,27 @@ with conflicts surfaced for review. This is Unison's model, not a one-way mirror
 <p>Through <a href="https://sparkle-project.org/">Sparkle</a>, over a cryptographically signed
 appcast feed. Check manually any time from <strong>App menu ▸ Check for Updates</strong>.</p>
 <h2 id="what-data-does-the-app-send">What data does the app send?</h2>
-<p>There is no analytics or usage tracking. The only information the app can send is an
-optional anonymous system profile that Sparkle attaches to an update check. When it
-is included, the profile is sent only while checking for updates, at most once a
-week, and contains just: macOS version, Mac model, CPU, memory, app version, and
-preferred language. It carries no name or account, no file names or contents, and no
-record of what you sync or how you use the app.</p>
-<p>An "Include an anonymous system profile with update checks" checkbox controls it, on
-the first-launch update prompt and in Settings. The checkbox is selected by default
-on that prompt, so accepting the defaults includes the profile; clear it there or in
-Settings to turn it off. Nothing is sent before you answer the prompt. Checking for
-updates at all contacts the update feed, the same as any app that updates itself.</p>
-<p>Synchronization never routes your data through this project: files move directly
-between the two roots over SSH, not through any server operated by the app.</p>
+<p>The app has no per-user tracking. When it checks for updates, the request goes to
+the project's update endpoint. A record is created only when a check includes the
+optional anonymous system profile. Sparkle attaches that profile at most once every
+seven days, and only if the checkbox is on. Checks without the profile, including
+every check after you opt out and the routine checks in between, are not recorded.</p>
+<p>Each record holds only the check time, a coarse country that Cloudflare derives from
+the connection, and the profile fields: macOS version, Mac model, CPU, memory, app
+version, and preferred language. It carries no name, account, IP address, cookie, or
+stable per-user identifier, and no file names, contents, or record of what you sync.
+The records are per-check rows, deleted once they are older than 180 days by a
+cleanup that runs weekly (so a record may persist up to about a week beyond that),
+and used only to produce aggregate statistics. Cloudflare processes the request as
+the hosting provider.</p>
+<p>An "Include an anonymous system profile with update checks" checkbox controls the
+profile, on the first-launch update prompt and in Settings. The checkbox is selected
+by default on that prompt, so accepting the defaults includes the profile; clear it
+there or in Settings to turn it off. With it off, update checks still reach
+Cloudflare (the same as any app that updates itself), but the project creates no
+telemetry record for the check.</p>
+<p>Your synced files never route through this project: they move directly between the
+two roots over SSH.</p>
 <h2 id="which-version-of-unison-does-it-use">Which version of Unison does it use?</h2>
 <p>It currently embeds upstream Unison
 <a href="https://github.com/bcpierce00/unison/releases/tag/v2.54.0">2.54.0</a>. The wire-protocol compatibility boundary is
