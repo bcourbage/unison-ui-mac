@@ -488,25 +488,27 @@ then show their own); collapsing it again brings the summary back.</p>
 when idle.</p>
 <h3 id="toolbar">Toolbar</h3>
 <ul>
-<li><strong>Profiles</strong>: return to the picker (closes this reconcile window). During a
-  scan this action reads <strong>Return to Profiles</strong>: it abandons the view and
-  returns to the picker but does <strong>not</strong> cancel the scan, which keeps running in
-  the background until it finishes on its own (for a remote session the app then
-  closes the connection; a local-only session has no connection and simply goes
-  idle). There is no in-place "stop the scan" control; if a remote scan hangs,
-  quit and relaunch.</li>
+<li><strong>Profiles</strong>: return to the picker (closes this reconcile window). Its
+  label and position never change. Leaving during a connect or scan does
+  <strong>not</strong> cancel it; the connection or scan keeps running in the background
+  until it finishes on its own (for a remote session the app then closes the
+  connection; a local-only session has no connection and simply goes idle).
+  There is no in-place "stop the scan" control; if a remote scan hangs, quit
+  and relaunch. Leaving during a sync raises a confirmation first (see Stop).</li>
 <li><strong>Rescan</strong>: re-run init2 without re-initializing the SSH connection.
   Useful when files have changed on either side and you want a fresh
-  view.</li>
+  view. Disabled while a scan or sync is already running.</li>
 <li><strong>← First / → Second / Skip / Merge</strong>: direction overrides for the
   selected leaf rows. Multi-select supported; selecting a folder applies
   to every leaf under it.</li>
 <li><strong>Go</strong> (green): synchronize. Propagates every row's Action.</li>
-<li><strong>Stop</strong> (red): visible during sync. Aborts the running sync: it
-  signals Unison to stop at its next checkpoint (between files), so a
-  transfer already in flight may finish before the abort takes hold. The
-  window stays open afterward so you can inspect any rows left <code>⚠ FAILED</code>
-  in the Progress column; close it or Rescan when you're ready.</li>
+<li><strong>Stop</strong>: the sync-abort control, always in the same position. It is
+  enabled and red only while a sync is running, and disabled and neutral
+  otherwise. Aborting signals Unison to stop at its next checkpoint (between
+  files), so a transfer already in flight may finish before the abort takes
+  hold. The window stays open afterward so you can inspect any rows left
+  <code>⚠ FAILED</code> in the Progress column; close it or Rescan when you're ready.
+  To leave during a connect or scan, use Profiles, not Stop.</li>
 <li><strong>Quit</strong>: quit the app, identical to <code>⌘Q</code> (runs the clean OCaml
   bridge shutdown on the way out).</li>
 </ul>
@@ -854,7 +856,7 @@ otherwise they're greyed.</p>
 <tr>
 <td>Rescan</td>
 <td>⌘⇧R</td>
-<td>Re-run init2 against the current profile. Disabled mid-sync.</td>
+<td>Re-run init2 against the current profile. Disabled while a scan or sync is already running.</td>
 </tr>
 <tr>
 <td>Rescan Ignoring Archives…</td>
