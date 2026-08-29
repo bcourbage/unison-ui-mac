@@ -813,7 +813,7 @@ otherwise they're greyed.
 |---|---|---|
 | Go | ⌘⏎ | Start synchronizing the current row decisions. Disabled mid-sync and before init2 has populated rows. |
 | Stop | ⌘. | Abort a running sync. Disabled when no sync is running. (See [Stop button](#stop-button-how-abort-works) for the abort semantics.) |
-| Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled mid-sync. |
+| Rescan | ⌘⇧R | Re-run init2 against the current profile. Disabled while a scan or sync is already running. |
 | Rescan Ignoring Archives… | (none) | Re-open the profile with a one-shot `ignorearchives` to recover from an "archive inconsistency" (confirms first). Enabled only with a reconcile window open. See [Troubleshooting](#archive-inconsistency-fatal-mid-reconcile). |
 | Show Profile Picker | ⌘⇧P | Close the reconcile window and return to the launch picker (the just-run profile stays highlighted). Disabled mid-sync, use Stop or ⌘W (which triggers the mid-sync confirm sheet) instead. |
 | → Second | `>` | Propagate first → second for selected leaves |

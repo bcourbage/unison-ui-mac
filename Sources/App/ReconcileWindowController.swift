@@ -632,10 +632,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     func cancelSync() {
         // Stop is a sync-only control (issue #117): it aborts a running sync and
         // nothing else. Leaving during a connect/scan is the Profiles control's
-        // job. This guard is the method-boundary backstop for the gate that only
-        // enables Stop while syncing — if reached in any other phase it is a
-        // no-op beep.
-        guard isSyncing else { NSSound.beep(); return }
+        // job. The method boundary consults the SAME shared gate as the toolbar
+        // and menu (not a private `isSyncing` re-derivation), so all four paths
+        // stay in lockstep and a future gate refinement can't drift from here.
+        // If reached in any other phase it is a no-op beep.
+        guard actionGate.allows(.stop) else { NSSound.beep(); return }
         userRequestedStop = true   // finalizeSyncUI reads this for the "stopped" summary
         Log.reconcile.notice("user requested Stop — routing abort through the coordinator")
         TraceLog.shared.write("ReconcileWindow: user requested Stop — coordinator abort (keep window)")

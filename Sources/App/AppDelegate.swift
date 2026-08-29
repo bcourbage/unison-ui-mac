@@ -417,8 +417,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         diffLifecycle.abandon(owner: s.raw)
     }
 
-    /// The user closed a live session's reconcile window (the ✕ button, ⌘W, or
-    /// the ✕ / ⌘W path only). Reached from `windowWillClose` — i.e. AFTER
+    /// The user closed a live session's reconcile window (the ✕ button or ⌘W).
+    /// Reached from `windowWillClose` — i.e. AFTER
     /// `windowShouldClose` (see `windowShouldCloseSession`) already ALLOWED the
     /// close. `windowShouldClose` always allows during a connect/scan now
     /// (in-place interruption withdrawn, #53 / #94), so this is the honest
