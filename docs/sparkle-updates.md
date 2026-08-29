@@ -196,13 +196,24 @@ revision (and the tools checksum above) deliberately.
 ## Producing an appcast for a release
 
 The appcast is an RSS feed listing available versions; the app polls it at
-`SUFeedURL`. On a pushed `v*` tag, the `release` job in
-`.github/workflows/release.yml` produces and publishes it automatically. The
-appcast is generated, signed, and **cryptographically verified before the
-GitHub Release is created and the archive uploaded** (deliberately: the signed
-feed is proven over local bytes first). The Release is then created/uploaded,
-the verified appcast is published to GitHub Pages, and finally the served feed
-is re-verified byte-for-byte:
+`SUFeedURL`. **Two endpoints, distinct roles:** GitHub Pages
+(`https://bcourbage.github.io/unison-ui-mac/appcast.xml`) is the **signed origin**
+that the release job publishes to; `SUFeedURL`
+(`https://updates.courbage.net/unison-ui-mac/appcast.xml`) is the **client-facing**
+URL baked into the app, a Cloudflare Worker that fetches the origin and returns it
+BYTE-FOR-BYTE (feed signature intact) while logging the anonymous update-check
+profile (its source is the separate private repo
+[`bcourbage/unison-updates-worker`](https://github.com/bcourbage/unison-updates-worker),
+not part of this repository). Builds released before that switch
+poll GitHub Pages directly.
+
+On a pushed `v*` tag, the `release` job in `.github/workflows/release.yml` produces
+and publishes it automatically. The appcast is generated, signed, and
+**cryptographically verified before the GitHub Release is created and the archive
+uploaded** (deliberately: the signed feed is proven over local bytes first). The
+Release is then created/uploaded, the verified appcast is published to the GitHub
+Pages origin, and finally BOTH endpoints (origin, then the client `SUFeedURL`) are
+re-verified byte-for-byte:
 
 1. **Fetch the Sparkle tools** from the pinned, checksum-verified tarball (same
    SHA-256 as "Getting the tools" above) — provides both `generate_appcast` and
@@ -234,10 +245,16 @@ is re-verified byte-for-byte:
    over its bytes, matched by its EXACT expected URL so a foreign/duplicate
    enclosure or a dot-segment URL cannot stand in for it).
 5. **Publish** `appcast.xml` to the `gh-pages` branch (which must already exist),
-   which GitHub Pages serves at `SUFeedURL`. Archives live on GitHub Releases.
-6. **Verify publication:** poll `SUFeedURL` until it serves the new version, then
-   `sign_update --verify` the served bytes — a green `git push` is not proof the
-   asynchronous Pages deploy succeeded.
+   the signed **origin** GitHub Pages serves. Archives live on GitHub Releases.
+   `SUFeedURL` (the Worker) fetches this origin; it is not itself published to.
+6. **Verify publication at both endpoints:** poll the GitHub Pages **origin** until
+   it serves the new version and `sign_update --verify` the served bytes (a green
+   `git push` is not proof the asynchronous Pages deploy succeeded); then poll the
+   client-facing `SUFeedURL` (the Worker, which may lag the origin by up to its
+   short cache TTL) until byte-identical and verify those bytes too, proving clients
+   can actually see the release. Rollback must likewise restore the origin AND wait
+   out / purge the Worker cache before deleting an asset (see the release
+   checklist).
 
 For **local testing** (not a real release), the manual wrapper still works:
 `SPARKLE_BIN="$tools/bin" ./scripts/sparkle-appcast.sh path/to/updates/` runs
