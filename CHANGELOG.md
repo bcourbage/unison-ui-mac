@@ -22,17 +22,21 @@ A small user-interface and update-infrastructure release on top of 0.6.0.
   phase and is enabled (red) only during a synchronization, when it aborts that
   sync. It no longer relabels to "Return to Profiles" during a connect/scan, so
   the Go button no longer shifts between phases. Returning to the profile list
-  during a scan is the Profiles control's job (it leaves without cancelling the
-  scan, which winds down in the background). Rescan is now disabled while a scan
-  or sync is already running. Enablement for Stop, Rescan, the toolbar, the menu,
-  the keyboard, and the action-method boundaries is driven by one shared gate.
-  (#117, #118)
+  during a scan is the Profiles control's job; leaving does not cancel the scan,
+  which continues in the background (quit and relaunch if it does not finish).
+  Rescan is now disabled while a scan or sync is already running. Enablement for
+  Stop, Rescan, the toolbar, the menu, the keyboard, and the action-method
+  boundaries is driven by one shared gate. (#117, #118)
 - **Update checks route through `updates.courbage.net`.** Builds from 0.6.1
   onward check for updates through a privacy-scoped Cloudflare Worker that proxies
   the signed GitHub Pages appcast byte-for-byte (the EdDSA feed signature is
   intact and `SURequireSignedFeed` still fails closed). GitHub Pages remains the
   signed origin; a 0.6.0 install still discovers 0.6.1 through its existing feed.
-  (#116)
+  A bounded per-check telemetry row (the shared profile fields and coarse country,
+  no IP, user agent, cookie, or user identifier) is recorded only when anonymous
+  system-profile sharing is enabled, and nothing is recorded when it is disabled;
+  see [what data the app sends](https://bcourbage.github.io/unison-ui-mac/faq/#what-data-does-the-app-send)
+  in the FAQ. (#116)
 
 ### Fixed
 - **The reconcile toolbar no longer shifts position between phases** — Go moving
