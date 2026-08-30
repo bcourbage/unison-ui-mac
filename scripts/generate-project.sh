@@ -54,8 +54,13 @@ fi
 
 "$XCODEGEN" generate
 
-if [ -n "$prev" ] && cmp -s "$prev" "$proj"; then
-  touch -r "$ref" "$proj"
+# Restore project.pbxproj's prior mtime on a no-op rewrite (xcodegen rewrites the
+# file each run even when byte-identical). Guarded on $prev so a FRESH generation
+# (no prior file — e.g. a clean checkout) skips this block and the script still
+# exits 0: a bare trailing `[ -n "$prev" ] && rm` would otherwise make the whole
+# script exit non-zero when $prev is empty.
+if [ -n "$prev" ]; then
+  cmp -s "$prev" "$proj" && touch -r "$ref" "$proj"
+  rm -f "$ref" "$prev"
 fi
-[ -n "$ref" ] && rm -f "$ref"
-[ -n "$prev" ] && rm -f "$prev"
+:
