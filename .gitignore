@@ -20,7 +20,7 @@ DerivedData/
 # the opam local switch (setup-ocaml), the build-log tee'd by the build step, and
 # the repository-local pinned XcodeGen (scripts/install-xcodegen.sh).
 /_opam/
-build.log
+/build.log
 /.tools/
 
 # Editor noise

@@ -273,15 +273,11 @@ verify-runtime-minos: $(STRIPPED_ASMRUN)
 # xcodegen substitutes into project.yml.
 #
 # The pinned XcodeGen lives in an ignored, repository-local path (.tools/…, not
-# on PATH) so a global/Homebrew xcodegen can't shadow it; `generate` depends on
-# that binary and installs it on first use (no sudo).
-XCODEGEN_BIN := $(shell ./scripts/install-xcodegen.sh --print-bin)
-
-$(XCODEGEN_BIN):
-	./scripts/install-xcodegen.sh
-
+# on PATH) so a global/Homebrew xcodegen can't shadow it. generate-project.sh
+# validates that install COMPLETELY (binary version + presets) on every run and
+# installs/repairs it (no sudo) if missing or incomplete, failing closed.
 .PHONY: generate xcodeproj
-generate: $(XCODEGEN_BIN)
+generate:
 	./scripts/generate-project.sh
 # Back-compat alias for the previous target name.
 xcodeproj: generate
@@ -479,6 +475,13 @@ check-plist-keys: generate
 .PHONY: check-plist-policy
 check-plist-policy: generate
 	./scripts/verify-plist-policy.sh --generated Resources/Info.plist
+
+# Regression: a repository-local XcodeGen with the right binary but missing
+# SettingPresets must be detected and repaired before generation (a missing-
+# presets install silently emits a different project).
+.PHONY: check-xcodegen-install
+check-xcodegen-install:
+	./scripts/test-xcodegen-install.sh
 
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a

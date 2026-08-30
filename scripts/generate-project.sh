@@ -22,19 +22,18 @@ cd "$(cd "$(dirname "$0")/.." && pwd)"   # repo root
 here="scripts"
 
 bin="$("$here/install-xcodegen.sh" --print-bin)"
-pinned="$("$here/install-xcodegen.sh" --print-version)"
-if [ ! -x "$bin" ]; then
-  cat >&2 <<EOF
-error: the pinned XcodeGen ($pinned) is not installed at:
-         $bin
-       Install it (repository-local, no sudo, does not touch your global xcodegen):
-         make install-xcodegen
-EOF
-  exit 1
+
+# Validate the repository-local install COMPLETELY (binary version + presets) on
+# every run — a present-but-incomplete install (e.g. missing SettingPresets)
+# would silently emit a different project. If it is absent or incomplete, install
+# it (repository-local, no sudo, ignores any global/Homebrew xcodegen), then
+# re-verify and FAIL CLOSED if it is still not complete.
+if ! "$here/install-xcodegen.sh" --verify >/dev/null 2>&1; then
+  echo "generate: repository-local XcodeGen missing/incomplete — installing…" >&2
+  "$here/install-xcodegen.sh" >&2
+  "$here/install-xcodegen.sh" --verify >/dev/null \
+    || { echo "error: repository-local XcodeGen still not valid after install; aborting before generation" >&2; exit 1; }
 fi
-have="$("$bin" --version 2>/dev/null | awk '{print $2}' || true)"
-[ "$have" = "$pinned" ] \
-  || { echo "error: repository-local xcodegen is '${have:-unknown}', expected $pinned — re-run make install-xcodegen" >&2; exit 1; }
 
 # xcodegen substitutes ${UNISON_VERSION} into project.yml; the Makefile exports
 # it. Fail clearly rather than silently baking an empty path.

@@ -181,8 +181,8 @@ make build      # Debug build by default. Strips libasmrun's main.n.o,
                 # vendor/. Pass CONFIG=Release for an optimized build.
 make generate   # (re)generate the xcodeproj + Resources/Info.plist from
                 # project.yml — run this before opening the project in Xcode
-make install-xcodegen  # install the pinned, checksum-verified XcodeGen
-                # (only when `make generate` reports a version mismatch)
+make install-xcodegen  # explicitly (re)install/repair the pinned XcodeGen into
+                # .tools/ (make build/generate also do this automatically)
 make install    # Release build + sign + copy to /Applications
                 # (always Release, regardless of CONFIG)
 make vendor-blob   # Maintainer-only: rebuild vendor/unison-blob-*.o
@@ -220,13 +220,16 @@ which do it for you) before opening the project in Xcode — a bare
 `xcodebuild` against a not-yet-generated project is not supported. A
 build that somehow runs without those paths set fails immediately with a
 clear error pointing back here, rather than producing a bundle that
-crashes at launch. Prerequisites for any build: Xcode, the **pinned**
-`xcodegen`, and **OCaml 5.5.0 built for the app's macOS deployment
-target**. XcodeGen is pinned to one version + checksum in the single
-authority [`scripts/install-xcodegen.sh`](scripts/install-xcodegen.sh)
-(shared by CI, the release pipeline, and the blob rebuild); `make
-generate` fails clearly if the installed `xcodegen` differs, and `make
-install-xcodegen` installs the pinned, checksum-verified version. The vendored blob removes the 5–10 min upstream *source* compile,
+crashes at launch. Prerequisites for any build: Xcode and **OCaml 5.5.0
+built for the app's macOS deployment target**. XcodeGen is **not** an
+externally-installed prerequisite: it is pinned to one version + checksum in
+the single authority
+[`scripts/install-xcodegen.sh`](scripts/install-xcodegen.sh) (shared by CI, the
+release pipeline, and the blob rebuild) and installed into an ignored,
+repository-local path (`.tools/`). `make generate`/`make build` install and
+invoke that exact pinned copy automatically and **ignore any global/Homebrew
+`xcodegen` on your PATH**; `make install-xcodegen` is an explicit
+preinstall/repair command. The vendored blob removes the 5–10 min upstream *source* compile,
 **not** the OCaml runtime dependency: `make build` still links the app against
 the OCaml 5.5.0 runtime libraries (`libasmrun` etc.) and its headers. Two gates
 enforce the toolchain: `check-ocaml-version` rejects any version other than

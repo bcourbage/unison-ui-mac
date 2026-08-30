@@ -144,6 +144,13 @@ jobs:
         # survive as build input.
         run: make check-generate-contract
 
+      - name: XcodeGen install is fail-closed
+        # Proves a repository-local XcodeGen with a valid-version binary but
+        # missing SettingPresets is rejected by --verify and repaired by
+        # `make generate` before generation (a missing-presets install silently
+        # emits a different project).
+        run: make check-xcodegen-install
+
       - name: Check signing resolver matrix
         # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
         # in scripts/test-resolve-signing.sh (24 cases, 38 assertions)
@@ -252,9 +259,10 @@ jobs:
           ./scripts/verify-plist-policy.sh --app "$app"
 
       - name: Clean-worktree proof (generation + build produced only ignored outputs)
-        # After generating and building, the working tree must be clean: the
-        # .xcodeproj and Resources/Info.plist are the ONLY new files and both are
-        # gitignored. A dirty tree means a generated output escaped .gitignore.
+        # After generating and building, `git status` must be clean: every output
+        # (the .xcodeproj and Resources/Info.plist, plus intentionally-ignored
+        # byproducts like .tools/, _opam/, .build/, and build.log) is gitignored.
+        # A non-empty status means some produced file escaped .gitignore.
         run: |
           test -d unison-ui-mac.xcodeproj || { echo "::error::build did not produce the generated .xcodeproj"; exit 1; }
           test -f Resources/Info.plist    || { echo "::error::build did not produce Resources/Info.plist"; exit 1; }
