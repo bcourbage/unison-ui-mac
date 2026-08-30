@@ -25,9 +25,8 @@ permissions:
 
 env:
   OCAML_VERSION: "5.5.0"
-  XCODEGEN_VERSION: "2.44.1"
-  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
-  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+  # XcodeGen version + checksum live in the single authority
+  # scripts/install-xcodegen.sh (shared with ci.yml and release.yml).
 
 jobs:
   vendor-blob:
@@ -212,16 +211,9 @@ jobs:
           retention-days: 14
 
       - name: Install pinned + SHA-256-verified XcodeGen (after upload)
-        run: |
-          curl -fsSL -o xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
-            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
-          unzip -q xcodegen.zip
-          sudo ./xcodegen/install.sh
-          got="$(xcodegen --version | awk '{print $2}')"
-          echo "xcodegen: $got"
-          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
+        # Single authority for the pinned version + checksum (shared with ci.yml
+        # and release.yml). Fetched AFTER the blob upload — see the header note.
+        run: ./scripts/install-xcodegen.sh
 
       - name: Smoke-test — build + test the app against the freshly built blob
         # SF7: `make build` runs verify-runtime-minos (the OCaml runtime built by
