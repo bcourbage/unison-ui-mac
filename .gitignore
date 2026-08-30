@@ -16,6 +16,11 @@ DerivedData/
 *.profraw
 *.profdata
 
+# Toolchain / build byproducts (created by CI or local runs, never committed):
+# the opam local switch (setup-ocaml) and the build-log tee'd by the build step.
+/_opam/
+build.log
+
 # Editor noise
 *.swp
 *~
