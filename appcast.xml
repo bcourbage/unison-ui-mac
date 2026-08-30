@@ -6,6 +6,34 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.6.1</title>
+            <pubDate>Sun, 30 Aug 2026 01:20:37 +0000</pubDate>
+            <sparkle:version>22</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 0.6.1</h1>
+<p>Version 0.6.1 is a small user-interface and update-infrastructure release on top of 0.6.0. Existing profiles and settings continue to work without migration.</p>
+<h2>Fixed</h2>
+<ul>
+<li><strong>The reconcile toolbar no longer shifts between phases.</strong> After a scan finished, the Go button used to move to where another control had been, because a single button was relabelled and resized per phase. The toolbar is now spatially stable: every button keeps its position, so Go stays where you expect it.</li>
+</ul>
+<h2>Changed</h2>
+<ul>
+<li><strong>Stop is a sync-only control.</strong> The Stop button keeps its "Stop" label and its position in every phase, and is active (red) only while a synchronization is running, when it aborts that sync. During a connect or scan it is inactive. To return to the profile list at any time, including during a scan, use Profiles (or ⌘⇧P). Leaving during a scan does not cancel it; the scan continues in the background. If it does not finish, quit and relaunch the app. Rescan is disabled while a scan or sync is already running.</li>
+<li><strong>Update checks now go through <code>updates.courbage.net</code>.</strong> Builds from 0.6.1 onward check for updates through a project-run proxy rather than contacting GitHub Pages directly. It serves the same signed appcast byte-for-byte, so update integrity is unchanged and a signed feed is still required.</li>
+</ul>
+<p>When anonymous system-profile sharing is enabled, the project records a bounded per-check telemetry row containing the shared profile fields and coarse country, subject to the documented retention period. When sharing is disabled, the project creates no telemetry record, although Cloudflare still processes the request as the hosting provider. No IP address, user agent, cookie, or user identifier is stored. See <a href="https://bcourbage.github.io/unison-ui-mac/faq/#what-data-does-the-app-send">what data the app sends</a> in the FAQ.</p>
+<h2>Compatibility</h2>
+<ul>
+<li>No profile or settings migration is required. Same system requirements as 0.6.0: macOS 15 or later, Apple Silicon.</li>
+<li>The move to <code>updates.courbage.net</code> takes effect for update checks made by this build and later. A 0.6.0 install discovers 0.6.1 through its existing feed; once 0.6.1 is installed, its later checks use the new address.</li>
+<li>If automatic update checking is enabled, Sparkle notifies you when 0.6.1 is available; whether it then downloads and installs automatically or only after you confirm depends on the separate automatic-download choice from the first-launch prompt. You can also update any time from App menu ▸ Check for Updates.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.6.1/unison-ui-mac-0.6.1.app.zip" length="5173262" type="application/octet-stream" sparkle:edSignature="XmXyXDZzfnA+J2Nt8ElH8T337tZ2KXCanAMkgljh1dH68TngugVUmptUSaSOoZL+J5tDa4kx2f3g7rav3SedBw=="/>
+        </item>
+        <item>
             <title>0.6.0</title>
             <pubDate>Tue, 25 Aug 2026 03:14:23 +0000</pubDate>
             <sparkle:version>21</sparkle:version>
@@ -74,37 +102,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.5.1/unison-ui-mac-0.5.1.app.zip" length="5072252" type="application/octet-stream" sparkle:edSignature="ocTijlx9j/Gj0LHjVdp8HIn+pME48fTwV4iiIom0PZ+HId23Lp73uIBctcVye1SE2mkO27IKhzHZTYLZdKuDDw=="/>
         </item>
-        <item>
-            <title>0.5.0</title>
-            <pubDate>Fri, 21 Aug 2026 23:57:05 +0000</pubDate>
-            <sparkle:version>19</sparkle:version>
-            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison-UI-Mac 0.5.0</h1>
-<p>Version 0.5.0 adds in-app updates, so the app can find and install new versions on its own, and moves distribution to a Developer ID-signed, notarized build. It also adds a Software Updates settings tab and a Donate menu item. It builds on 0.4.2.</p>
-<p>Existing profiles and settings continue to work without migration.</p>
-<h2>Added</h2>
-<ul>
-<li><strong>In-app updates.</strong> The app can now check for updates and install them itself, through the Sparkle update framework. Use App menu ▸ Check for Updates at any time. On first launch the app asks whether to check automatically.</li>
-<li><strong>Software Updates settings.</strong> A new Updates tab in Settings lets you change these choices at any time: whether the app checks for updates automatically, and whether it includes an anonymous system profile when it checks.</li>
-<li><strong>Donate menu item.</strong> Help ▸ Donate opens the project's GitHub Sponsors page.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>Signed and notarized distribution.</strong> The app is now distributed as a Developer ID-signed, notarized build, so it opens with a normal double-click. Updates after the first install come through the app itself.</li>
-</ul>
-<h2>Compatibility</h2>
-<ul>
-<li>No profile or settings migration is required. Same system requirements as 0.4.2 (macOS 15 or later, Apple Silicon).</li>
-<li>If you installed an earlier version by hand, install 0.5.0 once (via Homebrew or the download); after that the app updates itself, automatically if you enable automatic checks or any time from App menu ▸ Check for Updates.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.5.0/unison-ui-mac-0.5.0.app.zip" length="5124923" type="application/octet-stream" sparkle:edSignature="jX7828uMsaymqtzWuC4aPLsxHf9bcyHFj/DOrfv4tpNCkxC3D+Oid2K4cCeaENyQYLYMoa89ayHymOs57kjyAA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: yWeHHTD7E6HM4SImda2mrRSKAjdNUfK1BviEJb6kKUHm17YAmsnc3DcXOxKvAIhT+fSsWlVqKve+T42ZhB71CA==
-length: 10732
+edSignature: TyhvZ0NtR7izuOg1OicRJlBAkyPPHIjZaoSmF2PqtV/F0SKaUIhuDyPzMmZMME+QXnhsP47kBKerxPBTXWObDQ==
+length: 11816
 -->
