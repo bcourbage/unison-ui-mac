@@ -138,14 +138,17 @@ jobs:
         run: make verify-bundle-minos CONFIG=Release
 
       - name: Verify Info.plist critical values (generated + unsigned Release app)
-        # Fail-closed check of the Sparkle security keys, bundle id, executable,
-        # min-os, and version/build against project.yml. Early detection on the
-        # unsigned bytes; the release job re-runs the built-app check against the
-        # SIGNED + stapled bundle before publication (signing does not alter these
-        # Info.plist values, but the final bytes are what ship, so both are checked).
+        # Propagation (vs project.yml) + policy (hard-coded security invariants),
+        # on the generated plist and the unsigned Release bytes. Early detection;
+        # the release job re-runs the built-app checks against the SIGNED + stapled
+        # bundle before publication (signing does not alter these Info.plist values,
+        # but the final bytes are what ship, so both are checked).
         run: |
+          app=.build/derived/Build/Products/Release/unison-ui-mac.app
           make check-plist-keys
-          ./scripts/verify-plist-keys.sh --app .build/derived/Build/Products/Release/unison-ui-mac.app
+          make check-plist-policy
+          ./scripts/verify-plist-keys.sh   --app "$app"
+          ./scripts/verify-plist-policy.sh --app "$app"
 
       - name: Package unsigned build (for inspection)
         env:
@@ -381,11 +384,15 @@ jobs:
           # macOS baseline floor before it is zipped and published — the "exact
           # signed package" guarantee, on the literal bytes shipped to users.
           ./scripts/verify-bundle-minos.sh "$app"
-          # Re-run the critical Info.plist assertions against the SAME signed +
-          # stapled bytes (Sparkle security keys, bundle id, executable, min-os,
-          # version/build) vs project.yml — so the shipped feed URL, EdDSA key,
-          # and signed-feed enforcement can never regress into a release.
-          ./scripts/verify-plist-keys.sh --app "$app"
+          # Re-run BOTH plist layers against the SAME signed + stapled bytes:
+          #  - propagation vs project.yml (bundle id, executable, min-os, version);
+          #  - independent security policy (exact production SUFeedURL, signed-feed
+          #    enforcement on, failure-expiration 0, EdDSA key shape) — hard-coded,
+          #    so a weakened project.yml cannot ship even though propagation passes.
+          # The seed-feed / appcast steps below additionally prove the EdDSA key
+          # matches the key the feed is signed with.
+          ./scripts/verify-plist-keys.sh   --app "$app"
+          ./scripts/verify-plist-policy.sh --app "$app"
           zip="unison-ui-mac-${VERSION}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"

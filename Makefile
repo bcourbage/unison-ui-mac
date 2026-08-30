@@ -271,15 +271,23 @@ verify-runtime-minos: $(STRIPPED_ASMRUN)
 # perturbed. Every build/test/open path depends on `generate`. The exported
 # vars above (UNISON_VERSION, BLOB, OCAMLLIBDIR, STRIPPED_ASMRUN_DIR) are what
 # xcodegen substitutes into project.yml.
+#
+# The pinned XcodeGen lives in an ignored, repository-local path (.tools/…, not
+# on PATH) so a global/Homebrew xcodegen can't shadow it; `generate` depends on
+# that binary and installs it on first use (no sudo).
+XCODEGEN_BIN := $(shell ./scripts/install-xcodegen.sh --print-bin)
+
+$(XCODEGEN_BIN):
+	./scripts/install-xcodegen.sh
+
 .PHONY: generate xcodeproj
-generate:
+generate: $(XCODEGEN_BIN)
 	./scripts/generate-project.sh
 # Back-compat alias for the previous target name.
 xcodeproj: generate
 
-# Install the pinned, checksum-verified XcodeGen (single version authority in
-# scripts/install-xcodegen.sh). Use when `make generate` reports a version
-# mismatch.
+# (Re)install the pinned, checksum-verified XcodeGen into .tools/ (single version
+# authority: scripts/install-xcodegen.sh).
 .PHONY: install-xcodegen
 install-xcodegen:
 	./scripts/install-xcodegen.sh
@@ -464,6 +472,13 @@ check-generate-contract:
 .PHONY: check-plist-keys
 check-plist-keys: generate
 	./scripts/verify-plist-keys.sh --generated Resources/Info.plist
+
+# Independent security-policy assertions on the generated plist (hard-coded, not
+# read from project.yml) — catches a weakened project.yml that verify-plist-keys
+# would still pass. The built-app policy check runs in CI/release.
+.PHONY: check-plist-policy
+check-plist-policy: generate
+	./scripts/verify-plist-policy.sh --generated Resources/Info.plist
 
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a

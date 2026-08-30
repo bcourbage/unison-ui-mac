@@ -17,9 +17,11 @@ DerivedData/
 *.profdata
 
 # Toolchain / build byproducts (created by CI or local runs, never committed):
-# the opam local switch (setup-ocaml) and the build-log tee'd by the build step.
+# the opam local switch (setup-ocaml), the build-log tee'd by the build step, and
+# the repository-local pinned XcodeGen (scripts/install-xcodegen.sh).
 /_opam/
 build.log
+/.tools/
 
 # Editor noise
 *.swp

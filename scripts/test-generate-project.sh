@@ -51,4 +51,21 @@ fi
 scripts/verify-plist-keys.sh --generated "$plist" \
   || { echo "FAIL: regenerated plist does not match project.yml"; exit 1; }
 
-echo "PASS: generation is deterministic — an absent plist is created, and a stale plist is replaced with project.yml values"
+echo "[6] a different xcodegen earlier on PATH must NOT be used (repository-pinned wins)"
+shadow="$(mktemp -d)"
+cat > "$shadow/xcodegen" <<'FAKE'
+#!/bin/sh
+echo "FAKE PATH xcodegen was invoked — the pinned repo-local copy should have been used" >&2
+exit 87
+FAKE
+chmod +x "$shadow/xcodegen"
+if ! PATH="$shadow:$PATH" "$MAKE" generate >/dev/null; then
+  echo "FAIL: generation used the PATH xcodegen instead of the repository-pinned binary"
+  rm -rf "$shadow"; exit 1
+fi
+rm -rf "$shadow"
+scripts/verify-plist-keys.sh --generated "$plist" >/dev/null \
+  || { echo "FAIL: plist wrong after PATH-shadow regeneration"; exit 1; }
+echo "  ok: generation ignored the PATH xcodegen and used the repository-pinned copy"
+
+echo "PASS: generation is deterministic (absent created, stale replaced) and always uses the repository-pinned XcodeGen"

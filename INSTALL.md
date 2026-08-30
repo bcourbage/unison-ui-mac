@@ -67,10 +67,14 @@ incompatible hosts rather than producing a bundle that won't launch.
   xcode-select --install
   ```
 - **Homebrew**: <https://brew.sh>
-- **Build tools**: `xcodegen` (via Homebrew) plus **OCaml 5.5.0, built for the
-  app's macOS deployment target**.
+- **Build tools**: the **pinned** XcodeGen plus **OCaml 5.5.0, built for the
+  app's macOS deployment target**. A global/Homebrew `xcodegen` is neither
+  required nor used — the build pins an exact, checksum-verified version into an
+  ignored, repository-local path (`.tools/`), so a different `xcodegen` on your
+  `PATH` (e.g. a Homebrew version) can never be used. `make build`/`make generate`
+  install it on first use; you can also install it explicitly:
   ```sh
-  brew install xcodegen
+  make install-xcodegen
   ```
   Two constraints apply to OCaml, and both are enforced by `make build`:
   - **Version 5.5.0** — the vendored blob's runtime ABI is locked to it, so the
@@ -136,7 +140,9 @@ build the binary yourself, see
 ```sh
 # 1. Get build prerequisites (one time)
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
+# XcodeGen is pinned + installed into the repo (.tools/) by `make` — no `brew
+# install xcodegen` needed. You still need OCaml 5.5.0 built for macOS 15 — see
+# "Prerequisites" above (a plain opam/brew OCaml fails verify-runtime-minos).
 
 # 2. Clone this repo
 cd ~/somewhere
@@ -228,8 +234,8 @@ again. To rejoin the auto-updating Homebrew track, reinstall the cask:
 `brew install --cask bcourbage/tap/unison-ui-mac`.
 
 Prerequisites are the same one-time tools as [Install from
-source](#install-from-source) (`xcode-select --install`,
-`brew install xcodegen` plus OCaml 5.5.0; see above).
+source](#install-from-source) (`xcode-select --install` plus OCaml 5.5.0;
+XcodeGen is pinned and installed into the repo by `make` — see above).
 
 ## Uninstall
 
@@ -256,7 +262,9 @@ brew install --cask bcourbage/tap/unison-ui-mac
 
 ```sh
 xcode-select --install
-brew install xcodegen        # + OCaml 5.5.0 built for macOS 15 — see "To build from source" (a plain opam/brew OCaml fails verify-runtime-minos)
+# XcodeGen is pinned + installed into the repo (.tools/) by `make` — no `brew
+# install xcodegen`. You still need OCaml 5.5.0 built for macOS 15 (a plain
+# opam/brew OCaml fails verify-runtime-minos) — see Prerequisites.
 make install
 ```
 
@@ -279,7 +287,8 @@ make install
   architecture (e.g. `brew install`ing OCaml under Rosetta on Apple
   Silicon, the runtime libs end up x86_64 and won't link with the
   arm64 vendored blob).
-- **`make build` fails with "xcodegen: command not found"**: Homebrew
-  is installed but `brew install xcodegen` hasn't run, or your shell
-  hasn't picked up Homebrew's PATH yet (`eval "$(/opt/homebrew/bin/brew
-  shellenv)"`).
+- **`make generate`/`make build` reports the pinned XcodeGen is not
+  installed**: run `make install-xcodegen` (it fetches the pinned,
+  checksum-verified version into the repo-local `.tools/` — no sudo, and it
+  does not touch any global/Homebrew `xcodegen`). A Homebrew `xcodegen` on your
+  PATH is neither required nor used, and its version is deliberately ignored.

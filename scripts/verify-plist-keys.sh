@@ -42,14 +42,32 @@ yml_val() {
 yml_deploy_macos() {
   awk '/deploymentTarget:/{f=1} f&&/macOS:/{gsub(/[",]/,""); n=split($0,a,":"); gsub(/[[:space:]]/,"",a[n]); print a[n]; exit}' "$projyml"
 }
+# PRODUCT_NAME / PRODUCT_BUNDLE_IDENTIFIER appear under BOTH the app target and
+# the test target, so read them scoped to the app target (`  unison-ui-mac:`),
+# not the first match in the file.
+app_target_val() {
+  local key="$1" v
+  v="$(awk -v key="$key" '
+    /^  unison-ui-mac:[[:space:]]*$/ { inapp=1; next }   # app target block begins
+    /^  [A-Za-z].*:[[:space:]]*$/    { inapp=0 }          # any other 2-space target key ends it
+    inapp && $0 ~ ("^[[:space:]]+" key ":") {
+      line=$0
+      sub("^[[:space:]]+" key ":[[:space:]]*", "", line)
+      sub(/[[:space:]]+#.*$/, "", line)
+      gsub(/^"|"$/, "", line)
+      print line; exit
+    }' "$projyml")"
+  [ -n "$v" ] || { echo "error: project.yml app target has no value for '$key'" >&2; exit 1; }
+  printf '%s' "$v"
+}
 
 exp_feed="$(yml_val SUFeedURL)"
 exp_edkey="$(yml_val SUPublicEDKey)"
 exp_reqsigned="$(yml_val SURequireSignedFeed)"
 exp_verifybefore="$(yml_val SUVerifyUpdateBeforeExtraction)"
 exp_failexpiry="$(yml_val SUSignedFeedFailureExpirationInterval)"
-exp_bundleid="$(yml_val PRODUCT_BUNDLE_IDENTIFIER)"
-exp_exec="$(yml_val PRODUCT_NAME)"
+exp_bundleid="$(app_target_val PRODUCT_BUNDLE_IDENTIFIER)"
+exp_exec="$(app_target_val PRODUCT_NAME)"
 exp_marketing="$(yml_val MARKETING_VERSION)"
 exp_build="$(yml_val CURRENT_PROJECT_VERSION)"
 exp_minos="$(yml_deploy_macos)"
