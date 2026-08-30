@@ -52,14 +52,11 @@ concurrency:
   group: gh-pages-publish
   cancel-in-progress: false
 
-# SF11: XcodeGen pinned + checksum-verified (in lockstep with ci.yml and
-# vendor-blob.yml) so a floating tool can't change the generated .xcodeproj on the
-# signed release path. The signature covers whatever project.yml generated, so the
-# generator must be reproducible.
-env:
-  XCODEGEN_VERSION: "2.44.1"
-  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
-  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+# SF11: XcodeGen pinned + checksum-verified via the single authority
+# scripts/install-xcodegen.sh (in lockstep with ci.yml and vendor-blob.yml) so a
+# floating tool can't change the generated .xcodeproj / Resources/Info.plist on
+# the signed release path. The signature covers whatever project.yml generated,
+# so the generator must be reproducible.
 
 jobs:
   build:
@@ -112,19 +109,10 @@ jobs:
           test "$(ocamlc -version)" = "5.5.0"
 
       - name: Install pinned + SHA-256-verified XcodeGen
-        # SF11: pin + verify XcodeGen (not a floating `brew install`) so the
-        # generated .xcodeproj — the source of truth for build settings and
-        # Info.plist security keys — is reproducible on the release path.
-        run: |
-          curl -fsSL -o xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
-            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
-          unzip -q xcodegen.zip
-          sudo ./xcodegen/install.sh
-          got="$(xcodegen --version | awk '{print $2}')"
-          echo "xcodegen: $got"
-          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
+        # SF11: single authority for the pinned version + checksum (not a floating
+        # `brew install`) so the generated .xcodeproj / Resources/Info.plist are
+        # reproducible on the release path. Same script ci.yml and vendor-blob.yml use.
+        run: ./scripts/install-xcodegen.sh
 
       - name: Run tests
         run: make test
@@ -148,6 +136,16 @@ jobs:
         # change a Mach-O's minos, so verifying here proves the floor for the
         # product the signed release job builds from the same recipe.
         run: make verify-bundle-minos CONFIG=Release
+
+      - name: Verify Info.plist critical values (generated + unsigned Release app)
+        # Fail-closed check of the Sparkle security keys, bundle id, executable,
+        # min-os, and version/build against project.yml. Early detection on the
+        # unsigned bytes; the release job re-runs the built-app check against the
+        # SIGNED + stapled bundle before publication (signing does not alter these
+        # Info.plist values, but the final bytes are what ship, so both are checked).
+        run: |
+          make check-plist-keys
+          ./scripts/verify-plist-keys.sh --app .build/derived/Build/Products/Release/unison-ui-mac.app
 
       - name: Package unsigned build (for inspection)
         env:
@@ -383,6 +381,11 @@ jobs:
           # macOS baseline floor before it is zipped and published — the "exact
           # signed package" guarantee, on the literal bytes shipped to users.
           ./scripts/verify-bundle-minos.sh "$app"
+          # Re-run the critical Info.plist assertions against the SAME signed +
+          # stapled bytes (Sparkle security keys, bundle id, executable, min-os,
+          # version/build) vs project.yml — so the shipped feed URL, EdDSA key,
+          # and signed-feed enforcement can never regress into a release.
+          ./scripts/verify-plist-keys.sh --app "$app"
           zip="unison-ui-mac-${VERSION}.app.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$zip"
           echo "zip=$zip" >> "$GITHUB_OUTPUT"

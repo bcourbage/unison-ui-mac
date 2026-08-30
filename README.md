@@ -176,9 +176,13 @@ For day-to-day development, the Makefile targets are:
 
 ```sh
 make build      # Debug build by default. Strips libasmrun's main.n.o,
-                # regenerates xcodeproj, runs xcodebuild. Links against
-                # the vendored unison-blob.o in vendor/. Pass
-                # CONFIG=Release for an optimized build.
+                # regenerates the xcodeproj + Resources/Info.plist, runs
+                # xcodebuild. Links against the vendored unison-blob.o in
+                # vendor/. Pass CONFIG=Release for an optimized build.
+make generate   # (re)generate the xcodeproj + Resources/Info.plist from
+                # project.yml — run this before opening the project in Xcode
+make install-xcodegen  # install the pinned, checksum-verified XcodeGen
+                # (only when `make generate` reports a version mismatch)
 make install    # Release build + sign + copy to /Applications
                 # (always Release, regardless of CONFIG)
 make vendor-blob   # Maintainer-only: rebuild vendor/unison-blob-*.o
@@ -186,9 +190,9 @@ make vendor-blob   # Maintainer-only: rebuild vendor/unison-blob-*.o
 make run        # build + launch the binary directly (stderr → terminal)
 make app        # build + `open`s the .app (detached, no terminal output)
 make test       # XCTest bundle (always Debug)
-make open       # opens unison-ui-mac.xcodeproj in Xcode
-make clean      # cleans .build/; preserves xcodeproj
-make distclean  # also removes the generated xcodeproj
+make open       # generate, then open unison-ui-mac.xcodeproj in Xcode
+make clean      # cleans .build/; preserves the generated xcodeproj/plist
+make distclean  # also removes the generated xcodeproj + Resources/Info.plist
 make print-config  # show resolved paths
 ```
 
@@ -202,17 +206,27 @@ want to test a custom build:
 
 ### Building in Xcode / with bare `xcodebuild`
 
-The `.xcodeproj` is **not** committed; it's generated from
-[`project.yml`](project.yml) by XcodeGen, which `make` runs for you.
-Run `make build` (or `make xcodeproj`) once; that step bakes the
-vendored blob path and OCaml library paths into the generated project,
-so afterwards `make open` (or opening `unison-ui-mac.xcodeproj`
+[`project.yml`](project.yml) is the **sole human-maintained source of
+truth** for the Xcode project. Both the `.xcodeproj` **and**
+`Resources/Info.plist` are **generated** from it by XcodeGen and are
+**gitignored — never commit them**. `make generate` (which `make build`
+runs for you) regenerates both from `project.yml` on every run, so a
+stale local copy can never survive as build input. That step also bakes
+the vendored blob path and OCaml library paths into the generated
+project, so afterwards `make open` (or opening `unison-ui-mac.xcodeproj`
 directly) and a bare `xcodebuild` both build and link correctly with no
-extra flags. A build that somehow runs without those paths set fails
-immediately with a clear error pointing back here, rather than
-producing a bundle that crashes at launch. Prerequisites for any build:
-Xcode, `xcodegen`, and **OCaml 5.5.0 built for the app's macOS deployment
-target**. The vendored blob removes the 5–10 min upstream *source* compile,
+extra flags. Always run `make generate` (or `make build` / `make open`,
+which do it for you) before opening the project in Xcode — a bare
+`xcodebuild` against a not-yet-generated project is not supported. A
+build that somehow runs without those paths set fails immediately with a
+clear error pointing back here, rather than producing a bundle that
+crashes at launch. Prerequisites for any build: Xcode, the **pinned**
+`xcodegen`, and **OCaml 5.5.0 built for the app's macOS deployment
+target**. XcodeGen is pinned to one version + checksum in the single
+authority [`scripts/install-xcodegen.sh`](scripts/install-xcodegen.sh)
+(shared by CI, the release pipeline, and the blob rebuild); `make
+generate` fails clearly if the installed `xcodegen` differs, and `make
+install-xcodegen` installs the pinned, checksum-verified version. The vendored blob removes the 5–10 min upstream *source* compile,
 **not** the OCaml runtime dependency: `make build` still links the app against
 the OCaml 5.5.0 runtime libraries (`libasmrun` etc.) and its headers. Two gates
 enforce the toolchain: `check-ocaml-version` rejects any version other than
@@ -287,7 +301,8 @@ for the full OCaml-side protocol.
 
 ```
 unison-ui-mac/
-├── project.yml                          XcodeGen project definition
+├── project.yml                          XcodeGen project definition — sole source of truth
+│                                        (generates the .xcodeproj + Resources/Info.plist)
 ├── Makefile                             Build orchestration
 ├── README.md                            Orientation and dev build
 ├── INSTALL.md                           End-user install guide
@@ -331,7 +346,7 @@ unison-ui-mac/
 │       └── UnisonBridgeC.c              OCaml↔C glue + thread machinery
 ├── Tests/                               XCTest bundle
 └── Resources/
-    ├── Info.plist                       App bundle metadata
+    ├── Info.plist                       GENERATED from project.yml (gitignored — do not commit)
     └── Unison.icon/                     Native Icon Composer app icon (light/dark)
 ```
 

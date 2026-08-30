@@ -40,14 +40,11 @@ on:
 permissions:
   contents: read
 
-# SF11: XcodeGen is pinned + checksum-verified (in lockstep with release.yml and
-# vendor-blob.yml), so a floating `brew install xcodegen` can't change the
-# generated .xcodeproj — the source of truth for build settings and Info.plist
-# security keys — between otherwise-identical commits.
-env:
-  XCODEGEN_VERSION: "2.44.1"
-  # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
-  XCODEGEN_ZIP_SHA256: "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+# SF11: XcodeGen is pinned + checksum-verified via the single authority
+# scripts/install-xcodegen.sh (shared with release.yml and vendor-blob.yml), so a
+# floating `brew install xcodegen` can't change the generated .xcodeproj /
+# Resources/Info.plist — both generated from project.yml, the source of truth for
+# build settings and Info.plist security keys — between otherwise-identical commits.
 
 jobs:
   test:
@@ -117,22 +114,35 @@ jobs:
           ocamlc -version
           test "$(ocamlc -version)" = "5.5.0"
 
-      - name: Install pinned + SHA-256-verified XcodeGen
-        # SF11: XcodeGen regenerates the .xcodeproj from project.yml (the source of
-        # truth for build settings and Info.plist security keys). A floating
-        # `brew install xcodegen` could change that generated project between
-        # identical commits, so pin the exact release and verify its checksum —
-        # the same guard release.yml and vendor-blob.yml use.
+      - name: Assert generated files are NOT tracked (clean-checkout precondition)
+        # The repository must be self-contained WITHOUT committed generated
+        # outputs: neither the generated Resources/Info.plist nor a tracked
+        # .xcodeproj may be in the index, and neither should be present in a fresh
+        # checkout (the build produces them). Fails closed if either is tracked.
         run: |
-          curl -fsSL -o xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          echo "${XCODEGEN_ZIP_SHA256}  xcodegen.zip" | shasum -a 256 -c - \
-            || { echo "::error::XcodeGen zip failed SHA-256 verification (supply-chain guard)"; exit 1; }
-          unzip -q xcodegen.zip
-          sudo ./xcodegen/install.sh
-          got="$(xcodegen --version | awk '{print $2}')"
-          echo "xcodegen: $got"
-          [ "$got" = "$XCODEGEN_VERSION" ] || { echo "::error::xcodegen $got != pinned $XCODEGEN_VERSION"; exit 1; }
+          if git ls-files --error-unmatch Resources/Info.plist >/dev/null 2>&1; then
+            echo "::error::Resources/Info.plist is tracked — it is generated and must be gitignored"; exit 1
+          fi
+          if git ls-files '*.xcodeproj' '*.xcodeproj/**' | grep -q .; then
+            echo "::error::a .xcodeproj is tracked — it is generated and must be gitignored"; exit 1
+          fi
+          test ! -e unison-ui-mac.xcodeproj || { echo "::error::fresh checkout already contains a .xcodeproj"; exit 1; }
+          test ! -e Resources/Info.plist   || { echo "::error::fresh checkout already contains Resources/Info.plist"; exit 1; }
+          echo "clean-checkout precondition ok: no tracked/committed generated outputs"
+
+      - name: Install pinned + SHA-256-verified XcodeGen
+        # SF11: single authority for the pinned version + checksum. XcodeGen
+        # regenerates the .xcodeproj AND Resources/Info.plist from project.yml
+        # (the source of truth for build settings and Sparkle security keys); a
+        # floating `brew install xcodegen` could change them between identical
+        # commits. Same script release.yml and vendor-blob.yml use.
+        run: ./scripts/install-xcodegen.sh
+
+      - name: Generation contract (determinism)
+        # Proves `make generate` creates an absent plist and REPLACES a stale one
+        # with the project.yml values — an old ignored local copy can never
+        # survive as build input.
+        run: make check-generate-contract
 
       - name: Check signing resolver matrix
         # Pure-shell gate (no Xcode/OCaml needed): the signing resolver matrix
@@ -224,6 +234,28 @@ jobs:
         # exceeds it. This runner IS macos-15, so a green build+test here is the
         # app genuinely building AND running its full XCTest suite on the baseline OS.
         run: make verify-bundle-minos
+
+      - name: Verify Info.plist critical values (generated + built app)
+        # Fail-closed check of the Sparkle security keys, bundle id, executable,
+        # min-os, and version/build against project.yml (the source of truth) —
+        # in the generated plist AND, more importantly, in the actual built .app.
+        run: |
+          make check-plist-keys
+          ./scripts/verify-plist-keys.sh --app .build/derived/Build/Products/Debug/unison-ui-mac.app
+
+      - name: Clean-worktree proof (generation + build produced only ignored outputs)
+        # After generating and building, the working tree must be clean: the
+        # .xcodeproj and Resources/Info.plist are the ONLY new files and both are
+        # gitignored. A dirty tree means a generated output escaped .gitignore.
+        run: |
+          test -d unison-ui-mac.xcodeproj || { echo "::error::build did not produce the generated .xcodeproj"; exit 1; }
+          test -f Resources/Info.plist    || { echo "::error::build did not produce Resources/Info.plist"; exit 1; }
+          if [ -n "$(git status --short)" ]; then
+            echo "::error::working tree is dirty after generate+build — a generated output is not ignored:"
+            git status --short
+            exit 1
+          fi
+          echo "clean-worktree proof ok: generate + build left git status clean (only ignored outputs produced)"
 
       - name: Run tests
         # 286 tests at the v0.1.0 baseline. Should run in ~1 s on the

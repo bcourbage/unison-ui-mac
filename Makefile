@@ -259,45 +259,30 @@ verify-runtime-minos: $(STRIPPED_ASMRUN)
 	done; \
 	test $$fail -eq 0
 
-# ----- Xcode project (regenerate from project.yml + source list) -----
+# ----- Generate the Xcode project + Resources/Info.plist (from project.yml) --
 #
-# xcodegen reads project.yml plus the directory globs in it (Sources/App,
-# Sources/Bridge, Tests). The project file needs to regenerate when:
-#   1. project.yml itself changes, OR
-#   2. a source file is ADDED, REMOVED, or RENAMED (changes the glob result).
-#
-# Make doesn't watch glob results directly. The trick: depend on the
-# source DIRECTORIES rather than the file list. POSIX advances a
-# directory's mtime when an entry is added or removed, but NOT on
-# file content edits. So:
-#   - Touch any .swift file       → no regen (Xcode handles content via
-#                                   its own dep system).
-#   - Add / remove / rename a file → dir mtime advances → manifest regen
-#                                   → if list actually changed,
-#                                     mtime moves forward → xcodegen runs.
-#
-# The manifest content check (cmp -s) means a no-op dir touch (e.g.
-# `touch Sources/App`) doesn't trigger a spurious regen — the manifest
-# only updates its mtime when the file list materially differs.
-SOURCE_DIRS := Sources/App Sources/Bridge Tests
-SOURCES_MANIFEST := .build/sources.manifest
+# project.yml is the SOLE human-maintained source of truth. The .xcodeproj and
+# Resources/Info.plist are generated artifacts (both gitignored) and must NOT be
+# committed. `scripts/generate-project.sh` is the single generation authority:
+# it enforces the pinned XcodeGen (scripts/install-xcodegen.sh) and rewrites the
+# project + plist from project.yml on every run — so a stale local copy can
+# never survive as build input (proven by `make check-generate-contract`). It
+# preserves the project.pbxproj mtime on a no-op so incremental builds aren't
+# perturbed. Every build/test/open path depends on `generate`. The exported
+# vars above (UNISON_VERSION, BLOB, OCAMLLIBDIR, STRIPPED_ASMRUN_DIR) are what
+# xcodegen substitutes into project.yml.
+.PHONY: generate xcodeproj
+generate:
+	./scripts/generate-project.sh
+# Back-compat alias for the previous target name.
+xcodeproj: generate
 
-$(SOURCES_MANIFEST): $(SOURCE_DIRS)
-	@mkdir -p $(@D)
-	@find $(SOURCE_DIRS) -type f \( -name '*.swift' -o -name '*.c' -o -name '*.h' \) | sort > $@.tmp
-	@if cmp -s $@.tmp $@ 2>/dev/null; then \
-		rm $@.tmp; \
-		touch $@; \
-	else \
-		mv $@.tmp $@; \
-		echo "Source list changed → xcodeproj will regenerate"; \
-	fi
-
-.PHONY: xcodeproj
-xcodeproj: $(XCODEPROJ)
-
-$(XCODEPROJ): project.yml $(SOURCES_MANIFEST)
-	xcodegen generate
+# Install the pinned, checksum-verified XcodeGen (single version authority in
+# scripts/install-xcodegen.sh). Use when `make generate` reports a version
+# mismatch.
+.PHONY: install-xcodegen
+install-xcodegen:
+	./scripts/install-xcodegen.sh
 
 # ----- Local code-signing identity (TCC-stable dev builds) -----
 # An ad-hoc signature ("-", the project.yml default) carries no certificate,
@@ -350,7 +335,7 @@ export CONFIG
 
 # ----- Build via xcodebuild -----
 .PHONY: build
-build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos $(XCODEPROJ)
+build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos generate
 	@vals="$$(./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -376,7 +361,7 @@ run: build
 # doesn't apply here — `make test` and `make test CONFIG=Release` behave
 # identically (signing is always resolved with CONFIG=Debug here).
 .PHONY: test
-test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos $(XCODEPROJ)
+test: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos generate
 	@vals="$$(CONFIG=Debug ./scripts/select-signing.sh)" || exit $$?; \
 	id="$$(printf '%s\n' "$$vals" | sed -n '1p')"; \
 	team="$$(printf '%s\n' "$$vals" | sed -n '2p')"; \
@@ -464,6 +449,22 @@ check-release-notes:
 check-verify-appcast:
 	@$(PYTHON) ./scripts/test-verify-appcast.py
 
+# Generation-contract regression test: proves `make generate` deterministically
+# creates an absent Resources/Info.plist and REPLACES a stale one with the
+# project.yml values (an old ignored local copy can never survive as build
+# input). Requires the pinned XcodeGen (the generation step enforces it).
+.PHONY: check-generate-contract
+check-generate-contract:
+	./scripts/test-generate-project.sh
+
+# Fail-closed check of the critical Sparkle/bundle keys in the GENERATED plist
+# against project.yml (the source of truth). Generates first, then verifies.
+# The stronger built-app check (verify-plist-keys.sh --app) runs in CI after the
+# build and on the release path against the signed bundle.
+.PHONY: check-plist-keys
+check-plist-keys: generate
+	./scripts/verify-plist-keys.sh --generated Resources/Info.plist
+
 # `make install` — the end-to-end installation flow. Always builds the
 # Release configuration (regardless of the user's CONFIG setting — a
 # user-facing install wants the optimized binary, not a Debug build with
@@ -509,7 +510,7 @@ leaks: build
 		exit $$rc
 
 .PHONY: open
-open: $(XCODEPROJ)
+open: generate
 	open $(XCODEPROJ)
 
 .PHONY: clean
@@ -520,6 +521,7 @@ clean:
 .PHONY: distclean
 distclean: clean
 	rm -rf $(XCODEPROJ)
+	rm -f Resources/Info.plist   # generated (gitignored) — regenerated by `make generate`
 
 .PHONY: print-config
 print-config:
