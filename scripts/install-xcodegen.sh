@@ -28,32 +28,40 @@ set -euo pipefail
 XCODEGEN_VERSION="2.44.1"
 # sha256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip
 XCODEGEN_ZIP_SHA256="a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73"
+# Content digest of the COMPLETE extracted tree (bin/ + share/) for this version,
+# computed once from the checksum-verified archive (see tree_digest()). This
+# validates the WHOLE SettingPresets tree — enumerating individual presets is
+# brittle (xcodegen consumes many, e.g. Product_Platform/*), so any missing or
+# modified file changes this digest and fails verification. Recompute + update it
+# together with the version/zip-sha above on a bump (a reviewed change).
+XCODEGEN_TREE_SHA256="5b5ad7ca7d5a77eadb7f2d5a5e54e8f4e97f3d40c437a999f6293c65dd177890"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dest="$root/.tools/xcodegen/$XCODEGEN_VERSION"
 bin="$dest/bin/xcodegen"
 
-# Resources xcodegen needs beyond the binary. Missing any of these makes it emit
-# a different project without failing, so they are part of a "complete" install.
-required_resources=(
-  "share/xcodegen/SettingPresets/base.yml"
-  "share/xcodegen/SettingPresets/Configs/debug.yml"
-  "share/xcodegen/SettingPresets/Configs/release.yml"
-  "share/xcodegen/SettingPresets/Platforms/macOS.yml"
-)
+# tree_digest <dir>: content digest of bin/ + share/ under <dir> — sorted
+# relative paths each hashed, then the whole listing hashed. Deterministic for a
+# given file set + contents (metadata-independent). Empty on failure.
+tree_digest() {
+  ( cd "$1" 2>/dev/null \
+      && find bin share -type f 2>/dev/null | LC_ALL=C sort \
+      | xargs shasum -a 256 2>/dev/null | shasum -a 256 | awk '{print $1}' )
+}
 
-# verify_dir <dir>: 0 iff <dir> holds a complete pinned install (binary version +
-# all required resources).
+# verify_dir <dir>: 0 iff <dir> holds a complete pinned install — the binary
+# reports the pinned version AND the full bin/+share/ tree matches the pinned
+# digest (so no consumed preset can be missing or altered).
 verify_dir() {
   local d="$1"
   local b="$d/bin/xcodegen"
-  local r ver
+  local ver dg
   [ -x "$b" ] || { echo "  missing binary: $b" >&2; return 1; }
   ver="$("$b" --version 2>/dev/null | awk '{print $2}' || true)"
   [ "$ver" = "$XCODEGEN_VERSION" ] || { echo "  wrong version at $b: '${ver:-none}' != $XCODEGEN_VERSION" >&2; return 1; }
-  for r in "${required_resources[@]}"; do
-    [ -f "$d/$r" ] || { echo "  missing resource: $d/$r" >&2; return 1; }
-  done
+  dg="$(tree_digest "$d")"
+  [ "$dg" = "$XCODEGEN_TREE_SHA256" ] \
+    || { echo "  tree digest mismatch at $d ('${dg:-none}') — incomplete or modified install" >&2; return 1; }
   return 0
 }
 
