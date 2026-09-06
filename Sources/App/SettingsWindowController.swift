@@ -576,9 +576,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         cliActionButton.isEnabled = false
         cliRefreshButton.isEnabled = false
         Task { [weak self] in
-            let contexts = await Task.detached(priority: .userInitiated) {
-                CommandLineToolStatus.currentStatus()
-            }.value
+            // Blocking work runs on GCD inside currentStatusAsync, never on the
+            // cooperative pool (see CommandLineToolStatus.currentStatusAsync).
+            let contexts = await CommandLineToolStatus.currentStatusAsync()
             guard let self, self.cliRefreshGeneration == generation else { return }
             self.showCommandLineToolStatus(contexts)
         }
@@ -671,21 +671,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     /// Run the action's shell command with administrator privileges through
     /// AppleScript's `do shell script … with administrator privileges`, which
-    /// shows the system authentication dialog. Completion on the main thread
-    /// with nil on success or a message on failure (cancel included).
+    /// shows the system authentication dialog. NSAppleScript is main-thread
+    /// only, and the authentication dialog is modal anyway, so this runs
+    /// synchronously on the main thread and calls `completion` with nil on
+    /// success or a message on failure (a cancelled dialog included).
+    @MainActor
     static func performAdmin(action: CommandLineToolAction, launcherPath: String,
-                             completion: @escaping @MainActor (String?) -> Void) {
+                             completion: (String?) -> Void) {
         let command = CommandLineToolActionPolicy.adminShellCommand(for: action, launcherPath: launcherPath)
         let source = CommandLineToolActionPolicy.appleScript(runningAsAdmin: command)
-        Task.detached {
-            var errorInfo: NSDictionary?
-            let script = NSAppleScript(source: source)
-            _ = script?.executeAndReturnError(&errorInfo)
-            let message: String? = errorInfo.map { info in
-                (info[NSAppleScript.errorMessage] as? String) ?? "The command could not be run."
-            }
-            await MainActor.run { completion(message) }
+        var errorInfo: NSDictionary?
+        let script = NSAppleScript(source: source)
+        _ = script?.executeAndReturnError(&errorInfo)
+        let message: String? = errorInfo.map { info in
+            (info[NSAppleScript.errorMessage] as? String) ?? "The command could not be run."
         }
+        completion(message)
     }
 
     /// Update the path label, value, and placeholder to match the selected

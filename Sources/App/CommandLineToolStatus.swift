@@ -281,8 +281,21 @@ enum CommandLineToolStatus {
         return Environment(thisBundlePath: bundle, brewPrefix: prefix, caskroomReceiptExists: receipt)
     }
 
-    /// Both contexts, computed now. Runs the login shell, so call it off the
-    /// main thread.
+    /// Both contexts, computed on a GCD utility queue. The login-shell probe
+    /// blocks (a child process and a pipe read), so it must never run on
+    /// Swift's cooperative thread pool: a blocked pool thread starves every
+    /// other Task in the process, which surfaced as timeouts in unrelated
+    /// async tests on a small CI runner.
+    static func currentStatusAsync() async -> [CommandLineToolContextStatus] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: currentStatus())
+            }
+        }
+    }
+
+    /// Both contexts, computed now. Runs the login shell and blocks; call it
+    /// from a GCD queue, never from the main thread or a Task.
     static func currentStatus(fs: CommandLineToolFileSystem = RealCommandLineToolFileSystem()) -> [CommandLineToolContextStatus] {
         let env = discoverEnvironment(fs: fs)
         let login = loginShellSearchPath()

@@ -2558,9 +2558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let isTestHost = env["XCTestConfigurationFilePath"] != nil || env["UNISON_UI_SMOKE"] != nil
         if isTestHost || CommandLineToolPromptPolicy.isSuppressed(defaults: defaults) { return }
         Task { [weak self] in
-            let contexts = await Task.detached(priority: .utility) {
-                CommandLineToolStatus.currentStatus()
-            }.value
+            let contexts = await CommandLineToolStatus.currentStatusAsync()
             guard let self,
                   let kind = CommandLineToolPromptPolicy.prompt(
                     contexts: contexts, suppressed: false, isTestHost: false)
