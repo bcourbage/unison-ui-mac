@@ -29,6 +29,22 @@ and OCaml 5.5.0 built for the macOS 15 deployment target, then run `make build` 
 `make install`). A prebuilt OCaml engine is vendored, so an everyday build compiles
 Swift and links in a few seconds rather than compiling Unison from source.
 
+## The `unison` command
+
+The app bundle includes a command-line launcher. Linked onto your PATH under the
+name `unison`, it behaves like Unison's own command: `unison -ui graphic` opens the
+app, `unison <profile>` runs Unison's text interface in the terminal on the app's
+embedded engine, and `unison -server`, which another machine runs over ssh when it
+syncs to this Mac, is served by the app's engine. A Mac with this app therefore
+needs no separate Unison installation to be the far side of an SSH profile.
+
+Homebrew installs create the link automatically once the cask for 0.7.0 or later
+is published. For a direct download, the app offers to create it at first launch
+when nothing on the PATH is named `unison`; the same control lives in **Settings ▸
+Command Line**, which also shows what `unison` currently resolves to. Details, and
+the note for machines that sync to this Mac over ssh, are in the
+[manual]({{REPO}}/blob/main/MANUAL.md#the-unison-command).
+
 ## Updating
 
 Once installed, the app checks for updates through Sparkle over a cryptographically

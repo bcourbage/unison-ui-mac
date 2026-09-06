@@ -130,6 +130,9 @@ version other than the latest. Otherwise the
 2. Unzip it and drag the app (its file name is `unison-ui-mac.app`, shown in
    Finder as **Unison-UI-Mac**) to `/Applications`.
 3. Double-click to launch. Updates after that come through the app itself.
+4. Optional: when nothing on your PATH is named `unison`, the app offers to
+   install its `unison` command at first launch; the same control is in
+   Settings ▸ Command Line. See MANUAL, "The `unison` command".
 
 If no release is available for the version you want, or you'd rather
 build the binary yourself, see
