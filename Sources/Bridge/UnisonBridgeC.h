@@ -209,8 +209,10 @@ int unison_bridge_cli_startup(int argc, char *argv[]);
  * runtime only ever sees argv[0]. */
 const char *unison_bridge_command_line_profile(void);
 
-/* 1 iff two roots were given on the command line (OCaml's areRootsSet), 0
- * otherwise or if the callback is missing/raised. Valid after init0. */
+/* 1 iff two roots were given on the command line (OCaml's areRootsSet), 0 when
+ * none were, -1 when the answer could not be obtained (callback missing or
+ * raised). The caller must treat -1 as "cannot proceed", not as "no roots".
+ * Valid after init0. */
 int unison_bridge_command_line_roots_set(void);
 
 /* === Init1 — load profile, parse roots, open remote connection ===

@@ -103,15 +103,20 @@ app:
 
 | Command | What runs |
 |---|---|
-| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker. |
+| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it; a hidden profile is refused with a message. Two roots are refused. |
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison -batch <profile>` with no `-ui`, from launchd, cron or ssh | The text interface. Automation is recognized by the absence of a graphical session or of a terminal on standard input, so a LaunchAgent in a logged-in session counts too. |
-| `unison <profile>`, two roots, or any other option with no `-ui`, typed in Terminal | Refused with a message. Choose the profile in the picker, or add `-ui text`. |
+| `unison -batch <profile>`, or any arguments with no `-ui` from launchd, cron or ssh | The text interface. Automation is recognized by `-batch`, by the absence of a graphical session, or by the absence of a terminal on standard input, so a LaunchAgent in a logged-in session and a script run from Terminal with `-batch` both count. |
+| `unison <profile>`, two roots, or any other option with no `-ui` and no `-batch`, typed in Terminal | Refused with a message. Choose the profile in the picker, or add `-ui text`. |
+| `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
+| `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
 
-Options follow Unison's usual grammar: `-ui=text` and `--ui text` mean the
-same as `-ui text`.
+Options follow Unison's grammar: `-ui=text` means the same as `-ui text`.
+Options take exactly one leading dash; `--ui` is not recognized, by Unison
+or by this app. Arguments are handed to the engine exactly as typed, so an
+option macOS or Xcode adds to a graphical launch is reported by the engine
+as unknown if it reaches a command-line invocation.
 
 `unison -ui graphic` keeps the terminal busy until the app quits, like any
 foreground command. Append `&` to get the prompt back.
@@ -152,10 +157,10 @@ macOS's `/etc/paths`, which includes `/usr/local/bin`, so the link above is
 enough. If the link lives anywhere else, set `servercmd = /path/to/unison`
 in the peer's profile.
 
-An app downloaded as a zip carries the quarantine attribute until it is
-opened once from Finder, and Gatekeeper's first-launch check needs a
-graphical session. Launch the app once before relying on it as an ssh
-peer, or install it through Homebrew, which does not quarantine it.
+A freshly installed app, whether from the zip or through Homebrew, carries
+the quarantine attribute until it is opened once from Finder, and
+Gatekeeper's first-launch check needs a graphical session. Launch the app
+once before relying on it as an ssh peer.
 
 ---
 

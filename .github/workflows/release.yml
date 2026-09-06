@@ -213,6 +213,15 @@ jobs:
       - name: Verify the release bundle's macOS floor (exact release bytes)
         run: ./scripts/verify-bundle-minos.sh "$APP"
 
+      - name: Launcher and headless engine on macOS 15 (exact release bytes)
+        # XCTest and UNISON_UI_SMOKE deliberately take the graphical branch, so
+        # they never exercise the command-line path. This runs the bundled
+        # `unison` launcher through a symlink and the engine's stdin/stdout
+        # server transport (the app in text mode as client, the same bundle as
+        # server through an ssh stand-in) on the deployment-floor OS. See
+        # scripts/smoke-cli.sh for exactly what is and is not proved.
+        run: ./scripts/smoke-cli.sh "$APP"
+
       - name: Launch on macOS 15 and require a clean exit
         # Runs the release-built binary directly (not via `open`) so the process
         # exit code is observable. UNISON_UI_SMOKE makes the app initialise the

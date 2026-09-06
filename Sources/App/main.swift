@@ -24,8 +24,7 @@ case .gui:
 case .unsupported(let message):
     CommandLineEngineLaunch.writeStderr(message)
     exit(1)
-case .commandLine(let arguments, let notice):
-    if let notice { CommandLineEngineLaunch.writeStderr(notice) }
+case .commandLine(let arguments):
     CommandLineEngineLaunch.startEngine(arguments: arguments)
 }
 

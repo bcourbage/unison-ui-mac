@@ -16,14 +16,14 @@ enum CommandLineInvocation: Equatable {
     /// preference parser rejects, and the profile picker selects the profile.
     case gui
 
-    /// Shell launch. The engine receives `arguments` in full and
-    /// `unisonNonGuiStartup` runs before AppKit. `notice`, when present, goes to
-    /// stderr first.
-    case commandLine(arguments: [String], notice: String?)
+    /// Shell launch. The engine receives `arguments` and `unisonNonGuiStartup`
+    /// runs before AppKit. The caller's tokens are never edited or reordered;
+    /// the only change the policy ever makes is prepending `-ui text`.
+    case commandLine(arguments: [String])
 
-    /// A shell launch the graphical interface cannot honor. `message` goes to
-    /// stderr and the process exits 1. Silently opening the picker and dropping
-    /// the arguments is the one behavior this type forbids.
+    /// A shell launch that cannot be honored. `message` goes to stderr and the
+    /// process exits 1. Silently opening the picker and dropping the arguments
+    /// is the one behavior this type forbids.
     case unsupported(message: String)
 }
 
@@ -31,8 +31,7 @@ enum CommandLineInvocationPolicy {
 
     /// The options upstream's `Main.init` handles before any UI exists. Their
     /// presence means the caller is a shell, not a graphical launcher. Compared
-    /// by option *name*, after `Uarg`'s grammar is applied: leading dashes are
-    /// not significant and `-name=value` is one token.
+    /// by option *name* under `Uarg`'s grammar (see `optionName`).
     static let engineStartupOptions: Set<String> = [
         "server", "socket", "ui", "version", "doc", "help",
     ]
@@ -44,12 +43,21 @@ enum CommandLineInvocationPolicy {
     ///   session (`CGSessionCopyCurrentDictionary() != nil`). False under ssh,
     ///   cron and launchd daemons; true for a LaunchAgent in a logged-in
     ///   session, which is why it is not the only automation signal.
-    /// - `stdinIsTerminal`: `isatty(STDIN_FILENO)`. A person typing in Terminal
-    ///   has one; launchd, cron and ssh commands do not.
+    /// - `stdinIsTerminal`: `isatty(STDIN_FILENO)`. This is a policy input, not
+    ///   proof of a person: a script started from Terminal inherits the
+    ///   terminal, and a person can redirect stdin. Scripts say `-batch` or
+    ///   `-ui text`, both of which route to the text interface regardless.
     /// - `isTestHost`: XCTest or the launch smoke. Both are graphical launches
     ///   whatever the arguments or session say, and both must reach
     ///   `applicationDidFinishLaunching` before the runtime starts, because that
     ///   is where the test host redirects `UNISON` to a throwaway directory.
+    ///
+    /// The policy classifies tokens but does not parse them: which token is an
+    /// option's value is `Uarg`'s knowledge (a `-label` value may start with
+    /// `-`). So the tokens handed to the engine are always the caller's own,
+    /// in order, and host-injected flags are only *ignored for the decision*,
+    /// never removed from what the engine sees. Where the engine gets them it
+    /// rejects them itself with usage and exit 2, as upstream would.
     static func classify(arguments: [String],
                          hasWindowServerSession: Bool,
                          stdinIsTerminal: Bool,
@@ -57,101 +65,103 @@ enum CommandLineInvocationPolicy {
         if isTestHost { return .gui }
 
         let argv0 = arguments.first ?? "unison-ui-mac"
-        // Host-injected flags are never Unison's business, on any path: an Xcode
-        // scheme that runs `-ui graphic` still carries -NSDocumentRevisionsDebugMode.
-        let userArguments = stripHostInjected(Array(arguments.dropFirst()))
+        let rest = Array(arguments.dropFirst())
+        let userArguments = withoutHostInjected(rest)
+        let names = Set(rest.compactMap(optionName))
 
         if userArguments.isEmpty {
-            // A bare launch with no session cannot show a window. Upstream's text
-            // interface prints its usage and exits, which is the honest answer to
-            // `ssh mac unison` with nothing else.
+            // A bare launch with no session cannot show a window. Hand it to the
+            // text interface, which behaves exactly like upstream's `unison` with
+            // no arguments: it uses the `default` profile if one exists and prints
+            // usage otherwise.
             return hasWindowServerSession
                 ? .gui
-                : .commandLine(arguments: [argv0, "-ui", "text"], notice: nil)
+                : .commandLine(arguments: [argv0, "-ui", "text"])
         }
 
-        if userArguments.contains(where: { engineStartupOptions.contains(optionName($0) ?? "") }) {
-            // A graphical interface cannot be shown without a session. Mirror
-            // the GTK build, which warns and starts the text interface. This
-            // takes precedence over anything else in the arguments: a profile
-            // named here then runs in the text interface.
-            if !hasWindowServerSession, let rewritten = replacingUIGraphicWithText(userArguments) {
-                return .commandLine(
-                    arguments: [argv0] + rewritten,
-                    notice: "unison-ui-mac: no graphical session is available; starting the text interface instead of -ui graphic")
+        if !names.isDisjoint(with: engineStartupOptions) {
+            // A graphical interface cannot be shown without a session. Refuse
+            // rather than rewrite the request: editing `graphic` into `text`
+            // would require knowing which token is the value of `-ui`.
+            if !hasWindowServerSession, selectsGraphicUI(rest) {
+                return .unsupported(message:
+                    "unison-ui-mac: no graphical session is available for -ui graphic. Use -ui text to run in the terminal.")
             }
-            return .commandLine(arguments: [argv0] + userArguments, notice: nil)
+            return .commandLine(arguments: [argv0] + rest)
         }
 
-        // Arguments, but no engine option. Without a graphical session, or
-        // without a terminal on stdin, the caller is automation such as
-        // `unison -batch myprofile` from launchd or cron: run the text
-        // interface, which is what upstream's `unison` would have done.
-        if !hasWindowServerSession || !stdinIsTerminal {
-            return .commandLine(arguments: [argv0, "-ui", "text"] + userArguments, notice: nil)
+        // Arguments, but no engine option. Automation gets the text interface,
+        // which is what upstream's `unison` would have run. Automation is
+        // recognized by any of: `-batch` (the caller said so), no graphical
+        // session, or no terminal on stdin (launchd, cron, ssh commands).
+        if names.contains("batch") || !hasWindowServerSession || !stdinIsTerminal {
+            return .commandLine(arguments: [argv0, "-ui", "text"] + rest)
         }
 
         // A person in Terminal with a graphical session. The graphical interface
         // cannot take a profile, roots or other options yet; say so.
         return .unsupported(message:
             "unison-ui-mac: these arguments are not supported by the graphical interface: "
-            + userArguments.joined(separator: " ")
+            + rest.joined(separator: " ")
             + ". Choose the profile in the profile picker, or add -ui text to run in the terminal.")
     }
 
-    /// The option name of a token in `Uarg`'s grammar: a token starting with `-`
-    /// is an option; leading dashes are stripped and an inline `=value` is
-    /// removed. Returns nil for a value or positional token.
+    /// The option name of a token in `Uarg`'s grammar. Upstream registers every
+    /// option as `"-" ^ name` and looks tokens up exactly after splitting at the
+    /// first `=`, so `-ui` and `-ui=text` name the option `ui`, while `--ui` is
+    /// a different, unknown option and `-` alone is nothing. Returns nil for a
+    /// value or positional token, and for anything upstream would not match.
     static func optionName(_ token: String) -> String? {
-        guard token.hasPrefix("-") else { return nil }
-        let stripped = token.drop(while: { $0 == "-" })
-        let name = stripped.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        guard token.hasPrefix("-"), token.count > 1 else { return nil }
+        let afterDash = token.dropFirst()
+        guard !afterDash.hasPrefix("-") else { return nil }
+        let name = afterDash.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
         return name.isEmpty ? nil : String(name)
     }
 
-    /// If the arguments select `-ui graphic` (separate or `=` form), return them
-    /// with `text` in its place; otherwise nil.
-    static func replacingUIGraphicWithText(_ arguments: [String]) -> [String]? {
-        var out = arguments
-        var changed = false
-        var i = 0
-        while i < out.count {
-            if optionName(out[i]) == "ui" {
-                if out[i].contains("=") {
-                    if out[i].hasSuffix("=graphic") {
-                        out[i] = String(out[i].dropLast("graphic".count)) + "text"
-                        changed = true
-                    }
-                } else if i + 1 < out.count, out[i + 1] == "graphic" {
-                    out[i + 1] = "text"
-                    changed = true
-                    i += 1
-                }
+    /// True when the tokens ask for the graphical interface: `-ui graphic` or
+    /// `-ui=graphic`. Token-level, so a value that merely looks like `-ui` can
+    /// make this true; the only consequence is a refusal that names the
+    /// request, never a silent change.
+    static func selectsGraphicUI(_ arguments: [String]) -> Bool {
+        for (i, token) in arguments.enumerated() where optionName(token) == "ui" {
+            if token.contains("=") {
+                if token.hasSuffix("=graphic") { return true }
+            } else if i + 1 < arguments.count, arguments[i + 1] == "graphic" {
+                return true
             }
-            i += 1
         }
-        return changed ? out : nil
+        return false
     }
 
     /// Flags macOS itself, Xcode or the test runner add to a graphical launch.
-    /// `-NS…` and `-Apple…` are NSArgumentDomain defaults and take a value;
-    /// `-psn_…` is Launch Services' legacy process serial number and does not.
+    /// `-NS…` and `-Apple…` are NSArgumentDomain defaults (`-NSDocumentRevisions
+    /// DebugMode YES`, `-NSTreatUnknownArgumentsAsOpen NO`, `-ApplePersistence
+    /// IgnoreState YES`, `-AppleLanguages (fr)`) and carry one value; `-psn_…` is
+    /// Launch Services' legacy process serial number and carries none. Unison
+    /// registers no option with either prefix.
     static func isHostInjectedFlag(_ argument: String) -> Bool {
         argument.hasPrefix("-NS") || argument.hasPrefix("-Apple") || argument.hasPrefix("-psn_")
     }
 
-    /// Remove host-injected flags, and the value that follows each `-NS…` or
-    /// `-Apple…` flag, leaving only what a person or script passed.
-    static func stripHostInjected(_ arguments: [String]) -> [String] {
+    /// The tokens a person or script passed, for the purpose of deciding whether
+    /// any exist. A `-NS…`/`-Apple…` flag's value is the following token,
+    /// skipped only when it does not itself start with `-`. Used for the
+    /// decision only; the engine always receives the caller's tokens intact.
+    static func withoutHostInjected(_ arguments: [String]) -> [String] {
         var out: [String] = []
-        var skipNext = false
-        for argument in arguments {
-            if skipNext { skipNext = false; continue }
+        var i = 0
+        while i < arguments.count {
+            let argument = arguments[i]
             if isHostInjectedFlag(argument) {
-                skipNext = !argument.hasPrefix("-psn_")
+                if !argument.hasPrefix("-psn_"), i + 1 < arguments.count, !arguments[i + 1].hasPrefix("-") {
+                    i += 1
+                }
+                i += 1
                 continue
             }
             out.append(argument)
+            i += 1
         }
         return out
     }

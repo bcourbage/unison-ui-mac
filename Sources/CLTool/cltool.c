@@ -165,7 +165,13 @@ int main(int argc, char **argv) {
     char real[PATH_MAX], bundle[PATH_MAX], exe[PATH_MAX];
     int resolved = 0;
 
-    if (self_real_path(real, sizeof real) && enclosing_bundle(real, bundle, sizeof bundle)) {
+    if (!self_real_path(real, sizeof real)) {
+        /* Location unknown is not "known to be copied out": with the bundle
+         * being replaced or removed underneath us, asking Launch Services
+         * could run some other registered copy. Stop instead. */
+        fprintf(stderr, "unison: cannot determine the launcher's own location: %s\n", strerror(errno));
+        resolved = 0;
+    } else if (enclosing_bundle(real, bundle, sizeof bundle)) {
         /* Inside a bundle: that bundle or nothing. */
         resolved = executable_of_verified_bundle(bundle, exe, sizeof exe);
     } else {

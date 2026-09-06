@@ -559,3 +559,10 @@ print-config:
 	@test -f $(STRIPPED_ASMRUN) && echo "stripped asmrun: present" || echo "stripped asmrun: MISSING"
 	@echo XCODEPROJ=$(XCODEPROJ)
 	@test -d $(XCODEPROJ) && echo "xcodeproj: present" || echo "xcodeproj: MISSING"
+
+# CLI smoke against the built bundle: the `unison` launcher through a symlink
+# and the engine's stdin/stdout server transport (app as both peers via an ssh
+# stand-in). Same script the release pipeline runs on macOS 15.
+.PHONY: smoke-cli
+smoke-cli: build
+	@./scripts/smoke-cli.sh $(BUILT_APP)

@@ -1659,9 +1659,16 @@ static void _ocaml_non_gui_startup(void *user) {
     bool raised = false;
     value result = bridge_call1_exn(closure, Val_unit, &raised);
     if (raised) {
-        char *text = caml_format_exception(Extract_exception(result));
-        fprintf(stderr, "unison-mac: %s\n", text ? text : "exception during startup");
-        caml_stat_free(text);
+        /* `raised` can come from a real OCaml exception (result is an
+         * exception result) or from the Debug fault-injection seam, which
+         * reports `raised` with a plain Val_unit. Only format the former. */
+        if (Is_exception_result(result)) {
+            char *text = caml_format_exception(Extract_exception(result));
+            fprintf(stderr, "unison-mac: %s\n", text ? text : "exception during startup");
+            caml_stat_free(text);
+        } else {
+            fprintf(stderr, "unison-mac: startup callback reported failure\n");
+        }
         io->status = UNISON_BRIDGE_ERR_EXN;
         return;
     }
@@ -1677,17 +1684,23 @@ int unison_bridge_cli_startup(int argc, char *argv[]) {
 
 static void _ocaml_roots_set(void *user) {
     struct status_io *io = user;
-    io->status = 0;
+    io->status = -1;   /* undetermined unless the callback answers */
     const value *closure = caml_named_value("areRootsSet");
-    if (closure == NULL) return;
+    if (closure == NULL) {
+        fprintf(stderr, "unison-mac: areRootsSet not registered\n");
+        return;
+    }
     bool raised = false;
     value result = bridge_call1_exn(closure, Val_unit, &raised);
-    if (raised) return;
+    if (raised) {
+        fprintf(stderr, "unison-mac: areRootsSet raised\n");
+        return;
+    }
     io->status = Bool_val(result) ? 1 : 0;
 }
 
 int unison_bridge_command_line_roots_set(void) {
-    struct status_io io = { .status = 0 };
+    struct status_io io = { .status = -1 };
     run_on_ocaml_thread(_ocaml_roots_set, &io);
     return io.status;
 }
