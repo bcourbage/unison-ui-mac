@@ -56,6 +56,7 @@ linked to the section of the upstream docs that defines it.</p>
 <ol>
 <li><a href="#concepts-in-one-paragraph">Concepts in one paragraph</a></li>
 <li><a href="#getting-started">Getting started</a></li>
+<li><a href="#the-unison-command">The <code>unison</code> command</a></li>
 <li><a href="#the-profile-picker">The Profile Picker</a></li>
 <li><a href="#the-profile-editor-manager-window">The Profile Editor (manager window)</a></li>
 <li><a href="#the-profile-form-single-profile-content-editor">The Profile Form (single-profile content editor)</a></li>
@@ -84,11 +85,14 @@ the next scan can tell what's changed.</p>
 <h3 id="1-install-unison-on-remote-machines-ssh-profiles-only">1. Install Unison on remote machines (SSH profiles only)</h3>
 <p>The app embeds Unison's OCaml runtime, so the local machine doesn't need a
 separate <code>unison</code> install. But profiles whose root is <code>ssh://…</code> spawn
-<code>unison -server</code> on the remote host, that remote needs Unison installed
-and reachable in <code>$PATH</code> (or via <code>servercmd = …</code> in the profile).</p>
-<p>Install instructions for the remote side:</p>
+<code>unison -server</code> on the remote host, so that remote needs a <code>unison</code>
+command its non-interactive shell can find (or a <code>servercmd = …</code> line in
+the profile).</p>
+<p>Ways to provide it on the remote side:</p>
 <ul>
-<li><strong>macOS</strong>: <code>brew install unison</code></li>
+<li><strong>macOS with this app installed</strong>: the bundled command serves this role
+  with the embedded engine; see <a href="#the-unison-command">The <code>unison</code> command</a>.</li>
+<li><strong>macOS without this app</strong>: <code>brew install unison</code></li>
 <li><strong>Debian/Ubuntu</strong>: <code>sudo apt install unison</code></li>
 <li><strong>Other</strong>: see upstream's <a href="https://github.com/bcpierce00/unison/wiki/Downloading-Unison">Downloading Unison</a>
   page or build from source at <a href="https://github.com/bcpierce00/unison">https://github.com/bcpierce00/unison</a>.</li>
@@ -111,6 +115,85 @@ launch, if you have no profiles yet, the list will be empty, use
 <p>Double-click a profile (or select it and click Run) to start reconcile.
 The reconcile window opens immediately in "scanning" mode and populates
 when init1+init2 complete.</p>
+<hr>
+<h2 id="the-unison-command">The <code>unison</code> command</h2>
+<p>The app bundle carries a command-line launcher at
+<code>unison-ui-mac.app/Contents/MacOS/cltool</code>. Linked onto PATH under the name
+<code>unison</code>, it makes one command serve both of Unison's roles through this
+app:</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>unison -ui graphic</code></td>
+<td>This app. A profile name after the flags is preselected in the picker when the picker lists it and its row opens the same file Unison would (<code>p.prf</code> given while a file named plainly <code>p</code> also exists is refused, since the picker's <code>p</code> would open that other file); a hidden profile is refused with a message. Two roots are refused.</td>
+</tr>
+<tr>
+<td><code>unison -ui text &lt;profile&gt;</code></td>
+<td>Unison's text interface in the terminal, on the embedded engine.</td>
+</tr>
+<tr>
+<td><code>unison -version</code>, <code>unison -doc …</code>, <code>unison -help</code></td>
+<td>Printed by the embedded engine.</td>
+</tr>
+<tr>
+<td><code>unison -server</code>, <code>unison -socket …</code></td>
+<td>The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile.</td>
+</tr>
+<tr>
+<td><code>unison &lt;profile&gt;</code>, <code>unison -batch &lt;profile&gt;</code>, <code>unison root1 root2</code>, with no <code>-ui</code></td>
+<td>The text interface, exactly as the <code>unison</code> command behaves everywhere. The graphical interface runs only when <code>-ui graphic</code> is given.</td>
+</tr>
+<tr>
+<td><code>unison -ui graphic …</code> where no graphical session exists (over ssh)</td>
+<td>Refused with a message. Use <code>-ui text</code>.</td>
+</tr>
+<tr>
+<td><code>unison</code> with no arguments, over ssh</td>
+<td>The text interface, which like upstream's <code>unison</code> uses the <code>default</code> profile if one exists and prints usage otherwise.</td>
+</tr>
+</tbody>
+</table>
+<p>The command hands Unison's engine <code>-ui text</code> followed by the arguments
+exactly as typed, and Unison interprets them: a later <code>-ui graphic</code> wins
+over that default, <code>-server</code> and <code>-version</code> take effect before any interface
+choice, <code>-ui=text</code> means the same as <code>-ui text</code>, and options take exactly one
+leading dash (<code>--ui</code> is an unknown option to Unison). Unknown options are
+reported by Unison with its usage text.</p>
+<p><code>unison -ui graphic</code> keeps the terminal busy until the app quits, like any
+foreground command. Append <code>&amp;</code> to get the prompt back.</p>
+<h3 id="putting-it-on-path">Putting it on PATH</h3>
+<p>Create a symlink named <code>unison</code>. <code>/usr/local/bin</code> is on the PATH of both
+interactive shells and incoming ssh commands, and writing there needs an
+administrator password:</p>
+<pre><code class="language-sh">sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
+</code></pre>
+<p>Only one command can own the name. Check what <code>unison</code> resolves to before
+and after:</p>
+<pre><code class="language-sh">which -a unison
+</code></pre>
+<p>A Homebrew <code>unison</code> formula or upstream Unison.app's own launcher may
+already hold it. Unlink or remove that first, or leave it and skip this
+section: the app works from the profile picker either way.</p>
+<p>If the app is moved, the link dangles and <code>unison</code> reports "command not
+found"; recreate it. To uninstall the command, remove the link:</p>
+<pre><code class="language-sh">sudo rm /usr/local/bin/unison
+</code></pre>
+<h3 id="remote-peers">Remote peers</h3>
+<p>Peers whose profiles target this Mac run <code>unison -server</code> here through
+ssh. Their command runs in a non-interactive shell whose PATH comes from
+macOS's <code>/etc/paths</code>, which includes <code>/usr/local/bin</code>, so the link above is
+enough. If the link lives anywhere else, set <code>servercmd = /path/to/unison</code>
+in the peer's profile.</p>
+<p>A freshly installed app, whether from the zip or through Homebrew, carries
+the quarantine attribute until it is opened once from Finder, and
+Gatekeeper's first-launch check needs a graphical session. Launch the app
+once before relying on it as an ssh peer.</p>
 <hr>
 <h2 id="the-profile-picker">The Profile Picker</h2>
 <p>The launch view. A simple list of every <code>.prf</code> file in
@@ -1381,8 +1464,10 @@ upstream <code>Uicommon.initPrefs</code> runs it unconditionally (per the
   (see <a href="#stop-button-how-abort-works">Stop button</a> in troubleshooting):
   a file mid-write at abort time stays partial. Unison's next reconcile
   will surface the difference for you to resolve.</li>
-<li><strong>Replace the upstream Unison CLI for scripting.</strong> The CLI is still the
-  right tool for <code>crontab</code> / <code>launchd</code> automation. This GUI is for
+<li><strong>Change how Unison's text interface behaves.</strong> <code>unison -ui text</code> through
+  the bundled command (see <a href="#the-unison-command">The <code>unison</code> command</a>) runs
+  upstream's own text interface on the embedded engine, unchanged, which is
+  still the right tool for <code>crontab</code> / <code>launchd</code> automation. This GUI is for
   interactive use.</li>
 <li><strong>Run as a menu-bar status item or background daemon.</strong> Foreground app
   only, one reconcile window per profile open at a time.</li>
