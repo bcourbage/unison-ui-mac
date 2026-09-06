@@ -285,8 +285,10 @@ enum CommandLineToolStatus {
         let exe = (shell?.isEmpty == false ? shell! : "/bin/zsh")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exe)
-        process.arguments = ["-l", "-c", "printf %s \"$PATH\""]
-        // A login shell can print banners or run tools; take only stdout.
+        // Login startup files can print banners or anything else to stdout
+        // before the command runs, so the PATH is bracketed with markers and
+        // only the bracketed text is read (see `extractMarkedPath`).
+        process.arguments = ["-l", "-c", "printf '%s%s%s' '\(pathMarkerStart)' \"$PATH\" '\(pathMarkerEnd)'"]
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice
@@ -306,7 +308,20 @@ enum CommandLineToolStatus {
             return nil
         }
         guard process.terminationStatus == 0, let text = String(data: box.data, encoding: .utf8) else { return nil }
-        return splitSearchPath(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        return extractMarkedPath(from: text).map(splitSearchPath)
+    }
+
+    static let pathMarkerStart = "@@UNISON_UI_MAC_PATH_START@@"
+    static let pathMarkerEnd = "@@UNISON_UI_MAC_PATH_END@@"
+
+    /// The text between the two markers, or nil when the markers are absent or
+    /// out of order. Only that text is the PATH; a banner printed by a login
+    /// script before it is ignored rather than parsed into a first directory.
+    static func extractMarkedPath(from output: String) -> String? {
+        guard let start = output.range(of: pathMarkerStart),
+              let end = output.range(of: pathMarkerEnd, range: start.upperBound..<output.endIndex)
+        else { return nil }
+        return String(output[start.upperBound..<end.lowerBound])
     }
 
     // MARK: Environment discovery
@@ -394,15 +409,17 @@ enum CommandLineToolActionPolicy {
     /// Each command re-checks its precondition at execution time; if the
     /// filesystem changed since the panel was shown, the command fails and
     /// changes nothing. `launcherPath` is this installation's `cltool`.
-    static func adminShellCommand(for action: CommandLineToolAction, launcherPath: String) -> String {
+    static func adminShellCommand(for action: CommandLineToolAction, launcherPath: String,
+                                  installLinkPath: String = CommandLineToolStatus.installLinkPath) -> String {
         let launcher = shellQuoted(launcherPath)
         switch action {
         case .install:
-            let link = shellQuoted(CommandLineToolStatus.installLinkPath)
-            let dir = shellQuoted((CommandLineToolStatus.installLinkPath as NSString).deletingLastPathComponent)
-            // `ln -s` without -f: if something appeared since the check, fail
-            // rather than overwrite it.
-            return "/bin/mkdir -p \(dir) && /bin/ln -s \(launcher) \(link)"
+            let link = shellQuoted(installLinkPath)
+            let dir = shellQuoted((installLinkPath as NSString).deletingLastPathComponent)
+            // Nothing may exist at the destination: not a file, not a dangling
+            // link (-e is false for those), and not a directory, into which
+            // `ln -s` would otherwise create `unison/cltool` and report success.
+            return "/bin/mkdir -p \(dir) && ! [ -e \(link) ] && ! [ -L \(link) ] && /bin/ln -s \(launcher) \(link)"
         case .repair(let linkPath, let oldTarget, _):
             let link = shellQuoted(linkPath)
             // Still a link, still dangling, still storing the disclosed target.

@@ -240,6 +240,38 @@ final class CommandLineToolStatusTests: XCTestCase {
         XCTAssertLessThan(elapsed, 1.5, "the timeout must bound the wait; took \(elapsed)s")
     }
 
+    /// The reviewer's fixture: a login script prints a banner before the PATH.
+    /// Only the marked PATH may be parsed, so the banner never becomes a first
+    /// directory that hides the real one.
+    func test_loginShellSearchPath_ignoresBannerOutput() throws {
+        let bin = try makeBin("bin"); try makeExecutable(bin + "/unison", body: "exit 0")
+        let shell = root + "/banner-shell"
+        // Prints a banner, then runs the requested command with PATH set.
+        try makeExecutable(shell, body: "printf 'Welcome\\n'; PATH='\(bin):/usr/bin:/bin'; export PATH; eval \"$3\"")
+        let path = CommandLineToolStatus.loginShellSearchPath(shell: shell, timeout: 10)
+        XCTAssertEqual(path, [bin, "/usr/bin", "/bin"])
+        let status = CommandLineToolStatus.scan(searchPath: path, label: "", caveat: "",
+                                                environment: env(thisBundle: root + "/none.app"), fs: fs)
+        XCTAssertEqual(status.first?.path, bin + "/unison")
+        XCTAssertFalse(status.isKnownEmpty)
+    }
+
+    func test_loginShellSearchPath_withoutMarkers_isUnknown() throws {
+        // A shell that ignores the command and prints something else entirely.
+        let shell = root + "/mute-shell"
+        try makeExecutable(shell, body: "printf '/fake/bin:/usr/bin'")
+        XCTAssertNil(CommandLineToolStatus.loginShellSearchPath(shell: shell, timeout: 10))
+    }
+
+    func test_extractMarkedPath() {
+        let s = CommandLineToolStatus.pathMarkerStart, e = CommandLineToolStatus.pathMarkerEnd
+        XCTAssertEqual(CommandLineToolStatus.extractMarkedPath(from: "Welcome\n\(s)/a:/b\(e)"), "/a:/b")
+        XCTAssertEqual(CommandLineToolStatus.extractMarkedPath(from: "\(s)\(e)trailing banner"), "")
+        XCTAssertNil(CommandLineToolStatus.extractMarkedPath(from: "/a:/b"))
+        XCTAssertNil(CommandLineToolStatus.extractMarkedPath(from: "\(e)/a\(s)"), "out of order")
+        XCTAssertNil(CommandLineToolStatus.extractMarkedPath(from: "\(s)/a"), "unterminated")
+    }
+
     func test_loginShellSearchPath_nonZeroExit_isNil() throws {
         let failing = root + "/failing-shell"
         try makeExecutable(failing, body: "printf /x/bin; exit 3")
@@ -287,10 +319,43 @@ final class CommandLineToolStatusTests: XCTestCase {
 
     // MARK: admin commands re-verify at execution time
 
-    func test_adminShellCommand_install_neverOverwrites() {
+    func test_adminShellCommand_install_requiresAnAbsentDestination() {
         let launcher = "/Applications/It's here.app/Contents/MacOS/cltool"
         XCTAssertEqual(CommandLineToolActionPolicy.adminShellCommand(for: .install, launcherPath: launcher),
-                       "/bin/mkdir -p '/usr/local/bin' && /bin/ln -s '/Applications/It'\\''s here.app/Contents/MacOS/cltool' '/usr/local/bin/unison'")
+                       "/bin/mkdir -p '/usr/local/bin' && ! [ -e '/usr/local/bin/unison' ] && ! [ -L '/usr/local/bin/unison' ] && /bin/ln -s '/Applications/It'\\''s here.app/Contents/MacOS/cltool' '/usr/local/bin/unison'")
+    }
+
+    /// The reviewer's fixture: the destination has become a directory while the
+    /// dialog was open. `ln -s` alone would create `unison/cltool` inside it and
+    /// exit 0; the generated command must refuse and leave it untouched.
+    func test_install_refusesWhenDestinationIsADirectory_orAnyEntry() throws {
+        let launcher = root + "/L/cltool"; try makeBin("L"); try makeExecutable(launcher, body: "exit 0")
+        let bin = try makeBin("bin")
+        let dest = bin + "/unison"
+        func sh(_ cmd: String) -> Int32 {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/sh"); p.arguments = ["-c", cmd]
+            p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+            try? p.run(); p.waitUntilExit(); return p.terminationStatus
+        }
+        let install = CommandLineToolActionPolicy.adminShellCommand(for: .install, launcherPath: launcher, installLinkPath: dest)
+        // Directory at the destination: refused, nothing created inside.
+        try FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
+        XCTAssertNotEqual(sh(install), 0)
+        XCTAssertFalse(fs.entryExists(atPath: dest + "/cltool"))
+        try FileManager.default.removeItem(atPath: dest)
+        // Dangling link at the destination: refused (-e is false, -L is true).
+        try link(dest, to: "/gone")
+        XCTAssertNotEqual(sh(install), 0)
+        XCTAssertEqual(fs.linkTarget(atPath: dest), "/gone")
+        try FileManager.default.removeItem(atPath: dest)
+        // Regular file: refused, kept.
+        try makeExecutable(dest, body: "exit 0")
+        XCTAssertNotEqual(sh(install), 0)
+        XCTAssertNil(fs.linkTarget(atPath: dest))
+        try FileManager.default.removeItem(atPath: dest)
+        // Absent: created, pointing at the launcher.
+        XCTAssertEqual(sh(install), 0)
+        XCTAssertEqual(fs.linkTarget(atPath: dest), launcher)
     }
 
     func test_adminShellCommand_repair_actsOnTheDetectedLink_andChecksItsStoredTarget() {
