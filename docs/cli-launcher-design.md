@@ -100,60 +100,64 @@ upstream's tool are deprecated.
 
 Runs before `NSApplication.shared`, before Sparkle, before the menu.
 
-**Mode selection** is a pure function of argv and three environment facts,
-kept in a testable policy type (`CommandLineInvocationPolicy`):
+**The engine's parser is the classifier.** Only `Uarg` knows which tokens
+are options and which are values (`-label -server` is a label) and which
+`-ui` wins (the last one given), so no token-level policy can say what a
+shell invocation means. The app therefore never interprets Unison options.
+It decides one thing itself, *graphical launch or shell launch*, and for a
+shell launch hands the engine the caller's tokens unchanged with a single
+default in front, `-ui text`, then lets upstream's `unisonNonGuiStartup`
+interpret the result exactly as `Main.init` does:
 
-- *session*: `CGSessionCopyCurrentDictionary()` is non-nil. This is Quartz
-  session membership, nothing more. False under ssh, cron and launchd
-  daemons; true for a LaunchAgent in a logged-in session.
-- *tty*: `isatty(STDIN_FILENO)`. A person in Terminal has one; launchd, cron
-  and ssh commands do not. Together with *session* this separates a person
-  from automation without guessing intent from one probe.
-- *test host*: XCTest or `UNISON_UI_SMOKE`. Checked first.
+- `-server`, `-socket`, `-version`, `-doc`, `-help`: handled before `-ui` is
+  looked at; the process exits. `-server -ui graphic` is a server.
+- Effective `-ui text`, which is the default unless the caller's own later
+  `-ui graphic` wins (scanCmdLine keeps the last value): the text interface
+  runs on the caller's arguments and exits. `unison p`, `unison -batch p`,
+  `-label -server -batch p` and `-ui graphic -ui text -batch p` are all text
+  runs. Unknown or malformed options get upstream's usage and exit 2;
+  `--server` is one of those.
+- Effective `-ui graphic`: the callback returns. With a graphical session the
+  graphical launch continues with the runtime already up; without one the
+  invocation is refused with a message naming `-ui text`.
 
-The policy classifies tokens; it does not parse them. Which token is an
-option's *value* is `Uarg`'s knowledge (a `-label` value may legitimately
-begin with `-`), so the policy never edits, reorders or removes the caller's
-tokens. The only change it ever makes to what the engine receives is
-prepending `-ui text`. Two token-level readings feed the decision:
+Consequence, stated plainly: `unison p` typed in Terminal runs the text
+interface, which is what the `unison` command does everywhere. There is no
+"refuse a bare profile" rule and no tty probe; nothing is ever dropped,
+edited or reordered.
 
-- **Option names** follow `Uarg` exactly: upstream registers every option as
-  `"-" ^ name` and matches the token before the first `=` exactly, so `-ui`
-  and `-ui=text` name `ui`, while `--ui` is an unknown option to upstream and
-  is treated as no option here.
-- **Host-injected flags** (`-NS…`/`-Apple…` with the following token when it
-  does not start with `-`, and `-psn_…`) are *ignored for the decision*
-  whether any user arguments exist. They are not removed from argv. Where
-  they reach the engine (an Xcode scheme running `-ui graphic`), upstream's
-  parser reports them with usage and exit 2, as it would anywhere.
+**Graphical launch or shell launch** is decided by `CommandLineInvocationPolicy.launchKind`
+from three facts, in order:
 
-Rows are evaluated in order:
+- *test host* (XCTest or `UNISON_UI_SMOKE`): graphical. Both must reach
+  `applicationDidFinishLaunching`, where `UNISON` is redirected, before the
+  runtime starts.
+- *launcher marker*: `cltool` sets `UNISON_UI_MAC_LAUNCHER=1` in the
+  environment of the process it execs; `main.swift` reads and removes it so
+  nothing the app spawns inherits it. Present means shell. It identifies the
+  launch path, not a security boundary.
+- otherwise: shell if there is no window-server session (nothing graphical
+  can run), or if any argument other than host-injected flags is present
+  (a direct invocation of the bundle executable with arguments, so
+  `servercmd` pointing at the executable keeps working); graphical if only
+  host-injected flags remain (Finder, `open`, Xcode). Host-injected flags
+  (`-NS…`/`-Apple…` with a following non-option value, `-psn_…`) are only
+  ignored for this decision, never removed from argv.
 
-| Row | Condition | Mode |
-|---|---|---|
-| 1 | test host | GUI, argv[0] only. The test host must reach `applicationDidFinishLaunching`, where `UNISON` is redirected, before the runtime starts. |
-| 2 | no user arguments, session | GUI, argv[0] only (Finder, `open`, Xcode). |
-| 3 | no user arguments, no session | command-line, `-ui text`. The text interface then does what upstream's bare `unison` does: it uses the `default` profile if one exists, and prints usage otherwise. AppKit is never attempted without a session. |
-| 4 | an engine option present (`server`, `socket`, `ui`, `version`, `doc`, `help`), and `-ui graphic` (either form) with no session | unsupported: exit 1 with a message naming `-ui text`. Refused rather than rewritten, because rewriting would require knowing which token is the value of `-ui`. |
-| 5 | an engine option present, otherwise | command-line, argv passed through intact. Precedence among mixed options is upstream's (`Main.init` checks `-version` before `-server`). |
-| 6 | no engine option, and (`-batch` present **or** no session **or** no tty) | command-line, `-ui text` prepended to the intact argv: automation such as `unison -batch p` from launchd, cron, a script, in or out of a GUI session. |
-| 7 | no engine option, session and tty, no `-batch` | unsupported: exit 1 with a message naming the arguments, the picker, and `-ui text`. Covers `unison myprofile`, two roots, and unknown options typed in Terminal. |
-
-The tty input is a policy choice, not proof of a person: a script started
-from Terminal inherits the terminal, and a person can redirect stdin. `-batch`
-is the caller's own statement of intent and wins over the tty, which covers
-the inheriting script; a script that says neither `-batch` nor `-ui text` is
-refused with a message that names both.
-
-**In command-line mode** the argv is handed to `caml_startup` and
-`unisonNonGuiStartup` is invoked on the OCaml thread. It exits the process
-for `-server`, `-socket`, `-version`, `-doc`, `-help` and `-ui text`, and
-upstream's parser reports unknown or malformed options with usage and exit 2.
-If it returns, the caller asked for `-ui graphic` with a session, and
-execution continues into the normal GUI path with the runtime already
-started. The existing `unison_bridge_startup` guard makes the later startup
-call a no-op. This is the one command-line path that reaches Sparkle and the
+**Shell launch.** `[argv0, "-ui", "text"] + caller's tokens` is handed to
+`caml_startup` and `unisonNonGuiStartup` is invoked on the OCaml thread
+(`unison_bridge_cli_startup`). It exits the process for every role but the
+graphical one. If it returns, the effective interface is graphical:
+`main.swift` checks for a window-server session, refuses with exit 1 without
+one, and otherwise continues into the normal graphical path with the runtime
+already started. The existing `unison_bridge_startup` guard makes the later
+startup call a no-op. This is the one shell path that reaches Sparkle and the
 menu; the headless roles never do.
+
+A bare `unison` over ssh therefore runs the text interface with no
+arguments, which like upstream's `unison` uses the `default` profile if one
+exists and prints usage otherwise. AppKit is never attempted without a
+session.
 
 **After init0 on the graphical continuation** (`unison -ui graphic …` with a
 session), upstream's `unisonInit0` has extracted any profile or roots from
@@ -299,9 +303,10 @@ only when all hold:
 Draft copy, subject to the usual review before release:
 
 > **Install the unison command?**
-> Adds a `unison` command in /usr/local/bin that opens this app. Terminal
-> commands such as `unison -ui graphic` and ssh syncs from other machines then
-> use this app. Requires an administrator password.
+> Adds a `unison` command in /usr/local/bin that runs this app's copy of
+> Unison, so `unison -ui graphic` opens this app and `unison -server` from a
+> remote machine uses it, wherever /usr/local/bin comes first on the PATH.
+> Requires an administrator password.
 > [ ] Do not ask again
 > **Install**   Not Now
 
@@ -313,21 +318,24 @@ Draft copy, subject to the usual review before release:
 | Brew formula linked, then this cask | Cask install fails at the `binary` artifact ("already a Binary at …"); brew rolls back the app it had placed. | User chooses `brew unlink unison`, or the zip. |
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
 | This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Incoming ssh PATH lacks the brew prefix; peers set `servercmd`. On Intel, the prefix is `/usr/local`, so `bin/unison` is the same path a manual install would use, and the incoming-ssh PATH does include it. |
-| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on the incoming-ssh PATH per `/etc/paths` on a stock macOS; Settings measures rather than assumes. |
+| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on the incoming-ssh PATH per `/etc/paths` on a stock macOS. Settings shows reconstructed PATHs for two contexts and says so; a `.zshrc` override or a remote shell's own environment can still pick another `unison`, and the prompt's copy promises only what the link does, not what every shell will resolve. |
 | Fresh install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. Homebrew quarantines cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh, whatever the install method. |
 | Sparkle update | Link stays valid; bundled tool updates too. | The headless roles exit before Sparkle initializes; the `-ui graphic` continuation reaches Sparkle like any graphical launch. |
 | Bare `unison` over ssh, with a `default.prf` present | The text interface runs the default profile, as upstream's `unison` would. | Upstream semantics, stated as such. Not "prints usage". |
-| Script started from Terminal, `unison -batch p`, stdin inherited | Text UI (row 6): `-batch` wins over the tty. | A script saying neither `-batch` nor `-ui text` is refused with a message naming both. |
+| Script started from Terminal, `unison -batch p`, stdin inherited | Text UI. | No tty probe exists; the default applies. |
 | Dangling launcher link ahead of a working formula on PATH | Settings shows both the first entry and the executing one; Repair's confirmation says which command it displaces. | PR C. |
 | Second copy of the app (Debug build) opens Settings | The installed release's link classifies as `otherCopyOfThisApp`; Remove is not offered. | PR C. |
 | Sparkle replaces the bundle while a `-server` process runs | The running process keeps its mapped binary; new invocations resolve the new bundle. The old bundle is moved aside, so a link stays valid. | Same as any in-place app update with a running helper. |
 | Brew `upgrade --greedy` after Sparkle | Can downgrade to the tap's version. A downgrade to a pre-launcher cask version removes brew's link; a manual link dangles. | Release checklist already bumps the cask with each release; Settings reports the dangling case. |
 | Mac that is both GUI user and ssh target | One binary serves both. | File access over ssh follows sshd's Full Disk Access grant, unchanged. |
-| Automation without a session (`unison -batch p` from cron, ssh, a daemon) | Text UI (row 6). | Upstream's Mac app fails here. |
-| Automation in a GUI session (a LaunchAgent running `unison -batch p`) | Text UI (row 6, no tty). | Session membership alone would have misclassified this. |
-| Person in Terminal: `unison p`, two roots, or `unison -bogus` | Refused with a message (row 7). | Upstream would report `-bogus` itself; here the person is told what the GUI cannot take and how to reach the text UI. |
+| `unison -batch p` from cron, ssh, a daemon, or a LaunchAgent in a GUI session | Text UI: the `-ui text` default applies. | Upstream's Mac app opens a GUI here and fails headless. |
+| Person in Terminal: `unison p` or two roots | Text UI, exactly as the `unison` command behaves everywhere. | No refusal rule; nothing to drop. |
+| Person in Terminal: `unison -bogus` | Upstream's unknown-option usage, exit 2. | The engine reports it, not the app. |
+| `unison -label -server -batch p` | Text sync with the label "-server". | Only the parser knows `-server` is a value; the app never decides. |
+| `unison -ui graphic -ui text -batch p` | Text sync. | Last `-ui` wins in upstream's scanner. |
+| `unison -server -ui graphic` | Server. | `Main.init` handles `-server` before `-ui`. |
 | `-ui=text` | Recognized as an engine option. | `Uarg` splits at `=`. |
-| `--server`, `--ui text` | Not engine options, matching upstream, which registers single-dash names and matches exactly. Headless they reach the engine and are reported as unknown; in Terminal they are refused. | The manual says so. |
+| `--server`, `--ui text` | Upstream's unknown-option usage, exit 2: it registers single-dash names and matches exactly. | The manual says so. |
 | XCTest or smoke host, any arguments | GUI path, argv[0] only. | `UNISON` redirection in `applicationDidFinishLaunching` precedes the runtime start, as today. |
 | Xcode scheme runs `-ui graphic` with `-NSDocumentRevisionsDebugMode YES` | Command-line mode; the host flag reaches the engine intact and upstream's parser reports it with usage, exit 2. | Nothing is removed from argv, because the policy cannot know option-value boundaries. |
 | `unison -ui text -label -NSFoo p` | Passed through intact; `-NSFoo` is the label's value and Unison treats it as such. | Same reason. |
@@ -341,10 +349,13 @@ Draft copy, subject to the usual review before release:
 ## Acceptance criteria
 
 Each gate is named for what it proves. None of them proves notarization or
-Gatekeeper acceptance of the shipped bundle; that remains the release
-pipeline's job (Developer ID signing, notarization, and the macOS-15 launch
-smoke on a quarantined download), which `sign-app.sh` and its structural test
-do not replace.
+Gatekeeper acceptance of the shipped bundle. The release pipeline signs with
+a Developer ID and notarizes, but its macOS 15 smoke runs the *unsigned*
+build artifact before that step, so **no automated gate exercises a
+quarantined, notarized download**; that check is manual, in the release
+checklist (install the published zip on a clean Mac, launch from Finder,
+then run `unison -version` through the link). `sign-app.sh` and its
+structural test do not stand in for it.
 
 ### PR A: launcher and command-line branch
 
@@ -364,16 +375,21 @@ do not replace.
   two registered Launch Services entries, which a fixture cannot arrange
   deterministically, so it is covered by the identity check plus the
   fail-closed count in code review.
-- Unit tests for the mode-selection policy cover every row of the table,
-  `=` forms, double-dash tokens as non-options, mixed engine options passed
-  through unreordered, `-ui graphic` with no session refused in both forms,
-  option-value boundaries never edited (`-NSFoo -server`, `-ui text -label
-  -NSFoo p`, `-label -ui graphic p`), host flags reaching the engine intact,
-  no arguments with no session, GUI-session automation without a tty,
-  `-batch` in Terminal, and a person in Terminal with a profile or an unknown
-  option. These prove the argv handed over and the mode chosen; what the
-  engine does with the argv is upstream's behavior and is exercised by the
-  smoke below, not asserted by name in a unit test.
+- Unit tests for the launch-kind decision (marker, test host, no session,
+  direct invocation with arguments, Finder/Xcode/XCTest host flags, a host
+  flag followed by an option) and for the engine argv (`-ui text` prepended,
+  everything else byte-identical, including `-label -server -batch p` and a
+  caller's own later `-ui graphic`). These prove what is handed over; what
+  the engine does with it is upstream's behavior and is exercised against the
+  real bundle by the smoke and the live checks below, never asserted by name
+  in a unit test.
+- Live, against the built bundle through the launcher: `-label -server
+  -batch p` performs a text sync (the label is "-server"); `-ui graphic -ui
+  text -batch p` performs a text sync (last `-ui` wins); `-server -ui
+  graphic` runs the server role (exits on EOF, no window); `-batch p` under a
+  real pseudo-terminal performs a text sync (no refusal); `-NSDocument
+  RevisionsDebugMode YES -ui graphic` and `--server` get upstream's
+  unknown-option usage, exit 2; `-ui graphic p` opens the GUI.
 - **`scripts/smoke-cli.sh` against the built bundle** (`make smoke-cli`
   locally; the release pipeline runs it on the macOS 15 runner against the
   exact release bytes, where XCTest and `UNISON_UI_SMOKE` deliberately take
