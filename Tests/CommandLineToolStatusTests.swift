@@ -121,15 +121,17 @@ final class CommandLineToolStatusTests: XCTestCase {
 
     func test_danglingLauncherPath_vs_danglingOther() throws {
         let app = try makeBundle("This.app", identifier: CommandLineToolStatus.ourBundleIdentifier)
+        // Targets under the fixture root, so they are absent regardless of what
+        // is installed in /Applications on the machine running the tests.
         let bin = try makeBin("bin")
-        let target = "/Applications/unison-ui-mac.app/Contents/MacOS/cltool"
+        let target = root + "/gone/unison-ui-mac.app/Contents/MacOS/cltool"
         try link(bin + "/unison", to: target)
         XCTAssertEqual(classify(bin + "/unison", env(thisBundle: app)),
                        .danglingLauncherPath(storedTarget: target, resolvedTarget: target))
         let bin2 = try makeBin("bin2")
-        try link(bin2 + "/unison", to: "/Applications/Unison.app/Contents/MacOS/cltool")
-        XCTAssertEqual(classify(bin2 + "/unison", env(thisBundle: app)),
-                       .danglingOther(target: "/Applications/Unison.app/Contents/MacOS/cltool"))
+        let other = root + "/gone/Unison.app/Contents/MacOS/cltool"
+        try link(bin2 + "/unison", to: other)
+        XCTAssertEqual(classify(bin2 + "/unison", env(thisBundle: app)), .danglingOther(target: other))
     }
 
     func test_danglingRelativeTarget_keepsStoredForm_andResolvesForDisplay() throws {
@@ -168,7 +170,7 @@ final class CommandLineToolStatusTests: XCTestCase {
         let app = try makeBundle("This.app", identifier: CommandLineToolStatus.ourBundleIdentifier)
         let prefix = root + "/opt/homebrew"
         let broken = try makeBin("usr/local/bin")
-        try link(broken + "/unison", to: "/Applications/unison-ui-mac.app/Contents/MacOS/cltool")
+        try link(broken + "/unison", to: root + "/gone/unison-ui-mac.app/Contents/MacOS/cltool")
         let cellar = try makeBin("opt/homebrew/Cellar/unison/2.54.0/bin"); try makeExecutable(cellar + "/unison", body: "exit 0")
         let brewBin = try makeBin("opt/homebrew/bin"); try link(brewBin + "/unison", to: "../Cellar/unison/2.54.0/bin/unison")
 
@@ -200,19 +202,20 @@ final class CommandLineToolStatusTests: XCTestCase {
 
     // MARK: PATH reconstructions
 
-    func test_parsePathsFile() {
-        XCTAssertEqual(CommandLineToolStatus.parsePathsFile("/usr/local/bin\n/usr/bin\n\n  /bin  \n"),
-                       ["/usr/local/bin", "/usr/bin", "/bin"])
+    func test_remoteCommandSearchPath_isSshdsDefault_notEtcPaths() {
+        // Measured on a macOS 26 host: `ssh host 'echo $PATH'` prints exactly
+        // this. /etc/paths shapes login shells only; an ssh command never runs
+        // path_helper, so neither /usr/local/bin nor a brew prefix appears.
+        XCTAssertEqual(CommandLineToolStatus.remoteCommandSearchPath(), ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+        XCTAssertFalse(CommandLineToolStatus.remoteCommandSearchPath().contains("/usr/local/bin"))
     }
 
-    func test_remoteCommandSearchPath_etcPathsThenPathsD_inNameOrder_deduplicated() throws {
-        let etc = root + "/etc"
-        try FileManager.default.createDirectory(atPath: etc + "/paths.d", withIntermediateDirectories: true)
-        try "/usr/local/bin\n/usr/bin\n/bin\n".write(toFile: etc + "/paths", atomically: true, encoding: .utf8)
-        try "/opt/tool/bin\n".write(toFile: etc + "/paths.d/20-tool", atomically: true, encoding: .utf8)
-        try "/usr/bin\n/opt/a/bin\n".write(toFile: etc + "/paths.d/10-a", atomically: true, encoding: .utf8)
-        let path = CommandLineToolStatus.remoteCommandSearchPath(fs: fs, etcPaths: etc + "/paths", etcPathsD: etc + "/paths.d")
-        XCTAssertEqual(path, ["/usr/local/bin", "/usr/bin", "/bin", "/opt/a/bin", "/opt/tool/bin"])
+    func test_userHasZshenv_detectsHomeFile() throws {
+        if !fs.entryExists(atPath: "/etc/zshenv") {
+            XCTAssertFalse(CommandLineToolStatus.userHasZshenv(fs: fs, home: root))
+        }
+        try "export PATH=/x:$PATH\n".write(toFile: root + "/.zshenv", atomically: true, encoding: .utf8)
+        XCTAssertTrue(CommandLineToolStatus.userHasZshenv(fs: fs, home: root))
     }
 
     func test_splitSearchPath_dropsEmptyEntries() {

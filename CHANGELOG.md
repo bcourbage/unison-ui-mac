@@ -11,6 +11,17 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Fixed
+- **The "Remote command" PATH in Settings → Command Line, and the matching
+  documentation, described the wrong PATH.** A command arriving over ssh gets
+  sshd's default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`); `/etc/paths` shapes
+  login shells only, so neither `/usr/local/bin` nor the Homebrew prefix is
+  searched, whatever created the link. The tab now shows that PATH, notes when
+  a `.zshenv` exists that could extend it, and the manual, the design document
+  and the 0.7.0 release notes say that peers set `servercmd` to the link's full
+  path in every case. Measured on a macOS 26 host; the previous text was
+  reasoned, not measured.
+
 ## [0.7.0] — 2026-09-06
 
 A command-line release. (Build 23.) The app bundle now carries a `unison`

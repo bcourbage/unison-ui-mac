@@ -253,12 +253,16 @@ of a PATH, not measurements taken inside those execution contexts.
   running `$SHELL -l -c 'printf %s "$PATH"'`. This reads `/etc/zprofile` and
   `~/.zprofile` but not `~/.zshrc`, so a PATH change made only in `.zshrc`
   is not seen. The label says "as a login shell sees it".
-- *Remote command*: the PATH `path_helper` builds from `/etc/paths` and
-  `/etc/paths.d`. An ssh command runs `$SHELL -c`, which on a stock macOS
-  does not read `/etc/zprofile` at all, so this reconstruction can include
-  `/etc/paths.d` entries the real remote command will not have. The label
-  says "as macOS defines it for non-interactive commands", and the manual
-  keeps `servercmd` as the reliable answer for remote peers.
+- *Remote command*: sshd's default PATH, `/usr/bin:/bin:/usr/sbin:/sbin`.
+  An ssh command runs `$SHELL -c`, which reads neither `/etc/zprofile` (so
+  `path_helper` and `/etc/paths` never apply) nor `~/.zshrc`; only
+  `~/.zshenv` or `/etc/zshenv` could add to it, and the panel notes when one
+  exists rather than evaluating it. Measured on a macOS 26 host: `ssh host
+  'echo $PATH'` prints exactly the default. Neither `/usr/local/bin` nor a
+  Homebrew prefix is on it, whatever created the link, so `servercmd` is the
+  answer for every remote peer of a Mac, not a fallback. (An earlier revision
+  of this document claimed `/etc/paths` applied and put `/usr/local/bin` on
+  this PATH; the measurement contradicted it.)
 
 For each context two things are found: the first PATH entry holding a
 `unison` **entry** of any kind (a file or a symlink, dangling included), and
@@ -324,8 +328,8 @@ Draft copy, subject to the usual review before release:
 | Brew formula only | Unchanged. Text UI; `-ui graphic` ignored. | Not this app's concern. |
 | Brew formula linked, then this cask | Cask install fails at the `binary` artifact ("already a Binary at …"); brew rolls back the app it had placed. | User chooses `brew unlink unison`, or the zip. |
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
-| This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Incoming ssh PATH lacks the brew prefix; peers set `servercmd`. On Intel, the prefix is `/usr/local`, so `bin/unison` is the same path a manual install would use, and the incoming-ssh PATH does include it. |
-| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on the incoming-ssh PATH per `/etc/paths` on a stock macOS. Settings shows reconstructed PATHs for two contexts and says so; a `.zshrc` override or a remote shell's own environment can still pick another `unison`, and the prompt's copy promises only what the link does, not what every shell will resolve. |
+| This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | The incoming-ssh PATH is sshd's default and lacks the brew prefix on every architecture; peers set `servercmd = <prefix>/bin/unison`. |
+| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on a login shell's PATH but not on the incoming-ssh PATH, so peers set `servercmd = /usr/local/bin/unison`. Settings shows reconstructed PATHs for two contexts and says so; a `.zshrc` or `.zshenv` change can still pick another `unison`, and the prompt's copy promises only what the link does, not what every shell will resolve. |
 | Fresh install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. Homebrew quarantines cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh, whatever the install method. |
 | Sparkle update | Link stays valid; bundled tool updates too. | The headless roles exit before Sparkle initializes; the `-ui graphic` continuation reaches Sparkle like any graphical launch. |
 | Bare `unison` over ssh, with a `default.prf` present | The text interface runs the default profile, as upstream's `unison` would. | Upstream semantics, stated as such. Not "prints usage". |

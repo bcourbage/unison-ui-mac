@@ -138,8 +138,9 @@ enum CommandLineToolStatus {
     static let upstreamBundleIdentifier = "edu.upenn.cis.Unison"
     static let launcherSuffix = "/Contents/MacOS/cltool"
     static let launcherBundleSuffix = "/unison-ui-mac.app" + launcherSuffix
-    /// Where Install creates the link. On the PATH of both a login shell
-    /// (`path_helper`) and a non-interactive remote command on a stock macOS.
+    /// Where Install creates the link. On a login shell's PATH (`path_helper`)
+    /// on a stock macOS; NOT on the PATH sshd gives an incoming command, so
+    /// remote peers set `servercmd` to this path.
     static let installLinkPath = "/usr/local/bin/unison"
 
     /// Facts about the machine the classifier needs besides the filesystem.
@@ -238,32 +239,22 @@ enum CommandLineToolStatus {
 
     // MARK: PATH reconstructions
 
-    /// The PATH `path_helper` builds: `/etc/paths` first, then every file in
-    /// `/etc/paths.d` in name order. This is what a non-interactive remote
-    /// command receives on a stock macOS. It is a reconstruction: an ssh
-    /// command runs `$SHELL -c`, which reads neither `/etc/zprofile` nor
-    /// `~/.zshrc`, so entries a user adds in those files are absent here by
-    /// design, and `/etc/paths.d` entries appear here even where a remote
-    /// command's own environment would not carry them.
-    static func remoteCommandSearchPath(fs: CommandLineToolFileSystem,
-                                        etcPaths: String = "/etc/paths",
-                                        etcPathsD: String = "/etc/paths.d") -> [String] {
-        var entries = parsePathsFile(fs.contentsOfFile(atPath: etcPaths) ?? "")
-        if fs.isDirectory(atPath: etcPathsD) {
-            for name in fs.contentsOfDirectory(atPath: etcPathsD).sorted() {
-                let file = (etcPathsD as NSString).appendingPathComponent(name)
-                entries += parsePathsFile(fs.contentsOfFile(atPath: file) ?? "")
-            }
-        }
-        var seen = Set<String>()
-        return entries.filter { seen.insert($0).inserted }
-    }
+    /// The PATH a command arriving over ssh receives on a stock macOS: sshd's
+    /// own default. `sshd` runs the command as `$SHELL -c`, which reads neither
+    /// `/etc/zprofile` (so `path_helper` and `/etc/paths` never apply) nor
+    /// `~/.zshrc`; only `~/.zshenv` or `/etc/zshenv` could add to it, and a
+    /// stock system has neither. Measured on a macOS 26 host: `ssh host 'echo
+    /// $PATH'` prints exactly this. Neither `/usr/local/bin` nor a Homebrew
+    /// prefix is on it, which is why a peer's profile needs `servercmd`.
+    static let sshdDefaultSearchPath = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
-    /// One directory per line; blank lines ignored.
-    static func parsePathsFile(_ text: String) -> [String] {
-        text.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+    /// The remote-command PATH: sshd's default, extended by whatever the user's
+    /// `~/.zshenv` exports for PATH is beyond this app's ability to evaluate, so
+    /// that file's presence is reported in the caveat rather than guessed at.
+    static func remoteCommandSearchPath() -> [String] { sshdDefaultSearchPath }
+
+    static func userHasZshenv(fs: CommandLineToolFileSystem, home: String = NSHomeDirectory()) -> Bool {
+        fs.entryExists(atPath: (home as NSString).appendingPathComponent(".zshenv")) || fs.entryExists(atPath: "/etc/zshenv")
     }
 
     static func splitSearchPath(_ path: String) -> [String] {
@@ -358,10 +349,13 @@ enum CommandLineToolStatus {
                 ? "The login shell did not report its PATH, so nothing is known about this context."
                 : "PATH as a login shell builds it. Changes made only in .zshrc are not included.",
             environment: env, fs: fs)
+        let zshenvNote = userHasZshenv(fs: fs)
+            ? " A .zshenv file exists and may add directories that are not reflected here."
+            : ""
         let remoteStatus = scan(
-            searchPath: remoteCommandSearchPath(fs: fs),
+            searchPath: remoteCommandSearchPath(),
             label: "Remote command",
-            caveat: "PATH as macOS defines it for non-interactive commands (/etc/paths and /etc/paths.d). A remote command's own environment can differ; servercmd in the peer's profile is the reliable setting.",
+            caveat: "The PATH sshd gives an incoming command on a stock macOS (/usr/bin:/bin:/usr/sbin:/sbin). Neither /usr/local/bin nor the Homebrew prefix is on it, so machines that sync to this Mac set servercmd in their profile." + zshenvNote,
             environment: env, fs: fs)
         return [loginStatus, remoteStatus]
     }

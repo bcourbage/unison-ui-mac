@@ -126,8 +126,8 @@ foreground command. Append `&` to get the prompt back.
 Settings → Command Line shows what `unison` resolves to and offers Install
 when nothing owns the name (see [Settings](#command-line)). The manual
 equivalent: create a symlink named `unison`. `/usr/local/bin` is on the PATH
-of both login shells and incoming ssh commands on a stock macOS, and writing
-there needs an administrator password:
+of login shells on a stock macOS (not of incoming ssh commands, see Remote
+peers below), and writing there needs an administrator password:
 
 ```sh
 sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
@@ -154,10 +154,13 @@ sudo rm /usr/local/bin/unison
 ### Remote peers
 
 Peers whose profiles target this Mac run `unison -server` here through
-ssh. Their command runs in a non-interactive shell whose PATH comes from
-macOS's `/etc/paths`, which includes `/usr/local/bin`, so the link above is
-enough. If the link lives anywhere else, set `servercmd = /path/to/unison`
-in the peer's profile.
+ssh. That command receives sshd's default PATH, `/usr/bin:/bin:/usr/sbin:/sbin`
+on a stock macOS: `/etc/paths` and the login files do not apply to it, so
+neither `/usr/local/bin` nor the Homebrew prefix is searched, whatever
+created the link. Peers therefore set `servercmd` in their profile to the
+link's full path, for example `servercmd = /usr/local/bin/unison` or
+`servercmd = /opt/homebrew/bin/unison`. A `~/.zshenv` on this Mac can extend
+that PATH; the Settings tab notes when one exists.
 
 A freshly installed app, whether from the zip or through Homebrew, carries
 the quarantine attribute until it is opened once from Finder, and
@@ -834,10 +837,11 @@ preference):
 
 - **Terminal**: the PATH a login shell builds. A change made only in
   `.zshrc` is not included.
-- **Remote command**: the PATH macOS defines for non-interactive commands
-  (`/etc/paths` and `/etc/paths.d`), which is what an incoming ssh command
-  gets on a stock Mac. A remote shell's own environment can differ, which is
-  why `servercmd` in the peer's profile remains the reliable setting.
+- **Remote command**: the PATH sshd gives a command arriving over ssh on a
+  stock Mac, `/usr/bin:/bin:/usr/sbin:/sbin`. It contains neither
+  `/usr/local/bin` nor the Homebrew prefix, so this line normally reports no
+  `unison`, and machines that sync to this Mac set `servercmd` in their
+  profile. A `~/.zshenv` can extend that PATH; the tab notes when one exists.
 
 Each line names the first `unison` entry on that PATH, broken links
 included, and says what it is: this app's command, another copy of this app,
