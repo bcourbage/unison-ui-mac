@@ -138,9 +138,9 @@ enum CommandLineToolStatus {
     static let upstreamBundleIdentifier = "edu.upenn.cis.Unison"
     static let launcherSuffix = "/Contents/MacOS/cltool"
     static let launcherBundleSuffix = "/unison-ui-mac.app" + launcherSuffix
-    /// Where Install creates the link. On a login shell's PATH (`path_helper`)
-    /// on a stock macOS; NOT on the PATH sshd gives an incoming command, so
-    /// remote peers set `servercmd` to this path.
+    /// Where Install creates the link. Whether a given shell finds it depends on
+    /// that shell's PATH; remote peers should name it in `servercmd` rather than
+    /// rely on any PATH.
     static let installLinkPath = "/usr/local/bin/unison"
 
     /// Facts about the machine the classifier needs besides the filesystem.
@@ -239,22 +239,28 @@ enum CommandLineToolStatus {
 
     // MARK: PATH reconstructions
 
-    /// The PATH a command arriving over ssh receives on a stock macOS: sshd's
-    /// own default. `sshd` runs the command as `$SHELL -c`, which reads neither
-    /// `/etc/zprofile` (so `path_helper` and `/etc/paths` never apply) nor
-    /// `~/.zshrc`; only `~/.zshenv` or `/etc/zshenv` could add to it, and a
-    /// stock system has neither. Measured on a macOS 26 host: `ssh host 'echo
-    /// $PATH'` prints exactly this. Neither `/usr/local/bin` nor a Homebrew
-    /// prefix is on it, which is why a peer's profile needs `servercmd`.
-    static let sshdDefaultSearchPath = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    /// The remote-SSH-command context is not determined locally, by design.
+    /// The PATH an incoming `ssh host unison -server` receives is decided by the
+    /// SSH server's configuration (`SetEnv`, `PermitUserEnvironment`), by the
+    /// login shell's non-interactive startup files (`~/.zshenv`, `/etc/zshenv`),
+    /// and by the invoking peer, none of which this process can evaluate from
+    /// inside a GUI session. One measurement exists (Demeter, macOS 26.6.2,
+    /// zsh, no zshenv files: `ssh demeter 'echo $PATH'` printed
+    /// `/usr/bin:/bin:/usr/sbin:/sbin`), and it is recorded in the manual as
+    /// that machine's observation, not as a rule. The status therefore carries
+    /// no search path and can never be "known empty": it can neither enable nor
+    /// satisfy any gate. The advice that does not depend on remote PATH at all
+    /// is an absolute `servercmd` in the peer's profile.
+    static let remoteCommandLabel = "Remote SSH command"
+    static let remoteCommandCaveat =
+        "Not determined locally. The PATH an incoming ssh command receives depends on the SSH server " +
+        "configuration and on the login shell's startup files on this Mac, which this app does not " +
+        "evaluate. Set servercmd in the peer's profile to the link's full path so the peer does not " +
+        "rely on remote PATH at all."
 
-    /// The remote-command PATH: sshd's default, extended by whatever the user's
-    /// `~/.zshenv` exports for PATH is beyond this app's ability to evaluate, so
-    /// that file's presence is reported in the caveat rather than guessed at.
-    static func remoteCommandSearchPath() -> [String] { sshdDefaultSearchPath }
-
-    static func userHasZshenv(fs: CommandLineToolFileSystem, home: String = NSHomeDirectory()) -> Bool {
-        fs.entryExists(atPath: (home as NSString).appendingPathComponent(".zshenv")) || fs.entryExists(atPath: "/etc/zshenv")
+    static func remoteCommandStatus() -> CommandLineToolContextStatus {
+        CommandLineToolContextStatus(label: remoteCommandLabel, caveat: remoteCommandCaveat,
+                                     searchPath: nil, first: nil, executingWhenDifferent: nil)
     }
 
     static func splitSearchPath(_ path: String) -> [String] {
@@ -346,18 +352,10 @@ enum CommandLineToolStatus {
             searchPath: login,
             label: "Terminal",
             caveat: login == nil
-                ? "The login shell did not report its PATH, so nothing is known about this context."
-                : "PATH as a login shell builds it. Changes made only in .zshrc are not included.",
+                ? "The login-shell probe did not report a PATH, so nothing is known about this context."
+                : "PATH obtained by running the login shell non-interactively. An interactive Terminal also reads .zshrc, which can change what unison resolves to there.",
             environment: env, fs: fs)
-        let zshenvNote = userHasZshenv(fs: fs)
-            ? " A .zshenv file exists and may add directories that are not reflected here."
-            : ""
-        let remoteStatus = scan(
-            searchPath: remoteCommandSearchPath(),
-            label: "Remote command",
-            caveat: "The PATH sshd gives an incoming command on a stock macOS (/usr/bin:/bin:/usr/sbin:/sbin). Neither /usr/local/bin nor the Homebrew prefix is on it, so machines that sync to this Mac set servercmd in their profile." + zshenvNote,
-            environment: env, fs: fs)
-        return [loginStatus, remoteStatus]
+        return [loginStatus, remoteCommandStatus()]
     }
 }
 
@@ -379,15 +377,21 @@ enum CommandLineToolAction: Equatable, Sendable {
 }
 
 enum CommandLineToolActionPolicy {
-    /// - `contexts`: Terminal first, then Remote command.
+    /// - `contexts`: Terminal first, then Remote SSH command.
+    ///
+    /// Every gate is decided from the Terminal context alone. The remote
+    /// context is informational: it is never determined locally, so it can
+    /// neither satisfy a gate that requires known absence nor block one. An
+    /// earlier revision required the remote context to be "known empty" too,
+    /// which only held because a guessed PATH was standing in for a
+    /// measurement; nothing is guessed now.
     static func availableAction(contexts: [CommandLineToolContextStatus]) -> CommandLineToolAction? {
         guard let terminal = contexts.first else { return nil }
-        let remote = contexts.dropFirst().first
         switch terminal.first?.classification {
         case .none:
-            // Nothing in Terminal's PATH. Install only when both PATHs were
-            // obtained and are empty: an unknown PATH is not an absence.
-            return (terminal.isKnownEmpty && (remote?.isKnownEmpty ?? false)) ? .install : nil
+            // Install only when the Terminal PATH was obtained and holds no
+            // `unison`. An unobtained PATH is not an absence.
+            return terminal.isKnownEmpty ? .install : nil
         case .some(.danglingLauncherPath(let stored, _)):
             return .repair(linkPath: terminal.first!.path, oldTarget: stored,
                            displacing: terminal.executingWhenDifferent?.path)
@@ -444,30 +448,26 @@ enum CommandLineToolActionPolicy {
 enum CommandLineToolPromptPolicy {
     static let doNotAskKey = "commandLineTool.doNotAsk"
 
-    /// The action to offer at first launch, or nil to stay silent. Silent
-    /// whenever anything else owns the name in either context, whenever a PATH
-    /// could not be obtained (unknown is not absence), when suppressed, and
-    /// under the test host. A Repair offer carries the displaced command.
+    /// The action to offer at first launch, or nil to stay silent. Decided from
+    /// the Terminal context alone (the remote context is never determined, see
+    /// `remoteCommandStatus`). Silent when the Terminal PATH could not be
+    /// obtained (unknown is not absence), when anything but a dangling launcher
+    /// link owns the name there, when suppressed, and under the test host. A
+    /// Repair offer carries the displaced command.
     static func offer(contexts: [CommandLineToolContextStatus],
                       suppressed: Bool,
                       isTestHost: Bool) -> CommandLineToolAction? {
         if isTestHost || suppressed { return nil }
-        guard let terminal = contexts.first, let remote = contexts.dropFirst().first else { return nil }
-        guard terminal.searchPath != nil, remote.searchPath != nil else { return nil }
-        func isEmptyOrDanglingLauncher(_ e: CommandLineToolEntry?) -> Bool {
-            switch e?.classification {
-            case .none, .some(.danglingLauncherPath): return true
-            default: return false
-            }
+        guard let terminal = contexts.first, terminal.searchPath != nil else { return nil }
+        switch terminal.first?.classification {
+        case .none:
+            return .install
+        case .some(.danglingLauncherPath(let stored, _)):
+            return .repair(linkPath: terminal.first!.path, oldTarget: stored,
+                           displacing: terminal.executingWhenDifferent?.path)
+        default:
+            return nil
         }
-        guard isEmptyOrDanglingLauncher(terminal.first), isEmptyOrDanglingLauncher(remote.first) else { return nil }
-        for context in [terminal, remote] {
-            if let entry = context.first, case .danglingLauncherPath(let stored, _) = entry.classification {
-                return .repair(linkPath: entry.path, oldTarget: stored,
-                               displacing: context.executingWhenDifferent?.path)
-            }
-        }
-        return .install
     }
 
     static func isSuppressed(defaults: UserDefaults = .standard) -> Bool {

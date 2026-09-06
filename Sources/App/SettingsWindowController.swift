@@ -353,8 +353,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             label.textColor = .labelColor
             label.isSelectable = true
         }
-        let terminalHeading = sectionDescription("Terminal (as a login shell builds its PATH):")
-        let remoteHeading = sectionDescription("Remote command (the PATH sshd gives a command arriving over ssh):")
+        let terminalHeading = sectionDescription("Terminal (PATH obtained from a login-shell probe):")
+        let remoteHeading = sectionDescription("Remote SSH command:")
         cliActionButton.bezelStyle = .rounded
         cliActionButton.target = self
         cliActionButton.action = #selector(commandLineToolAction(_:))
@@ -366,13 +366,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         section9Row.orientation = .horizontal
         section9Row.spacing = 8
         let section9Note = sectionDescription(
-            "Install creates /usr/local/bin/unison, which is on the PATH of login " +
-            "shells, and asks for an administrator password. Commands arriving over " +
-            "ssh get sshd's default PATH, which has neither /usr/local/bin nor the " +
-            "Homebrew prefix, so machines that sync to this Mac set servercmd in " +
-            "their profile. Both PATHs above are reconstructions: a PATH change " +
-            "made only in .zshrc, or one made in .zshenv, can select a different " +
-            "unison than shown here.")
+            "Install creates /usr/local/bin/unison and asks for an administrator " +
+            "password. Whether a given shell finds it depends on that shell's PATH. " +
+            "The Terminal line comes from running the login shell non-interactively, " +
+            "so an interactive Terminal's .zshrc can change the result. The PATH an " +
+            "incoming ssh command receives is not determined here; machines that " +
+            "sync to this Mac should set servercmd in their profile to the link's " +
+            "full path, which does not depend on PATH at all.")
 
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane

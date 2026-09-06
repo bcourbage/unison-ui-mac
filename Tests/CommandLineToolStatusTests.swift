@@ -202,20 +202,24 @@ final class CommandLineToolStatusTests: XCTestCase {
 
     // MARK: PATH reconstructions
 
-    func test_remoteCommandSearchPath_isSshdsDefault_notEtcPaths() {
-        // Measured on a macOS 26 host: `ssh host 'echo $PATH'` prints exactly
-        // this. /etc/paths shapes login shells only; an ssh command never runs
-        // path_helper, so neither /usr/local/bin nor a brew prefix appears.
-        XCTAssertEqual(CommandLineToolStatus.remoteCommandSearchPath(), ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
-        XCTAssertFalse(CommandLineToolStatus.remoteCommandSearchPath().contains("/usr/local/bin"))
+    // MARK: the remote context is never determined
+
+    func test_remoteCommandStatus_isUnknown_neverKnownEmpty_andSaysSo() {
+        let remote = CommandLineToolStatus.remoteCommandStatus()
+        XCTAssertNil(remote.searchPath)
+        XCTAssertNil(remote.first)
+        XCTAssertFalse(remote.isKnownEmpty, "an undetermined PATH must never read as an absence")
+        XCTAssertTrue(remote.caveat.hasPrefix("Not determined locally."))
+        XCTAssertTrue(remote.caveat.contains("servercmd"))
+        XCTAssertEqual(CommandLineToolWording.describe(remote), remote.caveat)
     }
 
-    func test_userHasZshenv_detectsHomeFile() throws {
-        if !fs.entryExists(atPath: "/etc/zshenv") {
-            XCTAssertFalse(CommandLineToolStatus.userHasZshenv(fs: fs, home: root))
-        }
-        try "export PATH=/x:$PATH\n".write(toFile: root + "/.zshenv", atomically: true, encoding: .utf8)
-        XCTAssertTrue(CommandLineToolStatus.userHasZshenv(fs: fs, home: root))
+    func test_currentStatus_secondContextIsTheUndeterminedRemoteOne() {
+        // The probe runs the real login shell; only the shape of the second
+        // context is asserted here.
+        let contexts = CommandLineToolStatus.currentStatus(fs: fs)
+        XCTAssertEqual(contexts.count, 2)
+        XCTAssertEqual(contexts[1], CommandLineToolStatus.remoteCommandStatus())
     }
 
     func test_splitSearchPath_dropsEmptyEntries() {
@@ -293,12 +297,24 @@ final class CommandLineToolStatusTests: XCTestCase {
                                      first: first, executingWhenDifferent: executing)
     }
 
-    func test_action_installOnlyWhenBothContextsKnownAndEmpty() {
-        XCTAssertEqual(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil), ctx(nil)]), .install)
-        XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil), ctx(entry(.brewFormula(resolvedPath: "/c")))]))
-        // An unobtained PATH is not an absence.
+    func test_action_installRequiresTheTerminalPathKnownAndEmpty() {
+        let remote = CommandLineToolStatus.remoteCommandStatus()   // always undetermined
+        // Terminal obtained and empty: Install, regardless of the undetermined remote context.
+        XCTAssertEqual(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil), remote]), .install)
+        // Terminal PATH not obtained: nothing. Unknown is not absence.
+        XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil, known: false), remote]))
         XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil, known: false), ctx(nil)]))
-        XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil), ctx(nil, known: false)]))
+        // The remote context can neither enable nor block: identical answers
+        // whether it is undetermined or (hypothetically) holds an entry.
+        XCTAssertEqual(CommandLineToolActionPolicy.availableAction(contexts: [ctx(nil), ctx(entry(.brewFormula(resolvedPath: "/c")))]), .install)
+        XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [ctx(entry(.brewFormula(resolvedPath: "/c"))), remote]))
+    }
+
+    func test_undeterminedContext_canNeverSatisfyAGateRequiringKnownAbsence() {
+        // A gate written against the remote context alone would never fire.
+        let remote = CommandLineToolStatus.remoteCommandStatus()
+        XCTAssertNil(CommandLineToolActionPolicy.availableAction(contexts: [remote, ctx(nil)]))
+        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [remote, ctx(nil)], suppressed: false, isTestHost: false))
     }
 
     func test_action_repairUsesTheDetectedLinkPath_andCarriesTargetAndDisplaced() {
@@ -417,16 +433,21 @@ final class CommandLineToolStatusTests: XCTestCase {
 
     // MARK: first-launch offer gate
 
-    func test_offer_installWhenBothKnownEmpty_silentWhenSuppressedOrTestHost() {
-        let empty = [ctx(nil), ctx(nil)]
-        XCTAssertEqual(CommandLineToolPromptPolicy.offer(contexts: empty, suppressed: false, isTestHost: false), .install)
-        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: empty, suppressed: true, isTestHost: false))
-        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: empty, suppressed: false, isTestHost: true))
+    func test_offer_installWhenTerminalKnownEmpty_silentWhenSuppressedOrTestHost() {
+        let contexts = [ctx(nil), CommandLineToolStatus.remoteCommandStatus()]
+        XCTAssertEqual(CommandLineToolPromptPolicy.offer(contexts: contexts, suppressed: false, isTestHost: false), .install)
+        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: contexts, suppressed: true, isTestHost: false))
+        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: contexts, suppressed: false, isTestHost: true))
     }
 
-    func test_offer_silentWhenAPathIsUnknown() {
-        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(nil, known: false), ctx(nil)], suppressed: false, isTestHost: false))
-        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(nil), ctx(nil, known: false)], suppressed: false, isTestHost: false))
+    func test_offer_silentWhenTheTerminalPathIsUnknown_remoteNeverCounts() {
+        let remote = CommandLineToolStatus.remoteCommandStatus()
+        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(nil, known: false), remote], suppressed: false, isTestHost: false))
+        // The remote context is informational only: a hypothetical entry there
+        // does not silence an offer the Terminal context justifies, and its
+        // undetermined state does not enable one the Terminal context does not.
+        XCTAssertEqual(CommandLineToolPromptPolicy.offer(contexts: [ctx(nil), ctx(entry(.brewFormula(resolvedPath: "/c")))], suppressed: false, isTestHost: false), .install)
+        XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(entry(.brewFormula(resolvedPath: "/c"))), remote], suppressed: false, isTestHost: false))
     }
 
     func test_offer_repairCarriesLinkPathAndDisplacedCommand() {
@@ -441,8 +462,7 @@ final class CommandLineToolStatusTests: XCTestCase {
         for c in [CommandLineToolClassification.thisInstallation, .homebrewManaged(bundlePath: "/h"),
                   .brewFormula(resolvedPath: "/c"), .upstreamApp(bundlePath: "/u"),
                   .danglingOther(target: "/d"), .other(resolvedPath: "/z"), .otherCopyOfThisApp(bundlePath: "/o")] {
-            XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(entry(c)), ctx(nil)], suppressed: false, isTestHost: false), "\(c)")
-            XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(nil), ctx(entry(c))], suppressed: false, isTestHost: false), "\(c) remote")
+            XCTAssertNil(CommandLineToolPromptPolicy.offer(contexts: [ctx(entry(c)), CommandLineToolStatus.remoteCommandStatus()], suppressed: false, isTestHost: false), "\(c)")
         }
     }
 
