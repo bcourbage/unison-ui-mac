@@ -1538,8 +1538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Pass only argv[0]: OCaml's Prefs.parseCmdLine rejects anything it
         // doesn't recognize. macOS / XCTest pass us flags like
         // `-NSTreatUnknownArgumentsAsOpen` which would cause Unison to print
-        // its help text and exit. The GUI doesn't expose CLI args — profile
-        // selection happens through the picker — so a clean argv is correct.
+        // its help text and exit. On a graphical launch profile selection
+        // happens through the picker, so a clean argv is correct. On a shell
+        // launch (`unison -ui graphic …`) main.swift has already started the
+        // runtime with the full argv and this call is a guarded no-op.
         let programName = CommandLine.arguments.first ?? "unison-ui-mac"
         var cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(programName), nil]
         cArgs.withUnsafeMutableBufferPointer { buf in
@@ -1575,7 +1577,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // a .prf by a crash mid-rescan, so it never silently persists.
         Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
 
-        showProfilePicker()
+        // A shell launch (`unison -ui graphic …`) reaches here with the full
+        // argv in the engine, and init0 has extracted any profile or roots from
+        // it. Two roots have no representation in the picker: say so and stop
+        // rather than open the picker as if nothing was asked. A profile name
+        // is preselected in the picker. On the graphical path both are absent.
+        if unison_bridge_command_line_roots_set() != 0 {
+            CommandLineEngineLaunch.writeStderr(
+                "unison-ui-mac: roots given on the command line are not supported by the graphical interface. "
+                + "Put them in a profile and choose it in the profile picker, or add -ui text to run in the terminal.")
+            exit(1)
+        }
+        if let cstr = unison_bridge_command_line_profile() {
+            let profile = String(cString: cstr)
+            log.write("profile named on the command line; preselecting it in the picker")
+            showProfilePicker(select: profile)
+        } else {
+            showProfilePicker()
+        }
 
         NSApp.activate(ignoringOtherApps: true)
 

@@ -2,6 +2,28 @@
 
 ## To Do
 
+- [ ] **Cask installs the `unison` command.** Add to the `bcourbage/tap` cask
+      `binary "#{appdir}/unison-ui-mac.app/Contents/MacOS/cltool", target: "unison"`
+      and `conflicts_with formula: "unison"`, so brew owns the PATH link and
+      refuses a half-install next to the formula. Note in the manual that the
+      brew prefix is not on the PATH an incoming ssh command sees, so peers
+      targeting a cask-installed Mac set `servercmd`. (docs/cli-launcher-design.md, PR B)
+
+- [ ] **Settings: Command Line Tool section and first-launch prompt.** Classify
+      what `unison` on PATH resolves to (this app, Homebrew-managed, brew
+      formula, upstream Unison.app, dangling, none) from the filesystem on every
+      show; offer Install/Repair/Remove only for links this app owns; prompt once
+      per launch with "Do not ask again" when nothing owns the name.
+      (docs/cli-launcher-design.md, PR C)
+
+- [ ] **Open a command-line profile directly.** `unison -ui graphic <profile>`
+      currently preselects the profile in the picker. Opening it straight away
+      needs a picker bypass and a GUI answer for "profile not found".
+
+- [ ] **Decide on progress output for `unison -ui text`.** upstream's
+      `unisonNonGuiStartup` silences the progress printer before the text
+      interface starts; keep or restore for terminal users.
+
 - [ ] **Upstream the connection close/reopen support in dependency order.**
       First rebase vendored patch 0003 (`remote-close-and-drain`) onto current
       upstream master and propose it as the general engine contribution, retaining

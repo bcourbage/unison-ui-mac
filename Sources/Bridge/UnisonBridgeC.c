@@ -6,6 +6,7 @@
 #include <caml/memory.h>
 #include <caml/signals.h>
 #include <caml/threads.h>
+#include <caml/printexc.h>   /* caml_format_exception — shell-launch startup errors */
 #if UNISON_DEBUG_HOOKS
 #include <stdatomic.h>       /* atomic fault-injection flags — Debug tests only */
 #include <caml/minor_gc.h>   /* caml_minor_collection — Finding #1 GC-rooting test */
@@ -1517,6 +1518,12 @@ const char *unison_bridge_unison_directory(void) {
 /* Shared {int status} shape for the status-returning phase entry points. */
 struct status_io { int status; };
 
+/* The command-line profile unisonInit0 extracted from Sys.argv, if any. Written
+ * on the OCaml worker while the init0 caller blocks in run_on_ocaml_thread, read
+ * by that caller afterwards; the handoff mutex orders the two. */
+static char g_cli_profile[4096];
+static bool g_cli_profile_set = false;
+
 static void _ocaml_init0(void *user) {
     struct status_io *io = user;
     io->status = UNISON_BRIDGE_ERR_MISSING;
@@ -1526,11 +1533,20 @@ static void _ocaml_init0(void *user) {
         return;   /* ERR_MISSING — caller must abort launch */
     }
     bool raised = false;
-    (void)bridge_call1_exn(closure, Val_unit, &raised);
+    value result = bridge_call1_exn(closure, Val_unit, &raised);
     if (raised) {
         fprintf(stderr, "unison-mac: unisonInit0 raised — runtime not fully initialized\n");
         io->status = UNISON_BRIDGE_ERR_EXN;
         return;
+    }
+    /* unisonInit0 returns the profile named on the command line, if any, as a
+     * `string option`. Copy it out now, before any further OCaml allocation can
+     * move it. On the graphical path Sys.argv is argv[0] only, so this is None. */
+    g_cli_profile_set = false;
+    if (Is_block(result)) {
+        strncpy(g_cli_profile, String_val(Field(result, 0)), sizeof(g_cli_profile) - 1);
+        g_cli_profile[sizeof(g_cli_profile) - 1] = '\0';
+        g_cli_profile_set = true;
     }
     io->status = UNISON_BRIDGE_OK;
 }
@@ -1618,6 +1634,61 @@ int unison_bridge_lock_is_locked(const char *hash) {
 int unison_bridge_init0(void) {
     struct status_io io = { .status = UNISON_BRIDGE_ERR_MISSING };
     run_on_ocaml_thread(_ocaml_init0, &io);
+    return io.status;
+}
+
+const char *unison_bridge_command_line_profile(void) {
+    return g_cli_profile_set ? g_cli_profile : NULL;
+}
+
+/* === Shell launch ===========================================================
+ *
+ * unisonNonGuiStartup is upstream's pre-GUI entry (uimacbridge.ml → Main.init):
+ * it scans Sys.argv and, for -server/-socket/-version/-doc/-help/-ui text, does
+ * the work and calls exit from inside OCaml. exit(3) from the worker thread
+ * ends the whole process while the caller is parked in run_on_ocaml_thread,
+ * which is the intended outcome: on this path there is no AppKit to serve. */
+static void _ocaml_non_gui_startup(void *user) {
+    struct status_io *io = user;
+    io->status = UNISON_BRIDGE_ERR_MISSING;
+    const value *closure = caml_named_value("unisonNonGuiStartup");
+    if (closure == NULL) {
+        fprintf(stderr, "unison-mac: unisonNonGuiStartup not registered\n");
+        return;
+    }
+    bool raised = false;
+    value result = bridge_call1_exn(closure, Val_unit, &raised);
+    if (raised) {
+        char *text = caml_format_exception(Extract_exception(result));
+        fprintf(stderr, "unison-mac: %s\n", text ? text : "exception during startup");
+        caml_stat_free(text);
+        io->status = UNISON_BRIDGE_ERR_EXN;
+        return;
+    }
+    io->status = UNISON_BRIDGE_OK;
+}
+
+int unison_bridge_cli_startup(int argc, char *argv[]) {
+    unison_bridge_startup(argc, argv);
+    struct status_io io = { .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_non_gui_startup, &io);
+    return io.status;
+}
+
+static void _ocaml_roots_set(void *user) {
+    struct status_io *io = user;
+    io->status = 0;
+    const value *closure = caml_named_value("areRootsSet");
+    if (closure == NULL) return;
+    bool raised = false;
+    value result = bridge_call1_exn(closure, Val_unit, &raised);
+    if (raised) return;
+    io->status = Bool_val(result) ? 1 : 0;
+}
+
+int unison_bridge_command_line_roots_set(void) {
+    struct status_io io = { .status = 0 };
+    run_on_ocaml_thread(_ocaml_roots_set, &io);
     return io.status;
 }
 

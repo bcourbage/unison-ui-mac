@@ -110,17 +110,20 @@ updated upstream checkout to refresh it.
 
 ### Remote-side requirement (SSH profiles)
 
-For `ssh://` profiles, the *remote* machine still needs the `unison` CLI
-installed because `ssh://` profiles spawn `unison -server` on the far
-side. Pure local-to-local profiles (two local directories) have no
-external dependency.
+For `ssh://` profiles the *remote* machine runs `unison -server`, so it
+needs a `unison` command that its non-interactive shell can find (or a
+`servercmd = /path/to/unison` line in the profile). Pure local-to-local
+profiles (two local directories) have no external dependency.
 
 The remote `unison` must be at **>= 2.52.0** (Unison's 2.52 wire-protocol
 boundary); `2.53.x` and `2.54.x` interoperate with this app's embedded 2.54.0,
-while `2.51.x` and earlier cannot connect. Common ways to install it on the
-remote:
+while `2.51.x` and earlier cannot connect. Ways to provide it on the remote:
 
-- **macOS**: `brew install unison`
+- **macOS with this app installed**: the app bundle carries a `unison`
+  command that serves this role with the embedded engine, so no separate
+  Unison install is needed. See [The `unison` command](MANUAL.md#the-unison-command)
+  in the manual for how to put it on PATH.
+- **macOS without this app**: `brew install unison`
 - **Debian/Ubuntu**: `sudo apt install unison`
 - **Other**: upstream install instructions at
   <https://github.com/bcpierce00/unison/wiki/Downloading-Unison>

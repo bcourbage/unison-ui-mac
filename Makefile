@@ -415,6 +415,14 @@ check-sparkle-output-path:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# The `unison` launcher (Sources/CLTool/cltool.c): compiled with cc against a
+# throwaway bundle identifier into a fake bundle, then exercised through a PATH
+# symlink, by direct path, copied out of the bundle, and against a bundle with
+# no app executable. No Xcode/OCaml/signing identity.
+.PHONY: check-cltool
+check-cltool:
+	@./scripts/test-cltool.sh
+
 # install.sh hardening tests (SF8–SF10): Release-only selection, staged-then-swap
 # install with rollback, and verified quarantine strip. Pure shell (no
 # Xcode/OCaml/sudo), via install.sh's test seams.
