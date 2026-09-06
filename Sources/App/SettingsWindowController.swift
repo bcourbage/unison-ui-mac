@@ -115,6 +115,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "Include an anonymous system profile with update checks",
         target: nil, action: nil)
 
+    // MARK: - Section 9: Command line tool
+
+    /// What `unison` resolves to in two PATH contexts, recomputed from the
+    /// filesystem on every reload (see CommandLineToolStatus). The login shell
+    /// is spawned off the main thread; the labels show "Checking…" meanwhile.
+    private let cliTerminalLabel = NSTextField(wrappingLabelWithString: "Checking…")
+    private let cliRemoteLabel = NSTextField(wrappingLabelWithString: "Checking…")
+    private let cliActionButton = NSButton(title: "Install", target: nil, action: nil)
+    private let cliRefreshButton = NSButton(title: "Refresh", target: nil, action: nil)
+    private var cliContexts: [CommandLineToolContextStatus] = []
+    private var cliAction: CommandLineToolAction?
+    private var cliRefreshGeneration = 0
+
     // MARK: - Init
 
     init(unisonDirectory: String,
@@ -327,6 +340,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             "app version, and preferred language. It is sent only when the app " +
             "checks for updates.")
 
+        // Section 9: Command line tool. Status is read from the filesystem on
+        // every reload; nothing here is a stored preference.
+        let section9Title = sectionHeader("The unison Command")
+        let section9Desc = sectionDescription(
+            "The app bundle carries a command-line launcher. Linked onto PATH as " +
+            "`unison`, it makes `unison -ui graphic` open this app and lets " +
+            "`unison -server`, run by a remote machine over ssh, use this app's " +
+            "Unison. Below is what `unison` resolves to right now, for two PATHs.")
+        for label in [cliTerminalLabel, cliRemoteLabel] {
+            label.font = .systemFont(ofSize: NSFont.systemFontSize)
+            label.textColor = .labelColor
+            label.isSelectable = true
+        }
+        let terminalHeading = sectionDescription("Terminal (as a login shell builds its PATH):")
+        let remoteHeading = sectionDescription("Remote command (PATH as macOS defines it for non-interactive commands):")
+        cliActionButton.bezelStyle = .rounded
+        cliActionButton.target = self
+        cliActionButton.action = #selector(commandLineToolAction(_:))
+        cliActionButton.isEnabled = false
+        cliRefreshButton.bezelStyle = .rounded
+        cliRefreshButton.target = self
+        cliRefreshButton.action = #selector(refreshCommandLineToolAction(_:))
+        let section9Row = NSStackView(views: [cliActionButton, NSView(), cliRefreshButton])
+        section9Row.orientation = .horizontal
+        section9Row.spacing = 8
+        let section9Note = sectionDescription(
+            "Install creates /usr/local/bin/unison, which is on the PATH of both " +
+            "login shells and remote commands on a stock macOS, and asks for an " +
+            "administrator password. Both PATHs above are reconstructions: a " +
+            "PATH change made only in .zshrc, or a remote shell's own " +
+            "environment, can select a different unison than shown here.")
+
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
         // views, and animates the window to each pane's preferredContentSize
@@ -359,6 +404,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 views: [section8Title, section8Desc,
                         updatesCheckboxRow, section8ProfileDesc]))
         }
+
+        tabVC.addTabViewItem(makePane(
+            symbol: "terminal", label: "Command Line",
+            views: [section9Title, section9Desc,
+                    terminalHeading, cliTerminalLabel,
+                    remoteHeading, cliRemoteLabel,
+                    section9Row, section9Note]))
 
         window?.contentViewController = tabVC
         window?.toolbarStyle = .preference
@@ -506,6 +558,133 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if let prefs = updatePreferences {
             autoUpdateCheckbox.state = prefs.automaticallyChecksForUpdates ? .on : .off
             systemProfileCheckbox.state = prefs.sendsSystemProfile ? .on : .off
+        }
+
+        refreshCommandLineToolStatus()
+    }
+
+    // MARK: - Command line tool
+
+    /// Recompute both PATH contexts off the main thread (the login shell is
+    /// spawned) and show the result. A stale answer from an earlier refresh is
+    /// discarded by generation.
+    private func refreshCommandLineToolStatus() {
+        cliRefreshGeneration += 1
+        let generation = cliRefreshGeneration
+        cliTerminalLabel.stringValue = "Checking…"
+        cliRemoteLabel.stringValue = "Checking…"
+        cliActionButton.isEnabled = false
+        cliRefreshButton.isEnabled = false
+        Task { [weak self] in
+            let contexts = await Task.detached(priority: .userInitiated) {
+                CommandLineToolStatus.currentStatus()
+            }.value
+            guard let self, self.cliRefreshGeneration == generation else { return }
+            self.showCommandLineToolStatus(contexts)
+        }
+    }
+
+    private func showCommandLineToolStatus(_ contexts: [CommandLineToolContextStatus]) {
+        cliContexts = contexts
+        let terminal = contexts.first
+        let remote = contexts.dropFirst().first
+        cliTerminalLabel.stringValue = Self.describeContext(terminal)
+        cliRemoteLabel.stringValue = Self.describeContext(remote)
+        cliAction = CommandLineToolActionPolicy.availableAction(contexts: contexts)
+        switch cliAction {
+        case .install:
+            cliActionButton.title = "Install…"
+            cliActionButton.isEnabled = true
+        case .repair:
+            cliActionButton.title = "Repair…"
+            cliActionButton.isEnabled = true
+        case .remove:
+            cliActionButton.title = "Remove…"
+            cliActionButton.isEnabled = true
+        case nil:
+            cliActionButton.title = "Install…"
+            cliActionButton.isEnabled = false
+        }
+        cliRefreshButton.isEnabled = true
+    }
+
+    static func describeContext(_ context: CommandLineToolContextStatus?) -> String {
+        guard let context else { return "Not available." }
+        var text = CommandLineToolWording.describe(context.first)
+        if let executing = context.executingWhenDifferent {
+            text += " The command that actually runs is " + CommandLineToolWording.describe(executing)
+        }
+        return text + " " + context.caveat
+    }
+
+    @objc private func refreshCommandLineToolAction(_ sender: Any?) {
+        refreshCommandLineToolStatus()
+    }
+
+    @objc private func commandLineToolAction(_ sender: Any?) {
+        guard let action = cliAction, let window else { return }
+        let launcher = (Bundle.main.bundlePath as NSString)
+            .appendingPathComponent("Contents/MacOS/cltool")
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        switch action {
+        case .install:
+            alert.messageText = "Install the unison command?"
+            alert.informativeText =
+                "Creates \(CommandLineToolStatus.installLinkPath) as a link to this app's " +
+                "command-line launcher. Requires an administrator password."
+            alert.addButton(withTitle: "Install")
+        case .repair(let oldTarget, let displacing):
+            alert.messageText = "Repair the unison command?"
+            var text = "Replaces the broken link at \(CommandLineToolStatus.installLinkPath), " +
+                "which pointed at \(oldTarget), with a link to this app's command-line launcher."
+            if let displacing {
+                text += " The command that currently runs, \(displacing), comes later on the " +
+                    "PATH and will no longer be reached by the name unison."
+            }
+            alert.informativeText = text + " Requires an administrator password."
+            alert.addButton(withTitle: "Repair")
+        case .remove(let linkPath):
+            alert.messageText = "Remove the unison command?"
+            alert.informativeText =
+                "Deletes the link at \(linkPath). The app keeps working from the profile " +
+                "picker. Requires an administrator password."
+            alert.addButton(withTitle: "Remove")
+        }
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            Self.performAdmin(action: action, launcherPath: launcher) { [weak self] error in
+                if let error {
+                    TraceLog.shared.write("command-line tool action failed: \(error)")
+                    let failure = NSAlert()
+                    failure.alertStyle = .warning
+                    failure.messageText = "The unison command was not changed"
+                    failure.informativeText = error
+                    failure.addButton(withTitle: "OK")
+                    if let window = self?.window { failure.beginSheetModal(for: window) } else { failure.runModal() }
+                }
+                self?.refreshCommandLineToolStatus()
+            }
+        }
+    }
+
+    /// Run the action's shell command with administrator privileges through
+    /// AppleScript's `do shell script … with administrator privileges`, which
+    /// shows the system authentication dialog. Completion on the main thread
+    /// with nil on success or a message on failure (cancel included).
+    static func performAdmin(action: CommandLineToolAction, launcherPath: String,
+                             completion: @escaping @MainActor (String?) -> Void) {
+        let command = CommandLineToolActionPolicy.adminShellCommand(for: action, launcherPath: launcherPath)
+        let source = CommandLineToolActionPolicy.appleScript(runningAsAdmin: command)
+        Task.detached {
+            var errorInfo: NSDictionary?
+            let script = NSAppleScript(source: source)
+            _ = script?.executeAndReturnError(&errorInfo)
+            let message: String? = errorInfo.map { info in
+                (info[NSAppleScript.errorMessage] as? String) ?? "The command could not be run."
+            }
+            await MainActor.run { completion(message) }
         }
     }
 

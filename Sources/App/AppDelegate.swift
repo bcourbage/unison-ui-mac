@@ -1653,6 +1653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         DispatchQueue.main.async { [weak self] in
             self?.checkForPriorCrashReport()
             self?.checkForAbandonedArchiveStaging()
+            self?.offerCommandLineToolIfAbsent()
         }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
@@ -2544,6 +2545,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 + cleanupNotes.joined(separator: "\n")
             a3.addButton(withTitle: "OK")
             a3.runModal()
+        }
+    }
+
+    /// First-launch offer to put the bundled `unison` command on PATH. Shown
+    /// only when nothing owns the name in either PATH context (or a broken link
+    /// to a former copy of this app does), never when another product holds it,
+    /// and never again once "Do not ask again" was checked. Status is computed
+    /// off the main thread; the alert is presented after the picker is up.
+    private func offerCommandLineToolIfAbsent(defaults: UserDefaults = .standard) {
+        let env = ProcessInfo.processInfo.environment
+        let isTestHost = env["XCTestConfigurationFilePath"] != nil || env["UNISON_UI_SMOKE"] != nil
+        if isTestHost || CommandLineToolPromptPolicy.isSuppressed(defaults: defaults) { return }
+        Task { [weak self] in
+            let contexts = await Task.detached(priority: .utility) {
+                CommandLineToolStatus.currentStatus()
+            }.value
+            guard let self,
+                  let kind = CommandLineToolPromptPolicy.prompt(
+                    contexts: contexts, suppressed: false, isTestHost: false)
+            else { return }
+            self.presentCommandLineToolOffer(kind, defaults: defaults)
+        }
+    }
+
+    private func presentCommandLineToolOffer(_ kind: CommandLineToolPromptKind, defaults: UserDefaults) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        let action: CommandLineToolAction
+        switch kind {
+        case .install:
+            alert.messageText = "Install the unison command?"
+            alert.informativeText =
+                "Adds a unison command in /usr/local/bin that runs this app's copy of Unison, " +
+                "so `unison -ui graphic` opens this app and `unison -server` from a remote machine " +
+                "uses it, wherever /usr/local/bin comes first on the PATH. Requires an administrator password."
+            alert.addButton(withTitle: "Install")
+            action = .install
+        case .repair(let oldTarget):
+            alert.messageText = "Repair the unison command?"
+            alert.informativeText =
+                "The unison command is a broken link to a former copy of this app (\(oldTarget)). " +
+                "Repair points it at this app. Requires an administrator password."
+            alert.addButton(withTitle: "Repair")
+            action = .repair(oldTarget: oldTarget, displacing: nil)
+        }
+        alert.addButton(withTitle: "Not Now")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Do not ask again"
+        let response = alert.runModal()
+        if alert.suppressionButton?.state == .on {
+            CommandLineToolPromptPolicy.suppress(defaults: defaults)
+        }
+        guard response == .alertFirstButtonReturn else { return }
+        let launcher = (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/MacOS/cltool")
+        SettingsWindowController.performAdmin(action: action, launcherPath: launcher) { [weak self] error in
+            guard let error else { return }
+            self?.log.write("command-line tool offer failed: \(error)")
+            let failure = NSAlert()
+            failure.alertStyle = .warning
+            failure.messageText = "The unison command was not installed"
+            failure.informativeText = error + " The command can be installed later from Settings."
+            failure.addButton(withTitle: "OK")
+            failure.runModal()
         }
     }
 

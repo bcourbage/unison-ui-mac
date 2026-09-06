@@ -27,6 +27,18 @@ across releases per Apple's bundle-version rules.
   reason otherwise; two roots on the command line are refused. Creating the
   PATH link is a manual step for now (see MANUAL, "The `unison` command").
   (#124)
+- **Settings → Command Line, and a first-launch offer to install the `unison`
+  command.** The tab reads, from the filesystem each time, what `unison`
+  resolves to on two PATHs (a login shell's, and the one macOS gives
+  non-interactive commands) and names it: this app's command, another copy of
+  this app, Homebrew-managed, the Homebrew formula, upstream Unison.app, a
+  broken link, or something else. It offers exactly one action when the
+  evidence supports it: Install when nothing owns the name, Repair for a broken
+  link to a former copy of this app (naming any working command it would take
+  precedence over), Remove for this installation's own link. Each needs an
+  administrator password. After the picker appears, the app offers Install or
+  Repair once per launch under the same conditions, with "Do not ask again".
+  Both PATHs are labelled as reconstructions. (PR C)
 
 ## [0.6.1] — 2026-08-29
 
