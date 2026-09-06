@@ -18,12 +18,12 @@ across releases per Apple's bundle-version rules.
   engine's text interface for `unison -ui text <profile>`, and serves
   `unison -server` headlessly when a remote peer invokes it over ssh. A Mac
   with this app installed therefore no longer needs a separate Unison install
-  to act as an SSH peer. Without a `-ui` flag, arguments given from a shell
-  with no graphical session (launchd, cron, ssh) run the text interface; with a
-  graphical session they are refused with a message rather than dropped. A
-  profile named alongside `-ui graphic` is preselected in the picker; two roots
-  on the command line are refused. Creating the PATH link is a manual step for
-  now (see MANUAL, "The `unison` command"). (#124)
+  to act as an SSH peer. Without a `-ui` flag, arguments given by automation
+  (no graphical session, or no terminal on standard input: launchd, cron, ssh)
+  run the text interface; typed in Terminal they are refused with a message
+  rather than dropped. A profile named alongside `-ui graphic` is preselected
+  in the picker; two roots on the command line are refused. Creating the PATH
+  link is a manual step for now (see MANUAL, "The `unison` command"). (#124)
 
 ## [0.6.1] — 2026-08-29
 

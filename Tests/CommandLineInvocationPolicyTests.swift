@@ -9,86 +9,160 @@ final class CommandLineInvocationPolicyTests: XCTestCase {
     private typealias P = CommandLineInvocationPolicy
     private let exe = "/Applications/unison-ui-mac.app/Contents/MacOS/unison-ui-mac"
 
-    // MARK: engine startup flags → command-line mode, argv passed through in full
-
-    func test_serverFlag_isCommandLine_withFullArgv() {
-        let r = P.classify(arguments: [exe, "-server"], hasWindowServerSession: false, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-server"], notice: nil))
+    private func classify(_ args: [String], session: Bool, tty: Bool, test: Bool = false) -> CommandLineInvocation {
+        P.classify(arguments: [exe] + args, hasWindowServerSession: session, stdinIsTerminal: tty, isTestHost: test)
     }
 
-    func test_everyStartupFlag_isCommandLine_regardlessOfSession() {
+    // MARK: engine startup options → command-line mode, argv passed through in full
+
+    func test_serverFlag_isCommandLine_withFullArgv() {
+        XCTAssertEqual(classify(["-server"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-server"], notice: nil))
+    }
+
+    func test_everyStartupOption_isCommandLine_regardlessOfSessionAndTTY() {
         for flag in ["-server", "-socket", "-version", "-doc", "-help"] {
-            for session in [true, false] {
-                let r = P.classify(arguments: [exe, flag, "x"], hasWindowServerSession: session, isTestHost: false)
-                XCTAssertEqual(r, .commandLine(arguments: [exe, flag, "x"], notice: nil), "\(flag) session=\(session)")
-            }
+            for session in [true, false] { for tty in [true, false] {
+                XCTAssertEqual(classify([flag, "x"], session: session, tty: tty),
+                               .commandLine(arguments: [exe, flag, "x"], notice: nil), "\(flag) s=\(session) t=\(tty)")
+            } }
         }
     }
 
+    func test_uargGrammar_equalsForm_andDoubleDash_areRecognized() {
+        XCTAssertEqual(classify(["-ui=text", "prof"], session: true, tty: true),
+                       .commandLine(arguments: [exe, "-ui=text", "prof"], notice: nil))
+        XCTAssertEqual(classify(["--server"], session: true, tty: true),
+                       .commandLine(arguments: [exe, "--server"], notice: nil))
+        XCTAssertEqual(classify(["--version=true"], session: true, tty: true),
+                       .commandLine(arguments: [exe, "--version=true"], notice: nil))
+    }
+
+    func test_mixedStartupOptions_passThrough_upstreamDecidesPrecedence() {
+        // Main.init checks -version before -server; the policy must not reorder or drop.
+        XCTAssertEqual(classify(["-server", "-version"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-server", "-version"], notice: nil))
+    }
+
     func test_uiText_withSession_isCommandLine_unchanged() {
-        let r = P.classify(arguments: [exe, "-ui", "text", "prof"], hasWindowServerSession: true, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-ui", "text", "prof"], notice: nil))
+        XCTAssertEqual(classify(["-ui", "text", "prof"], session: true, tty: true),
+                       .commandLine(arguments: [exe, "-ui", "text", "prof"], notice: nil))
     }
 
     func test_uiGraphic_withSession_isCommandLine_unchanged() {
         // nonGuiStartup returns for this one and the GUI starts with the runtime up.
-        let r = P.classify(arguments: [exe, "-ui", "graphic"], hasWindowServerSession: true, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-ui", "graphic"], notice: nil))
+        XCTAssertEqual(classify(["-ui", "graphic"], session: true, tty: true),
+                       .commandLine(arguments: [exe, "-ui", "graphic"], notice: nil))
     }
 
-    func test_uiGraphic_withoutSession_becomesText_withNotice() {
-        let r = P.classify(arguments: [exe, "-batch", "-ui", "graphic", "prof"],
-                           hasWindowServerSession: false, isTestHost: false)
+    func test_uiGraphic_withoutSession_becomesText_withNotice_profileKept() {
+        // Precedence: the text fallback wins and the profile runs in the text UI.
+        let r = classify(["-batch", "-ui", "graphic", "prof"], session: false, tty: false)
         guard case .commandLine(let args, let notice) = r else { return XCTFail("\(r)") }
         XCTAssertEqual(args, [exe, "-batch", "-ui", "text", "prof"])
         XCTAssertNotNil(notice)
         XCTAssertTrue(notice!.contains("-ui graphic"))
     }
 
+    func test_uiGraphic_equalsForm_withoutSession_becomesText() {
+        let r = classify(["-ui=graphic", "prof"], session: false, tty: false)
+        guard case .commandLine(let args, _) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(args, [exe, "-ui=text", "prof"])
+    }
+
     func test_uiWithoutValue_passesThroughForTheEngineToReject() {
-        // Upstream prints usage and exits 1; the policy must not mask that.
-        let r = P.classify(arguments: [exe, "-ui"], hasWindowServerSession: false, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-ui"], notice: nil))
+        // Upstream prints usage and exits; the policy must not mask that.
+        XCTAssertEqual(classify(["-ui"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-ui"], notice: nil))
+    }
+
+    func test_hostFlags_areStripped_inCommandLineModeToo() {
+        // An Xcode scheme running `-ui graphic` still carries -NSDocumentRevisionsDebugMode.
+        XCTAssertEqual(classify(["-NSDocumentRevisionsDebugMode", "YES", "-ui", "graphic"], session: true, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "graphic"], notice: nil))
     }
 
     // MARK: graphical launches
 
-    func test_noArguments_isGUI() {
-        for session in [true, false] {
-            XCTAssertEqual(P.classify(arguments: [exe], hasWindowServerSession: session, isTestHost: false), .gui)
+    func test_noArguments_withSession_isGUI() {
+        for tty in [true, false] {
+            XCTAssertEqual(classify([], session: true, tty: tty), .gui)
         }
     }
 
+    func test_noArguments_withoutSession_runsTextUsage_notAppKit() {
+        XCTAssertEqual(classify([], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "text"], notice: nil))
+    }
+
     func test_hostInjectedFlagsOnly_isGUI() {
-        let args = [exe, "-NSDocumentRevisionsDebugMode", "YES", "-ApplePersistenceIgnoreState", "YES", "-psn_0_123"]
-        XCTAssertEqual(P.classify(arguments: args, hasWindowServerSession: true, isTestHost: false), .gui)
+        let args = ["-NSDocumentRevisionsDebugMode", "YES", "-ApplePersistenceIgnoreState", "YES", "-psn_0_123"]
+        XCTAssertEqual(classify(args, session: true, tty: false), .gui)
     }
 
     func test_testHost_isGUI_whateverTheArguments() {
-        let args = [exe, "-server"]
-        XCTAssertEqual(P.classify(arguments: args, hasWindowServerSession: false, isTestHost: true), .gui)
-        XCTAssertEqual(P.classify(arguments: [exe, "prof"], hasWindowServerSession: true, isTestHost: true), .gui)
+        XCTAssertEqual(classify(["-server"], session: false, tty: false, test: true), .gui)
+        XCTAssertEqual(classify(["prof"], session: true, tty: true, test: true), .gui)
+        XCTAssertEqual(classify([], session: false, tty: false, test: true), .gui)
     }
 
-    // MARK: arguments without an engine flag
+    // MARK: arguments without an engine option
 
     func test_argumentsWithoutSession_runTextInterface() {
-        // launchd/cron: `unison -batch myprofile` with no -ui.
-        let r = P.classify(arguments: [exe, "-batch", "myprofile"], hasWindowServerSession: false, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-ui", "text", "-batch", "myprofile"], notice: nil))
+        // ssh / cron / launchd daemon: `unison -batch myprofile` with no -ui.
+        XCTAssertEqual(classify(["-batch", "myprofile"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "text", "-batch", "myprofile"], notice: nil))
     }
 
-    func test_argumentsWithSession_areUnsupported_notDropped() {
-        let r = P.classify(arguments: [exe, "myprofile"], hasWindowServerSession: true, isTestHost: false)
+    func test_argumentsWithSession_butNoTerminal_runTextInterface() {
+        // A LaunchAgent in a logged-in session: session yes, terminal no.
+        XCTAssertEqual(classify(["-batch", "myprofile"], session: true, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "text", "-batch", "myprofile"], notice: nil))
+    }
+
+    func test_argumentsWithSessionAndTerminal_areUnsupported_notDropped() {
+        let r = classify(["myprofile"], session: true, tty: true)
         guard case .unsupported(let message) = r else { return XCTFail("\(r)") }
         XCTAssertTrue(message.contains("myprofile"))
         XCTAssertTrue(message.contains("-ui text"))
     }
 
+    func test_unknownOption_inTerminal_isUnsupported_notGUI() {
+        let r = classify(["-bogus"], session: true, tty: true)
+        guard case .unsupported(let message) = r else { return XCTFail("\(r)") }
+        XCTAssertTrue(message.contains("-bogus"))
+    }
+
+    func test_unknownOption_headless_reachesUpstreamParser() {
+        // Upstream reports "unknown option" and exits 2; the policy passes it on.
+        XCTAssertEqual(classify(["-bogus"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "text", "-bogus"], notice: nil))
+    }
+
     func test_mixedHostAndUserArguments_keepOnlyUserArguments() {
-        let r = P.classify(arguments: [exe, "-NSDocumentRevisionsDebugMode", "YES", "root1", "root2"],
-                           hasWindowServerSession: false, isTestHost: false)
-        XCTAssertEqual(r, .commandLine(arguments: [exe, "-ui", "text", "root1", "root2"], notice: nil))
+        XCTAssertEqual(classify(["-NSDocumentRevisionsDebugMode", "YES", "root1", "root2"], session: false, tty: false),
+                       .commandLine(arguments: [exe, "-ui", "text", "root1", "root2"], notice: nil))
+    }
+
+    // MARK: grammar helpers
+
+    func test_optionName() {
+        XCTAssertEqual(P.optionName("-ui"), "ui")
+        XCTAssertEqual(P.optionName("--ui"), "ui")
+        XCTAssertEqual(P.optionName("-ui=text"), "ui")
+        XCTAssertEqual(P.optionName("-server=true"), "server")
+        XCTAssertNil(P.optionName("text"))
+        XCTAssertNil(P.optionName("my profile"))
+        XCTAssertNil(P.optionName("-"))
+        XCTAssertNil(P.optionName("-=x"))
+    }
+
+    func test_replacingUIGraphicWithText() {
+        XCTAssertEqual(P.replacingUIGraphicWithText(["-ui", "graphic"]), ["-ui", "text"])
+        XCTAssertEqual(P.replacingUIGraphicWithText(["--ui=graphic", "p"]), ["--ui=text", "p"])
+        XCTAssertNil(P.replacingUIGraphicWithText(["-ui", "text"]))
+        XCTAssertNil(P.replacingUIGraphicWithText(["-ui"]))
+        XCTAssertNil(P.replacingUIGraphicWithText(["graphic"]))
     }
 
     // MARK: host-injected flag stripping

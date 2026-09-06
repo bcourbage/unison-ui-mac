@@ -16,6 +16,7 @@ let underSmoke = ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil
 let invocation = CommandLineInvocationPolicy.classify(
     arguments: CommandLine.arguments,
     hasWindowServerSession: CGSessionCopyCurrentDictionary() != nil,
+    stdinIsTerminal: isatty(STDIN_FILENO) != 0,
     isTestHost: underXCTest || underSmoke)
 switch invocation {
 case .gui:

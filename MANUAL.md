@@ -107,8 +107,11 @@ app:
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison -batch <profile>` with no `-ui`, from launchd, cron or ssh | The text interface, because no graphical session is available. |
-| `unison <profile>` with no `-ui`, from Terminal | Refused with a message. Choose the profile in the picker, or add `-ui text`. |
+| `unison -batch <profile>` with no `-ui`, from launchd, cron or ssh | The text interface. Automation is recognized by the absence of a graphical session or of a terminal on standard input, so a LaunchAgent in a logged-in session counts too. |
+| `unison <profile>`, two roots, or any other option with no `-ui`, typed in Terminal | Refused with a message. Choose the profile in the picker, or add `-ui text`. |
+
+Options follow Unison's usual grammar: `-ui=text` and `--ui text` mean the
+same as `-ui text`.
 
 `unison -ui graphic` keeps the terminal busy until the app quits, like any
 foreground command. Append `&` to get the prompt back.
@@ -148,6 +151,11 @@ ssh. Their command runs in a non-interactive shell whose PATH comes from
 macOS's `/etc/paths`, which includes `/usr/local/bin`, so the link above is
 enough. If the link lives anywhere else, set `servercmd = /path/to/unison`
 in the peer's profile.
+
+An app downloaded as a zip carries the quarantine attribute until it is
+opened once from Finder, and Gatekeeper's first-launch check needs a
+graphical session. Launch the app once before relying on it as an ssh
+peer, or install it through Homebrew, which does not quarantine it.
 
 ---
 

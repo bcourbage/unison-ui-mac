@@ -12,21 +12,25 @@
  * Because the process is replaced rather than spawned, stdin, stdout, stderr,
  * the exit status and the ssh pipe all belong to the app directly.
  *
- * Resolution order:
- *   1. Self-relative: this tool's own real path with `cltool` replaced by the
- *      app executable name. This is the path taken when the tool is reached
- *      through a symlink. Deterministic; needs no Launch Services.
- *   2. Bundle identifier through Launch Services, only when (1) finds no
- *      executable (the tool was copied out of the bundle). Exactly one
- *      registered application is required: with a Debug build registered next
- *      to the installed release, guessing would silently run the wrong one.
+ * Resolution:
+ *   1. Inside a bundle. When this tool's real path ends in
+ *      /Contents/MacOS/cltool, that bundle is the only candidate: its
+ *      Info.plist must carry our bundle identifier and name an executable that
+ *      exists. Anything else (foreign identifier, no Info.plist, missing
+ *      executable) is a damaged or foreign bundle and the tool stops. It never
+ *      falls through to Launch Services from here, because "the executable next
+ *      to me is missing" is bundle damage, not a reason to run some other copy.
+ *   2. Outside a bundle (the tool was copied out). Launch Services is asked for
+ *      applications with our identifier; exactly one is required and it is
+ *      verified the same way. With a Debug build registered next to the
+ *      installed release, guessing would silently run the wrong one.
  *
  * Never writes to stdout. When the app runs as `unison -server`, stdout is the
  * wire protocol; every diagnostic here goes to stderr.
  *
- * CLTOOL_BUNDLE_ID and CLTOOL_APP_EXECUTABLE can be overridden at compile time
- * so scripts/test-cltool.sh can exercise the fallback against an identifier no
- * installed application carries.
+ * CLTOOL_BUNDLE_ID can be overridden at compile time so scripts/test-cltool.sh
+ * can exercise every path against an identifier no installed application
+ * carries.
  */
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -43,30 +47,81 @@
 #ifndef CLTOOL_BUNDLE_ID
 #define CLTOOL_BUNDLE_ID "net.courbage.unison-ui-mac"
 #endif
-#ifndef CLTOOL_APP_EXECUTABLE
-#define CLTOOL_APP_EXECUTABLE "unison-ui-mac"
-#endif
+
+static const char *const kBundleSuffix = "/Contents/MacOS/cltool";
 
 static int is_executable_file(const char *path) {
     struct stat st;
     return stat(path, &st) == 0 && S_ISREG(st.st_mode) && access(path, X_OK) == 0;
 }
 
-/* (1) The app executable next to this tool's real location. */
-static int resolve_self_relative(char *out, size_t outsz) {
+/* Verify the bundle at `bundle_path` and copy its main executable's path into
+ * `out`. Returns 1 on success; on failure prints why to stderr and returns 0. */
+static int executable_of_verified_bundle(const char *bundle_path, char *out, size_t outsz) {
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)bundle_path,
+                                                           (CFIndex)strlen(bundle_path), true);
+    if (url == NULL) return 0;
+    CFBundleRef bundle = CFBundleCreate(NULL, url);
+    CFRelease(url);
+    if (bundle == NULL) {
+        fprintf(stderr, "unison: %s is not a readable application bundle\n", bundle_path);
+        return 0;
+    }
+
+    int ok = 0;
+    CFStringRef ident = CFBundleGetIdentifier(bundle);
+    if (ident == NULL || CFStringCompare(ident, CFSTR(CLTOOL_BUNDLE_ID), 0) != kCFCompareEqualTo) {
+        char have[256] = "(none)";
+        if (ident != NULL) CFStringGetCString(ident, have, sizeof have, kCFStringEncodingUTF8);
+        fprintf(stderr, "unison: %s has bundle identifier %s, expected %s\n", bundle_path, have, CLTOOL_BUNDLE_ID);
+        goto done;
+    }
+
+    /* Build the executable path from CFBundleExecutable ourselves rather than
+     * through CFBundleCopyExecutableURL, which returns NULL for a missing file
+     * and would make "damaged" indistinguishable from "not declared". */
+    CFTypeRef exe_name = CFBundleGetValueForInfoDictionaryKey(bundle, kCFBundleExecutableKey);
+    char name[256];
+    if (exe_name == NULL || CFGetTypeID(exe_name) != CFStringGetTypeID()
+        || !CFStringGetCString((CFStringRef)exe_name, name, sizeof name, kCFStringEncodingUTF8)
+        || name[0] == '\0' || strchr(name, '/') != NULL) {
+        fprintf(stderr, "unison: %s names no executable in its Info.plist\n", bundle_path);
+        goto done;
+    }
+    if (snprintf(out, outsz, "%s/Contents/MacOS/%s", bundle_path, name) >= (int)outsz) goto done;
+
+    if (!is_executable_file(out)) {
+        fprintf(stderr, "unison: %s is missing its executable (%s); the bundle is damaged\n", bundle_path, out);
+        goto done;
+    }
+    ok = 1;
+
+done:
+    CFRelease(bundle);
+    return ok;
+}
+
+/* Our own real path. 0 if it cannot be determined. */
+static int self_real_path(char *out, size_t outsz) {
     char self[PATH_MAX];
     uint32_t size = sizeof self;
     if (_NSGetExecutablePath(self, &size) != 0) return 0;
-
     char real[PATH_MAX];
     if (realpath(self, real) == NULL) return 0;
+    if (strlen(real) + 1 > outsz) return 0;
+    strcpy(out, real);
+    return 1;
+}
 
-    char *slash = strrchr(real, '/');
-    if (slash == NULL) return 0;
-    *slash = '\0';
-
-    if (snprintf(out, outsz, "%s/%s", real, CLTOOL_APP_EXECUTABLE) >= (int)outsz) return 0;
-    return is_executable_file(out);
+/* (1) The bundle this tool lives in, if its path has the bundle layout.
+ * Returns 1 and fills `bundle_out` when inside a bundle, else 0. */
+static int enclosing_bundle(const char *real, char *bundle_out, size_t outsz) {
+    size_t n = strlen(real), k = strlen(kBundleSuffix);
+    if (n <= k || strcmp(real + n - k, kBundleSuffix) != 0) return 0;
+    if (n - k + 1 > outsz) return 0;
+    memcpy(bundle_out, real, n - k);
+    bundle_out[n - k] = '\0';
+    return 1;
 }
 
 static void print_url(CFURLRef url) {
@@ -89,40 +144,39 @@ static int resolve_by_bundle_id(char *out, size_t outsz) {
     if (count != 1) {
         fprintf(stderr, "unison: %ld applications carry the bundle identifier %s; refusing to guess:\n",
                 (long)count, CLTOOL_BUNDLE_ID);
-        for (CFIndex i = 0; i < count; i++) {
-            print_url((CFURLRef)CFArrayGetValueAtIndex(urls, i));
-        }
+        for (CFIndex i = 0; i < count; i++) print_url((CFURLRef)CFArrayGetValueAtIndex(urls, i));
         CFRelease(urls);
         return 0;
     }
 
     char app[PATH_MAX];
-    Boolean ok = CFURLGetFileSystemRepresentation((CFURLRef)CFArrayGetValueAtIndex(urls, 0), true,
-                                                  (UInt8 *)app, sizeof app);
+    Boolean got = CFURLGetFileSystemRepresentation((CFURLRef)CFArrayGetValueAtIndex(urls, 0), true,
+                                                   (UInt8 *)app, sizeof app);
     CFRelease(urls);
-    if (!ok) {
+    if (!got) {
         fprintf(stderr, "unison: cannot read the path of the registered %s application\n", CLTOOL_BUNDLE_ID);
         return 0;
     }
-
-    if (snprintf(out, outsz, "%s/Contents/MacOS/%s", app, CLTOOL_APP_EXECUTABLE) >= (int)outsz) return 0;
-    if (!is_executable_file(out)) {
-        fprintf(stderr, "unison: %s has no executable at Contents/MacOS/%s\n", app, CLTOOL_APP_EXECUTABLE);
-        return 0;
-    }
-    return 1;
+    return executable_of_verified_bundle(app, out, outsz);
 }
 
 int main(int argc, char **argv) {
     (void)argc;
-    char exe[PATH_MAX];
+    char real[PATH_MAX], bundle[PATH_MAX], exe[PATH_MAX];
+    int resolved = 0;
 
-    if (!resolve_self_relative(exe, sizeof exe) && !resolve_by_bundle_id(exe, sizeof exe)) {
+    if (self_real_path(real, sizeof real) && enclosing_bundle(real, bundle, sizeof bundle)) {
+        /* Inside a bundle: that bundle or nothing. */
+        resolved = executable_of_verified_bundle(bundle, exe, sizeof exe);
+    } else {
+        resolved = resolve_by_bundle_id(exe, sizeof exe);
+    }
+
+    if (!resolved) {
         fprintf(stderr,
-                "unison: cannot locate the %s application.\n"
+                "unison: cannot locate the unison-ui-mac application.\n"
                 "Reinstall the app, or recreate the `unison` link so it points at "
-                "<app bundle>/Contents/MacOS/cltool.\n",
-                CLTOOL_APP_EXECUTABLE);
+                "<app bundle>/Contents/MacOS/cltool.\n");
         return 1;
     }
 

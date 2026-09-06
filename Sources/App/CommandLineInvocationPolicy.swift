@@ -29,55 +29,108 @@ enum CommandLineInvocation: Equatable {
 
 enum CommandLineInvocationPolicy {
 
-    /// The flags upstream's `Main.init` handles before any UI exists. Their
-    /// presence means the caller is a shell, not a graphical launcher.
-    static let engineStartupFlags: Set<String> = [
-        "-server", "-socket", "-ui", "-version", "-doc", "-help",
+    /// The options upstream's `Main.init` handles before any UI exists. Their
+    /// presence means the caller is a shell, not a graphical launcher. Compared
+    /// by option *name*, after `Uarg`'s grammar is applied: leading dashes are
+    /// not significant and `-name=value` is one token.
+    static let engineStartupOptions: Set<String> = [
+        "server", "socket", "ui", "version", "doc", "help",
     ]
 
     /// Decide the invocation from the raw process arguments.
     ///
     /// - `arguments`: `CommandLine.arguments`, argv[0] included.
-    /// - `hasWindowServerSession`: whether a graphical session exists for this
-    ///   process. False under ssh, cron and launchd daemons.
+    /// - `hasWindowServerSession`: whether this process belongs to a graphical
+    ///   session (`CGSessionCopyCurrentDictionary() != nil`). False under ssh,
+    ///   cron and launchd daemons; true for a LaunchAgent in a logged-in
+    ///   session, which is why it is not the only automation signal.
+    /// - `stdinIsTerminal`: `isatty(STDIN_FILENO)`. A person typing in Terminal
+    ///   has one; launchd, cron and ssh commands do not.
     /// - `isTestHost`: XCTest or the launch smoke. Both are graphical launches
-    ///   whatever the arguments or session say.
+    ///   whatever the arguments or session say, and both must reach
+    ///   `applicationDidFinishLaunching` before the runtime starts, because that
+    ///   is where the test host redirects `UNISON` to a throwaway directory.
     static func classify(arguments: [String],
                          hasWindowServerSession: Bool,
+                         stdinIsTerminal: Bool,
                          isTestHost: Bool) -> CommandLineInvocation {
         if isTestHost { return .gui }
 
         let argv0 = arguments.first ?? "unison-ui-mac"
-        let rest = Array(arguments.dropFirst())
+        // Host-injected flags are never Unison's business, on any path: an Xcode
+        // scheme that runs `-ui graphic` still carries -NSDocumentRevisionsDebugMode.
+        let userArguments = stripHostInjected(Array(arguments.dropFirst()))
 
-        if rest.contains(where: engineStartupFlags.contains) {
-            // A graphical interface cannot be shown without a session. Mirror
-            // the GTK build, which warns and starts the text interface.
-            if !hasWindowServerSession,
-               let i = rest.firstIndex(of: "-ui"), i + 1 < rest.count, rest[i + 1] == "graphic" {
-                var adjusted = rest
-                adjusted[i + 1] = "text"
-                return .commandLine(
-                    arguments: [argv0] + adjusted,
-                    notice: "unison-ui-mac: no graphical session is available; starting the text interface instead of -ui graphic")
-            }
-            return .commandLine(arguments: [argv0] + rest, notice: nil)
+        if userArguments.isEmpty {
+            // A bare launch with no session cannot show a window. Upstream's text
+            // interface prints its usage and exits, which is the honest answer to
+            // `ssh mac unison` with nothing else.
+            return hasWindowServerSession
+                ? .gui
+                : .commandLine(arguments: [argv0, "-ui", "text"], notice: nil)
         }
 
-        let userArguments = stripHostInjected(rest)
-        if userArguments.isEmpty { return .gui }
+        if userArguments.contains(where: { engineStartupOptions.contains(optionName($0) ?? "") }) {
+            // A graphical interface cannot be shown without a session. Mirror
+            // the GTK build, which warns and starts the text interface. This
+            // takes precedence over anything else in the arguments: a profile
+            // named here then runs in the text interface.
+            if !hasWindowServerSession, let rewritten = replacingUIGraphicWithText(userArguments) {
+                return .commandLine(
+                    arguments: [argv0] + rewritten,
+                    notice: "unison-ui-mac: no graphical session is available; starting the text interface instead of -ui graphic")
+            }
+            return .commandLine(arguments: [argv0] + userArguments, notice: nil)
+        }
 
-        // Arguments but no engine flag and no session: an automation caller
-        // such as `unison -batch myprofile` from launchd. Upstream's macOS app
-        // attempts a GUI here and fails; run the text interface instead.
-        if !hasWindowServerSession {
+        // Arguments, but no engine option. Without a graphical session, or
+        // without a terminal on stdin, the caller is automation such as
+        // `unison -batch myprofile` from launchd or cron: run the text
+        // interface, which is what upstream's `unison` would have done.
+        if !hasWindowServerSession || !stdinIsTerminal {
             return .commandLine(arguments: [argv0, "-ui", "text"] + userArguments, notice: nil)
         }
 
+        // A person in Terminal with a graphical session. The graphical interface
+        // cannot take a profile, roots or other options yet; say so.
         return .unsupported(message:
-            "unison-ui-mac: profiles and roots given on the command line are not supported by the graphical interface. "
-            + "Choose the profile in the profile picker, or add -ui text to run in the terminal. "
-            + "Arguments: " + userArguments.joined(separator: " "))
+            "unison-ui-mac: these arguments are not supported by the graphical interface: "
+            + userArguments.joined(separator: " ")
+            + ". Choose the profile in the profile picker, or add -ui text to run in the terminal.")
+    }
+
+    /// The option name of a token in `Uarg`'s grammar: a token starting with `-`
+    /// is an option; leading dashes are stripped and an inline `=value` is
+    /// removed. Returns nil for a value or positional token.
+    static func optionName(_ token: String) -> String? {
+        guard token.hasPrefix("-") else { return nil }
+        let stripped = token.drop(while: { $0 == "-" })
+        let name = stripped.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        return name.isEmpty ? nil : String(name)
+    }
+
+    /// If the arguments select `-ui graphic` (separate or `=` form), return them
+    /// with `text` in its place; otherwise nil.
+    static func replacingUIGraphicWithText(_ arguments: [String]) -> [String]? {
+        var out = arguments
+        var changed = false
+        var i = 0
+        while i < out.count {
+            if optionName(out[i]) == "ui" {
+                if out[i].contains("=") {
+                    if out[i].hasSuffix("=graphic") {
+                        out[i] = String(out[i].dropLast("graphic".count)) + "text"
+                        changed = true
+                    }
+                } else if i + 1 < out.count, out[i + 1] == "graphic" {
+                    out[i + 1] = "text"
+                    changed = true
+                    i += 1
+                }
+            }
+            i += 1
+        }
+        return changed ? out : nil
     }
 
     /// Flags macOS itself, Xcode or the test runner add to a graphical launch.
@@ -105,9 +158,11 @@ enum CommandLineInvocationPolicy {
 }
 
 /// Starts the embedded engine for a shell launch and runs `unisonNonGuiStartup`.
-/// Returns only when OCaml returned, which means the caller asked for `-ui
-/// graphic` and the graphical interface should now start with the runtime
-/// already up. Every other startup flag ends the process inside OCaml.
+/// Returns only when OCaml returned normally, which means the caller asked for
+/// `-ui graphic` and the graphical interface should now start with the runtime
+/// already up. Every other startup option ends the process inside OCaml; an
+/// OCaml exception is reported by the bridge and ends the process here with
+/// exit status 1.
 enum CommandLineEngineLaunch {
     static func startEngine(arguments: [String]) {
         // The OCaml runtime keeps Sys.argv pointing into this array for the
