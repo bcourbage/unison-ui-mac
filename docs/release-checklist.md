@@ -46,6 +46,15 @@ workflow → Homebrew cask bump) is in the release runbook.
 - [ ] **(pre-publication gate — in-job)** The release build (`release.yml`,
       Release configuration) is built from the exact tagged commit. (Cannot be
       confirmed before the tag exists; it is the job's checkout/build guarantee.)
+- [ ] **(post-publication canary — manual, Gatekeeper)** On a Mac that has never
+      run this version: download the published `.app.zip` from the GitHub release
+      (not the unsigned CI artifact), unzip, move to `/Applications`, launch once
+      from Finder and accept nothing but the standard first-open dialog. Then
+      `ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /tmp/unison`
+      and run `/tmp/unison -version`: it prints the engine version, exit 0. This
+      is the only check that exercises Gatekeeper acceptance of the quarantined,
+      notarized distribution and its embedded launcher; `smoke-macos15` runs the
+      unsigned artifact before signing and cannot stand in for it.
 - [ ] **(post-publication canary)** The built artifact reports the right
       `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer ID
       signature with a hardened runtime, a stapled notarization ticket, and no
