@@ -165,12 +165,19 @@ argv and already verified that a named profile's file exists (`name` or
 `name.prf`). Roots: the engine is asked through `areRootsSet`, which answers
 yes, no, or *undetermined* (callback missing or raised); yes and undetermined
 both stop with a stderr message and exit 1, because undetermined is not
-"no". A profile: the name is normalized (`.prf` stripped) and checked against
-the list the picker will actually show, with the user's hide preferences
-applied; only then is it preselected. A profile the picker does not list
-(hidden) stops with a message saying so, because the picker falls back to
-another row for a name it cannot find, which would select the wrong profile
-silently. Opening the profile directly is a follow-up.
+"no". A profile: upstream's `profilePathname s` opens the file named exactly
+`s` if it exists and `s.prf` otherwise, and the picker hands the engine its
+row name (the `.prf` file's name without the extension), which the engine
+resolves by the same rule. So the given string is turned into a picker name
+only when both resolve to the same file (`CommandLineProfileHandoff`): with
+`p` and `p.prf` both present, `p.prf` given would become picker `p`, which
+opens the extensionless `p`; that case stops with a message naming both
+files. The resulting name is then checked against the list the picker will
+actually show, with the user's hide preferences applied; only then is it
+preselected. A profile the picker does not list (hidden) stops with a message
+saying so, because the picker falls back to another row for a name it cannot
+find, which would select the wrong profile silently. Opening the profile
+directly is a follow-up.
 
 **stdout is the wire.** In command-line mode nothing may write to stdout
 before OCaml does. `TraceLog` writes to the unified log, not to stdout, and
