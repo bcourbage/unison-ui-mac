@@ -6,6 +6,11 @@ import Foundation
 // Only the "Do not ask again" bit of the first-launch prompt is persisted, and
 // that is a decision about prompting, which the app does control.
 //
+// Every mutation re-checks its precondition at execution time, inside the
+// privileged shell command itself: the state seen at classification is only a
+// proposal, and the filesystem may have changed by the time the user has typed
+// an administrator password.
+//
 // See docs/cli-launcher-design.md, "Detection, Settings panel, first-launch
 // prompt", for the classification table and the action gates.
 
@@ -69,8 +74,8 @@ struct RealCommandLineToolFileSystem: CommandLineToolFileSystem {
 
 // MARK: - Classification
 
-/// What one `unison` entry on PATH is. Every case that names a target carries
-/// the resolved or stored path so the Settings panel can show it.
+/// What one `unison` entry on PATH is. Cases that name a target carry the
+/// resolved or stored path so the Settings panel can show it.
 enum CommandLineToolClassification: Equatable, Sendable {
     /// Resolves to `cltool` inside the bundle this process runs from.
     case thisInstallation
@@ -84,10 +89,12 @@ enum CommandLineToolClassification: Equatable, Sendable {
     case brewFormula(resolvedPath: String)
     /// Resolves into a bundle with identifier `edu.upenn.cis.Unison`.
     case upstreamApp(bundlePath: String)
-    /// Broken link whose stored target ends in
-    /// `/unison-ui-mac.app/Contents/MacOS/cltool`. A pathname, not proof of
-    /// ownership; it says what the link was for.
-    case danglingLauncherPath(target: String)
+    /// Broken link whose target ends in `/unison-ui-mac.app/Contents/MacOS/
+    /// cltool`. A pathname, not proof of ownership; it says what the link was
+    /// for. `storedTarget` is the link's content as stored (what `readlink`
+    /// returns); `resolvedTarget` is that made absolute against the link's
+    /// directory, for display.
+    case danglingLauncherPath(storedTarget: String, resolvedTarget: String)
     /// Broken link pointing anywhere else.
     case danglingOther(target: String)
     /// Anything else.
@@ -99,6 +106,9 @@ struct CommandLineToolEntry: Equatable, Sendable {
     /// The path of the entry itself (`<dir>/unison`).
     let path: String
     let classification: CommandLineToolClassification
+    /// The link's stored target when the entry is a symlink, else nil. Every
+    /// mutation re-verifies this at execution time.
+    let storedLinkTarget: String?
 }
 
 /// The status of the `unison` name in one PATH context.
@@ -107,13 +117,18 @@ struct CommandLineToolContextStatus: Equatable, Sendable {
     let label: String
     /// One sentence saying how this PATH was obtained and what it can miss.
     let caveat: String
-    let searchPath: [String]
+    /// The PATH that was searched, or nil when it could not be obtained. An
+    /// unknown PATH is not an empty one: nothing can be concluded from it.
+    let searchPath: [String]?
     /// The first entry of any kind, dangling links included. `which` skips
     /// dangling links and must not be used for this.
     let first: CommandLineToolEntry?
     /// The first entry that actually executes, when it differs from `first`
     /// (a dangling link ahead of a working command). Nil when the same, or none.
     let executingWhenDifferent: CommandLineToolEntry?
+
+    /// True only when the PATH was obtained and holds no `unison` entry.
+    var isKnownEmpty: Bool { searchPath != nil && first == nil }
 }
 
 enum CommandLineToolStatus {
@@ -141,17 +156,26 @@ enum CommandLineToolStatus {
 
     static func classify(entryAtPath path: String,
                          environment env: Environment,
-                         fs: CommandLineToolFileSystem) -> CommandLineToolClassification? {
+                         fs: CommandLineToolFileSystem) -> CommandLineToolEntry? {
         guard fs.entryExists(atPath: path) else { return nil }
+        let stored = fs.isSymlink(atPath: path) ? fs.linkTarget(atPath: path) : nil
+        return CommandLineToolEntry(
+            path: path,
+            classification: classification(entryAtPath: path, storedLinkTarget: stored, environment: env, fs: fs),
+            storedLinkTarget: stored)
+    }
 
+    private static func classification(entryAtPath path: String,
+                                       storedLinkTarget stored: String?,
+                                       environment env: Environment,
+                                       fs: CommandLineToolFileSystem) -> CommandLineToolClassification {
         let resolved = fs.realPath(ofPath: path)
-        if fs.isSymlink(atPath: path), resolved == nil {
-            let stored = fs.linkTarget(atPath: path) ?? ""
+        if let stored, resolved == nil {
             let absolute = stored.hasPrefix("/")
                 ? stored
                 : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(stored)
             return absolute.hasSuffix(launcherBundleSuffix)
-                ? .danglingLauncherPath(target: absolute)
+                ? .danglingLauncherPath(storedTarget: stored, resolvedTarget: absolute)
                 : .danglingOther(target: absolute)
         }
         guard let real = resolved else { return .other(resolvedPath: path) }
@@ -188,17 +212,18 @@ enum CommandLineToolStatus {
 
     // MARK: Scan one PATH
 
-    static func scan(searchPath: [String],
+    /// `searchPath` nil means the PATH could not be obtained; the result then
+    /// carries no entries and `isKnownEmpty` is false.
+    static func scan(searchPath: [String]?,
                      label: String,
                      caveat: String,
                      environment env: Environment,
                      fs: CommandLineToolFileSystem) -> CommandLineToolContextStatus {
         var first: CommandLineToolEntry?
         var executing: CommandLineToolEntry?
-        for dir in searchPath where !dir.isEmpty {
+        for dir in searchPath ?? [] where !dir.isEmpty {
             let candidate = (dir as NSString).appendingPathComponent(commandName)
-            guard let c = classify(entryAtPath: candidate, environment: env, fs: fs) else { continue }
-            let entry = CommandLineToolEntry(path: candidate, classification: c)
+            guard let entry = classify(entryAtPath: candidate, environment: env, fs: fs) else { continue }
             if first == nil { first = entry }
             if executing == nil, let real = fs.realPath(ofPath: candidate), fs.isExecutableFile(atPath: real) {
                 executing = entry
@@ -247,8 +272,14 @@ enum CommandLineToolStatus {
 
     /// The PATH of a non-interactive login shell: `$SHELL -l -c 'printf %s "$PATH"'`.
     /// Reads `/etc/zprofile` and `~/.zprofile` (or the bash equivalents) but not
-    /// `~/.zshrc`, so a PATH change made only there is not seen. Bounded by a
-    /// timeout; nil when the shell cannot be run or does not answer.
+    /// `~/.zshrc`, so a PATH change made only there is not seen.
+    ///
+    /// Bounded by `timeout`: the pipe is read on a background thread while this
+    /// thread waits on the timeout, so a login script that stalls, or a
+    /// descendant that keeps stdout open, makes this return nil after `timeout`
+    /// rather than hang. The child is terminated on timeout; a descendant that
+    /// survives it keeps the reader thread parked until it closes stdout, which
+    /// leaks that one thread but never blocks the caller.
     static func loginShellSearchPath(shell: String? = ProcessInfo.processInfo.environment["SHELL"],
                                      timeout: TimeInterval = 5) -> [String]? {
         let exe = (shell?.isEmpty == false ? shell! : "/bin/zsh")
@@ -261,14 +292,20 @@ enum CommandLineToolStatus {
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
-        let exited = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async { process.waitUntilExit(); exited.signal() }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
+
+        final class Box: @unchecked Sendable { var data = Data() }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             return nil
         }
-        guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return nil }
+        guard process.terminationStatus == 0, let text = String(data: box.data, encoding: .utf8) else { return nil }
         return splitSearchPath(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
@@ -300,10 +337,10 @@ enum CommandLineToolStatus {
         let env = discoverEnvironment(fs: fs)
         let login = loginShellSearchPath()
         let loginStatus = scan(
-            searchPath: login ?? [],
+            searchPath: login,
             label: "Terminal",
             caveat: login == nil
-                ? "The login shell did not report its PATH."
+                ? "The login shell did not report its PATH, so nothing is known about this context."
                 : "PATH as a login shell builds it. Changes made only in .zshrc are not included.",
             environment: env, fs: fs)
         let remoteStatus = scan(
@@ -317,16 +354,19 @@ enum CommandLineToolStatus {
 
 // MARK: - Actions
 
-/// What the panel may offer, decided from the Terminal context's first entry
-/// and from whether either context holds anything at all.
+/// What the panel and the first-launch offer may propose. Every case carries
+/// what its privileged command re-verifies at execution time.
 enum CommandLineToolAction: Equatable, Sendable {
     /// Create `/usr/local/bin/unison` pointing at this installation's launcher.
+    /// Fails if anything appeared there since the check.
     case install
-    /// Replace a dangling launcher link. Carries the old target for disclosure
-    /// and, when a later PATH entry currently executes, that entry's path.
-    case repair(oldTarget: String, displacing: String?)
-    /// Delete a link that resolves into this installation.
-    case remove(linkPath: String)
+    /// Replace the dangling link at `linkPath` whose stored target is still
+    /// `oldTarget`. `displacing`, when set, is the path of the command that
+    /// currently executes and that the repaired link will take precedence over.
+    case repair(linkPath: String, oldTarget: String, displacing: String?)
+    /// Delete the link at `linkPath`, but only if it still stores
+    /// `expectedTarget`, the target seen when it classified as this installation.
+    case remove(linkPath: String, expectedTarget: String)
 }
 
 enum CommandLineToolActionPolicy {
@@ -336,33 +376,41 @@ enum CommandLineToolActionPolicy {
         let remote = contexts.dropFirst().first
         switch terminal.first?.classification {
         case .none:
-            // Nothing in Terminal's PATH. Offer Install only if the remote
-            // context is empty too; otherwise something owns the name there.
-            return (remote?.first == nil) ? .install : nil
-        case .some(.danglingLauncherPath(let target)):
-            return .repair(oldTarget: target, displacing: terminal.executingWhenDifferent?.path)
+            // Nothing in Terminal's PATH. Install only when both PATHs were
+            // obtained and are empty: an unknown PATH is not an absence.
+            return (terminal.isKnownEmpty && (remote?.isKnownEmpty ?? false)) ? .install : nil
+        case .some(.danglingLauncherPath(let stored, _)):
+            return .repair(linkPath: terminal.first!.path, oldTarget: stored,
+                           displacing: terminal.executingWhenDifferent?.path)
         case .some(.thisInstallation):
-            return .remove(linkPath: terminal.first!.path)
+            guard let target = terminal.first!.storedLinkTarget else { return nil }
+            return .remove(linkPath: terminal.first!.path, expectedTarget: target)
         default:
             return nil
         }
     }
 
     /// The `/bin/sh` command run with administrator privileges for an action.
-    /// `launcherPath` is this installation's `cltool`.
+    /// Each command re-checks its precondition at execution time; if the
+    /// filesystem changed since the panel was shown, the command fails and
+    /// changes nothing. `launcherPath` is this installation's `cltool`.
     static func adminShellCommand(for action: CommandLineToolAction, launcherPath: String) -> String {
-        let link = shellQuoted(CommandLineToolStatus.installLinkPath)
-        let dir = shellQuoted((CommandLineToolStatus.installLinkPath as NSString).deletingLastPathComponent)
+        let launcher = shellQuoted(launcherPath)
         switch action {
         case .install:
+            let link = shellQuoted(CommandLineToolStatus.installLinkPath)
+            let dir = shellQuoted((CommandLineToolStatus.installLinkPath as NSString).deletingLastPathComponent)
             // `ln -s` without -f: if something appeared since the check, fail
             // rather than overwrite it.
-            return "/bin/mkdir -p \(dir) && /bin/ln -s \(shellQuoted(launcherPath)) \(link)"
-        case .repair:
-            // Replace only a link that is still dangling at execution time.
-            return "[ -L \(link) ] && ! [ -e \(link) ] && /bin/ln -sfn \(shellQuoted(launcherPath)) \(link)"
-        case .remove(let linkPath):
-            return "/bin/rm \(shellQuoted(linkPath))"
+            return "/bin/mkdir -p \(dir) && /bin/ln -s \(launcher) \(link)"
+        case .repair(let linkPath, let oldTarget, _):
+            let link = shellQuoted(linkPath)
+            // Still a link, still dangling, still storing the disclosed target.
+            return "[ -L \(link) ] && ! [ -e \(link) ] && [ \"$(/usr/bin/readlink \(link))\" = \(shellQuoted(oldTarget)) ] && /bin/ln -sfn \(launcher) \(link)"
+        case .remove(let linkPath, let expectedTarget):
+            let link = shellQuoted(linkPath)
+            // Still a link, still storing the target that classified it as ours.
+            return "[ -L \(link) ] && [ \"$(/usr/bin/readlink \(link))\" = \(shellQuoted(expectedTarget)) ] && /bin/rm \(link)"
         }
     }
 
@@ -382,36 +430,31 @@ enum CommandLineToolActionPolicy {
 
 // MARK: - First-launch prompt policy
 
-enum CommandLineToolPromptKind: Equatable, Sendable {
-    case install
-    case repair(oldTarget: String)
-}
-
 enum CommandLineToolPromptPolicy {
     static let doNotAskKey = "commandLineTool.doNotAsk"
 
-    /// Whether to show the first-launch prompt, and which one. Nil means stay
-    /// silent. Silent whenever anything else owns the name in either context:
-    /// those users made a choice, or inherited a state, and the Settings panel
-    /// shows it without nagging.
-    static func prompt(contexts: [CommandLineToolContextStatus],
-                       suppressed: Bool,
-                       isTestHost: Bool) -> CommandLineToolPromptKind? {
+    /// The action to offer at first launch, or nil to stay silent. Silent
+    /// whenever anything else owns the name in either context, whenever a PATH
+    /// could not be obtained (unknown is not absence), when suppressed, and
+    /// under the test host. A Repair offer carries the displaced command.
+    static func offer(contexts: [CommandLineToolContextStatus],
+                      suppressed: Bool,
+                      isTestHost: Bool) -> CommandLineToolAction? {
         if isTestHost || suppressed { return nil }
-        guard let terminal = contexts.first else { return nil }
-        let remote = contexts.dropFirst().first
+        guard let terminal = contexts.first, let remote = contexts.dropFirst().first else { return nil }
+        guard terminal.searchPath != nil, remote.searchPath != nil else { return nil }
         func isEmptyOrDanglingLauncher(_ e: CommandLineToolEntry?) -> Bool {
             switch e?.classification {
             case .none, .some(.danglingLauncherPath): return true
             default: return false
             }
         }
-        guard isEmptyOrDanglingLauncher(terminal.first), isEmptyOrDanglingLauncher(remote?.first) else { return nil }
-        if case .some(.danglingLauncherPath(let target)) = terminal.first?.classification {
-            return .repair(oldTarget: target)
-        }
-        if case .some(.danglingLauncherPath(let target)) = remote?.first?.classification {
-            return .repair(oldTarget: target)
+        guard isEmptyOrDanglingLauncher(terminal.first), isEmptyOrDanglingLauncher(remote.first) else { return nil }
+        for context in [terminal, remote] {
+            if let entry = context.first, case .danglingLauncherPath(let stored, _) = entry.classification {
+                return .repair(linkPath: entry.path, oldTarget: stored,
+                               displacing: context.executingWhenDifferent?.path)
+            }
         }
         return .install
     }
@@ -442,12 +485,35 @@ enum CommandLineToolWording {
             return "\(entry.path) is the Homebrew unison formula (\(resolved))."
         case .upstreamApp(let bundle):
             return "\(entry.path) is upstream Unison.app's command (\(bundle))."
-        case .danglingLauncherPath(let target):
-            return "\(entry.path) is a broken link to a former copy of this app's command (\(target))."
+        case .danglingLauncherPath(_, let resolved):
+            return "\(entry.path) is a broken link to a former copy of this app's command (\(resolved))."
         case .danglingOther(let target):
             return "\(entry.path) is a broken link to \(target)."
         case .other(let resolved):
             return "\(entry.path) is \(resolved)."
         }
+    }
+
+    /// The whole context in words: first entry, executing entry when different,
+    /// then the caveat. An unobtained PATH is stated as unknown.
+    static func describe(_ context: CommandLineToolContextStatus?) -> String {
+        guard let context else { return "Not available." }
+        if context.searchPath == nil { return context.caveat }
+        var text = describe(context.first)
+        if let executing = context.executingWhenDifferent {
+            text += " The command that actually runs is " + describe(executing)
+        }
+        return text + " " + context.caveat
+    }
+
+    /// The disclosure a Repair confirmation makes.
+    static func repairDetails(linkPath: String, oldTarget: String, displacing: String?) -> String {
+        var text = "Replaces the broken link at \(linkPath), which pointed at \(oldTarget), " +
+            "with a link to this app's command-line launcher."
+        if let displacing {
+            text += " The command that currently runs, \(displacing), comes later on the PATH " +
+                "and will no longer be reached by the name unison."
+        }
+        return text
     }
 }

@@ -2560,18 +2560,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         Task { [weak self] in
             let contexts = await CommandLineToolStatus.currentStatusAsync()
             guard let self,
-                  let kind = CommandLineToolPromptPolicy.prompt(
+                  let action = CommandLineToolPromptPolicy.offer(
                     contexts: contexts, suppressed: false, isTestHost: false)
             else { return }
-            self.presentCommandLineToolOffer(kind, defaults: defaults)
+            self.presentCommandLineToolOffer(action, defaults: defaults)
         }
     }
 
-    private func presentCommandLineToolOffer(_ kind: CommandLineToolPromptKind, defaults: UserDefaults) {
+    private func presentCommandLineToolOffer(_ action: CommandLineToolAction, defaults: UserDefaults) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        let action: CommandLineToolAction
-        switch kind {
+        switch action {
         case .install:
             alert.messageText = "Install the unison command?"
             alert.informativeText =
@@ -2579,14 +2578,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 "so `unison -ui graphic` opens this app and `unison -server` from a remote machine " +
                 "uses it, wherever /usr/local/bin comes first on the PATH. Requires an administrator password."
             alert.addButton(withTitle: "Install")
-            action = .install
-        case .repair(let oldTarget):
+        case .repair(let linkPath, let oldTarget, let displacing):
             alert.messageText = "Repair the unison command?"
-            alert.informativeText =
-                "The unison command is a broken link to a former copy of this app (\(oldTarget)). " +
-                "Repair points it at this app. Requires an administrator password."
+            alert.informativeText = CommandLineToolWording.repairDetails(
+                linkPath: linkPath, oldTarget: oldTarget, displacing: displacing)
+                + " Requires an administrator password."
             alert.addButton(withTitle: "Repair")
-            action = .repair(oldTarget: oldTarget, displacing: nil)
+        case .remove:
+            // The offer never proposes Remove; the policy only returns install or repair.
+            return
         }
         alert.addButton(withTitle: "Not Now")
         alert.showsSuppressionButton = true

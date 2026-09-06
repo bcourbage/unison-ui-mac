@@ -588,8 +588,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         cliContexts = contexts
         let terminal = contexts.first
         let remote = contexts.dropFirst().first
-        cliTerminalLabel.stringValue = Self.describeContext(terminal)
-        cliRemoteLabel.stringValue = Self.describeContext(remote)
+        cliTerminalLabel.stringValue = CommandLineToolWording.describe(terminal)
+        cliRemoteLabel.stringValue = CommandLineToolWording.describe(remote)
         cliAction = CommandLineToolActionPolicy.availableAction(contexts: contexts)
         switch cliAction {
         case .install:
@@ -606,15 +606,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             cliActionButton.isEnabled = false
         }
         cliRefreshButton.isEnabled = true
-    }
-
-    static func describeContext(_ context: CommandLineToolContextStatus?) -> String {
-        guard let context else { return "Not available." }
-        var text = CommandLineToolWording.describe(context.first)
-        if let executing = context.executingWhenDifferent {
-            text += " The command that actually runs is " + CommandLineToolWording.describe(executing)
-        }
-        return text + " " + context.caveat
     }
 
     @objc private func refreshCommandLineToolAction(_ sender: Any?) {
@@ -634,17 +625,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 "Creates \(CommandLineToolStatus.installLinkPath) as a link to this app's " +
                 "command-line launcher. Requires an administrator password."
             alert.addButton(withTitle: "Install")
-        case .repair(let oldTarget, let displacing):
+        case .repair(let linkPath, let oldTarget, let displacing):
             alert.messageText = "Repair the unison command?"
-            var text = "Replaces the broken link at \(CommandLineToolStatus.installLinkPath), " +
-                "which pointed at \(oldTarget), with a link to this app's command-line launcher."
-            if let displacing {
-                text += " The command that currently runs, \(displacing), comes later on the " +
-                    "PATH and will no longer be reached by the name unison."
-            }
-            alert.informativeText = text + " Requires an administrator password."
+            alert.informativeText = CommandLineToolWording.repairDetails(
+                linkPath: linkPath, oldTarget: oldTarget, displacing: displacing)
+                + " Requires an administrator password."
             alert.addButton(withTitle: "Repair")
-        case .remove(let linkPath):
+        case .remove(let linkPath, _):
             alert.messageText = "Remove the unison command?"
             alert.informativeText =
                 "Deletes the link at \(linkPath). The app keeps working from the profile " +
