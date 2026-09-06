@@ -100,6 +100,16 @@ targets:
       # Sparkle framework (declared in the top-level `packages` block).
       # Xcode links and auto-embeds the SPM binary framework into the app.
       - package: Sparkle
+      # The `unison` command-line launcher, copied into Contents/MacOS next to
+      # the app executable. It is what a PATH symlink named `unison` points at
+      # (cask `binary` stanza or manual link); see docs/cli-launcher-design.md.
+      # sign-app.sh requires and signs it; verify-bundle-minos.sh holds it to the
+      # deployment target like every binary in Contents/MacOS.
+      - target: cltool
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     info:
       path: Resources/Info.plist
       properties:
@@ -243,6 +253,24 @@ targets:
           GCC_PREPROCESSOR_DEFINITIONS:
             - CAML_NAME_SPACE=1
             - UNISON_DEBUG_HOOKS=1
+
+  # The `unison` launcher. A plain C command-line tool that resolves the app
+  # executable next to it and execs it with the caller's arguments unchanged.
+  # Embedded into the app bundle by the dependency above; never shipped on its
+  # own. Tested without Xcode by scripts/test-cltool.sh (`make check-cltool`).
+  cltool:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/CLTool
+    dependencies:
+      # LSCopyApplicationURLsForBundleIdentifier, the bundle-identifier fallback.
+      - sdk: CoreServices.framework
+    settings:
+      base:
+        PRODUCT_NAME: cltool
+        # A tool has no Info.plist; make sure Xcode does not synthesize one.
+        GENERATE_INFOPLIST_FILE: NO
 
   unison-ui-macTests:
     type: bundle.unit-test

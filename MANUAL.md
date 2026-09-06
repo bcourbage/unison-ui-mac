@@ -21,16 +21,17 @@ linked to the section of the upstream docs that defines it.
 
 1. [Concepts in one paragraph](#concepts-in-one-paragraph)
 2. [Getting started](#getting-started)
-3. [The Profile Picker](#the-profile-picker)
-4. [The Profile Editor (manager window)](#the-profile-editor-manager-window)
-5. [The Profile Form (single-profile content editor)](#the-profile-form-single-profile-content-editor)
-6. [The Reconcile window](#the-reconcile-window)
-7. [The Diff viewer](#the-diff-viewer)
-8. [Settings](#settings)
-9. [The menu bar reference](#the-menu-bar-reference)
-10. [Keyboard shortcuts](#keyboard-shortcuts)
-11. [Troubleshooting](#troubleshooting)
-12. [What this app does NOT do](#what-this-app-does-not-do)
+3. [The `unison` command](#the-unison-command)
+4. [The Profile Picker](#the-profile-picker)
+5. [The Profile Editor (manager window)](#the-profile-editor-manager-window)
+6. [The Profile Form (single-profile content editor)](#the-profile-form-single-profile-content-editor)
+7. [The Reconcile window](#the-reconcile-window)
+8. [The Diff viewer](#the-diff-viewer)
+9. [Settings](#settings)
+10. [The menu bar reference](#the-menu-bar-reference)
+11. [Keyboard shortcuts](#keyboard-shortcuts)
+12. [Troubleshooting](#troubleshooting)
+13. [What this app does NOT do](#what-this-app-does-not-do)
 
 ---
 
@@ -55,12 +56,15 @@ the next scan can tell what's changed.
 
 The app embeds Unison's OCaml runtime, so the local machine doesn't need a
 separate `unison` install. But profiles whose root is `ssh://…` spawn
-`unison -server` on the remote host, that remote needs Unison installed
-and reachable in `$PATH` (or via `servercmd = …` in the profile).
+`unison -server` on the remote host, so that remote needs a `unison`
+command its non-interactive shell can find (or a `servercmd = …` line in
+the profile).
 
-Install instructions for the remote side:
+Ways to provide it on the remote side:
 
-- **macOS**: `brew install unison`
+- **macOS with this app installed**: the bundled command serves this role
+  with the embedded engine; see [The `unison` command](#the-unison-command).
+- **macOS without this app**: `brew install unison`
 - **Debian/Ubuntu**: `sudo apt install unison`
 - **Other**: see upstream's [Downloading Unison](https://github.com/bcpierce00/unison/wiki/Downloading-Unison)
   page or build from source at <https://github.com/bcpierce00/unison>.
@@ -87,6 +91,76 @@ launch, if you have no profiles yet, the list will be empty, use
 Double-click a profile (or select it and click Run) to start reconcile.
 The reconcile window opens immediately in "scanning" mode and populates
 when init1+init2 complete.
+
+---
+
+## The `unison` command
+
+The app bundle carries a command-line launcher at
+`unison-ui-mac.app/Contents/MacOS/cltool`. Linked onto PATH under the name
+`unison`, it makes one command serve both of Unison's roles through this
+app:
+
+| Command | What runs |
+|---|---|
+| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it and its row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
+| `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
+| `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
+| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The text interface, exactly as the `unison` command behaves everywhere. The graphical interface runs only when `-ui graphic` is given. |
+| `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
+| `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
+
+The command hands Unison's engine `-ui text` followed by the arguments
+exactly as typed, and Unison interprets them: a later `-ui graphic` wins
+over that default, `-server` and `-version` take effect before any interface
+choice, `-ui=text` means the same as `-ui text`, and options take exactly one
+leading dash (`--ui` is an unknown option to Unison). Unknown options are
+reported by Unison with its usage text.
+
+`unison -ui graphic` keeps the terminal busy until the app quits, like any
+foreground command. Append `&` to get the prompt back.
+
+### Putting it on PATH
+
+Create a symlink named `unison`. `/usr/local/bin` is on the PATH of both
+interactive shells and incoming ssh commands, and writing there needs an
+administrator password:
+
+```sh
+sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
+```
+
+Only one command can own the name. Check what `unison` resolves to before
+and after:
+
+```sh
+which -a unison
+```
+
+A Homebrew `unison` formula or upstream Unison.app's own launcher may
+already hold it. Unlink or remove that first, or leave it and skip this
+section: the app works from the profile picker either way.
+
+If the app is moved, the link dangles and `unison` reports "command not
+found"; recreate it. To uninstall the command, remove the link:
+
+```sh
+sudo rm /usr/local/bin/unison
+```
+
+### Remote peers
+
+Peers whose profiles target this Mac run `unison -server` here through
+ssh. Their command runs in a non-interactive shell whose PATH comes from
+macOS's `/etc/paths`, which includes `/usr/local/bin`, so the link above is
+enough. If the link lives anywhere else, set `servercmd = /path/to/unison`
+in the peer's profile.
+
+A freshly installed app, whether from the zip or through Homebrew, carries
+the quarantine attribute until it is opened once from Finder, and
+Gatekeeper's first-launch check needs a graphical session. Launch the app
+once before relying on it as an ssh peer.
 
 ---
 
@@ -1317,8 +1391,10 @@ upstream `Uicommon.initPrefs` runs it unconditionally (per the
   (see [Stop button](#stop-button-how-abort-works) in troubleshooting):
   a file mid-write at abort time stays partial. Unison's next reconcile
   will surface the difference for you to resolve.
-- **Replace the upstream Unison CLI for scripting.** The CLI is still the
-  right tool for `crontab` / `launchd` automation. This GUI is for
+- **Change how Unison's text interface behaves.** `unison -ui text` through
+  the bundled command (see [The `unison` command](#the-unison-command)) runs
+  upstream's own text interface on the embedded engine, unchanged, which is
+  still the right tool for `crontab` / `launchd` automation. This GUI is for
   interactive use.
 - **Run as a menu-bar status item or background daemon.** Foreground app
   only, one reconcile window per profile open at a time.

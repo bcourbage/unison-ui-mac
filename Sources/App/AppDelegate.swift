@@ -1538,8 +1538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Pass only argv[0]: OCaml's Prefs.parseCmdLine rejects anything it
         // doesn't recognize. macOS / XCTest pass us flags like
         // `-NSTreatUnknownArgumentsAsOpen` which would cause Unison to print
-        // its help text and exit. The GUI doesn't expose CLI args — profile
-        // selection happens through the picker — so a clean argv is correct.
+        // its help text and exit. On a graphical launch profile selection
+        // happens through the picker, so a clean argv is correct. On a shell
+        // launch (`unison -ui graphic …`) main.swift has already started the
+        // runtime with the full argv and this call is a guarded no-op.
         let programName = CommandLine.arguments.first ?? "unison-ui-mac"
         var cArgs: [UnsafeMutablePointer<CChar>?] = [strdup(programName), nil]
         cArgs.withUnsafeMutableBufferPointer { buf in
@@ -1575,7 +1577,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // a .prf by a crash mid-rescan, so it never silently persists.
         Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
 
-        showProfilePicker()
+        // A shell launch (`unison -ui graphic …`) reaches here with the full
+        // argv in the engine, and init0 has extracted any profile or roots from
+        // it. Two roots have no representation in the picker: say so and stop
+        // rather than open the picker as if nothing was asked. A profile name
+        // is preselected in the picker. On the graphical path both are absent.
+        switch unison_bridge_command_line_roots_set() {
+        case 0:
+            break
+        case 1:
+            CommandLineEngineLaunch.writeStderr(
+                "unison-ui-mac: roots given on the command line are not supported by the graphical interface. "
+                + "Put them in a profile and choose it in the profile picker, or add -ui text to run in the terminal.")
+            exit(1)
+        default:
+            // Undetermined is not "none": the engine could not say whether roots
+            // were given, so opening the picker could silently drop them.
+            CommandLineEngineLaunch.writeStderr(
+                "unison-ui-mac: the embedded engine could not report its command-line roots; not continuing.")
+            exit(1)
+        }
+        if let cstr = unison_bridge_command_line_profile() {
+            // Upstream's profilePathname accepts both `name` and `name.prf`, and
+            // has already checked the file exists. The picker lists names without
+            // the extension and omits hidden profiles, and it falls back to
+            // another row when asked for a name it does not list. Only hand it a
+            // name it will actually select; otherwise say why and stop.
+            let given = String(cString: cstr)
+            let dir = unisonDirectory
+            let handoff = CommandLineProfileHandoff.resolve(given: given) { candidate in
+                FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(candidate))
+            }
+            switch handoff {
+            case .refuse(let reason):
+                // The picker's name would make the engine open a different file
+                // than the one the caller named (both `p` and `p.prf` exist).
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: \(reason). Add -ui text to run it in the terminal.")
+                exit(1)
+            case .select(let name):
+                if listedProfiles().contains(name) {
+                    log.write("profile named on the command line; preselecting it in the picker")
+                    showProfilePicker(select: name)
+                } else {
+                    CommandLineEngineLaunch.writeStderr(
+                        "unison-ui-mac: profile \(given) exists but is not shown in the profile picker (hidden, or not a profile name). "
+                        + "Unhide it in the Profile Editor, or add -ui text to run it in the terminal.")
+                    exit(1)
+                }
+            }
+        } else {
+            showProfilePicker()
+        }
 
         NSApp.activate(ignoringOtherApps: true)
 
@@ -1662,6 +1715,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     // MARK: - Window management
+
+    /// The profile names the picker will list: every `.prf` in the Unison
+    /// directory, minus the extension, with the user's hide/order preferences
+    /// applied exactly as `ProfileWindowController.reload` applies them. Used to
+    /// decide whether a command-line profile can be preselected at all.
+    private func listedProfiles() -> [String] {
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: unisonDirectory)) ?? []
+        let available = contents
+            .filter { ($0 as NSString).pathExtension == "prf" }
+            .map { ($0 as NSString).deletingPathExtension }
+        return ProfilePreferences.load().apply(to: available, includeHidden: false)
+    }
 
     private func showProfilePicker(select: String? = nil) {
         // Reconcile windows manage their own close (their onClose brings the

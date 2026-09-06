@@ -11,6 +11,23 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+- **A `unison` command that opens this app.** The bundle now carries a
+  command-line launcher at `Contents/MacOS/cltool`. Linked onto PATH under the
+  name `unison`, it runs this app for `unison -ui graphic`, runs the embedded
+  engine's text interface for `unison -ui text <profile>`, and serves
+  `unison -server` headlessly when a remote peer invokes it over ssh. A Mac
+  with this app installed therefore no longer needs a separate Unison install
+  to act as an SSH peer. The command behaves like Unison's own: arguments
+  reach the engine exactly as given, preceded by a `-ui text` default that a
+  later `-ui graphic` overrides, so `unison <profile>` runs the text
+  interface and only `-ui graphic` opens the app. `-ui graphic` without a
+  graphical session is refused. A profile named alongside `-ui graphic` is
+  preselected in the picker when the picker lists it, and refused with a
+  reason otherwise; two roots on the command line are refused. Creating the
+  PATH link is a manual step for now (see MANUAL, "The `unison` command").
+  (#124)
+
 ## [0.6.1] — 2026-08-29
 
 A small user-interface and update-infrastructure release on top of 0.6.0.

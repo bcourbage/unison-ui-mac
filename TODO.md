@@ -2,6 +2,33 @@
 
 ## To Do
 
+- [ ] **Cask installs the `unison` command.** Add to the `bcourbage/tap` cask
+      `binary "#{appdir}/unison-ui-mac.app/Contents/MacOS/cltool", target: "unison"`
+      so brew owns the PATH link. Homebrew's cask DSL has no formula conflict
+      stanza; with the formula linked the install fails at the binary artifact
+      and brew rolls the app back, so document `brew unlink unison` and the
+      zip-install alternative. Note in the manual that the brew prefix is not on
+      the PATH an incoming ssh command sees, so peers targeting a cask-installed
+      Mac set `servercmd`. (docs/cli-launcher-design.md, PR B)
+
+- [ ] **Settings: Command Line Tool section and first-launch prompt.** Classify
+      the first `unison` entry (dangling links included) for two named PATH
+      contexts, labelled as reconstructions (a login shell's PATH; the
+      `/etc/paths` PATH an ssh command gets), and also report the first entry
+      that actually executes when it differs. Classifications: this
+      installation (path equality with the running bundle), another copy of
+      this app, Homebrew-managed (brew prefix plus a Caskroom receipt), brew
+      formula, upstream Unison.app, dangling launcher path, dangling other,
+      other, none. Install only when both contexts are empty; Repair only for a
+      dangling launcher path, showing the old target and any working command it
+      would displace; Remove only for this installation. Prompt once per launch
+      with "Do not ask again" when nothing owns the name.
+      (docs/cli-launcher-design.md, PR C)
+
+- [ ] **Open a command-line profile directly.** `unison -ui graphic <profile>`
+      currently preselects the profile in the picker. Opening it straight away
+      needs a picker bypass and a GUI answer for "profile not found".
+
 - [ ] **Upstream the connection close/reopen support in dependency order.**
       First rebase vendored patch 0003 (`remote-close-and-drain`) onto current
       upstream master and propose it as the general engine contribution, retaining

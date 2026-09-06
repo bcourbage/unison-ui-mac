@@ -415,6 +415,14 @@ check-sparkle-output-path:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# The `unison` launcher (Sources/CLTool/cltool.c): compiled with cc against a
+# throwaway bundle identifier into a fake bundle, then exercised through a PATH
+# symlink, by direct path, copied out of the bundle, and against a bundle with
+# no app executable. No Xcode/OCaml/signing identity.
+.PHONY: check-cltool
+check-cltool:
+	@./scripts/test-cltool.sh
+
 # install.sh hardening tests (SF8–SF10): Release-only selection, staged-then-swap
 # install with rollback, and verified quarantine strip. Pure shell (no
 # Xcode/OCaml/sudo), via install.sh's test seams.
@@ -551,3 +559,10 @@ print-config:
 	@test -f $(STRIPPED_ASMRUN) && echo "stripped asmrun: present" || echo "stripped asmrun: MISSING"
 	@echo XCODEPROJ=$(XCODEPROJ)
 	@test -d $(XCODEPROJ) && echo "xcodeproj: present" || echo "xcodeproj: MISSING"
+
+# CLI smoke against the built bundle: the `unison` launcher through a symlink
+# and the engine's stdin/stdout server transport (app as both peers via an ssh
+# stand-in). Same script the release pipeline runs on macOS 15.
+.PHONY: smoke-cli
+smoke-cli: build
+	@./scripts/smoke-cli.sh $(BUILT_APP)

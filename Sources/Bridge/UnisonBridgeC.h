@@ -187,6 +187,34 @@ void unison_bridge_test_status(const char *msg);
  * normal launch on failure — it must present an unrecoverable startup error. */
 int unison_bridge_init0(void);
 
+/* === Shell launch (the `unison` launcher, or `ssh host unison -server`) ===
+ *
+ * Starts the runtime with the caller's FULL argv (unison_bridge_startup is
+ * idempotent, so the later graphical startup call becomes a no-op) and runs
+ * OCaml's unisonNonGuiStartup on the worker. That call ends the process from
+ * inside OCaml for -server, -socket, -version, -doc, -help and -ui text, so
+ * this function returns only when the caller asked for -ui graphic (or gave a
+ * bare profile) and the graphical interface should now start.
+ *
+ * Returns UNISON_BRIDGE_OK when OCaml returned normally, UNISON_BRIDGE_ERR_EXN
+ * if it raised (the exception is printed to stderr), ERR_MISSING if the
+ * callback is absent from the blob. The caller must exit nonzero on either
+ * error. Blocks the calling thread for the whole call; there is no AppKit to
+ * serve on this path. `argv` must stay valid for the life of the process. */
+int unison_bridge_cli_startup(int argc, char *argv[]);
+
+/* The profile named on the command line, as extracted by unisonInit0 from
+ * Sys.argv ("rest" after the flags), or NULL when none was given. Valid after
+ * unison_bridge_init0 returned OK; NULL on the graphical path, where the
+ * runtime only ever sees argv[0]. */
+const char *unison_bridge_command_line_profile(void);
+
+/* 1 iff two roots were given on the command line (OCaml's areRootsSet), 0 when
+ * none were, -1 when the answer could not be obtained (callback missing or
+ * raised). The caller must treat -1 as "cannot proceed", not as "no roots".
+ * Valid after init0. */
+int unison_bridge_command_line_roots_set(void);
+
 /* === Init1 — load profile, parse roots, open remote connection ===
  *
  * Asynchronous: OCaml spawns a worker that eventually invokes the installed

@@ -1,5 +1,37 @@
 import AppKit
+import CoreGraphics
 import Sparkle
+
+let underXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+let underSmoke = ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil
+
+// Shell launches are decided before anything AppKit or Sparkle runs. The
+// `unison` launcher (Sources/CLTool/cltool.c) execs this executable with the
+// caller's arguments, and a remote peer's `ssh host unison -server` arrives the
+// same way. For the headless roles the engine takes over the process here and
+// never returns; for `-ui graphic` the engine is started with the full argv and
+// the graphical launch below continues. Nothing on this path may write to
+// stdout: for `-server` it is the wire protocol. See
+// docs/cli-launcher-design.md and CommandLineInvocationPolicy.
+// The launcher marks the process it execs; read it and remove it so nothing the
+// app later spawns (diff, merge, ssh) inherits it.
+let launchedByLauncher = getenv(CommandLineInvocationPolicy.launcherMarker) != nil
+unsetenv(CommandLineInvocationPolicy.launcherMarker)
+let hasWindowServerSession = CGSessionCopyCurrentDictionary() != nil
+
+switch CommandLineInvocationPolicy.launchKind(
+    arguments: CommandLine.arguments,
+    launchedByLauncher: launchedByLauncher,
+    hasWindowServerSession: hasWindowServerSession,
+    isTestHost: underXCTest || underSmoke) {
+case .gui:
+    break
+case .shell:
+    // Returns only when the effective interface is graphical and a session
+    // exists; every other role exits inside the engine or here.
+    CommandLineEngineLaunch.run(arguments: CommandLine.arguments,
+                                hasWindowServerSession: hasWindowServerSession)
+}
 
 TraceLog.shared.write("main.swift: entering NSApplicationMain")
 
@@ -32,8 +64,6 @@ app.delegate = delegate
 // deployment-floor OS and exits immediately, so a live updater's first-launch
 // permission prompt / background feed check would only add a network dependency
 // and modal noise to a check that must be deterministic.
-let underXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-let underSmoke = ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil
 let updaterController: SPUStandardUpdaterController? = (underXCTest || underSmoke) ? nil
     : SPUStandardUpdaterController(
         startingUpdater: true,

@@ -59,6 +59,12 @@ main_exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents
 [ -n "$main_exe" ] || { echo "sign-app: empty CFBundleExecutable in $app/Contents/Info.plist" >&2; exit 1; }
 main="$app/Contents/MacOS/$main_exe"
 
+# The `unison` command-line launcher ships inside every bundle (project.yml
+# embeds the cltool target into Contents/MacOS). A bundle without it would
+# install fine and then break every PATH symlink pointing at it.
+cli="$app/Contents/MacOS/cltool"
+[ -f "$cli" ] || { echo "sign-app: required command-line launcher missing: Contents/MacOS/cltool" >&2; exit 1; }
+
 # Inventory every embedded code object (code bundles + Mach-O files, the latter
 # by content) and reject anything outside the whitelist. No `|| true`: a scan
 # error must fail the run, not pass silently.
@@ -89,7 +95,7 @@ done < "$files"
 sort -u "$inv" > "$sorted"
 while IFS= read -r p; do
 	case "$p" in
-		"$main"|"$fw"|"$fw"/*) continue ;;
+		"$main"|"$cli"|"$fw"|"$fw"/*) continue ;;
 	esac
 	printf '%s\n' "$p" >> "$extra"
 done < "$sorted"
@@ -116,6 +122,7 @@ sign() {
 echo "sign-app: signing '$app' with [$identity]" >&2
 for rel in $components; do sign "$v/$rel"; done
 sign "$fw"
+sign "$cli"
 sign "$app"
 
 # Fail closed if anything nested was left unsigned or invalid.
