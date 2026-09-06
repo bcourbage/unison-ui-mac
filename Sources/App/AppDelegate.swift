@@ -1604,16 +1604,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // another row when asked for a name it does not list. Only hand it a
             // name it will actually select; otherwise say why and stop.
             let given = String(cString: cstr)
-            let name = (given as NSString).pathExtension == "prf"
-                ? (given as NSString).deletingPathExtension : given
-            if listedProfiles().contains(name) {
-                log.write("profile named on the command line; preselecting it in the picker")
-                showProfilePicker(select: name)
-            } else {
+            let dir = unisonDirectory
+            let handoff = CommandLineProfileHandoff.resolve(given: given) { candidate in
+                FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(candidate))
+            }
+            switch handoff {
+            case .refuse(let reason):
+                // The picker's name would make the engine open a different file
+                // than the one the caller named (both `p` and `p.prf` exist).
                 CommandLineEngineLaunch.writeStderr(
-                    "unison-ui-mac: profile \(given) exists but is not shown in the profile picker (hidden, or not a profile name). "
-                    + "Unhide it in the Profile Editor, or add -ui text to run it in the terminal.")
+                    "unison-ui-mac: \(reason). Add -ui text to run it in the terminal.")
                 exit(1)
+            case .select(let name):
+                if listedProfiles().contains(name) {
+                    log.write("profile named on the command line; preselecting it in the picker")
+                    showProfilePicker(select: name)
+                } else {
+                    CommandLineEngineLaunch.writeStderr(
+                        "unison-ui-mac: profile \(given) exists but is not shown in the profile picker (hidden, or not a profile name). "
+                        + "Unhide it in the Profile Editor, or add -ui text to run it in the terminal.")
+                    exit(1)
+                }
             }
         } else {
             showProfilePicker()

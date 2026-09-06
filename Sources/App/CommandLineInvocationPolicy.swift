@@ -154,3 +154,34 @@ enum CommandLineEngineLaunch {
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 }
+
+/// Turning the profile string from the command line into a picker selection
+/// that opens the same file upstream would have opened.
+///
+/// Upstream's `profilePathname s` uses the file named exactly `s` in the Unison
+/// directory when it exists, and `s.prf` otherwise. The picker lists `*.prf`
+/// files by their name without the extension and, when a row is opened, hands
+/// that name back to the engine, which applies the same rule. So a picker name
+/// is only a faithful stand-in for the given string when both resolve to the
+/// same file. With `p` and `p.prf` both present, `p.prf` given resolves to
+/// `p.prf`, but the picker's `p` would resolve to the extensionless `p`.
+enum CommandLineProfileHandoff: Equatable {
+    case select(pickerName: String)
+    case refuse(reason: String)
+
+    /// - `given`: the string upstream validated (the file it names exists).
+    /// - `fileExists`: whether a file with that exact name exists in the Unison
+    ///   directory.
+    static func resolve(given: String, fileExists: (String) -> Bool) -> CommandLineProfileHandoff {
+        func upstreamFile(_ s: String) -> String { fileExists(s) ? s : s + ".prf" }
+        let pickerName = (given as NSString).pathExtension == "prf"
+            ? (given as NSString).deletingPathExtension : given
+        let wanted = upstreamFile(given)
+        let viaPicker = upstreamFile(pickerName)
+        if wanted != viaPicker {
+            return .refuse(reason:
+                "profile \(given) names the file \(wanted), but the picker entry \(pickerName) would open \(viaPicker)")
+        }
+        return .select(pickerName: pickerName)
+    }
+}

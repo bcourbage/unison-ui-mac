@@ -103,7 +103,7 @@ app:
 
 | Command | What runs |
 |---|---|
-| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it; a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it and its row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |

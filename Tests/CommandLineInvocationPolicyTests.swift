@@ -91,6 +91,41 @@ final class CommandLineInvocationPolicyTests: XCTestCase {
         XCTAssertEqual(P.withoutHostInjected(["-batch", "-servercmd", "/x/unison"]), ["-batch", "-servercmd", "/x/unison"])
     }
 
+    // MARK: profile handoff to the picker (upstream's profilePathname rule)
+
+    private func handoff(_ given: String, files: Set<String>) -> CommandLineProfileHandoff {
+        CommandLineProfileHandoff.resolve(given: given) { files.contains($0) }
+    }
+
+    func test_handoff_plainName_selectsIt() {
+        XCTAssertEqual(handoff("p", files: ["p.prf"]), .select(pickerName: "p"))
+    }
+
+    func test_handoff_suffixedName_selectsStrippedName_whenNoCollision() {
+        XCTAssertEqual(handoff("p.prf", files: ["p.prf"]), .select(pickerName: "p"))
+    }
+
+    func test_handoff_suffixedName_refused_whenExtensionlessFileAlsoExists() {
+        // `p.prf` given → upstream opens p.prf; picker's `p` → upstream opens `p`.
+        guard case .refuse(let reason) = handoff("p.prf", files: ["p.prf", "p"]) else {
+            return XCTFail("expected refusal on p / p.prf collision")
+        }
+        XCTAssertTrue(reason.contains("p.prf"))
+        XCTAssertTrue(reason.contains("would open p"))
+    }
+
+    func test_handoff_plainName_withExtensionlessFile_isConsistent() {
+        // Both the given string and the picker name resolve to the same file `p`.
+        XCTAssertEqual(handoff("p", files: ["p.prf", "p"]), .select(pickerName: "p"))
+    }
+
+    func test_handoff_doubleSuffix() {
+        // `p.prf.prf` given → file p.prf.prf; picker name `p.prf` → file p.prf. Different.
+        guard case .refuse = handoff("p.prf.prf", files: ["p.prf.prf", "p.prf"]) else {
+            return XCTFail("expected refusal")
+        }
+    }
+
     func test_launcherMarkerName() {
         XCTAssertEqual(P.launcherMarker, "UNISON_UI_MAC_LAUNCHER")
     }
