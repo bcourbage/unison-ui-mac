@@ -168,9 +168,11 @@ reported by Unison with its usage text.</p>
 <p><code>unison -ui graphic</code> keeps the terminal busy until the app quits, like any
 foreground command. Append <code>&amp;</code> to get the prompt back.</p>
 <h3 id="putting-it-on-path">Putting it on PATH</h3>
-<p>Create a symlink named <code>unison</code>. <code>/usr/local/bin</code> is on the PATH of both
-interactive shells and incoming ssh commands, and writing there needs an
-administrator password:</p>
+<p>Settings → Command Line shows what <code>unison</code> resolves to and offers Install
+when nothing owns the name (see <a href="#command-line">Settings</a>). The manual
+equivalent: create a symlink named <code>unison</code>. <code>/usr/local/bin</code> is on the PATH
+of both login shells and incoming ssh commands on a stock macOS, and writing
+there needs an administrator password:</p>
 <pre><code class="language-sh">sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
 </code></pre>
 <p>Only one command can own the name. Check what <code>unison</code> resolves to before
@@ -799,6 +801,43 @@ Escape (Don't Update).</p>
 <p>The <code>logfile</code> line is written into each profile's <code>.prf</code> (which is what
 Unison reads). The matching per-profile controls live in the editor's
 <strong>Options</strong> section: see <a href="#options">Write a log file</a>.</p>
+<h3 id="command-line">Command Line</h3>
+<p>Shows what the <code>unison</code> command resolves to right now, for two PATHs, read
+from the filesystem each time the tab is shown (nothing here is a stored
+preference):</p>
+<ul>
+<li><strong>Terminal</strong>: the PATH a login shell builds. A change made only in
+  <code>.zshrc</code> is not included.</li>
+<li><strong>Remote command</strong>: the PATH macOS defines for non-interactive commands
+  (<code>/etc/paths</code> and <code>/etc/paths.d</code>), which is what an incoming ssh command
+  gets on a stock Mac. A remote shell's own environment can differ, which is
+  why <code>servercmd</code> in the peer's profile remains the reliable setting.</li>
+</ul>
+<p>Each line names the first <code>unison</code> entry on that PATH, broken links
+included, and says what it is: this app's command, another copy of this app,
+Homebrew-managed, the Homebrew <code>unison</code> formula, upstream Unison.app's
+command, a broken link, or something else. When a broken link comes before a
+command that works, both are named, because repairing the link changes which
+command the name reaches.</p>
+<p>One button is offered at a time, and only when the evidence supports it:</p>
+<ul>
+<li><strong>Install…</strong> when neither PATH holds a <code>unison</code>. Creates
+  <code>/usr/local/bin/unison</code> as a link to this app's launcher after an
+  administrator password.</li>
+<li><strong>Repair…</strong> when the first entry is a broken link to a former copy of this
+  app's launcher. The confirmation shows the old target and, if a working
+  command sits later on the PATH, names it as the one that will no longer be
+  reached.</li>
+<li><strong>Remove…</strong> when the entry is this installation's link. Deletes it; the app
+  keeps working from the profile picker.</li>
+</ul>
+<p>Anything else (the formula, upstream's command, Homebrew's link, another copy
+of this app) is shown and left alone.</p>
+<p><strong>First-launch offer.</strong> When neither PATH holds a <code>unison</code>, or the first
+entry is a broken link to a former copy of this app, the app offers Install
+or Repair once per launch after the picker appears. "Not Now" asks again next
+launch; "Do not ask again" stops the offer, and the Command Line tab remains
+the way to install later.</p>
 <h3 id="whats-stored-and-where">What's stored, and where</h3>
 <p>Everything lives in <code>~/Library/Preferences/net.courbage.unison-ui-mac.plist</code>,
 accessed via the standard <code>UserDefaults</code> API. That domain also holds the
@@ -839,6 +878,10 @@ Sparkle, not as app keys of its own). The keys this app writes:</p>
 <tr>
 <td><code>sync.complete.sound</code></td>
 <td>Play a sound on sync completion (default on)</td>
+</tr>
+<tr>
+<td><code>commandLineTool.doNotAsk</code></td>
+<td>"Do not ask again" on the first-launch offer to install the <code>unison</code> command</td>
 </tr>
 <tr>
 <td><code>NSWindow Frame &lt;name&gt;</code></td>
