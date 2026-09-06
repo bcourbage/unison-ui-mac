@@ -71,12 +71,18 @@ A C command-line tool built as its own Xcode target and embedded at
    Services from inside a bundle, because "the executable next to me is
    missing" is not a reason to run some other copy. This is the path taken
    through a symlink (the cask, and the manual install).
-2. **Outside a bundle.** The tool was copied out. `LSCopyApplicationURLsFor
+2. **Outside a bundle.** The tool's real path is known and does not have the
+   bundle layout, so it was copied out. `LSCopyApplicationURLsFor
    BundleIdentifier` is asked for our identifier; exactly one registered
    application is required, and it is verified the same way as in step 1.
    Zero or several matches print the candidates to stderr and exit 1. Picking
    one of several would silently run a Debug build next to the installed
    release.
+3. **Location unknown.** If the tool cannot determine its own real path
+   (`_NSGetExecutablePath` or `realpath` fails, for instance while the bundle
+   is being replaced or removed underneath it), it stops with exit 1. Unknown
+   is not "known to be copied out", and Launch Services is never consulted
+   from this state.
 
 What the two steps prove: step 1 proves the tool is running the app whose
 bundle it is physically part of, and that the bundle declares our identity.
@@ -105,23 +111,41 @@ kept in a testable policy type (`CommandLineInvocationPolicy`):
   from automation without guessing intent from one probe.
 - *test host*: XCTest or `UNISON_UI_SMOKE`. Checked first.
 
-Before classification, host-injected flags (`-NS…` and `-Apple…` with their
-value, `-psn_…`) are removed on **every** path. Option names follow `Uarg`'s
-grammar: leading dashes are not significant and `-name=value` is one token,
-so `-ui=text` and `--server` are recognized. The remaining "user arguments"
-drive the table, rows evaluated in order:
+The policy classifies tokens; it does not parse them. Which token is an
+option's *value* is `Uarg`'s knowledge (a `-label` value may legitimately
+begin with `-`), so the policy never edits, reorders or removes the caller's
+tokens. The only change it ever makes to what the engine receives is
+prepending `-ui text`. Two token-level readings feed the decision:
+
+- **Option names** follow `Uarg` exactly: upstream registers every option as
+  `"-" ^ name` and matches the token before the first `=` exactly, so `-ui`
+  and `-ui=text` name `ui`, while `--ui` is an unknown option to upstream and
+  is treated as no option here.
+- **Host-injected flags** (`-NS…`/`-Apple…` with the following token when it
+  does not start with `-`, and `-psn_…`) are *ignored for the decision*
+  whether any user arguments exist. They are not removed from argv. Where
+  they reach the engine (an Xcode scheme running `-ui graphic`), upstream's
+  parser reports them with usage and exit 2, as it would anywhere.
+
+Rows are evaluated in order:
 
 | Row | Condition | Mode |
 |---|---|---|
 | 1 | test host | GUI, argv[0] only. The test host must reach `applicationDidFinishLaunching`, where `UNISON` is redirected, before the runtime starts. |
 | 2 | no user arguments, session | GUI, argv[0] only (Finder, `open`, Xcode). |
-| 3 | no user arguments, no session | command-line, `-ui text`: upstream prints usage and exits. AppKit is never attempted without a session. |
-| 4 | an engine option present (`server`, `socket`, `ui`, `version`, `doc`, `help`), and `-ui graphic` with no session | command-line, `graphic` rewritten to `text`, notice on stderr. The GTK build's behavior. |
-| 5 | an engine option present, otherwise | command-line, user arguments passed through. Precedence among mixed options is upstream's (`Main.init` checks `-version` before `-server`). |
-| 6 | no engine option, and (no session **or** no tty) | command-line, `-ui text` prepended: automation such as `unison -batch p` from launchd or cron, in or out of a GUI session. |
-| 7 | no engine option, session and tty | unsupported: exit 1 with a message naming the arguments, the picker, and `-ui text`. Covers `unison myprofile`, two roots, and unknown options typed in Terminal. |
+| 3 | no user arguments, no session | command-line, `-ui text`. The text interface then does what upstream's bare `unison` does: it uses the `default` profile if one exists, and prints usage otherwise. AppKit is never attempted without a session. |
+| 4 | an engine option present (`server`, `socket`, `ui`, `version`, `doc`, `help`), and `-ui graphic` (either form) with no session | unsupported: exit 1 with a message naming `-ui text`. Refused rather than rewritten, because rewriting would require knowing which token is the value of `-ui`. |
+| 5 | an engine option present, otherwise | command-line, argv passed through intact. Precedence among mixed options is upstream's (`Main.init` checks `-version` before `-server`). |
+| 6 | no engine option, and (`-batch` present **or** no session **or** no tty) | command-line, `-ui text` prepended to the intact argv: automation such as `unison -batch p` from launchd, cron, a script, in or out of a GUI session. |
+| 7 | no engine option, session and tty, no `-batch` | unsupported: exit 1 with a message naming the arguments, the picker, and `-ui text`. Covers `unison myprofile`, two roots, and unknown options typed in Terminal. |
 
-**In command-line mode** the full user argv is handed to `caml_startup` and
+The tty input is a policy choice, not proof of a person: a script started
+from Terminal inherits the terminal, and a person can redirect stdin. `-batch`
+is the caller's own statement of intent and wins over the tty, which covers
+the inheriting script; a script that says neither `-batch` nor `-ui text` is
+refused with a message that names both.
+
+**In command-line mode** the argv is handed to `caml_startup` and
 `unisonNonGuiStartup` is invoked on the OCaml thread. It exits the process
 for `-server`, `-socket`, `-version`, `-doc`, `-help` and `-ui text`, and
 upstream's parser reports unknown or malformed options with usage and exit 2.
@@ -133,12 +157,16 @@ menu; the headless roles never do.
 
 **After init0 on the graphical continuation** (`unison -ui graphic …` with a
 session), upstream's `unisonInit0` has extracted any profile or roots from
-argv. Two roots have no representation in the picker: stderr message, exit 1.
-A profile is preselected in the picker. Opening it directly is a follow-up.
-Silently opening the picker and dropping the argument is the one behavior
-this design forbids. Precedence with row 4: without a session, `-ui graphic
-p` runs `p` in the text interface; the graphical continuation, and its
-positional rules, apply only when a window can be shown.
+argv and already verified that a named profile's file exists (`name` or
+`name.prf`). Roots: the engine is asked through `areRootsSet`, which answers
+yes, no, or *undetermined* (callback missing or raised); yes and undetermined
+both stop with a stderr message and exit 1, because undetermined is not
+"no". A profile: the name is normalized (`.prf` stripped) and checked against
+the list the picker will actually show, with the user's hide preferences
+applied; only then is it preselected. A profile the picker does not list
+(hidden) stops with a message saying so, because the picker falls back to
+another row for a name it cannot find, which would select the wrong profile
+silently. Opening the profile directly is a follow-up.
 
 **stdout is the wire.** In command-line mode nothing may write to stdout
 before OCaml does. `TraceLog` writes to the unified log, not to stdout, and
@@ -207,44 +235,55 @@ A `CommandLineToolStatus` value computed from the filesystem every time it is
 needed, never cached across launches. A Finder-launched process does not have
 the user's shell PATH, and the design itself establishes that Terminal and
 incoming ssh see different PATHs, so the status is computed for **two named
-contexts** and both are shown:
+contexts**, both shown, and both labelled as what they are: reconstructions
+of a PATH, not measurements taken inside those execution contexts.
 
-- *Terminal*: the PATH of the user's login shell, obtained by running
-  `$SHELL -l -c 'printf %s "$PATH"'`.
-- *Incoming ssh*: the PATH `path_helper` builds from `/etc/paths` and
-  `/etc/paths.d`, which is what a non-interactive remote command sees on a
-  stock macOS.
+- *Login shell*: the PATH a non-interactive login shell builds, obtained by
+  running `$SHELL -l -c 'printf %s "$PATH"'`. This reads `/etc/zprofile` and
+  `~/.zprofile` but not `~/.zshrc`, so a PATH change made only in `.zshrc`
+  is not seen. The label says "as a login shell sees it".
+- *Remote command*: the PATH `path_helper` builds from `/etc/paths` and
+  `/etc/paths.d`. An ssh command runs `$SHELL -c`, which on a stock macOS
+  does not read `/etc/zprofile` at all, so this reconstruction can include
+  `/etc/paths.d` entries the real remote command will not have. The label
+  says "as macOS defines it for non-interactive commands", and the manual
+  keeps `servercmd` as the reliable answer for remote peers.
 
-For each context the first PATH entry holding a `unison` **entry** (a file or
-a symlink, dangling included; `which` skips dangling links and must not be
-used here) is classified:
+For each context two things are found: the first PATH entry holding a
+`unison` **entry** of any kind (a file or a symlink, dangling included), and
+the first entry that **executes** (what `command -v` would pick, which skips
+dangling links). When they differ, both are shown, because a dangling link
+ahead of a working command means Repair would change which command runs.
+The first entry is classified:
 
 | Classification | Evidence |
 |---|---|
-| `thisApp` | Resolves to a file whose real path ends in `/Contents/MacOS/cltool` inside a bundle whose `Info.plist` identifier is ours |
-| `homebrewManaged` | `thisApp`, the link lives under `$(brew --prefix)/bin`, **and** the Caskroom holds an install receipt for `unison-ui-mac`. Location alone is not ownership. |
+| `thisInstallation` | Resolves to `cltool` inside the bundle this process is running from (path equality with `Bundle.main.bundlePath` after resolving symlinks) |
+| `otherCopyOfThisApp` | Resolves to `cltool` inside a different bundle whose `Info.plist` identifier is ours (a Debug build, a second copy). Same product, not this installation. |
+| `homebrewManaged` | `thisInstallation` or `otherCopyOfThisApp`, the link lives under `$(brew --prefix)/bin`, **and** the Caskroom holds an install receipt for `unison-ui-mac`. Location alone is not ownership. |
 | `brewFormula` | Resolves into the Homebrew Cellar |
 | `upstreamApp` | Resolves into a bundle with identifier `edu.upenn.cis.Unison` |
-| `danglingLauncherPath` | Broken link whose target path ends in `/unison-ui-mac.app/Contents/MacOS/cltool`. This is a pathname, not proof of ownership; it identifies what the link *was for*, which is all Repair needs to know (below). |
+| `danglingLauncherPath` | Broken link whose target path ends in `/unison-ui-mac.app/Contents/MacOS/cltool`. A pathname, not proof of ownership; it identifies what the link *was for*. |
 | `danglingOther` | Broken link pointing anywhere else |
 | `other` | Anything else, path shown |
 | `none` | No entry in that context |
 
 **Settings, Command Line Tool section.** Shows both contexts, the
 classification and the resolved path in words. Actions are offered from the
-Terminal-context result and are gated by what the evidence proves:
+login-shell result and are gated by what the evidence proves:
 
 - `none` in both contexts: **Install** creates `/usr/local/bin/unison` as a
-  symlink to the bundled tool. One administrator prompt. If the incoming-ssh
+  symlink to this installation's tool. One administrator prompt. If either
   context already shows an entry, Install is withheld and the entry shown.
-- `danglingLauncherPath`: **Repair** replaces the broken link, with the old
-  target path shown in the confirmation. What this replaces is a link to
-  nothing; the only thing lost is a pathname, and the dialog shows it.
-  Nothing that resolves is ever replaced.
-- `thisApp` (not `homebrewManaged`): **Remove** deletes the link.
+- `danglingLauncherPath`: **Repair** replaces the broken link with one to
+  this installation. The confirmation shows the old target path and, when a
+  later PATH entry currently executes, names that command and says Repair
+  will take precedence over it. Nothing that resolves is ever replaced.
+- `thisInstallation` (not `homebrewManaged`): **Remove** deletes the link.
+- `otherCopyOfThisApp`: read-only, with the other bundle's path. A second
+  copy must not remove the installed release's link.
 - `homebrewManaged`: read-only, "Managed by Homebrew".
-- Every other state: read-only, with the path shown. Never offers to remove
-  or overwrite something that resolves to anything but this app.
+- Every other state: read-only, with the path shown.
 
 **First-launch prompt.** Shown once per launch, after the picker appears,
 only when all hold:
@@ -275,17 +314,23 @@ Draft copy, subject to the usual review before release:
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
 | This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Incoming ssh PATH lacks the brew prefix; peers set `servercmd`. On Intel, the prefix is `/usr/local`, so `bin/unison` is the same path a manual install would use, and the incoming-ssh PATH does include it. |
 | This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on the incoming-ssh PATH per `/etc/paths` on a stock macOS; Settings measures rather than assumes. |
-| Fresh zip install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. | Manual: launch the app once from Finder before relying on ssh. Cask installs are not quarantined. |
+| Fresh install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. Homebrew quarantines cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh, whatever the install method. |
 | Sparkle update | Link stays valid; bundled tool updates too. | The headless roles exit before Sparkle initializes; the `-ui graphic` continuation reaches Sparkle like any graphical launch. |
+| Bare `unison` over ssh, with a `default.prf` present | The text interface runs the default profile, as upstream's `unison` would. | Upstream semantics, stated as such. Not "prints usage". |
+| Script started from Terminal, `unison -batch p`, stdin inherited | Text UI (row 6): `-batch` wins over the tty. | A script saying neither `-batch` nor `-ui text` is refused with a message naming both. |
+| Dangling launcher link ahead of a working formula on PATH | Settings shows both the first entry and the executing one; Repair's confirmation says which command it displaces. | PR C. |
+| Second copy of the app (Debug build) opens Settings | The installed release's link classifies as `otherCopyOfThisApp`; Remove is not offered. | PR C. |
 | Sparkle replaces the bundle while a `-server` process runs | The running process keeps its mapped binary; new invocations resolve the new bundle. The old bundle is moved aside, so a link stays valid. | Same as any in-place app update with a running helper. |
 | Brew `upgrade --greedy` after Sparkle | Can downgrade to the tap's version. A downgrade to a pre-launcher cask version removes brew's link; a manual link dangles. | Release checklist already bumps the cask with each release; Settings reports the dangling case. |
 | Mac that is both GUI user and ssh target | One binary serves both. | File access over ssh follows sshd's Full Disk Access grant, unchanged. |
 | Automation without a session (`unison -batch p` from cron, ssh, a daemon) | Text UI (row 6). | Upstream's Mac app fails here. |
 | Automation in a GUI session (a LaunchAgent running `unison -batch p`) | Text UI (row 6, no tty). | Session membership alone would have misclassified this. |
 | Person in Terminal: `unison p`, two roots, or `unison -bogus` | Refused with a message (row 7). | Upstream would report `-bogus` itself; here the person is told what the GUI cannot take and how to reach the text UI. |
-| `=` and double-dash forms (`-ui=text`, `--server`) | Recognized as engine options. | `Uarg` splits at `=` and options are matched by name. |
+| `-ui=text` | Recognized as an engine option. | `Uarg` splits at `=`. |
+| `--server`, `--ui text` | Not engine options, matching upstream, which registers single-dash names and matches exactly. Headless they reach the engine and are reported as unknown; in Terminal they are refused. | The manual says so. |
 | XCTest or smoke host, any arguments | GUI path, argv[0] only. | `UNISON` redirection in `applicationDidFinishLaunching` precedes the runtime start, as today. |
-| Xcode scheme runs `-ui graphic` with `-NSDocumentRevisionsDebugMode YES` | Host flags stripped before the engine sees argv. | Stripping applies on every path. |
+| Xcode scheme runs `-ui graphic` with `-NSDocumentRevisionsDebugMode YES` | Command-line mode; the host flag reaches the engine intact and upstream's parser reports it with usage, exit 2. | Nothing is removed from argv, because the policy cannot know option-value boundaries. |
+| `unison -ui text -label -NSFoo p` | Passed through intact; `-NSFoo` is the label's value and Unison treats it as such. | Same reason. |
 | Two copies of the app installed | Through a link, the link's bundle wins after identity verification. A copied-out tool fails closed on two Launch Services matches. | |
 | Damaged bundle (executable missing, or foreign `Info.plist`) | Launcher exits 1 naming the damage; never runs another copy. | |
 | App moved after linking | `danglingLauncherPath`, Repair offered with the old path shown. | Cask installs are immune. |
@@ -320,31 +365,43 @@ do not replace.
   deterministically, so it is covered by the identity check plus the
   fail-closed count in code review.
 - Unit tests for the mode-selection policy cover every row of the table,
-  `=` and double-dash forms, mixed engine options passed through unreordered,
-  `-ui graphic` with no session (both forms, profile kept), host flags on the
-  command-line path, no arguments with no session, GUI-session automation
-  without a tty, and a person in Terminal with a profile or an unknown option.
-- Live, through a PATH symlink, `UNISON` pointed at a throwaway directory:
-  `unison -version` prints exactly the engine's version line on stdout, empty
-  stderr, exit 0. `unison -help` prints usage, exit 2 (upstream's code).
-  `unison -server </dev/null` exits with 0 bytes on stdout and no GUI
-  process. `unison -ui text -batch <local profile>` syncs two files.
-  `unison -ui text NoSuchProfile` fails with usage. `unison NoSuchProfile`
-  in Terminal is refused. `unison -ui graphic NoSuchProfile` fails with
-  upstream's "Profile … does not exist" (proves the full argv reached OCaml).
-  `unison -ui graphic` brings the GUI up; `unison -ui graphic <profile>`
-  preselects it in the picker.
-- **Server interoperability oracle.** `unison -socket <port>` from the
-  launcher as the server, and an independent Unison 2.54 client (the brew
-  formula) syncing `local ↔ socket://localhost:<port>/…` in batch mode: the
-  client reports a completed sync, a 300 KB file compares identical, the
-  server's stdout carries 0 bytes, and killing the server leaves no GUI
-  process. This proves RPC negotiation and transfer through our engine as a
-  peer without needing ssh to self.
-- Not provable on the development host and recorded as such: the
-  no-session rows (a window-server session always exists there), and an
-  incoming ssh `-server` from another machine. The socket oracle covers the
-  protocol half of the ssh case; the PATH half is documented.
+  `=` forms, double-dash tokens as non-options, mixed engine options passed
+  through unreordered, `-ui graphic` with no session refused in both forms,
+  option-value boundaries never edited (`-NSFoo -server`, `-ui text -label
+  -NSFoo p`, `-label -ui graphic p`), host flags reaching the engine intact,
+  no arguments with no session, GUI-session automation without a tty,
+  `-batch` in Terminal, and a person in Terminal with a profile or an unknown
+  option. These prove the argv handed over and the mode chosen; what the
+  engine does with the argv is upstream's behavior and is exercised by the
+  smoke below, not asserted by name in a unit test.
+- **`scripts/smoke-cli.sh` against the built bundle** (`make smoke-cli`
+  locally; the release pipeline runs it on the macOS 15 runner against the
+  exact release bytes, where XCTest and `UNISON_UI_SMOKE` deliberately take
+  the graphical branch and prove nothing about this path). Through a PATH
+  symlink with `UNISON` in a throwaway directory: `-version` prints exactly
+  one version line on stdout with empty stderr and exit 0; **the stdin/stdout
+  transport oracle**: the app in text mode as client and the same bundle as
+  server, reached through an ssh stand-in that execs the launcher with the
+  exact remote command upstream sends (`unison -server __new-rpc-mode`),
+  syncs a 200 KB file and a nested file byte-identical with exit 0; `-bogus`
+  headless reaches the engine's parser (exit 2); `-server </dev/null` exits
+  on its own within 30 s. The last is a liveness check only: upstream sends
+  the header first but flushes asynchronously, so 0 bytes on immediate EOF is
+  consistent with a working server and proves nothing about the handshake.
+  The transport oracle is what proves the handshake.
+- Also measured live on the development host, independent 2.54.0 client
+  (the brew formula): the same stdin/stdout transport, and `-socket` mode
+  over TCP, both sync byte-identical. Recorded in the PR body.
+- `unison -help` prints usage, exit 2 (upstream's code). `unison -ui text
+  NoSuchProfile` fails with usage. `unison NoSuchProfile` in Terminal is
+  refused. `unison -ui graphic NoSuchProfile` fails with upstream's
+  "Profile … does not exist" (proves the full argv reached OCaml). `unison -ui
+  graphic` brings the GUI up; `unison -ui graphic <profile>` preselects it in
+  the picker; a hidden profile is refused with a message.
+- Not provable on the development host and recorded as such: the no-session
+  rows (a window-server session always exists there), and an incoming ssh
+  `-server` from another machine. The transport oracle covers the protocol
+  half of the ssh case; the PATH half is documented.
 - README and MANUAL: the "remote needs brew unison" requirement becomes "the
   remote needs a `unison` of 2.52 or later, which on a Mac with this app is
   the bundled command".
