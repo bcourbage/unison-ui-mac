@@ -123,9 +123,11 @@ foreground command. Append `&` to get the prompt back.
 
 ### Putting it on PATH
 
-Create a symlink named `unison`. `/usr/local/bin` is on the PATH of both
-interactive shells and incoming ssh commands, and writing there needs an
-administrator password:
+Settings → Command Line shows what `unison` resolves to and offers Install
+when nothing owns the name (see [Settings](#command-line)). The manual
+equivalent: create a symlink named `unison`. `/usr/local/bin` is on the PATH
+of both login shells and incoming ssh commands on a stock macOS, and writing
+there needs an administrator password:
 
 ```sh
 sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
@@ -824,6 +826,47 @@ The `logfile` line is written into each profile's `.prf` (which is what
 Unison reads). The matching per-profile controls live in the editor's
 **Options** section: see [Write a log file](#options).
 
+### Command Line
+
+Shows what the `unison` command resolves to right now, for two PATHs, read
+from the filesystem each time the tab is shown (nothing here is a stored
+preference):
+
+- **Terminal**: the PATH a login shell builds. A change made only in
+  `.zshrc` is not included.
+- **Remote command**: the PATH macOS defines for non-interactive commands
+  (`/etc/paths` and `/etc/paths.d`), which is what an incoming ssh command
+  gets on a stock Mac. A remote shell's own environment can differ, which is
+  why `servercmd` in the peer's profile remains the reliable setting.
+
+Each line names the first `unison` entry on that PATH, broken links
+included, and says what it is: this app's command, another copy of this app,
+Homebrew-managed, the Homebrew `unison` formula, upstream Unison.app's
+command, a broken link, or something else. When a broken link comes before a
+command that works, both are named, because repairing the link changes which
+command the name reaches.
+
+One button is offered at a time, and only when the evidence supports it:
+
+- **Install…** when neither PATH holds a `unison`. Creates
+  `/usr/local/bin/unison` as a link to this app's launcher after an
+  administrator password.
+- **Repair…** when the first entry is a broken link to a former copy of this
+  app's launcher. The confirmation shows the old target and, if a working
+  command sits later on the PATH, names it as the one that will no longer be
+  reached.
+- **Remove…** when the entry is this installation's link. Deletes it; the app
+  keeps working from the profile picker.
+
+Anything else (the formula, upstream's command, Homebrew's link, another copy
+of this app) is shown and left alone.
+
+**First-launch offer.** When neither PATH holds a `unison`, or the first
+entry is a broken link to a former copy of this app, the app offers Install
+or Repair once per launch after the picker appears. "Not Now" asks again next
+launch; "Do not ask again" stops the offer, and the Command Line tab remains
+the way to install later.
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -840,6 +883,7 @@ Sparkle, not as app keys of its own). The keys this app writes:
 | `reconcile.expandPolicy` | `smart` / `all` / `rootOnly` |
 | `sync.complete.notify` | Show a Notification Center banner on sync completion (default on) |
 | `sync.complete.sound` | Play a sound on sync completion (default on) |
+| `commandLineTool.doNotAsk` | "Do not ask again" on the first-launch offer to install the `unison` command |
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
 | `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 

@@ -11,20 +11,6 @@
       the PATH an incoming ssh command sees, so peers targeting a cask-installed
       Mac set `servercmd`. (docs/cli-launcher-design.md, PR B)
 
-- [ ] **Settings: Command Line Tool section and first-launch prompt.** Classify
-      the first `unison` entry (dangling links included) for two named PATH
-      contexts, labelled as reconstructions (a login shell's PATH; the
-      `/etc/paths` PATH an ssh command gets), and also report the first entry
-      that actually executes when it differs. Classifications: this
-      installation (path equality with the running bundle), another copy of
-      this app, Homebrew-managed (brew prefix plus a Caskroom receipt), brew
-      formula, upstream Unison.app, dangling launcher path, dangling other,
-      other, none. Install only when both contexts are empty; Repair only for a
-      dangling launcher path, showing the old target and any working command it
-      would displace; Remove only for this installation. Prompt once per launch
-      with "Do not ask again" when nothing owns the name.
-      (docs/cli-launcher-design.md, PR C)
-
 - [ ] **Open a command-line profile directly.** `unison -ui graphic <profile>`
       currently preselects the profile in the picker. Opening it straight away
       needs a picker bypass and a GUI answer for "profile not found".
