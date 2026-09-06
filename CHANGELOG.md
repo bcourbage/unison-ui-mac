@@ -11,6 +11,13 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-06
+
+A command-line release. (Build 23.) The app bundle now carries a `unison`
+command, so one install serves both the graphical interface and Unison's
+command-line roles, including acting as the far side of an SSH profile.
+Existing profiles and settings continue to work without migration.
+
 ### Added
 - **A `unison` command that opens this app.** The bundle now carries a
   command-line launcher at `Contents/MacOS/cltool`. Linked onto PATH under the
@@ -24,9 +31,9 @@ across releases per Apple's bundle-version rules.
   interface and only `-ui graphic` opens the app. `-ui graphic` without a
   graphical session is refused. A profile named alongside `-ui graphic` is
   preselected in the picker when the picker lists it, and refused with a
-  reason otherwise; two roots on the command line are refused. Creating the
-  PATH link is a manual step for now (see MANUAL, "The `unison` command").
-  (#124)
+  reason otherwise; two roots on the command line are refused. The PATH link
+  is created from Settings → Command Line, or by hand (see MANUAL, "The
+  `unison` command"). (#124)
 - **Settings → Command Line, and a first-launch offer to install the `unison`
   command.** The tab reads, from the filesystem each time, what `unison`
   resolves to on two PATHs (a login shell's, and the one macOS gives
@@ -38,7 +45,7 @@ across releases per Apple's bundle-version rules.
   precedence over), Remove for this installation's own link. Each needs an
   administrator password. After the picker appears, the app offers Install or
   Repair once per launch under the same conditions, with "Do not ask again".
-  Both PATHs are labelled as reconstructions. (PR C)
+  Both PATHs are labelled as reconstructions. (#125)
 
 ## [0.6.1] — 2026-08-29
 

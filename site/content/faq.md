@@ -15,6 +15,11 @@ core, so the `unison` CLI does not need to be installed for the app to run, and
 everything happens through the macOS interface instead of a terminal: choosing
 profiles, reviewing changes, and resolving conflicts.
 
+Since 0.7.0 the app also provides the `unison` command itself. Linked onto your
+PATH, it opens the app for `unison -ui graphic`, runs Unison's text interface for
+`unison <profile>`, and serves `unison -server` for machines that sync to this Mac
+over ssh. See [Install](../install/#the-unison-command).
+
 ## How does it compare to the macOS app included with Unison?
 
 Upstream Unison ships its own front ends, including a native macOS Cocoa app (built
@@ -53,7 +58,10 @@ GPLv3.
 
 Yes. A profile's two roots can each be a local folder or a remote root of the form
 `ssh://user@host//path`. The app runs Unison over SSH just as the command-line tool
-does, including key-based authentication and host-key prompts.
+does, including key-based authentication and host-key prompts. The remote machine
+needs a `unison` of version 2.52 or later on its PATH; on a Mac running this app,
+the app's own `unison` command fills that role, so no separate Unison installation
+is needed there.
 
 ## Does this app have a GUI to help configure sync profiles?
 
