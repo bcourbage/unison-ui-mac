@@ -107,16 +107,16 @@ app:
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison -batch <profile>`, or any arguments with no `-ui` from launchd, cron or ssh | The text interface. Automation is recognized by `-batch`, by the absence of a graphical session, or by the absence of a terminal on standard input, so a LaunchAgent in a logged-in session and a script run from Terminal with `-batch` both count. |
-| `unison <profile>`, two roots, or any other option with no `-ui` and no `-batch`, typed in Terminal | Refused with a message. Choose the profile in the picker, or add `-ui text`. |
+| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The text interface, exactly as the `unison` command behaves everywhere. The graphical interface runs only when `-ui graphic` is given. |
 | `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
 | `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
 
-Options follow Unison's grammar: `-ui=text` means the same as `-ui text`.
-Options take exactly one leading dash; `--ui` is not recognized, by Unison
-or by this app. Arguments are handed to the engine exactly as typed, so an
-option macOS or Xcode adds to a graphical launch is reported by the engine
-as unknown if it reaches a command-line invocation.
+The command hands Unison's engine `-ui text` followed by the arguments
+exactly as typed, and Unison interprets them: a later `-ui graphic` wins
+over that default, `-server` and `-version` take effect before any interface
+choice, `-ui=text` means the same as `-ui text`, and options take exactly one
+leading dash (`--ui` is an unknown option to Unison). Unknown options are
+reported by Unison with its usage text.
 
 `unison -ui graphic` keeps the terminal busy until the app quits, like any
 foreground command. Append `&` to get the prompt back.

@@ -249,6 +249,15 @@ jobs:
         # app genuinely building AND running its full XCTest suite on the baseline OS.
         run: make verify-bundle-minos
 
+      - name: CLI smoke (launcher + headless engine on the built bundle)
+        # XCTest and UNISON_UI_SMOKE take the graphical branch and never reach
+        # the command-line path. This runs the bundled `unison` launcher through
+        # a symlink and the engine's stdin/stdout server transport (the app in
+        # text mode as client, the same bundle as server through an ssh
+        # stand-in) against the Debug bundle just built. The release pipeline
+        # runs the same script on macOS 15 against the release bytes.
+        run: ./scripts/smoke-cli.sh .build/derived/Build/Products/Debug/unison-ui-mac.app
+
       - name: Verify Info.plist critical values (generated + built app)
         # Two complementary layers, on the generated plist AND the built .app:
         #  - propagation (verify-plist-keys): plist matches project.yml (the

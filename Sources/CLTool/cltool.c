@@ -186,6 +186,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Tell the app it was reached through the launcher, so its graphical-vs-
+     * shell decision does not depend on interpreting Unison options. The app
+     * reads and removes this. It identifies the launch path; it is not a
+     * security boundary. */
+    setenv("UNISON_UI_MAC_LAUNCHER", "1", 1);
+
     /* The app locates its bundle from its own executable path, so hand it the
      * resolved absolute path rather than whatever name the shell used. */
     argv[0] = exe;

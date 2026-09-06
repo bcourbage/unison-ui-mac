@@ -30,6 +30,7 @@ make_bundle() {
 	cat > "$d/Contents/MacOS/unison-ui-mac" <<-'FAKE'
 		#!/bin/sh
 		printf 'argv0=%s\n' "$0"
+		printf 'marker=%s\n' "${UNISON_UI_MAC_LAUNCHER-unset}"
 		for a in "$@"; do printf 'arg=[%s]\n' "$a"; done
 		exit 7
 	FAKE
@@ -64,20 +65,23 @@ ln -s "$macos/cltool" "$tmp/bin/unison"
 out=$("$tmp/bin/unison" -ui text "my profile" -server 2>"$tmp/err"); rc=$?
 [ "$rc" -eq 7 ]; check "symlink: exit status passes through" $?
 expected="argv0=$expected_exe
+marker=1
 arg=[-ui]
 arg=[text]
 arg=[my profile]
 arg=[-server]"
-[ "$out" = "$expected" ]; check "symlink: argv0 resolved, arguments intact" $?
+[ "$out" = "$expected" ]; check "symlink: argv0 resolved, marker set, arguments intact" $?
 [ ! -s "$tmp/err" ]; check "symlink: stderr silent on success" $?
 
 # --- Invoked by its real path inside the bundle -------------------------------
 out=$("$macos/cltool" -version 2>"$tmp/err"); rc=$?
 [ "$rc" -eq 7 ] && [ "$out" = "argv0=$expected_exe
+marker=1
 arg=[-version]" ]; check "direct: resolves via the bundle's Info.plist" $?
 
 out=$("$macos/cltool" 2>"$tmp/err"); rc=$?
-[ "$rc" -eq 7 ] && [ "$out" = "argv0=$expected_exe" ]; check "direct: no arguments" $?
+[ "$rc" -eq 7 ] && [ "$out" = "argv0=$expected_exe
+marker=1" ]; check "direct: no arguments" $?
 
 # --- Copied out of the bundle: Launch Services finds no app, fails closed -----
 cp "$tool" "$tmp/unison-copy"

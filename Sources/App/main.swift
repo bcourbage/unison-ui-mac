@@ -13,19 +13,24 @@ let underSmoke = ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] != nil
 // the graphical launch below continues. Nothing on this path may write to
 // stdout: for `-server` it is the wire protocol. See
 // docs/cli-launcher-design.md and CommandLineInvocationPolicy.
-let invocation = CommandLineInvocationPolicy.classify(
+// The launcher marks the process it execs; read it and remove it so nothing the
+// app later spawns (diff, merge, ssh) inherits it.
+let launchedByLauncher = getenv(CommandLineInvocationPolicy.launcherMarker) != nil
+unsetenv(CommandLineInvocationPolicy.launcherMarker)
+let hasWindowServerSession = CGSessionCopyCurrentDictionary() != nil
+
+switch CommandLineInvocationPolicy.launchKind(
     arguments: CommandLine.arguments,
-    hasWindowServerSession: CGSessionCopyCurrentDictionary() != nil,
-    stdinIsTerminal: isatty(STDIN_FILENO) != 0,
-    isTestHost: underXCTest || underSmoke)
-switch invocation {
+    launchedByLauncher: launchedByLauncher,
+    hasWindowServerSession: hasWindowServerSession,
+    isTestHost: underXCTest || underSmoke) {
 case .gui:
     break
-case .unsupported(let message):
-    CommandLineEngineLaunch.writeStderr(message)
-    exit(1)
-case .commandLine(let arguments):
-    CommandLineEngineLaunch.startEngine(arguments: arguments)
+case .shell:
+    // Returns only when the effective interface is graphical and a session
+    // exists; every other role exits inside the engine or here.
+    CommandLineEngineLaunch.run(arguments: CommandLine.arguments,
+                                hasWindowServerSession: hasWindowServerSession)
 }
 
 TraceLog.shared.write("main.swift: entering NSApplicationMain")
