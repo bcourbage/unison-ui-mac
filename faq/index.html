@@ -48,6 +48,10 @@ Swift and AppKit interface with a visual conflict-review step.</p>
 core, so the <code>unison</code> CLI does not need to be installed for the app to run, and
 everything happens through the macOS interface instead of a terminal: choosing
 profiles, reviewing changes, and resolving conflicts.</p>
+<p>Since 0.7.0 the app also provides the <code>unison</code> command itself. Linked onto your
+PATH, it opens the app for <code>unison -ui graphic</code>, runs Unison's text interface for
+<code>unison &lt;profile&gt;</code>, and serves <code>unison -server</code> for machines that sync to this Mac
+over ssh. See <a href="../install/#the-unison-command">Install</a>.</p>
 <h2 id="how-does-it-compare-to-the-macos-app-included-with-unison">How does it compare to the macOS app included with Unison?</h2>
 <p>Upstream Unison ships its own front ends, including a native macOS Cocoa app (built
 from the <code>uimac</code> sources in the Unison repository) alongside the text and GTK
@@ -79,7 +83,10 @@ GPLv3.</p>
 <h2 id="can-it-sync-to-another-machine-over-ssh">Can it sync to another machine over SSH?</h2>
 <p>Yes. A profile's two roots can each be a local folder or a remote root of the form
 <code>ssh://user@host//path</code>. The app runs Unison over SSH just as the command-line tool
-does, including key-based authentication and host-key prompts.</p>
+does, including key-based authentication and host-key prompts. The remote machine
+needs a <code>unison</code> of version 2.52 or later on its PATH; on a Mac running this app,
+the app's own <code>unison</code> command fills that role, so no separate Unison installation
+is needed there.</p>
 <h2 id="does-this-app-have-a-gui-to-help-configure-sync-profiles">Does this app have a GUI to help configure sync profiles?</h2>
 <p>Yes. A graphical profile editor sets a profile's two roots, the paths to include,
 ignore patterns, file-handling options, and more, so there is no configuration file
