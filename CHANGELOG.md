@@ -23,7 +23,7 @@ across releases per Apple's bundle-version rules.
   graphical session they are refused with a message rather than dropped. A
   profile named alongside `-ui graphic` is preselected in the picker; two roots
   on the command line are refused. Creating the PATH link is a manual step for
-  now (see MANUAL, "The `unison` command").
+  now (see MANUAL, "The `unison` command"). (#124)
 
 ## [0.6.1] — 2026-08-29
 
