@@ -198,7 +198,10 @@ Composition rules for a proposed setting, applied before anything is verified:
 The proposed profile is composed in memory, its effective remote command
 re-derived exactly as in step 1, and that command string (with ` -version`)
 is run on the remote host through the same `ssh` argument vector Unison would
-use, plus the non-interactive options. The check's `ssh` argument vector is
+use, plus the non-interactive options. The remote command is prefixed with
+`printf '<unique start marker>'; ` so that the marker's presence in stdout is
+evidence that the remote shell was reached and execution of the command
+began; the marker is stripped before the version line is parsed. The check's `ssh` argument vector is
 specified as: `<sshcmd> -o BatchMode=yes -o ConnectTimeout=<t>
 -o StrictHostKeyChecking=yes [-l user] [-p port] <host> -e none <sshargs…>
 <remote command string>`, that is upstream's order with the three options
@@ -227,19 +230,30 @@ not say:
   decides which `unison` runs; the check cannot see that PATH."
 - Protocol boundary: "2.54.0 (this Mac) and 2.53.5 (`host`) are on the same
   side of the 2.52 boundary." / "…on opposite sides and cannot connect."
-- Failures are worded by what was observed, never as "the command could not
-  start":
-  - ssh exited before running anything (authentication refused under batch
-    mode, unknown host key, connection refused, timeout): "ssh did not reach
-    `host` without prompting: `<first stderr line>`. A synchronization may
-    still connect if it can answer a prompt; this check cannot." The
-    executable is neither confirmed nor ruled out.
-  - the remote command ran and exited nonzero, or printed output the version
-    parser does not recognize: "`<remote command>` ran on `host` and exited
-    with status N" / "…printed `<first line>`, which is not a Unison version
-    line." The command started; what it is remains unverified.
-  - the remote shell reported the command missing (exit 127, "not found"):
-    "`host` has no executable at `<path>`."
+- Failures report what was observed (exit status, the first stderr line,
+  whether the deadline expired, what stdout contained) and assign an
+  execution stage **only when separate evidence establishes it**. Two pieces
+  of evidence exist: the remote command in step 4 is `printf '<start
+  marker>'; <remote command>`, so the marker's presence in stdout shows that
+  ssh reached the host's shell and execution of the command began; and step 2
+  already recorded whether a file exists at the effective path. Wording:
+  - no start marker in stdout: "ssh did not run the command on `host`
+    without prompting; ssh reported `<first stderr line>` (exit N)." or,
+    on deadline, "…no response within `<t>` seconds." A synchronization may
+    still connect if it can answer a prompt; this check cannot. Nothing about
+    the executable is claimed.
+  - start marker present, deadline expired: "The command began on `host`
+    but did not finish within `<t>` seconds; output so far: `<stdout>`."
+  - start marker present, nonzero exit: "`<remote command>` exited with
+    status N on `host`; stderr: `<first line>`." Exit 127 is reported as
+    that status with its stderr, plus one of two additions: when step 2 found
+    no file at the path, "step 2 found no file at `<path>`"; when it found
+    one, "a file exists at `<path>`; status 127 with this stderr can also
+    mean a dependency of that file is missing." No "no executable" claim is
+    made from the exit status alone.
+  - start marker present, exit 0, output not a Unison version line:
+    "`<remote command>` printed `<first line>`, which is not a Unison version
+    line." The command ran; what it is remains unverified.
 - Closing, by outcome: after a parsed version, "The command started over ssh
   and reported its version. Only a synchronization confirms the server
   protocol; run the profile to test that." After any failure, "This check did
@@ -257,7 +271,12 @@ touches, shown before an **Apply** button.
   target file, the edit is **refused**: the check names those profiles and
   the remote host each of them uses, and leaves the change to the user. The
   edit proceeds only when the target file is consumed by the checked profile
-  alone.
+  alone. Two rules make that scan fail closed: a profile that cannot be read
+  or resolved (unreadable file, garbled line, missing required include,
+  cycle) is **not** a proven non-consumer and is listed as "could not be
+  resolved", which refuses the edit like a consumer would; and the scan's
+  result is part of the pre-Apply snapshot, so a consumer that appears or
+  changes between the check and Apply invalidates the edit.
 - `servercmd` (and `addversionno` when composition requires it): if the
   winning assignment is in the top-level profile, replace that line in
   place. If it is in an included file, do **not** edit the include; append
@@ -282,10 +301,14 @@ When the check starts it snapshots every path that took part in resolution,
 **present or absent**: the top-level file; for each directive both lookup
 candidates (exact name and `.prf` form), the one used and the one absent;
 for optional directives the absent target. Each snapshot records existence,
-size, mtime and content hash where present. Before Apply the check re-reads
-every snapshotted path and compares; any difference, including a file that
-has appeared, refuses the edit: "the profile or its includes changed since
-the check ran; run it again". The Profile Form disables Save for that profile
+size, mtime and content hash where present. The snapshot also holds the
+consumer scan's result: every profile in the Unison directory with its
+content hash and its resolution outcome (consumer, non-consumer, could not be
+resolved). Before Apply the check re-reads every snapshotted path, re-runs
+the consumer scan, and compares; any difference, including a file that has
+appeared or a profile whose consumer status changed, refuses the edit: "the
+profile, its includes, or the profiles that share them changed since the
+check ran; run it again". The Profile Form disables Save for that profile
 while a check runs; one check per profile at a time.
 
 ### macOS 15 compatibility
@@ -316,13 +339,17 @@ of the app. The deployment target is unchanged.
 - Consumer tests: an edit is refused, naming the consuming profiles and
   their remote hosts, when the target file is included directly or
   transitively by another profile; it proceeds when the checked profile is
-  the only consumer.
-- Classification tests distinguish: ssh exited before running the command
-  (batch-mode authentication, host key, connection refused, timeout), the
-  command ran and exited nonzero, the command ran and printed an
-  unrecognized line, the command is missing (exit 127); each maps to its own
-  wording and none to "could not start" except the missing case's "no
-  executable at".
+  the only consumer; a profile that cannot be read or resolved is listed as
+  "could not be resolved" and refuses the edit; a consumer that appears, or
+  a profile whose consumer status changes, between the check and Apply
+  invalidates the edit.
+- Classification tests distinguish by observation, not by inferred stage:
+  no start marker with ssh's stderr (batch-mode authentication, host key,
+  connection refused) or with the deadline expired; marker present with the
+  deadline expired; marker present with nonzero exit, including 127 with and
+  without step 2's existence finding, each producing its own wording and
+  neither claiming "no executable" from the exit status alone; marker present
+  with exit 0 and an unrecognized line. No outcome maps to "could not start".
 - Composition tests: suffix stripping when `addversionno` is true and the
   selection ends in `-<major>`; `addversionno = false` added otherwise; unsafe
   characters produce no proposal.
