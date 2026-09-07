@@ -74,10 +74,13 @@ dropped; empty words are dropped):
 - `servercmd`, `sshcmd`, `sshargs` and `addversionno` are single, global
   settings. Upstream also refuses the configurations that would need more
   than one: `src/globals.ml` line 58 raises "Wrong number of roots" unless
-  exactly two roots are given, and `src/uicommon.ml` line 1113 raises
-  "cannot synchronize more than one remote root". A profile therefore has at
-  most one remote host, and the check stops with upstream's message before
-  any ssh session when either rule is violated.
+  exactly two roots are given, and `src/uicommon.ml` lines 1105–1113 count
+  every non-local root, `ConnectByShell` (`ssh://` and other shell
+  transports) **and** `ConnectBySocket` (`socket://`), and raise "cannot
+  synchronize more than one remote root" when that count exceeds one. A
+  profile therefore has at most one remote root of any transport, and the
+  check stops with upstream's message before any ssh session when either rule
+  is violated.
 
 ### What the remote shell then sees (OpenSSH behavior)
 
@@ -85,21 +88,24 @@ ssh concatenates every argument after the destination into **one command
 string joined by single spaces** and hands it to the remote user's login
 shell. Consequences the design must respect:
 
-- Upstream's tokenizer has already consumed backslashes, so `My\ Dir/unison`
-  in the profile reaches the remote shell as `My Dir/unison -server …` and
-  the shell runs `My`. Backslash-escaping in the profile **cannot** carry a
-  space to the remote.
-- Quoting characters do survive: `"/Volumes/My Dir/unison"` is split into two
-  tokens and rejoined with one space, and the remote shell re-parses the
-  quotes. This depends on the remote shell being POSIX-like and breaks for
-  runs of more than one space (the tokenizer drops empty words). Any shell
-  metacharacter in `servercmd` or `sshargs` is interpreted by the remote shell.
-- Therefore the check **verifies the exact remote command string** Unison
-  would send (tokens rejoined with single spaces, plus ` -version` in place of
-  ` -server __new-rpc-mode`), and it **proposes only paths made of safe
-  characters** (`A–Z a–z 0–9 . _ / + -`). A selected executable whose path
-  contains whitespace or any other character is not proposed; the check says
-  why and suggests a symlink with a plain path on the remote (for example
+- Upstream's tokenizer consumes a single backslash, so `My\ Dir/unison` in
+  the profile reaches the remote shell as `My Dir/unison -server …` and the
+  shell runs `My`. One backslash cannot protect a space through both stages.
+- Other encodings can survive both stages under some remote shells, for
+  example a doubled backslash or quote characters, which the tokenizer passes
+  through in pieces and ssh's single-space join reassembles for the remote
+  shell to re-parse. Whether that works depends on the remote login shell,
+  and runs of more than one space are lost either way (the tokenizer drops
+  empty words). Any shell metacharacter in `servercmd` or `sshargs` is
+  interpreted by the remote shell.
+- The check does not attempt to reason about those encodings. It
+  **verifies the exact remote command string** Unison would send (tokens
+  rejoined with single spaces, plus ` -version` in place of
+  ` -server __new-rpc-mode`), so whatever the user wrote is what gets tested,
+  and it **proposes only paths made of safe characters**
+  (`A–Z a–z 0–9 . _ / + -`). A selected executable whose path contains
+  whitespace or any other character is not proposed; the check says why and
+  suggests a symlink with a plain path on the remote (for example
   `/usr/local/bin/unison`).
 
 ### What the app does today, and the divergence to fix
@@ -109,10 +115,17 @@ shell. Consequences the design must respect:
 -version`. Differences from upstream: `tokenizeSSHArgs` splits at spaces
 **and tabs** with **no** escape handling, unlike `splitIntoWords`; `user@host`
 replaces `-l user`; the three `-o` options are added; `-e none` is omitted.
-The user-form, the options and `-e none` are deliberate and harmless for a
-non-interactive probe. The tokenizer difference is a bug: the check and the
-probe must share one `PrefsTokenizer` with upstream's semantics, unit-tested
-against `splitIntoWords` cases.
+The user-form and `-e none` do not change what the remote runs. The three
+options do change what a failure means: `BatchMode=yes` refuses any
+interactive authentication that an ordinary sync could satisfy through the
+app's credential prompts, `StrictHostKeyChecking=yes` refuses an unknown host
+that a sync could accept after a prompt, and `ConnectTimeout` cuts a slow
+connection short. A probe failure caused by any of them says that the
+connection needed interaction or time the probe does not allow, not that the
+sync cannot connect; the wording rules below keep that distinction. The
+tokenizer difference is a bug: the check and the probe must share one
+`PrefsTokenizer` with upstream's semantics, unit-tested against
+`splitIntoWords` cases.
 
 ## Design
 
@@ -131,11 +144,13 @@ Unison would report, and report it in Unison's words. Compute effective
 values for `root` (list), `servercmd`, `sshcmd`, `sshargs`, `addversionno`,
 with the location of the winning assignment and of every assignment it
 overrides. Apply upstream's root rules before anything else: not exactly two
-roots stops with "Wrong number of roots"; more than one `ssh://` root stops
-with "cannot synchronize more than one remote root"; no `ssh://` root means
-the check does not apply. Parse the one remote root into user, host, port and
-path with the `clroot` rules. Derive the **effective remote command**: the
-exact string Unison would send, per the assembly above.
+roots stops with "Wrong number of roots"; more than one non-local root,
+counting `ssh://` and `socket://` together as upstream does, stops with
+"cannot synchronize more than one remote root". If the single remote root is
+`socket://`, or there is no remote root, the check does not apply and says
+so (it verifies ssh transports only). Parse the one `ssh://` root into user,
+host, port and path with the `clroot` rules. Derive the **effective remote
+command**: the exact string Unison would send, per the assembly above.
 
 Reuse: `ProfileDocument` for line parsing and `ProfileRootResolver`'s include
 lookup. New: `EffectiveProfile` (values with provenance), `PrefsTokenizer`
@@ -212,20 +227,40 @@ not say:
   decides which `unison` runs; the check cannot see that PATH."
 - Protocol boundary: "2.54.0 (this Mac) and 2.53.5 (`host`) are on the same
   side of the 2.52 boundary." / "…on opposite sides and cannot connect."
-- Closing, conditional: on success "The command started over ssh and
-  reported its version. Only a synchronization confirms the server protocol;
-  run the profile to test that." On failure "The command could not be
-  started over ssh; nothing about the server was verified."
+- Failures are worded by what was observed, never as "the command could not
+  start":
+  - ssh exited before running anything (authentication refused under batch
+    mode, unknown host key, connection refused, timeout): "ssh did not reach
+    `host` without prompting: `<first stderr line>`. A synchronization may
+    still connect if it can answer a prompt; this check cannot." The
+    executable is neither confirmed nor ruled out.
+  - the remote command ran and exited nonzero, or printed output the version
+    parser does not recognize: "`<remote command>` ran on `host` and exited
+    with status N" / "…printed `<first line>`, which is not a Unison version
+    line." The command started; what it is remains unverified.
+  - the remote shell reported the command missing (exit 127, "not found"):
+    "`host` has no executable at `<path>`."
+- Closing, by outcome: after a parsed version, "The command started over ssh
+  and reported its version. Only a synchronization confirms the server
+  protocol; run the profile to test that." After any failure, "This check did
+  not verify the remote command. What it observed is above."
 
 ### Step 6: previewed, approved edits
 
 Offered only after step 4 succeeded. Each edit is a diff of the exact file it
 touches, shown before an **Apply** button.
 
+- Before any edit, the check resolves every other profile in the Unison
+  directory and finds those that include, directly or through further
+  includes, **the file it is about to edit**. The profile being checked can
+  itself be an include of another profile. If any other profile consumes the
+  target file, the edit is **refused**: the check names those profiles and
+  the remote host each of them uses, and leaves the change to the user. The
+  edit proceeds only when the target file is consumed by the checked profile
+  alone.
 - `servercmd` (and `addversionno` when composition requires it): if the
   winning assignment is in the top-level profile, replace that line in
-  place. If it is in an included file, do **not** edit the include; name the
-  other profiles that include it (by scanning the Unison directory); append
+  place. If it is in an included file, do **not** edit the include; append
   the override to the top-level profile **after the last directive line**,
   with a comment naming the include it overrides. If a pass-through directive
   follows the insertion point, refuse and explain.
@@ -273,10 +308,21 @@ of the app. The deployment target is unchanged.
   `addversionno` true/false, quoted and escaped values, equals what upstream's
   tokenizer-and-join would produce; the `ssh` argument vector equals this
   document's specification for roots with and without user and port.
-- Root-rule tests: a profile with one root, three roots, or two `ssh://`
-  roots stops before any ssh session with upstream's exact message ("Wrong
-  number of roots", "cannot synchronize more than one remote root"); a
-  profile with no `ssh://` root reports that the check does not apply.
+- Root-rule tests: a profile with one root, three roots, two `ssh://` roots,
+  or one `ssh://` and one `socket://` root stops before any ssh session with
+  upstream's exact message ("Wrong number of roots", "cannot synchronize more
+  than one remote root"); a profile whose single remote root is `socket://`,
+  or that has no remote root, reports that the check does not apply.
+- Consumer tests: an edit is refused, naming the consuming profiles and
+  their remote hosts, when the target file is included directly or
+  transitively by another profile; it proceeds when the checked profile is
+  the only consumer.
+- Classification tests distinguish: ssh exited before running the command
+  (batch-mode authentication, host key, connection refused, timeout), the
+  command ran and exited nonzero, the command ran and printed an
+  unrecognized line, the command is missing (exit 127); each maps to its own
+  wording and none to "could not start" except the missing case's "no
+  executable at".
 - Composition tests: suffix stripping when `addversionno` is true and the
   selection ends in `-<major>`; `addversionno = false` added otherwise; unsafe
   characters produce no proposal.
