@@ -566,3 +566,8 @@ print-config:
 .PHONY: smoke-cli
 smoke-cli: build
 	@./scripts/smoke-cli.sh $(BUILT_APP)
+
+# Preference catalog vs the built engine's `-help` (see scripts/check-pref-catalog.sh).
+.PHONY: check-pref-catalog
+check-pref-catalog: build
+	@./scripts/check-pref-catalog.sh $(BUILT_APP)

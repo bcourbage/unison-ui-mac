@@ -200,7 +200,7 @@ struct ProfileDocument: Equatable {
             ("source ",   .source),
         ]
         for (prefix, kind) in prefixes where line.hasPrefix(prefix) {
-            let words = ProfileDocument.splitIntoWordsUnison(line)
+            let words = PrefsTokenizer.splitIntoWords(line)
             guard words.count == 2 else { return .malformed }
             return .valid(kind: kind, argument: words[1])
         }
@@ -533,35 +533,6 @@ struct ProfileDocument: Equatable {
     }
 
     // MARK: - Word escaping (mirrors Unison's Util.splitIntoWords, esc='\\')
-
-    /// Split a line into escape-aware words exactly as Unison's
-    /// `Util.splitIntoWords` does (esc = `\`, separator = space): a `\` makes the
-    /// next char literal, a trailing `\` is dropped ("ignore final esc"), and
-    /// runs of separators collapse (no empty words). The returned words are
-    /// already UNESCAPED. Used to parse a directive's single filename argument
-    /// and to require exactly `[keyword; filename]`.
-    static func splitIntoWordsUnison(_ s: String) -> [String] {
-        let chars = Array(s)
-        let n = chars.count
-        let esc: Character = "\\"
-        let sep: Character = " "
-        var words: [String] = []
-        var i = 0
-        while i < n {
-            if chars[i] == sep { i += 1; continue }        // betweenwords: skip separators
-            var word = ""
-            while i < n && chars[i] != sep {               // inword
-                if chars[i] == esc {
-                    if i + 1 >= n { i += 1 }                // ignore final esc
-                    else { word.append(chars[i + 1]); i += 2 }
-                } else {
-                    word.append(chars[i]); i += 1
-                }
-            }
-            words.append(word)
-        }
-        return words
-    }
 
     /// Escape a word so Unison reads it back as a single token: backslash and
     /// space (the escape char and the word separator) are prefixed with `\`.

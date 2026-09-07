@@ -392,7 +392,7 @@ enum VersionCheck {
         var args: [String] = ["-o", "BatchMode=yes",
                               "-o", "ConnectTimeout=5",
                               "-o", "StrictHostKeyChecking=yes"]
-        args.append(contentsOf: tokenizeSSHArgs(sshargs))
+        args.append(contentsOf: PrefsTokenizer.splitIntoWords(sshargs ?? ""))
         if let port = sshRoot.port {
             args.append("-p"); args.append(String(port))
         }
@@ -611,16 +611,6 @@ enum VersionCheck {
         func waitUntilFinished(timeout: DispatchTime) -> Bool {
             finished.wait(timeout: timeout) == .success
         }
-    }
-
-    /// Split a Unison `sshargs` string into argv tokens (whitespace-
-    /// delimited; empty for nil/blank). Pure + tested. Caveat: a simple
-    /// split — an argument containing embedded spaces (e.g. a key path
-    /// with a space) isn't handled, which matches the common real-world
-    /// case where keys live at space-free paths.
-    static func tokenizeSSHArgs(_ sshargs: String?) -> [String] {
-        guard let sshargs else { return [] }
-        return sshargs.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
     }
 
     // MARK: - Version string parsing
