@@ -199,9 +199,10 @@ The proposed profile is composed in memory, its effective remote command
 re-derived exactly as in step 1, and that command string (with ` -version`)
 is run on the remote host through the same `ssh` argument vector Unison would
 use, plus the non-interactive options. The remote command is prefixed with
-`printf '<unique start marker>'; ` so that the marker's presence in stdout is
-evidence that the remote shell was reached and execution of the command
-began; the marker is stripped before the version line is parsed. The check's `ssh` argument vector is
+`printf '<unique start marker>'; ` so that the marker's presence in stdout
+shows that the remote shell ran the `printf`; it says nothing about whether
+the executable that follows started. The marker is stripped before the
+version line is parsed. The check's `ssh` argument vector is
 specified as: `<sshcmd> -o BatchMode=yes -o ConnectTimeout=<t>
 -o StrictHostKeyChecking=yes [-l user] [-p port] <host> -e none <sshargs…>
 <remote command string>`, that is upstream's order with the three options
@@ -230,30 +231,30 @@ not say:
   decides which `unison` runs; the check cannot see that PATH."
 - Protocol boundary: "2.54.0 (this Mac) and 2.53.5 (`host`) are on the same
   side of the 2.52 boundary." / "…on opposite sides and cannot connect."
-- Failures report what was observed (exit status, the first stderr line,
-  whether the deadline expired, what stdout contained) and assign an
-  execution stage **only when separate evidence establishes it**. Two pieces
-  of evidence exist: the remote command in step 4 is `printf '<start
-  marker>'; <remote command>`, so the marker's presence in stdout shows that
-  ssh reached the host's shell and execution of the command began; and step 2
-  already recorded whether a file exists at the effective path. Wording:
-  - no start marker in stdout: "ssh did not run the command on `host`
-    without prompting; ssh reported `<first stderr line>` (exit N)." or,
-    on deadline, "…no response within `<t>` seconds." A synchronization may
-    still connect if it can answer a prompt; this check cannot. Nothing about
-    the executable is claimed.
-  - start marker present, deadline expired: "The command began on `host`
-    but did not finish within `<t>` seconds; output so far: `<stdout>`."
-  - start marker present, nonzero exit: "`<remote command>` exited with
-    status N on `host`; stderr: `<first line>`." Exit 127 is reported as
-    that status with its stderr, plus one of two additions: when step 2 found
-    no file at the path, "step 2 found no file at `<path>`"; when it found
-    one, "a file exists at `<path>`; status 127 with this stderr can also
-    mean a dependency of that file is missing." No "no executable" claim is
-    made from the exit status alone.
-  - start marker present, exit 0, output not a Unison version line:
-    "`<remote command>` printed `<first line>`, which is not a Unison version
-    line." The command ran; what it is remains unverified.
+- Failures report observations and infer nothing beyond them. The
+  observations are: whether the start marker was received, the exit status,
+  the first stderr line, whether the deadline expired, and what stdout
+  contained after the marker. Each is stated separately; none is turned into
+  a claim about an execution stage. Wording:
+  - marker not received: "No start marker was received before ssh exited
+    (status N, `<first stderr line>`)." or "…before the `<t>`-second deadline."
+    followed by "Execution status is unknown." A synchronization may still
+    connect if it can answer a prompt; this check cannot. Nothing about the
+    executable is claimed either way.
+  - marker received, deadline expired: "The remote shell emitted the start
+    marker; no further output arrived within `<t>` seconds. Output so far:
+    `<stdout>`. Whether the executable started is not established."
+  - marker received, nonzero exit: "The remote shell emitted the start
+    marker; the command line then exited with status N; stderr:
+    `<first line>`." For status 127 one sentence is added from step 2's
+    record, stated historically: "During discovery no file was found at
+    `<path>`." or "During discovery a file was found at `<path>`; status 127
+    with this stderr can also mean a dependency of that file is missing." The
+    executable's startup is not established by the marker alone, and nothing
+    is claimed from the status alone.
+  - marker received, exit 0, output not a Unison version line: "The remote
+    shell emitted the start marker; the command line printed `<first line>`,
+    which is not a Unison version line." What ran remains unverified.
 - Closing, by outcome: after a parsed version, "The command started over ssh
   and reported its version. Only a synchronization confirms the server
   protocol; run the profile to test that." After any failure, "This check did
@@ -343,13 +344,15 @@ of the app. The deployment target is unchanged.
   "could not be resolved" and refuses the edit; a consumer that appears, or
   a profile whose consumer status changes, between the check and Apply
   invalidates the edit.
-- Classification tests distinguish by observation, not by inferred stage:
-  no start marker with ssh's stderr (batch-mode authentication, host key,
-  connection refused) or with the deadline expired; marker present with the
-  deadline expired; marker present with nonzero exit, including 127 with and
-  without step 2's existence finding, each producing its own wording and
-  neither claiming "no executable" from the exit status alone; marker present
-  with exit 0 and an unrecognized line. No outcome maps to "could not start".
+- Classification tests distinguish by observation only: marker not received
+  with ssh's stderr (batch-mode authentication, host key, connection refused)
+  or with the deadline expired, each worded "No start marker was received …
+  Execution status is unknown."; marker received with the deadline expired;
+  marker received with nonzero exit, including 127 with and without a
+  discovery record of a file at the path, each adding only the historical
+  "During discovery …" sentence; marker received with exit 0 and an
+  unrecognized line. Assertions check that no output contains "could not
+  start", "no executable", "the command began", or "a file exists".
 - Composition tests: suffix stripping when `addversionno` is true and the
   selection ends in `-<major>`; `addversionno = false` added otherwise; unsafe
   characters produce no proposal.
