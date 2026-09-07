@@ -22,9 +22,14 @@ import Foundation
 /// - `Prefs.alias` and `Pred.alias` calls; an alias shares its target's kind
 ///   and command-line-only flag.
 ///
-/// `scripts/check-pref-catalog.sh` compares this table with the names the
-/// built engine prints for `unison -help`, so a vendored-blob bump that adds
-/// or removes a preference fails CI until the table is updated.
+/// `scripts/check-pref-catalog.sh` compares this table with the built
+/// engine's `unison -help`: the names `-help` prints must equal the catalog's
+/// help-visible names (every non-internal registration), and each line's
+/// argument placeholder must agree with the kind (`n` for integers, none for
+/// booleans, a placeholder for the rest). `-help` cannot show internal
+/// registrations, alias targets, list-versus-scalar for string-like kinds, or
+/// custom value grammars, so those parts of the table rest on the source
+/// reading above and a vendored-blob bump must re-derive them by hand.
 enum UnisonPreferenceCatalog {
 
     /// How `processLines` converts the value text.
@@ -38,7 +43,8 @@ enum UnisonPreferenceCatalog {
         /// `Uarg.String` accumulating in order.
         case list
         /// `Uarg.String` with a preference-specific parser (`color`, `ui`,
-        /// `repeat`, …); the catalog does not validate these values.
+        /// `repeat`, …). The loader records these values as written; Unison's
+        /// own parser may still reject one, and that is not detected here.
         case custom
 
         var accumulates: Bool { self == .list }
@@ -53,6 +59,10 @@ enum UnisonPreferenceCatalog {
         /// Registered under `` `Internal `Pseudo ``; a profile line naming it
         /// is rejected as "not a valid option".
         let pseudo: Bool
+        /// Registered under any `` `Internal `` category: accepted in a
+        /// profile (unless pseudo or command-line only) but never printed by
+        /// `-help` or the manual.
+        let isInternal: Bool
     }
 
     /// Look up a name as written in a profile. Returns nil for a name the
@@ -62,12 +72,19 @@ enum UnisonPreferenceCatalog {
         guard let (kind, flags) = registrations[name] else { return nil }
         return Entry(name: name, kind: kind,
                      commandLineOnly: flags.contains(.commandLineOnly),
-                     pseudo: flags.contains(.pseudo))
+                     pseudo: flags.contains(.pseudo),
+                     isInternal: flags.contains(.internalCategory) || flags.contains(.pseudo))
     }
 
     /// Every name a profile line may carry (registrations and aliases).
     static var allNames: Set<String> {
         Set(registrations.keys).union(aliases.keys)
+    }
+
+    /// The registrations `unison -help` prints: every non-internal one.
+    /// Aliases are registered as internal by `Prefs.alias` and are not printed.
+    static var helpVisibleNames: Set<String> {
+        Set(registrations.filter { !$0.value.1.contains(.internalCategory) && !$0.value.1.contains(.pseudo) }.keys)
     }
 
     // MARK: - Data
@@ -76,6 +93,7 @@ enum UnisonPreferenceCatalog {
         let rawValue: Int
         static let commandLineOnly = Flags(rawValue: 1)
         static let pseudo = Flags(rawValue: 2)
+        static let internalCategory = Flags(rawValue: 4)
     }
 
     private static let none: Flags = []
@@ -101,7 +119,8 @@ enum UnisonPreferenceCatalog {
     ]
 
     private static let registrations: [String: (ValueKind, Flags)] = [
-        // createBool
+        // createBool (debugtimes, expert, keeptempfilesaftermerge, showprev,
+        // timers: internal, not printed by -help)
         "acl": (.bool, none),
         "addversionno": (.bool, none),
         "auto": (.bool, none),
@@ -111,10 +130,10 @@ enum UnisonPreferenceCatalog {
         "confirmmerge": (.bool, none),
         "contactquietly": (.bool, none),
         "copyonconflict": (.bool, none),
-        "debugtimes": (.bool, none),
+        "debugtimes": (.bool, .internalCategory),
         "dontchmod": (.bool, none),
         "dumbtty": (.bool, none),
-        "expert": (.bool, none),
+        "expert": (.bool, .internalCategory),
         "fastercheckUNSAFE": (.bool, none),
         "fat": (.bool, none),
         "group": (.bool, none),
@@ -122,7 +141,7 @@ enum UnisonPreferenceCatalog {
         "ignorearchives": (.bool, none),
         "ignoreinodenumbers": (.bool, none),
         "ignorelocks": (.bool, none),
-        "keeptempfilesaftermerge": (.bool, none),
+        "keeptempfilesaftermerge": (.bool, .internalCategory),
         "killserver": (.bool, none),
         "log": (.bool, none),
         "moves-experimental": (.bool, none),
@@ -130,26 +149,26 @@ enum UnisonPreferenceCatalog {
         "owner": (.bool, none),
         "rsync": (.bool, none),
         "showarchive": (.bool, none),
-        "showprev": (.bool, none),
+        "showprev": (.bool, .internalCategory),
         "silent": (.bool, none),
         "sortbysize": (.bool, none),
         "sortnewfirst": (.bool, none),
         "stream": (.bool, none),
         "terse": (.bool, none),
-        "timers": (.bool, none),
+        "timers": (.bool, .internalCategory),
         "times": (.bool, none),
         "watch": (.bool, none),
         "xattrs": (.bool, none),
         "xferbycopying": (.bool, none),
-        // createBool, command-line only
+        // createBool, command-line only (prefsdocs, server: also internal)
         "dumparchives": (.bool, .commandLineOnly),
         "i": (.bool, .commandLineOnly),
-        "prefsdocs": (.bool, .commandLineOnly),
+        "prefsdocs": (.bool, [.commandLineOnly, .internalCategory]),
         "selftest": (.bool, .commandLineOnly),
-        "server": (.bool, .commandLineOnly),
+        "server": (.bool, [.commandLineOnly, .internalCategory]),
         "testserver": (.bool, .commandLineOnly),
         "version": (.bool, .commandLineOnly),
-        // createBool, pseudo
+        // createBool, pseudo (internal by category)
         "allHostsAreRunningWindows": (.bool, .pseudo),
         "links-aux": (.bool, .pseudo),
         "rsrc-aux": (.bool, .pseudo),
@@ -188,7 +207,7 @@ enum UnisonPreferenceCatalog {
         // createString, command-line only
         "doc": (.string, .commandLineOnly),
         "listen": (.string, .commandLineOnly),
-        "prefsman": (.string, .commandLineOnly),
+        "prefsman": (.string, [.commandLineOnly, .internalCategory]),
         "socket": (.string, .commandLineOnly),
         // createString, pseudo
         "rootsName": (.string, .pseudo),
@@ -200,7 +219,7 @@ enum UnisonPreferenceCatalog {
         "noupdate": (.list, none),
         "root": (.list, none),
         "rootalias": (.list, none),
-        "rest": (.list, .commandLineOnly),
+        "rest": (.list, [.commandLineOnly, .internalCategory]),
         // Pred.create (pattern lists)
         "atomic": (.list, none),
         "backup": (.list, none),

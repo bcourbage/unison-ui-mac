@@ -55,10 +55,18 @@ struct ProfileAssignment: Equatable {
 ///   a boolean value other than `true`/`false`, and an integer value
 ///   `int_of_string` rejects; each stops the load with Unison's message.
 ///
-/// Two conditions Unison does not detect are reported as this check's own
+/// Value checks cover boolean and integer preferences only, with upstream's
+/// rules (`true`/`false`; `int_of_string` including its range). Values of
+/// string, list and custom preferences are recorded as written and are not
+/// validated here, so a value Unison's own parser would reject (a malformed
+/// pattern, an unknown `ui` name) is not detected at this stage.
+///
+/// Three conditions Unison does not detect are reported as this check's own
 /// errors, in its own words: an inclusion cycle (upstream would recurse until
-/// it ran out of stack) and a file that exists but cannot be read as text
-/// (upstream reads bytes and might load it).
+/// it ran out of stack), an include graph larger than the design's bounds
+/// (depth 16, 64 file reads counting repeats, so an acyclic graph that
+/// re-includes files exponentially cannot run away), and a file that exists
+/// but cannot be read as text (upstream reads bytes and might load it).
 struct EffectiveProfile: Equatable {
 
     enum LoadError: Error, Equatable {
@@ -84,7 +92,8 @@ struct EffectiveProfile: Equatable {
 
     /// The profile name given to the loader (without `.prf`).
     let profile: String
-    /// Files read, in the order Unison opens them (top-level first).
+    /// Files read, in the order Unison opens them (top-level first). A file
+    /// included twice appears twice, as upstream reads it twice.
     let files: [String]
     /// Every validated assignment in spliced order.
     let assignments: [ProfileAssignment]
@@ -116,7 +125,9 @@ struct EffectiveProfile: Equatable {
 
     // MARK: - Loading
 
-    static let maxInclusionDepth = 64
+    /// Design bounds: nesting depth and total file reads (repeats included).
+    static let maxInclusionDepth = 16
+    static let maxFileReads = 64
 
     /// Load `profile` from `unisonDirectory` as Unison would. `read` is the
     /// same injectable reader `ProfileRootResolver` uses.
@@ -200,6 +211,10 @@ struct EffectiveProfile: Equatable {
             if openStack.count >= EffectiveProfile.maxInclusionDepth {
                 throw LoadError.notEstablished(
                     "\(locName): inclusion depth exceeds \(EffectiveProfile.maxInclusionDepth).")
+            }
+            if filesRead.count >= EffectiveProfile.maxFileReads {
+                throw LoadError.notEstablished(
+                    "\(locName): the profile reads more than \(EffectiveProfile.maxFileReads) files through its includes.")
             }
             filesRead.append(path)
             openStack.append(canonical)
@@ -331,32 +346,55 @@ struct EffectiveProfile: Equatable {
         return String(first).lowercased() + String(s.unicodeScalars.dropFirst())
     }
 
-    /// Whether OCaml's `int_of_string` accepts the text: an optional sign,
-    /// then decimal digits or a `0x`/`0o`/`0b`/`0u` prefixed literal, with
-    /// underscores allowed after the first digit.
+    /// Whether OCaml's `int_of_string` accepts the text, following
+    /// `parse_intnat` in the OCaml runtime (`runtime/ints.c`) for a 63-bit
+    /// `int`: an optional sign, an optional `0x`/`0o`/`0b`/`0u` prefix, at
+    /// least one digit of the base, underscores allowed after the first digit,
+    /// and the range check: decimal literals are signed (`-2^62 … 2^62-1`);
+    /// prefixed literals are unsigned and accept magnitudes below `2^63`
+    /// with either sign (they wrap, as upstream's do).
     static func isOCamlInt(_ s: String) -> Bool {
         var scalars = s.unicodeScalars[...]
-        if let f = scalars.first, f == "-" || f == "+" { scalars.removeFirst() }
-        guard let first = scalars.first else { return false }
-        var digits: Set<Unicode.Scalar> = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-        if first == "0", scalars.count >= 2 {
-            let p = scalars[scalars.index(after: scalars.startIndex)]
-            switch p {
-            case "x", "X":
-                digits = digits.union("abcdefABCDEF".unicodeScalars); scalars.removeFirst(2)
-            case "o", "O":
-                digits = Set("01234567".unicodeScalars); scalars.removeFirst(2)
-            case "b", "B":
-                digits = Set("01".unicodeScalars); scalars.removeFirst(2)
-            case "u", "U":
-                scalars.removeFirst(2)
-            default:
-                break
-            }
-            guard let d = scalars.first, digits.contains(d) else { return false }
-        } else {
-            guard digits.contains(first) else { return false }
+        var negative = false
+        if let f = scalars.first, f == "-" || f == "+" {
+            negative = f == "-"
+            scalars.removeFirst()
         }
-        return scalars.allSatisfy { digits.contains($0) || $0 == "_" }
+        var base: UInt64 = 10
+        var signed = true
+        if scalars.count >= 2, scalars.first == "0" {
+            switch scalars[scalars.index(after: scalars.startIndex)] {
+            case "x", "X": base = 16; signed = false; scalars.removeFirst(2)
+            case "o", "O": base = 8; signed = false; scalars.removeFirst(2)
+            case "b", "B": base = 2; signed = false; scalars.removeFirst(2)
+            case "u", "U": base = 10; signed = false; scalars.removeFirst(2)
+            default: break
+            }
+        }
+        func digit(_ c: Unicode.Scalar) -> UInt64? {
+            let v: UInt64
+            switch c {
+            case "0"..."9": v = UInt64(c.value - 48)
+            case "a"..."z": v = UInt64(c.value - 97 + 10)
+            case "A"..."Z": v = UInt64(c.value - 65 + 10)
+            default: return nil
+            }
+            return v < base ? v : nil
+        }
+        guard let first = scalars.first, let d0 = digit(first) else { return false }
+        var result = d0
+        for c in scalars.dropFirst() {
+            if c == "_" { continue }
+            guard let d = digit(c) else { return false }
+            let (m, o1) = result.multipliedReportingOverflow(by: base)
+            let (a, o2) = m.addingReportingOverflow(d)
+            if o1 || o2 { return false }
+            result = a
+        }
+        let limit: UInt64 = signed ? (1 << 62) : (1 << 63)
+        if signed {
+            return negative ? result <= limit : result < limit
+        }
+        return result < limit
     }
 }

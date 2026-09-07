@@ -27,8 +27,29 @@ final class UnisonPreferenceCatalogTests: XCTestCase {
         }
     }
 
+    func test_helpVisibleNames_equalTheHelpOutput() {
+        // Both directions: nothing -help prints is missing, and nothing the
+        // catalog calls help-visible is absent from -help.
+        XCTAssertEqual(C.helpVisibleNames, Set(Self.helpNames))
+    }
+
+    func test_internalRegistrations_areAcceptedButNotHelpVisible() {
+        for name in ["expert", "showprev", "debugtimes", "timers", "keeptempfilesaftermerge"] {
+            let e = C.entry(for: name)
+            XCTAssertEqual(e?.isInternal, true, name)
+            XCTAssertEqual(e?.pseudo, false, name)
+            XCTAssertEqual(e?.commandLineOnly, false, name)
+        }
+        for name in ["prefsdocs", "prefsman", "server", "rest"] {
+            XCTAssertEqual(C.entry(for: name)?.isInternal, true, name)
+            XCTAssertEqual(C.entry(for: name)?.commandLineOnly, true, name)
+        }
+        XCTAssertEqual(C.entry(for: "rootsName")?.isInternal, true)
+        XCTAssertEqual(C.entry(for: "servercmd")?.isInternal, false)
+    }
+
     func test_kinds() {
-        XCTAssertEqual(C.entry(for: "servercmd"), .init(name: "servercmd", kind: .string, commandLineOnly: false, pseudo: false))
+        XCTAssertEqual(C.entry(for: "servercmd"), .init(name: "servercmd", kind: .string, commandLineOnly: false, pseudo: false, isInternal: false))
         XCTAssertEqual(C.entry(for: "addversionno")?.kind, .bool)
         XCTAssertEqual(C.entry(for: "maxthreads")?.kind, .int)
         XCTAssertEqual(C.entry(for: "root")?.kind, .list)

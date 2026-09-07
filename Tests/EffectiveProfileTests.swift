@@ -197,6 +197,41 @@ final class EffectiveProfileTests: XCTestCase {
         XCTAssertTrue(m.contains("includes itself"), m)
     }
 
+    func test_inclusionDepth_isBoundedAtSixteen() throws {
+        // p includes c1, c1 includes c2, … : depth 16 loads, depth 17 does not.
+        for i in 1...16 { try write("c\(i).prf", i < 16 ? "include c\(i + 1)\n" : "root = /a\nroot = /b\n") }
+        try write("p.prf", "include c1\n")           // p + c1…c16 = 17 files deep
+        guard case .failure(.notEstablished(let m)) = load("p") else { return XCTFail("expected notEstablished") }
+        XCTAssertTrue(m.contains("inclusion depth exceeds 16"), m)
+        try write("q.prf", "include c2\n")           // q + c2…c16 = 16 files deep
+        XCTAssertEqual(try loaded("q").roots, ["/a", "/b"])
+    }
+
+    func test_totalFileReads_areBounded_forExponentialAcyclicGraphs() throws {
+        // Each file includes the next one twice: 13 files would mean 2^13-1
+        // reads upstream. The loader stops at the 65th read, well inside the
+        // depth bound, and counts every read against the same budget.
+        for i in 1...13 { try write("e\(i).prf", i < 13 ? "include e\(i + 1)\ninclude e\(i + 1)\n" : "servercmd = /x\n") }
+        var reads = 0
+        let r = EffectiveProfile.load(profile: "e1", unisonDirectory: dir) { path in
+            let result = ProfileRootResolver.filesystemRead(path)
+            if result != .missing { reads += 1 }
+            return result
+        }
+        guard case .failure(.notEstablished(let m)) = r else { return XCTFail("expected notEstablished") }
+        XCTAssertTrue(m.contains("more than 64 files"), m)
+        // 64 successful opens plus the existence probes profilePathname makes.
+        XCTAssertLessThan(reads, 200)
+    }
+
+    func test_repeatedInclude_withinBounds_isReadTwice() throws {
+        try write("p.prf", "include c\ninclude c\n")
+        try write("c.prf", "ignore = Name x\n")
+        let p = try loaded("p")
+        XCTAssertEqual(p.list("ignore").map(\.value), ["Name x", "Name x"])
+        XCTAssertEqual(p.files, ["\(dir!)/p.prf", "\(dir!)/c.prf", "\(dir!)/c.prf"])
+    }
+
     func test_unreadableFile_isNotEstablished() {
         let r = EffectiveProfile.load(profile: "p", unisonDirectory: "/u") { path in
             path.hasSuffix("p.prf") ? .unreadable : .missing
@@ -250,13 +285,36 @@ final class EffectiveProfileTests: XCTestCase {
         XCTAssertEqual(fatal("q"), "maxthreads expects an integer value, but\nten is not an integer")
     }
 
-    func test_isOCamlInt() {
-        for ok in ["0", "42", "-7", "+3", "1_000", "0x1f", "0o17", "0b101", "0u5", "0_"] {
+    func test_isOCamlInt_syntax() {
+        for ok in ["0", "42", "-7", "+3", "1_000", "0x1f", "0o17", "0b101", "0u5", "0_", "0X1F", "-0x1"] {
             XCTAssertTrue(EffectiveProfile.isOCamlInt(ok), ok)
         }
-        for bad in ["", "-", "x", "1.5", "_1", "0x", "0xg", "1 "] {
+        for bad in ["", "-", "+", "x", "1.5", "_1", "0x", "0xg", "1 ", " 1", "0b2", "0o8", "1__2_a"] {
             XCTAssertFalse(EffectiveProfile.isOCamlInt(bad), bad)
         }
+    }
+
+    func test_isOCamlInt_range_matchesOCaml5IntOfString() {
+        // Measured with `ocaml` 5.5.0 on 2026-09-07: the 63-bit int.
+        XCTAssertTrue(EffectiveProfile.isOCamlInt("4611686018427387903"))    // max_int
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("4611686018427387904"))   // max_int + 1
+        XCTAssertTrue(EffectiveProfile.isOCamlInt("-4611686018427387904"))   // min_int
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("-4611686018427387905"))
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("999999999999999999999999999999999999"))
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("99999999999999999999")) // > UInt64 too
+        // Prefixed literals are unsigned: magnitudes below 2^63 are accepted
+        // (and wrap), with either sign.
+        XCTAssertTrue(EffectiveProfile.isOCamlInt("0x7fffffffffffffff"))
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("0x8000000000000000"))
+        XCTAssertTrue(EffectiveProfile.isOCamlInt("-0x7fffffffffffffff"))
+        XCTAssertTrue(EffectiveProfile.isOCamlInt("0u9223372036854775807"))
+        XCTAssertFalse(EffectiveProfile.isOCamlInt("0u9223372036854775808"))
+    }
+
+    func test_integerOverflow_isFatal_withUpstreamWording() throws {
+        try write("p.prf", "maxthreads = 999999999999999999999999999999999999\n")
+        XCTAssertEqual(fatal("p"),
+            "maxthreads expects an integer value, but\n999999999999999999999999999999999999 is not an integer")
     }
 
     // MARK: - Error ordering
