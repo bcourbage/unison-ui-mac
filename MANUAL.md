@@ -187,9 +187,13 @@ Mac with this app:
 
 Typing bare `unison` runs whichever comes first on that shell's PATH. A peer's
 `servercmd` with an absolute path runs exactly that path on this Mac,
-whatever PATH says. To see what a path is, use `readlink <path>` and
-`<path> -version`: the app's engine reports `(ocaml 5.5.0)`; Homebrew's
-`unison` formula reports the OCaml version Homebrew built it with.
+whatever PATH says. To see what a path is, use `readlink <path>`, which shows
+the executable it resolves to; a path inside `unison-ui-mac.app` is this app.
+`<path> -version` then shows that the executable starts and which Unison and
+OCaml versions it was built with; the OCaml version tells builds apart (this
+app's engine and Homebrew's formula are usually built with different ones) but
+it is the resolved path, not the version string, that identifies the
+installation.
 
 **Repairing a broken direct-install link.** Settings → Command Line offers
 **Repair…** only when the first `unison` on the Terminal PATH is a broken link
@@ -230,14 +234,24 @@ verified.
 2. Free the name without losing it, only if the backup name is unused:
    `mv /opt/homebrew/bin/unison /opt/homebrew/bin/unison.upstream-link`.
    From here until step 5 passes, peers that name this path cannot connect.
-3. `brew upgrade --cask unison-ui-mac` (or `brew install --cask`). Homebrew
-   creates `/opt/homebrew/bin/unison` pointing at this app's launcher.
+3. Install or refresh the cask so that Homebrew runs its artifacts, which is
+   what creates `/opt/homebrew/bin/unison` pointing at this app's launcher.
+   The command depends on what Homebrew already records:
+   - the app is not installed through Homebrew: `brew install --cask unison-ui-mac`;
+   - it is installed and a newer version exists: `brew upgrade --cask unison-ui-mac`;
+   - it is installed and already current, which is the situation on every
+     retry after a rollback: `brew reinstall --cask unison-ui-mac`. An upgrade
+     with nothing newer to install does not recreate the link.
+   Check afterwards that the link exists and points into this app:
+   `readlink /opt/homebrew/bin/unison`.
 4. Launch the app once from Finder.
 5. Verify as described under *Verifying the intended remote server* below.
 6. If installation or verification fails, restore service: check that
    `/opt/homebrew/bin/unison` is either absent or the new app link, remove it if
    present, then `mv /opt/homebrew/bin/unison.upstream-link /opt/homebrew/bin/unison`.
-   The upstream app is untouched, so peers work again at once.
+   The upstream app is untouched, so peers work again at once. When you retry
+   later, Homebrew's receipt is already current, so step 3 is the
+   `brew reinstall --cask unison-ui-mac` case.
 
 Do not run `brew uninstall --cask unison-app` as part of this migration. That
 cask's uninstall removes whatever link sits at `/opt/homebrew/bin/unison`,
@@ -249,7 +263,9 @@ and re-verify.
 **Sparkle and Homebrew.** Sparkle updates the app bundle in place; Homebrew's
 receipt keeps the version Homebrew itself installed. A later
 `brew upgrade --cask --greedy unison-ui-mac` reinstalls the current version and
-brings the receipt up to date. If the formula owns the command at that time,
+brings the receipt up to date; when the receipt already matches the current
+version, `brew reinstall --cask unison-ui-mac` is the command that reruns the
+artifacts. If the formula owns the command at that time,
 the upgrade succeeds and leaves the command with the formula, as described
 above; that is the expected outcome, not a failed upgrade.
 
@@ -259,8 +275,9 @@ thing:
 - Launching the app from Finder shows that macOS accepts the bundle for
   launching.
 - From the peer, `ssh host /path/to/unison -version` shows that this path
-  starts headlessly over ssh and which engine answers (`ocaml 5.5.0` is the
-  app's).
+  starts headlessly over ssh and reports its build; combined with
+  `ssh host readlink /path/to/unison`, it tells you which installation
+  answered.
 - A real synchronization of a throwaway profile, with a fresh file that you
   then read back on the other side, shows that Unison's server protocol works
   end to end through that path.
