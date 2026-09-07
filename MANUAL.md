@@ -239,9 +239,11 @@ verified.
    The command depends on what Homebrew already records:
    - the app is not installed through Homebrew: `brew install --cask unison-ui-mac`;
    - it is installed and a newer version exists: `brew upgrade --cask unison-ui-mac`;
-   - it is installed and already current, which is the situation on every
-     retry after a rollback: `brew reinstall --cask unison-ui-mac`. An upgrade
-     with nothing newer to install does not recreate the link.
+   - it is installed and already current: `brew reinstall --cask unison-ui-mac`.
+     An upgrade with nothing newer to install does not recreate the link.
+   Homebrew records the installed version in
+   `/opt/homebrew/Caskroom/unison-ui-mac/` (also shown by
+   `brew info --cask unison-ui-mac`); check it and pick the matching case.
    Check afterwards that the link exists and points into this app:
    `readlink /opt/homebrew/bin/unison`.
 4. Launch the app once from Finder.
@@ -250,8 +252,11 @@ verified.
    `/opt/homebrew/bin/unison` is either absent or the new app link, remove it if
    present, then `mv /opt/homebrew/bin/unison.upstream-link /opt/homebrew/bin/unison`.
    The upstream app is untouched, so peers work again at once. When you retry
-   later, Homebrew's receipt is already current, so step 3 is the
-   `brew reinstall --cask unison-ui-mac` case.
+   later, check the version Homebrew recorded before choosing the step 3
+   command: if the installation had succeeded and only service was rolled
+   back, the receipt is current and the reinstall case applies; if Homebrew's
+   own failed upgrade rolled the app back, the receipt may still be the older
+   version and the upgrade case applies.
 
 Do not run `brew uninstall --cask unison-app` as part of this migration. That
 cask's uninstall removes whatever link sits at `/opt/homebrew/bin/unison`,
