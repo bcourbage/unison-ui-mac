@@ -25,15 +25,21 @@ across releases per Apple's bundle-version rules.
   and the 0.7.0 release notes are corrected in the same way; the manual records
   the one measurement made (Demeter, macOS 26.6.2: `/usr/bin:/bin:/usr/sbin:/sbin`)
   as that machine's observation, not as a rule.
-- **The formula-linked Homebrew case was described as a refusal; it is a skipped
-  link.** With the `unison` formula linked, Homebrew installs the cask and skips
-  the app's `unison` link with a warning, leaving the command with the formula
-  (`cask/artifact/symlinked.rb`, Homebrew 6.0.22; executed on Heracles). The
-  refusal "already a Binary" applies to a non-formula occupant, as observed
-  against the legacy `unison-app` cask's link. Manual, design document and the
-  0.7.0 release notes now state the skip and the choice it leaves: keep the
-  formula's command, or `brew unlink unison` then `brew reinstall --cask
-  unison-ui-mac` to give the command to the app (verified on Heracles).
+- **Homebrew's behavior when `unison` is already taken is now described
+  precisely, and the manual gains a Repair and migration section.** With the
+  `unison` formula linked, Homebrew installs the cask and skips the app's link
+  with a warning, leaving the command with the formula; a link already
+  pointing at the app is accepted; any other resolving occupant makes the
+  install fail with "already a Binary" and revert; a dangling link is replaced
+  (`cask/artifact/symlinked.rb`, Homebrew 6.0.22). The earlier text called the
+  formula case a refusal. The manual's new section explains which of the
+  three `unison` paths a shell or a peer's `servercmd` selects, what Settings'
+  Repair does and does not do, how to give the Homebrew command to the app
+  (`brew unlink unison`, then `brew reinstall --cask unison-ui-mac`), how to
+  migrate from the legacy `unison-app` cask while keeping the upstream server
+  as a fallback, how Sparkle and Homebrew updates interact, and how to verify
+  the intended remote server. The Finder first-launch step is described as
+  launch acceptance, not quarantine removal.
 
 ## [0.7.0] — 2026-09-06
 

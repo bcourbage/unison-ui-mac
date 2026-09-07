@@ -228,19 +228,24 @@ copies it out, exposed as `unison_bridge_command_line_profile()`.
   (`Library/Homebrew/cask/dsl/conflicts_with.rb`, `VALID_KEYS = [:cask]`).
   What happens when `bin/unison` is occupied depends on the occupant
   (`Library/Homebrew/cask/artifact/symlinked.rb`, `link`, Homebrew
-  6.0.22-131-geda443a): a symlink resolving under the Cellar is a
-  `conflicting_formula`, and the cask **skips its link with a warning** and
-  installs normally, leaving the command with the formula; any other occupant
-  raises "It seems there is already a Binary at …" and the installer's rescue
-  path reverts the app it had placed. Both were executed: the skip on Heracles
-  with the formula linked (upgrade exit 0, warning printed, app installed),
-  the refusal on Demeter against the legacy `unison-app` cask's link. The
-  user's choice with the formula linked: keep the formula's command and use
-  the app from its window, or `brew unlink unison` then `brew reinstall --cask
-  unison-ui-mac` to give the command to the app (verified on Heracles: both
-  links into the app, bundle and receipt 0.7.0, syncs in both roles). An
-  earlier revision of this document described the formula case as a refusal;
-  that was inferred from the cask-vs-cask observation and was wrong.
+  6.0.22-131-geda443a, lines 74–96), four cases:
+
+  | Occupant | Homebrew's behavior | Evidence |
+  |---|---|---|
+  | symlink resolving to this cask's own `cltool` | accepted, "already linked", no change | code only |
+  | symlink resolving under the Cellar (a formula) | **skipped with a warning**; the cask installs, the formula keeps the command | executed, Heracles A1 |
+  | any other **resolving** target (file, or link elsewhere) | `CaskError "It seems there is already a Binary at …"`; the installer reverts the app | executed, Demeter, against the legacy `unison-app` link to upstream `Unison.app` |
+  | **dangling** symlink | `target.exist?` is false, so the conflict block is skipped and `ln --force` **replaces** the link | code only, not executed |
+
+  The Demeter refusal therefore shows the third case, not a rule for every
+  non-formula entry. The user's choice with the formula linked: keep the
+  formula's command and use the app from its window, or `brew unlink unison`
+  then `brew reinstall --cask unison-ui-mac` to give the command to the app
+  (executed on Heracles: both links into the app, bundle and receipt 0.7.0,
+  syncs in both roles). The manual's "Repair and migration" section carries the
+  user-facing procedure; this document keeps the evidence. Two earlier
+  revisions described the formula case as a refusal; that was inferred and
+  wrong.
 
   Downgrading through brew to a cask version that predates the `binary`
   stanza removes the link (artifacts follow the installed definition). A
@@ -361,11 +366,11 @@ Draft copy, subject to the usual review before release:
 |---|---|---|
 | Brew formula only | Unchanged. Text UI; `-ui graphic` ignored. | Not this app's concern. |
 | Brew formula linked, then this cask | Cask installs; its `binary` link is skipped with "already a Binary … from formula unison; skipping link." The formula keeps the command. Executed on Heracles (A1). | To give the command to the app: `brew unlink unison`, then `brew reinstall --cask unison-ui-mac` (executed on Heracles, A2). |
-| Legacy `unison-app` cask link present, then this cask | Cask install refused ("already a Binary at …"), brew reverts the app. Executed on Demeter. | Non-formula occupant; migration is explicit (see the Demeter plan). |
+| Legacy `unison-app` cask link present and resolving, then this cask | Cask install refused ("already a Binary at …"), brew reverts the app. Executed on Demeter. | A resolving non-formula occupant. A *dangling* legacy link would instead be replaced by `ln --force` (code, not executed). Migration is explicit: manual, "Repair and migration". |
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
 | This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Whether an incoming ssh command finds `<prefix>/bin/unison` is not determined by the app; peers set `servercmd = <prefix>/bin/unison`. |
 | This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, on the PATH `/etc/paths` gives login shells; whether an incoming ssh command finds it is not determined, so peers set `servercmd = /usr/local/bin/unison`. Settings shows the Terminal PATH as a login-shell probe result and the remote context as undetermined; the prompt's copy promises only what the link does. |
-| Fresh install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. Homebrew quarantines cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh, whatever the install method. |
+| Fresh install, first run over ssh | macOS's check of a downloaded bundle runs at first GUI launch and needs a session; a headless ssh exec cannot answer it. Homebrew applies quarantine metadata to cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh. That launch demonstrates GUI launch acceptance only: on Demeter the quarantine attribute string was unchanged after the launch, so no claim is made that opening removes it. |
 | Sparkle update | Link stays valid; bundled tool updates too. | The headless roles exit before Sparkle initializes; the `-ui graphic` continuation reaches Sparkle like any graphical launch. |
 | Bare `unison` over ssh, with a `default.prf` present | The text interface runs the default profile, as upstream's `unison` would. | Upstream semantics, stated as such. Not "prints usage". |
 | Script started from Terminal, `unison -batch p`, stdin inherited | Text UI. | No tty probe exists; the default applies. |

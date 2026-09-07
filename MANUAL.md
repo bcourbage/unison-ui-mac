@@ -158,20 +158,114 @@ sudo rm /usr/local/bin/unison
 ### Remote peers
 
 Peers whose profiles target this Mac run `unison -server` here through
-ssh. The PATH that command receives is not the one your Terminal has: it is
-decided by the SSH server's configuration and by the login shell's
-non-interactive startup files, and it does not include the directories that
-`/etc/paths` adds to login shells. On one measured machine (macOS 26.6.2,
-zsh, no `.zshenv`), `ssh host 'echo $PATH'` printed `/usr/bin:/bin:/usr/sbin:/sbin`,
-which contains neither `/usr/local/bin` nor the Homebrew prefix; other
-machines may differ. Do not rely on it either way: set `servercmd` in the
-peer's profile to the link's full path, for example
-`servercmd = /usr/local/bin/unison` or `servercmd = /opt/homebrew/bin/unison`.
+ssh. The PATH that command receives is not the one your Terminal has: it
+depends on this Mac's SSH server configuration and on the login shell's
+non-interactive startup files, and it may or may not include the directory
+that holds the link. Do not rely on it: set `servercmd` in the peer's profile
+to the full path of the executable you intend to run, for example
+`servercmd = /usr/local/bin/unison` or `servercmd = /opt/homebrew/bin/unison`,
+after checking with `readlink` that the path resolves into this app (see
+[Repair and migration](#repair-and-migration)).
 
-A freshly installed app, whether from the zip or through Homebrew, carries
-the quarantine attribute until it is opened once from Finder, and
-Gatekeeper's first-launch check needs a graphical session. Launch the app
-once before relying on it as an ssh peer.
+Launch a freshly installed app once from Finder before relying on it as an
+ssh peer. That first launch is where macOS runs its check of the downloaded
+bundle, and it needs a graphical session; a headless ssh invocation cannot
+answer it. A successful launch shows that macOS accepts the bundle for
+launching; it is not a statement about the bundle's quarantine metadata.
+
+### Repair and migration
+
+**Which command runs.** Three things can answer to the name `unison` on a
+Mac with this app:
+
+- the app's embedded launcher, `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`;
+- a direct-install link, `/usr/local/bin/unison`, created by Settings →
+  Command Line or by hand;
+- the Homebrew cask link, `/opt/homebrew/bin/unison` on Apple Silicon (on Intel
+  the Homebrew prefix is `/usr/local`, so it is the same path as a direct
+  install).
+
+Typing bare `unison` runs whichever comes first on that shell's PATH. A peer's
+`servercmd` with an absolute path runs exactly that path on this Mac,
+whatever PATH says. To see what a path is, use `readlink <path>` and
+`<path> -version`: the app's engine reports `(ocaml 5.5.0)`; Homebrew's
+`unison` formula reports the OCaml version Homebrew built it with.
+
+**Repairing a broken direct-install link.** Settings → Command Line offers
+**Repair…** only when the first `unison` on the Terminal PATH is a broken link
+whose target path ends in `unison-ui-mac.app/Contents/MacOS/cltool`, that is,
+a link to a former copy of this app. The confirmation shows the old target
+and, when a working command sits later on the PATH, names it as the command
+the repaired link will take precedence over. At execution the app re-checks
+that the link is still broken and still stores the target the dialog showed;
+otherwise nothing changes. Broken links to anything else are shown but never
+replaced by the app. Remove or fix those by hand only if you own them.
+
+**Formula and app.** Homebrew's `unison` formula and this app can be installed
+together. With the formula linked, `brew install --cask unison-ui-mac` (or an
+upgrade) installs the app but keeps the formula's command: Homebrew prints
+"already a Binary … from formula unison; skipping link", and
+`/opt/homebrew/bin/unison`, and any `servercmd` naming it, runs the formula,
+not the app. To give the command to the app:
+
+```sh
+brew unlink unison
+```
+
+```sh
+brew reinstall --cask unison-ui-mac
+```
+
+The formula stays installed, only unlinked. To give the command back to the
+formula later, remove the app's cask (`brew uninstall --cask unison-ui-mac`)
+and run `brew link unison`.
+
+**Migrating from the legacy `unison-app` cask.** Older setups have
+`/opt/homebrew/bin/unison` linked to upstream's `Unison.app` launcher by the
+now-disabled `unison-app` cask. That link is the working ssh server for peers
+whose `servercmd` names it, so keep the upstream app until the replacement is
+verified.
+
+1. Record the current target: `readlink /opt/homebrew/bin/unison`.
+2. Free the name without losing it, only if the backup name is unused:
+   `mv /opt/homebrew/bin/unison /opt/homebrew/bin/unison.upstream-link`.
+   From here until step 5 passes, peers that name this path cannot connect.
+3. `brew upgrade --cask unison-ui-mac` (or `brew install --cask`). Homebrew
+   creates `/opt/homebrew/bin/unison` pointing at this app's launcher.
+4. Launch the app once from Finder.
+5. Verify as described under *Verifying the intended remote server* below.
+6. If installation or verification fails, restore service: check that
+   `/opt/homebrew/bin/unison` is either absent or the new app link, remove it if
+   present, then `mv /opt/homebrew/bin/unison.upstream-link /opt/homebrew/bin/unison`.
+   The upstream app is untouched, so peers work again at once.
+
+Do not run `brew uninstall --cask unison-app` as part of this migration. That
+cask's uninstall removes whatever link sits at `/opt/homebrew/bin/unison`,
+including the new one, and deletes `Unison.app`. Treat it as a separate step
+for later, with a recovery ready: recreate the link with
+`ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /opt/homebrew/bin/unison`
+and re-verify.
+
+**Sparkle and Homebrew.** Sparkle updates the app bundle in place; Homebrew's
+receipt keeps the version Homebrew itself installed. A later
+`brew upgrade --cask --greedy unison-ui-mac` reinstalls the current version and
+brings the receipt up to date. If the formula owns the command at that time,
+the upgrade succeeds and leaves the command with the formula, as described
+above; that is the expected outcome, not a failed upgrade.
+
+**Verifying the intended remote server.** Three checks, each proving one
+thing:
+
+- Launching the app from Finder shows that macOS accepts the bundle for
+  launching.
+- From the peer, `ssh host /path/to/unison -version` shows that this path
+  starts headlessly over ssh and which engine answers (`ocaml 5.5.0` is the
+  app's).
+- A real synchronization of a throwaway profile, with a fresh file that you
+  then read back on the other side, shows that Unison's server protocol works
+  end to end through that path.
+
+The app never rewrites profiles. Set `servercmd` yourself.
 
 ---
 
