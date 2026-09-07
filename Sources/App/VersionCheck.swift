@@ -334,7 +334,8 @@ enum VersionCheck {
         /// The wall-clock deadline (measured from just after launch) elapsed;
         /// the ssh child was SIGTERM'd, then SIGKILL'd, and best-effort reaped
         /// (its ProxyCommand/remote descendants are not guaranteed reaped).
-        case timedOut
+        /// Carries whatever the child had written before it was torn down.
+        case timedOut(stdout: String, stderr: String)
         /// Cancellation was requested; the ssh child was SIGTERM'd (synchronously
         /// at cancel time), then SIGKILL'd if needed, and best-effort reaped
         /// (same descendant caveat as `timedOut`).
@@ -449,6 +450,54 @@ enum VersionCheck {
     struct SubprocessProbeExecutor: VersionProbeExecutor {
         var deadlinePollInterval: TimeInterval = 0.05
         var grace: TimeInterval = VersionCheck.terminateGrace
+        /// How long to wait, after the child is gone, for its pipes to reach
+        /// EOF before taking the output collected so far. A ProxyCommand or
+        /// other descendant that inherited the pipes can keep them open.
+        var outputSettle: TimeInterval = 1.0
+        /// Called once with the child's pid right after a successful launch,
+        /// so a caller can record which process the session owns.
+        var onLaunch: (@Sendable (pid_t) -> Void)? = nil
+
+        init(deadlinePollInterval: TimeInterval = 0.05,
+             grace: TimeInterval = VersionCheck.terminateGrace,
+             outputSettle: TimeInterval = 1.0,
+             onLaunch: (@Sendable (pid_t) -> Void)? = nil) {
+            self.deadlinePollInterval = deadlinePollInterval
+            self.grace = grace
+            self.outputSettle = outputSettle
+            self.onLaunch = onLaunch
+        }
+
+        /// Reads one pipe to EOF on its own thread, accumulating bytes under
+        /// a lock, so the child can never block on a full pipe buffer and the
+        /// caller can take a snapshot at any moment (natural exit, deadline,
+        /// cancel). The reader owns the file handle and closes it at EOF; a
+        /// descendant that keeps the write end open leaves the reader parked,
+        /// which is preferable to closing a handle another thread is reading.
+        final class PipeCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var bytes = Data()
+            private let eof = DispatchSemaphore(value: 0)
+
+            init(_ handle: FileHandle) {
+                DispatchQueue.global(qos: .utility).async {
+                    while true {
+                        let chunk = handle.availableData
+                        if chunk.isEmpty { break }
+                        self.lock.lock(); self.bytes.append(chunk); self.lock.unlock()
+                    }
+                    try? handle.close()
+                    self.eof.signal()
+                }
+            }
+
+            /// Waits up to `settle` for EOF, then returns everything read.
+            func snapshot(settle: TimeInterval) -> String {
+                _ = eof.wait(timeout: .now() + settle)
+                lock.lock(); defer { lock.unlock() }
+                return String(decoding: bytes, as: UTF8.self)
+            }
+        }
 
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
@@ -467,6 +516,9 @@ enum VersionCheck {
             do { try process.run() } catch {
                 return .launchFailed(error.localizedDescription)
             }
+            onLaunch?(process.processIdentifier)
+            let out = PipeCollector(outPipe.fileHandleForReading)
+            let err = PipeCollector(errPipe.fileHandleForReading)
 
             // Wait for natural exit on a background thread; the main flow waits
             // for exit / cancellation / deadline so it can never block forever.
@@ -491,9 +543,8 @@ enum VersionCheck {
                     _ = exited.wait(timeout: .now() + grace)
                 }
             }
-            func closePipes() {
-                try? outPipe.fileHandleForReading.close()
-                try? errPipe.fileHandleForReading.close()
+            func collected() -> (String, String) {
+                (out.snapshot(settle: outputSettle), err.snapshot(settle: outputSettle))
             }
 
             // Register a DETERMINISTIC teardown: the instant cancel() runs
@@ -504,7 +555,7 @@ enum VersionCheck {
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
-                reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+                reapExactChild(); canceller.clearTeardown(); return .cancelled
             }
 
             // Deadline is measured from HERE — just after the local spawn
@@ -516,22 +567,17 @@ enum VersionCheck {
                 // `exited`, and we must report .cancelled (not .exited with a
                 // signal status) when the reason we stopped was a cancel.
                 if canceller.isCancelled {
-                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+                    reapExactChild(); canceller.clearTeardown(); return .cancelled
                 }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
-                    // Natural exit. `-version` output is tiny, so reading now
-                    // can't deadlock on a full pipe buffer.
                     canceller.clearTeardown()
-                    let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    closePipes()
-                    return .exited(
-                        status: process.terminationStatus,
-                        stdout: String(data: outData, encoding: .utf8) ?? "",
-                        stderr: String(data: errData, encoding: .utf8) ?? "")
+                    let (stdout, stderr) = collected()
+                    return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
                 }
                 if DispatchTime.now() >= deadlineAt {
-                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .timedOut
+                    reapExactChild(); canceller.clearTeardown()
+                    let (stdout, stderr) = collected()
+                    return .timedOut(stdout: stdout, stderr: stderr)
                 }
             }
         }
