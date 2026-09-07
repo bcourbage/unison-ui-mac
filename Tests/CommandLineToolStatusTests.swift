@@ -66,6 +66,36 @@ final class CommandLineToolStatusTests: XCTestCase {
         CommandLineToolStatus.classify(entryAtPath: entry, environment: e, fs: fs)?.classification
     }
 
+    // MARK: Caskroom receipt, real directory layouts
+
+    func test_caskroomReceipt_currentToken() throws {
+        let prefix = try makeBin("brew")
+        try FileManager.default.createDirectory(atPath: prefix + "/Caskroom/unison-ui/0.7.0", withIntermediateDirectories: true)
+        XCTAssertTrue(CommandLineToolStatus.caskroomReceiptExists(brewPrefix: prefix, fs: fs))
+    }
+
+    func test_caskroomReceipt_previousTokenStillCounts() throws {
+        let prefix = try makeBin("brew")
+        try FileManager.default.createDirectory(atPath: prefix + "/Caskroom/unison-ui-mac/0.7.0", withIntermediateDirectories: true)
+        XCTAssertTrue(CommandLineToolStatus.caskroomReceiptExists(brewPrefix: prefix, fs: fs))
+    }
+
+    func test_caskroomReceipt_migratedLayout_oldTokenIsSymlinkToNew() throws {
+        let prefix = try makeBin("brew")
+        try FileManager.default.createDirectory(atPath: prefix + "/Caskroom/unison-ui/0.7.0", withIntermediateDirectories: true)
+        try link(prefix + "/Caskroom/unison-ui-mac", to: "unison-ui")
+        XCTAssertTrue(CommandLineToolStatus.caskroomReceiptExists(brewPrefix: prefix, fs: fs))
+    }
+
+    func test_caskroomReceipt_absent_orDanglingLink_isNoReceipt() throws {
+        let prefix = try makeBin("brew")
+        try FileManager.default.createDirectory(atPath: prefix + "/Caskroom/unison", withIntermediateDirectories: true)
+        XCTAssertFalse(CommandLineToolStatus.caskroomReceiptExists(brewPrefix: prefix, fs: fs))
+        try link(prefix + "/Caskroom/unison-ui-mac", to: "unison-ui")
+        XCTAssertFalse(CommandLineToolStatus.caskroomReceiptExists(brewPrefix: prefix, fs: fs),
+                       "a dangling old-token link is not a receipt")
+    }
+
     // MARK: classification, one fixture per case
 
     func test_thisInstallation_andStoredTargetIsRecorded() throws {

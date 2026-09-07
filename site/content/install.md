@@ -52,6 +52,6 @@ signed feed. Check any time from **App menu ▸ Check for Updates**.
 
 ## Uninstalling
 
-- Homebrew: `brew uninstall --cask unison-ui-mac`
+- Homebrew: `brew uninstall --cask unison-ui`
 - Manual: move `unison-ui-mac.app` to the Trash. To also remove saved settings, run
   `defaults delete net.courbage.unison-ui-mac`.

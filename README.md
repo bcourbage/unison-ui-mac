@@ -27,7 +27,7 @@ with visual conflict review before synchronized files are changed.
 ## Install
 
 ```sh
-brew install --cask bcourbage/tap/unison-ui-mac
+brew install --cask bcourbage/tap/unison-ui
 ```
 
 Other install paths (signed `.app` download, build from source) are in

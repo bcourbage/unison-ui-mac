@@ -29,7 +29,7 @@ CONTENT = os.path.join(SITE, "content")
 SITE_URL = "https://bcourbage.github.io/unison-ui-mac"
 APP_NAME = "Unison UI for macOS"
 REPO_URL = "https://github.com/bcourbage/unison-ui-mac"
-CASK = "brew install --cask bcourbage/tap/unison-ui-mac"
+CASK = "brew install --cask bcourbage/tap/unison-ui"
 
 
 def marketing_version() -> str:
