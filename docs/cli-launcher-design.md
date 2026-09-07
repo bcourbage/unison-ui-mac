@@ -271,13 +271,23 @@ of a PATH, not measurements taken inside those execution contexts.
   asserted a remote PATH without measuring (first `/etc/paths`, then sshd's
   default as if universal); both are withdrawn.
 
-**Gates use the Terminal context only.** Install requires the Terminal PATH to
-have been obtained and to hold no `unison`; an unobtained PATH is not an
+**Design change (0.7.x): gates use the Terminal context only.** Install and
+the first-launch offer require the Terminal PATH to have been obtained by the
+login-shell probe and to hold no `unison`; an unobtained PATH is not an
 absence. Repair and Remove act on the Terminal context's first entry. The
-remote context is informational. An earlier revision required the remote
-context to be "known empty" as well; that only ever held because a guessed
-PATH stood in for a measurement, and a guess must not enable a privileged
-action.
+remote context is informational and takes no part in any gate.
+
+What this establishes and what it does not: the probe establishes how a
+non-interactive login shell on this Mac resolves `unison`, nothing more.
+Remote resolution stays unknown, so Install gives **no assurance** about what
+an incoming ssh command will run; the only statement the app makes about ssh
+peers is to set an absolute `servercmd`. The original design (revision at
+#123) gated Install on both contexts being "known empty", which only ever held
+because a guessed remote PATH stood in for a measurement. A guess must not
+enable a privileged action, and requiring a truly undetermined context to be
+known-empty would disable Install permanently, so the gate moved to the one
+context that is measured. Recorded here as a change to the accepted design,
+not a clarification.
 
 For each context two things are found: the first PATH entry holding a
 `unison` **entry** of any kind (a file or a symlink, dangling included), and
