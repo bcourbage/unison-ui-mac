@@ -149,7 +149,8 @@ enum CommandLineToolStatus {
         let thisBundlePath: String
         /// `/opt/homebrew` or `/usr/local` when brew is installed there, else nil.
         let brewPrefix: String?
-        /// `<brewPrefix>/Caskroom/unison-ui-mac` exists.
+        /// The Caskroom under `brewPrefix` holds an entry for one of the app's
+        /// cask tokens (see `caskTokens`).
         let caskroomReceiptExists: Bool
     }
 
@@ -326,8 +327,19 @@ enum CommandLineToolStatus {
     static func discoverEnvironment(fs: CommandLineToolFileSystem = RealCommandLineToolFileSystem()) -> Environment {
         let bundle = fs.realPath(ofPath: Bundle.main.bundlePath) ?? Bundle.main.bundlePath
         let prefix: String? = ["/opt/homebrew", "/usr/local"].first { fs.isExecutableFile(atPath: $0 + "/bin/brew") }
-        let receipt = prefix.map { fs.isDirectory(atPath: $0 + "/Caskroom/unison-ui-mac") } ?? false
+        let receipt = prefix.map { caskroomReceiptExists(brewPrefix: $0, fs: fs) } ?? false
         return Environment(thisBundlePath: bundle, brewPrefix: prefix, caskroomReceiptExists: receipt)
+    }
+
+    /// Homebrew cask tokens the app has been published under, current first.
+    /// Homebrew leaves the old token's Caskroom entry behind as a symlink to
+    /// the new one when it migrates an install, so either name is a receipt.
+    static let caskTokens = ["unison-ui", "unison-ui-mac"]
+
+    /// True when `<brewPrefix>/Caskroom/<token>` is a directory, or a link to
+    /// one, for any token in `caskTokens`.
+    static func caskroomReceiptExists(brewPrefix: String, fs: CommandLineToolFileSystem) -> Bool {
+        caskTokens.contains { fs.isDirectory(atPath: brewPrefix + "/Caskroom/" + $0) }
     }
 
     /// Both contexts, computed on a GCD utility queue. The login-shell probe

@@ -11,6 +11,18 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Changed
+- **Homebrew cask renamed to `unison-ui`.** Homebrew's token rules drop
+  platform suffixes, so the tap's cask is now `bcourbage/tap/unison-ui`.
+  Installs made under the old token migrate on their own at the next
+  `brew update`; the old name keeps resolving. The cask also declares its
+  conflict with upstream's `unison-app` cask, and its zap stanza covers the
+  app's caches, preferences and web stores while leaving the profiles and
+  archives in `~/Library/Application Support/Unison` in place. Settings →
+  Command Line recognizes a Homebrew-managed install under either token,
+  including the migrated layout where the old Caskroom entry is a link to the
+  new one.
+
 ### Fixed
 - **Settings → Command Line no longer presents a guessed PATH as the one an
   incoming ssh command receives.** The "Remote SSH command" line now reads
@@ -35,7 +47,7 @@ across releases per Apple's bundle-version rules.
   formula case a refusal. The manual's new section explains which of the
   three `unison` paths a shell or a peer's `servercmd` selects, what Settings'
   Repair does and does not do, how to give the Homebrew command to the app
-  (`brew unlink unison`, then `brew reinstall --cask unison-ui-mac`), how to
+  (`brew unlink unison`, then `brew reinstall --cask unison-ui`), how to
   migrate from the legacy `unison-app` cask while keeping the upstream server
   as a fallback, how Sparkle and Homebrew updates interact, and how to verify
   the intended remote server. The Finder first-launch step is described as

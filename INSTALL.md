@@ -20,7 +20,7 @@ Three paths, in increasing order of effort:
 The recommended path for end users:
 
 ```sh
-brew install --cask bcourbage/tap/unison-ui-mac
+brew install --cask bcourbage/tap/unison-ui
 open /Applications/unison-ui-mac.app
 ```
 
@@ -30,12 +30,12 @@ itself.
 To uninstall:
 
 ```sh
-brew uninstall --cask unison-ui-mac           # remove the app
+brew uninstall --cask unison-ui           # remove the app
 brew uninstall --cask --zap unison-ui-mac     # also remove user defaults
 ```
 
 The cask formula lives at
-<https://github.com/bcourbage/homebrew-tap/blob/main/Casks/unison-ui-mac.rb>.
+<https://github.com/bcourbage/homebrew-tap/blob/main/Casks/unison-ui.rb>.
 It pins macOS 15+ and Apple Silicon, so brew refuses to install on
 incompatible hosts rather than producing a bundle that won't launch.
 
@@ -221,7 +221,7 @@ source by its git tag and take it out of Homebrew's hands:
 
 ```sh
 # 1. If you installed via Homebrew, stop it from managing the app
-brew uninstall --cask unison-ui-mac
+brew uninstall --cask unison-ui
 
 # 2. Build and install the exact version you want
 git clone https://github.com/bcourbage/unison-ui-mac.git
@@ -234,7 +234,7 @@ make install               # Release build → /Applications (see "Install from 
 Nothing will change the app after this until you choose to. To move to
 a different version later, `git checkout <other-tag>` then `make install`
 again. To rejoin the auto-updating Homebrew track, reinstall the cask:
-`brew install --cask bcourbage/tap/unison-ui-mac`.
+`brew install --cask bcourbage/tap/unison-ui`.
 
 Prerequisites are the same one-time tools as [Install from
 source](#install-from-source) (`xcode-select --install` plus OCaml 5.5.0;
@@ -258,7 +258,7 @@ Unison's CLI also uses it.
 **End users:**
 
 ```sh
-brew install --cask bcourbage/tap/unison-ui-mac
+brew install --cask bcourbage/tap/unison-ui
 ```
 
 **Developers (build from source):**
@@ -273,10 +273,10 @@ make install
 
 ## Troubleshooting
 
-- **`brew install --cask bcourbage/tap/unison-ui-mac` errors with
-  "Cask 'unison-ui-mac' is unavailable"**: the tap isn't registered
+- **`brew install --cask bcourbage/tap/unison-ui` errors with
+  "Cask 'unison-ui' is unavailable"**: the tap isn't registered
   yet. Run `brew tap bcourbage/tap` once, then re-run install. The
-  fully-qualified form (`bcourbage/tap/unison-ui-mac`) usually
+  fully-qualified form (`bcourbage/tap/unison-ui`) usually
   auto-taps, but some Homebrew configurations need the explicit
   `brew tap` first.
 - **`brew install --cask` errors with "depends_on macos"**: your

@@ -146,7 +146,7 @@ already hold it. Leave it and skip this section if you prefer: the app works
 from the profile picker either way. For Homebrew installs of the app: with
 the formula linked, Homebrew installs the app but skips the `unison` link with
 a warning and the formula keeps the command; to give the command to the app,
-run `brew unlink unison` and then `brew reinstall --cask unison-ui-mac`.
+run `brew unlink unison` and then `brew reinstall --cask unison-ui`.
 
 If the app is moved, the link dangles and `unison` reports "command not
 found"; recreate it. To uninstall the command, remove the link:
@@ -206,7 +206,7 @@ otherwise nothing changes. Broken links to anything else are shown but never
 replaced by the app. Remove or fix those by hand only if you own them.
 
 **Formula and app.** Homebrew's `unison` formula and this app can be installed
-together. With the formula linked, `brew install --cask unison-ui-mac` (or an
+together. With the formula linked, `brew install --cask unison-ui` (or an
 upgrade) installs the app but keeps the formula's command: Homebrew prints
 "already a Binary … from formula unison; skipping link", and
 `/opt/homebrew/bin/unison`, and any `servercmd` naming it, runs the formula,
@@ -217,11 +217,11 @@ brew unlink unison
 ```
 
 ```sh
-brew reinstall --cask unison-ui-mac
+brew reinstall --cask unison-ui
 ```
 
 The formula stays installed, only unlinked. To give the command back to the
-formula later, remove the app's cask (`brew uninstall --cask unison-ui-mac`)
+formula later, remove the app's cask (`brew uninstall --cask unison-ui`)
 and run `brew link unison`.
 
 **Migrating from the legacy `unison-app` cask.** Older setups have
@@ -237,13 +237,13 @@ verified.
 3. Install or refresh the cask so that Homebrew runs its artifacts, which is
    what creates `/opt/homebrew/bin/unison` pointing at this app's launcher.
    The command depends on what Homebrew already records:
-   - the app is not installed through Homebrew: `brew install --cask unison-ui-mac`;
-   - it is installed and a newer version exists: `brew upgrade --cask unison-ui-mac`;
-   - it is installed and already current: `brew reinstall --cask unison-ui-mac`.
+   - the app is not installed through Homebrew: `brew install --cask unison-ui`;
+   - it is installed and a newer version exists: `brew upgrade --cask unison-ui`;
+   - it is installed and already current: `brew reinstall --cask unison-ui`.
      An upgrade with nothing newer to install does not recreate the link.
    Homebrew records the installed version in
    `/opt/homebrew/Caskroom/unison-ui-mac/` (also shown by
-   `brew info --cask unison-ui-mac`); check it and pick the matching case.
+   `brew info --cask unison-ui`); check it and pick the matching case.
    Check afterwards that the link exists and points into this app:
    `readlink /opt/homebrew/bin/unison`.
 4. Launch the app once from Finder.
@@ -269,7 +269,7 @@ and re-verify.
 receipt keeps the version Homebrew itself installed. A later
 `brew upgrade --cask --greedy unison-ui-mac` reinstalls the current version and
 brings the receipt up to date; when the receipt already matches the current
-version, `brew reinstall --cask unison-ui-mac` is the command that reruns the
+version, `brew reinstall --cask unison-ui` is the command that reruns the
 artifacts. If the formula owns the command at that time,
 the upgrade succeeds and leaves the command with the formula, as described
 above; that is the expected outcome, not a failed upgrade.
