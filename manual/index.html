@@ -170,9 +170,10 @@ foreground command. Append <code>&amp;</code> to get the prompt back.</p>
 <h3 id="putting-it-on-path">Putting it on PATH</h3>
 <p>Settings → Command Line shows what <code>unison</code> resolves to and offers Install
 when nothing owns the name (see <a href="#command-line">Settings</a>). The manual
-equivalent: create a symlink named <code>unison</code>. <code>/usr/local/bin</code> is on the PATH
-of both login shells and incoming ssh commands on a stock macOS, and writing
-there needs an administrator password:</p>
+equivalent: create a symlink named <code>unison</code>. Whether a given shell finds it
+depends on that shell's PATH; <code>/usr/local/bin</code> is on the PATH <code>/etc/paths</code>
+gives login shells on a stock macOS. Writing there needs an administrator
+password:</p>
 <pre><code class="language-sh">sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
 </code></pre>
 <p>Only one command can own the name. Check what <code>unison</code> resolves to before
@@ -180,22 +181,134 @@ and after:</p>
 <pre><code class="language-sh">which -a unison
 </code></pre>
 <p>A Homebrew <code>unison</code> formula or upstream Unison.app's own launcher may
-already hold it. Unlink or remove that first, or leave it and skip this
-section: the app works from the profile picker either way.</p>
+already hold it. Leave it and skip this section if you prefer: the app works
+from the profile picker either way. For Homebrew installs of the app: with
+the formula linked, Homebrew installs the app but skips the <code>unison</code> link with
+a warning and the formula keeps the command; to give the command to the app,
+run <code>brew unlink unison</code> and then <code>brew reinstall --cask unison-ui-mac</code>.</p>
 <p>If the app is moved, the link dangles and <code>unison</code> reports "command not
 found"; recreate it. To uninstall the command, remove the link:</p>
 <pre><code class="language-sh">sudo rm /usr/local/bin/unison
 </code></pre>
 <h3 id="remote-peers">Remote peers</h3>
 <p>Peers whose profiles target this Mac run <code>unison -server</code> here through
-ssh. Their command runs in a non-interactive shell whose PATH comes from
-macOS's <code>/etc/paths</code>, which includes <code>/usr/local/bin</code>, so the link above is
-enough. If the link lives anywhere else, set <code>servercmd = /path/to/unison</code>
-in the peer's profile.</p>
-<p>A freshly installed app, whether from the zip or through Homebrew, carries
-the quarantine attribute until it is opened once from Finder, and
-Gatekeeper's first-launch check needs a graphical session. Launch the app
-once before relying on it as an ssh peer.</p>
+ssh. The PATH that command receives is not the one your Terminal has: it
+depends on this Mac's SSH server configuration and on the login shell's
+non-interactive startup files, and it may or may not include the directory
+that holds the link. Do not rely on it: set <code>servercmd</code> in the peer's profile
+to the full path of the executable you intend to run, for example
+<code>servercmd = /usr/local/bin/unison</code> or <code>servercmd = /opt/homebrew/bin/unison</code>,
+after checking with <code>readlink</code> that the path resolves into this app (see
+<a href="#repair-and-migration">Repair and migration</a>).</p>
+<p>Launch a freshly installed app once from Finder before relying on it as an
+ssh peer. That first launch is where macOS runs its check of the downloaded
+bundle, and it needs a graphical session; a headless ssh invocation cannot
+answer it. A successful launch shows that macOS accepts the bundle for
+launching; it is not a statement about the bundle's quarantine metadata.</p>
+<h3 id="repair-and-migration">Repair and migration</h3>
+<p><strong>Which command runs.</strong> Three things can answer to the name <code>unison</code> on a
+Mac with this app:</p>
+<ul>
+<li>the app's embedded launcher, <code>/Applications/unison-ui-mac.app/Contents/MacOS/cltool</code>;</li>
+<li>a direct-install link, <code>/usr/local/bin/unison</code>, created by Settings →
+  Command Line or by hand;</li>
+<li>the Homebrew cask link, <code>/opt/homebrew/bin/unison</code> on Apple Silicon (on Intel
+  the Homebrew prefix is <code>/usr/local</code>, so it is the same path as a direct
+  install).</li>
+</ul>
+<p>Typing bare <code>unison</code> runs whichever comes first on that shell's PATH. A peer's
+<code>servercmd</code> with an absolute path runs exactly that path on this Mac,
+whatever PATH says. To see what a path is, use <code>readlink &lt;path&gt;</code>, which shows
+the executable it resolves to; a path inside <code>unison-ui-mac.app</code> is this app.
+<code>&lt;path&gt; -version</code> then shows that the executable starts and which Unison and
+OCaml versions it was built with; the OCaml version tells builds apart (this
+app's engine and Homebrew's formula are usually built with different ones) but
+it is the resolved path, not the version string, that identifies the
+installation.</p>
+<p><strong>Repairing a broken direct-install link.</strong> Settings → Command Line offers
+<strong>Repair…</strong> only when the first <code>unison</code> on the Terminal PATH is a broken link
+whose target path ends in <code>unison-ui-mac.app/Contents/MacOS/cltool</code>, that is,
+a link to a former copy of this app. The confirmation shows the old target
+and, when a working command sits later on the PATH, names it as the command
+the repaired link will take precedence over. At execution the app re-checks
+that the link is still broken and still stores the target the dialog showed;
+otherwise nothing changes. Broken links to anything else are shown but never
+replaced by the app. Remove or fix those by hand only if you own them.</p>
+<p><strong>Formula and app.</strong> Homebrew's <code>unison</code> formula and this app can be installed
+together. With the formula linked, <code>brew install --cask unison-ui-mac</code> (or an
+upgrade) installs the app but keeps the formula's command: Homebrew prints
+"already a Binary … from formula unison; skipping link", and
+<code>/opt/homebrew/bin/unison</code>, and any <code>servercmd</code> naming it, runs the formula,
+not the app. To give the command to the app:</p>
+<pre><code class="language-sh">brew unlink unison
+</code></pre>
+<pre><code class="language-sh">brew reinstall --cask unison-ui-mac
+</code></pre>
+<p>The formula stays installed, only unlinked. To give the command back to the
+formula later, remove the app's cask (<code>brew uninstall --cask unison-ui-mac</code>)
+and run <code>brew link unison</code>.</p>
+<p><strong>Migrating from the legacy <code>unison-app</code> cask.</strong> Older setups have
+<code>/opt/homebrew/bin/unison</code> linked to upstream's <code>Unison.app</code> launcher by the
+now-disabled <code>unison-app</code> cask. That link is the working ssh server for peers
+whose <code>servercmd</code> names it, so keep the upstream app until the replacement is
+verified.</p>
+<ol>
+<li>Record the current target: <code>readlink /opt/homebrew/bin/unison</code>.</li>
+<li>Free the name without losing it, only if the backup name is unused:
+   <code>mv /opt/homebrew/bin/unison /opt/homebrew/bin/unison.upstream-link</code>.
+   From here until step 5 passes, peers that name this path cannot connect.</li>
+<li>Install or refresh the cask so that Homebrew runs its artifacts, which is
+   what creates <code>/opt/homebrew/bin/unison</code> pointing at this app's launcher.
+   The command depends on what Homebrew already records:
+   - the app is not installed through Homebrew: <code>brew install --cask unison-ui-mac</code>;
+   - it is installed and a newer version exists: <code>brew upgrade --cask unison-ui-mac</code>;
+   - it is installed and already current: <code>brew reinstall --cask unison-ui-mac</code>.
+     An upgrade with nothing newer to install does not recreate the link.
+   Homebrew records the installed version in
+   <code>/opt/homebrew/Caskroom/unison-ui-mac/</code> (also shown by
+   <code>brew info --cask unison-ui-mac</code>); check it and pick the matching case.
+   Check afterwards that the link exists and points into this app:
+   <code>readlink /opt/homebrew/bin/unison</code>.</li>
+<li>Launch the app once from Finder.</li>
+<li>Verify as described under <em>Verifying the intended remote server</em> below.</li>
+<li>If installation or verification fails, restore service: check that
+   <code>/opt/homebrew/bin/unison</code> is either absent or the new app link, remove it if
+   present, then <code>mv /opt/homebrew/bin/unison.upstream-link /opt/homebrew/bin/unison</code>.
+   The upstream app is untouched, so peers work again at once. When you retry
+   later, check the version Homebrew recorded before choosing the step 3
+   command: if the installation had succeeded and only service was rolled
+   back, the receipt is current and the reinstall case applies; if Homebrew's
+   own failed upgrade rolled the app back, the receipt may still be the older
+   version and the upgrade case applies.</li>
+</ol>
+<p>Do not run <code>brew uninstall --cask unison-app</code> as part of this migration. That
+cask's uninstall removes whatever link sits at <code>/opt/homebrew/bin/unison</code>,
+including the new one, and deletes <code>Unison.app</code>. Treat it as a separate step
+for later, with a recovery ready: recreate the link with
+<code>ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /opt/homebrew/bin/unison</code>
+and re-verify.</p>
+<p><strong>Sparkle and Homebrew.</strong> Sparkle updates the app bundle in place; Homebrew's
+receipt keeps the version Homebrew itself installed. A later
+<code>brew upgrade --cask --greedy unison-ui-mac</code> reinstalls the current version and
+brings the receipt up to date; when the receipt already matches the current
+version, <code>brew reinstall --cask unison-ui-mac</code> is the command that reruns the
+artifacts. If the formula owns the command at that time,
+the upgrade succeeds and leaves the command with the formula, as described
+above; that is the expected outcome, not a failed upgrade.</p>
+<p><strong>Verifying the intended remote server.</strong> Three checks, each proving one
+thing:</p>
+<ul>
+<li>Launching the app from Finder shows that macOS accepts the bundle for
+  launching.</li>
+<li>From the peer, <code>ssh host /path/to/unison -version</code> shows that this path
+  starts headlessly over ssh and reports its build; combined with
+  <code>ssh host readlink /path/to/unison</code>, it tells you which installation
+  answered.</li>
+<li>A real synchronization of a throwaway profile, with a fresh file that you
+  then read back on the other side, shows that Unison's server protocol works
+  end to end through that path.</li>
+</ul>
+<p>The app never rewrites profiles. Set <code>servercmd</code> yourself.</p>
 <hr>
 <h2 id="the-profile-picker">The Profile Picker</h2>
 <p>The launch view. A simple list of every <code>.prf</code> file in
@@ -806,12 +919,14 @@ Unison reads). The matching per-profile controls live in the editor's
 from the filesystem each time the tab is shown (nothing here is a stored
 preference):</p>
 <ul>
-<li><strong>Terminal</strong>: the PATH a login shell builds. A change made only in
-  <code>.zshrc</code> is not included.</li>
-<li><strong>Remote command</strong>: the PATH macOS defines for non-interactive commands
-  (<code>/etc/paths</code> and <code>/etc/paths.d</code>), which is what an incoming ssh command
-  gets on a stock Mac. A remote shell's own environment can differ, which is
-  why <code>servercmd</code> in the peer's profile remains the reliable setting.</li>
+<li><strong>Terminal</strong>: the PATH obtained by running your login shell
+  non-interactively. An interactive Terminal also reads <code>.zshrc</code>, which can
+  change what <code>unison</code> resolves to there.</li>
+<li><strong>Remote SSH command</strong>: not determined locally. The PATH an incoming ssh
+  command receives depends on the SSH server configuration and on the login
+  shell's startup files on this Mac, which the app does not evaluate. Set
+  <code>servercmd</code> in the peer's profile to the link's full path so the peer does
+  not rely on remote PATH at all.</li>
 </ul>
 <p>Each line names the first <code>unison</code> entry on that PATH, broken links
 included, and says what it is: this app's command, another copy of this app,
