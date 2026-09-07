@@ -14,9 +14,9 @@ change would help it shows the exact edit and applies it only after approval.
 ## Non-goals
 
 - Rewriting a profile automatically. Every edit is previewed and approved.
-- Running a synchronization. The check proves that a command starts over ssh
-  and what it reports; only a real sync proves the server protocol, and the
-  check says so.
+- Running a synchronization. The check observes whether a command line run
+  over ssh emits a Unison version line and what that line says; only a real
+  sync exercises the server protocol, and the check says so.
 - Changing anything on the remote machine.
 - Diagnosing PATH on the remote. The check never asks what PATH an ssh command
   receives; it works with absolute paths, which make PATH irrelevant.
