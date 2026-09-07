@@ -142,8 +142,11 @@ which -a unison
 ```
 
 A Homebrew `unison` formula or upstream Unison.app's own launcher may
-already hold it. Unlink or remove that first, or leave it and skip this
-section: the app works from the profile picker either way.
+already hold it. Leave it and skip this section if you prefer: the app works
+from the profile picker either way. For Homebrew installs of the app: with
+the formula linked, Homebrew installs the app but skips the `unison` link with
+a warning and the formula keeps the command; to give the command to the app,
+run `brew unlink unison` and then `brew reinstall --cask unison-ui-mac`.
 
 If the app is moved, the link dangles and `unison` reports "command not
 found"; recreate it. To uninstall the command, remove the link:

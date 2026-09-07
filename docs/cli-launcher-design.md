@@ -226,14 +226,21 @@ copies it out, exposed as `unison_bridge_command_line_profile()`.
   it on uninstall. There is no cask-level way to declare a conflict with a
   formula: Homebrew's `ConflictsWith` DSL accepts only `cask:`
   (`Library/Homebrew/cask/dsl/conflicts_with.rb`, `VALID_KEYS = [:cask]`).
-  What happens instead when the formula is linked: the `binary` artifact
-  finds `bin/unison` occupied, the installer raises "It seems there is
-  already a Binary at …", and its rescue path uninstalls the artifacts it
-  had placed (`cask/installer.rb`), so the app is not left half-installed.
-  The user then chooses: `brew unlink unison` and retry, or install the app
-  from the zip and keep the formula's CLI. Both paths are documented; the
-  second is the supported way to have the formula's text CLI and this GUI on
-  one machine.
+  What happens when `bin/unison` is occupied depends on the occupant
+  (`Library/Homebrew/cask/artifact/symlinked.rb`, `link`, Homebrew
+  6.0.22-131-geda443a): a symlink resolving under the Cellar is a
+  `conflicting_formula`, and the cask **skips its link with a warning** and
+  installs normally, leaving the command with the formula; any other occupant
+  raises "It seems there is already a Binary at …" and the installer's rescue
+  path reverts the app it had placed. Both were executed: the skip on Heracles
+  with the formula linked (upgrade exit 0, warning printed, app installed),
+  the refusal on Demeter against the legacy `unison-app` cask's link. The
+  user's choice with the formula linked: keep the formula's command and use
+  the app from its window, or `brew unlink unison` then `brew reinstall --cask
+  unison-ui-mac` to give the command to the app (verified on Heracles: both
+  links into the app, bundle and receipt 0.7.0, syncs in both roles). An
+  earlier revision of this document described the formula case as a refusal;
+  that was inferred from the cask-vs-cask observation and was wrong.
 
   Downgrading through brew to a cask version that predates the `binary`
   stanza removes the link (artifacts follow the installed definition). A
@@ -353,7 +360,8 @@ Draft copy, subject to the usual review before release:
 | Scenario | Result | Notes |
 |---|---|---|
 | Brew formula only | Unchanged. Text UI; `-ui graphic` ignored. | Not this app's concern. |
-| Brew formula linked, then this cask | Cask install fails at the `binary` artifact ("already a Binary at …"); brew rolls back the app it had placed. | User chooses `brew unlink unison`, or the zip. |
+| Brew formula linked, then this cask | Cask installs; its `binary` link is skipped with "already a Binary … from formula unison; skipping link." The formula keeps the command. Executed on Heracles (A1). | To give the command to the app: `brew unlink unison`, then `brew reinstall --cask unison-ui-mac` (executed on Heracles, A2). |
+| Legacy `unison-app` cask link present, then this cask | Cask install refused ("already a Binary at …"), brew reverts the app. Executed on Demeter. | Non-formula occupant; migration is explicit (see the Demeter plan). |
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
 | This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Whether an incoming ssh command finds `<prefix>/bin/unison` is not determined by the app; peers set `servercmd = <prefix>/bin/unison`. |
 | This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, on the PATH `/etc/paths` gives login shells; whether an incoming ssh command finds it is not determined, so peers set `servercmd = /usr/local/bin/unison`. Settings shows the Terminal PATH as a login-shell probe result and the remote context as undetermined; the prompt's copy promises only what the link does. |

@@ -25,6 +25,15 @@ across releases per Apple's bundle-version rules.
   and the 0.7.0 release notes are corrected in the same way; the manual records
   the one measurement made (Demeter, macOS 26.6.2: `/usr/bin:/bin:/usr/sbin:/sbin`)
   as that machine's observation, not as a rule.
+- **The formula-linked Homebrew case was described as a refusal; it is a skipped
+  link.** With the `unison` formula linked, Homebrew installs the cask and skips
+  the app's `unison` link with a warning, leaving the command with the formula
+  (`cask/artifact/symlinked.rb`, Homebrew 6.0.22; executed on Heracles). The
+  refusal "already a Binary" applies to a non-formula occupant, as observed
+  against the legacy `unison-app` cask's link. Manual, design document and the
+  0.7.0 release notes now state the skip and the choice it leaves: keep the
+  formula's command, or `brew unlink unison` then `brew reinstall --cask
+  unison-ui-mac` to give the command to the app (verified on Heracles).
 
 ## [0.7.0] — 2026-09-06
 
