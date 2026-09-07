@@ -242,7 +242,7 @@ not say:
     connect if it can answer a prompt; this check cannot. Nothing about the
     executable is claimed either way.
   - marker received, deadline expired: "The remote shell emitted the start
-    marker; no further output arrived within `<t>` seconds. Output so far:
+    marker; the `<t>`-second deadline expired. Output received so far:
     `<stdout>`. Whether the executable started is not established."
   - marker received, nonzero exit: "The remote shell emitted the start
     marker; the command line then exited with status N; stderr:
