@@ -100,7 +100,7 @@ enum ProfileRootResolver {
         // (matching OCaml + POSIX), so includes never escape to an arbitrary
         // absolute path the way a naive join might allow.
         func joined(_ token: String) -> String {
-            canonical(unisonDirectory + "/" + token)
+            ProfileRootResolver.fileInUnisonDir(unisonDirectory, token)
         }
 
         // Visit one directive/target. `addExt` mirrors upstream's `add_ext`
@@ -200,6 +200,13 @@ enum ProfileRootResolver {
                           rootaliases: aliases,
                           reliable: issues.isEmpty,
                           issues: issues)
+    }
+
+    /// `Util.fileInUnisonDir` = `Filename.concat unisonDir token`, POSIX-
+    /// normalized. Shared by every reader of profile files so the same token
+    /// resolves to the same path everywhere.
+    static func fileInUnisonDir(_ unisonDirectory: String, _ token: String) -> String {
+        ((unisonDirectory + "/" + token) as NSString).standardizingPath
     }
 
     /// Default reader. The classification is deliberately precise because the

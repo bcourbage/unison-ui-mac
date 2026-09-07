@@ -152,10 +152,16 @@ so (it verifies ssh transports only). Parse the one `ssh://` root into user,
 host, port and path with the `clroot` rules. Derive the **effective remote
 command**: the exact string Unison would send, per the assembly above.
 
-Reuse: `ProfileDocument` for line parsing and `ProfileRootResolver`'s include
-lookup. New: `EffectiveProfile` (values with provenance), `PrefsTokenizer`
-(matching `splitIntoWords`), `RemoteCommand` (the assembled string and the
-`ssh` argument vector).
+Reuse: `ProfileRootResolver`'s include lookup (`fileInUnisonDir`, exact name
+then `.prf`) and its file reader. New: `EffectiveProfile` (values with
+provenance; it walks lines itself, because it must keep file and line for
+every assignment and report errors in the order `parseLines` finds them,
+which `ProfileDocument`'s editing model does not record), `PrefsTokenizer`
+(matching `splitIntoWords`, also used by `ProfileDocument` and the version
+probe), `UnisonPreferenceCatalog` (the engine's preference table: names,
+kinds, command-line-only and pseudo flags, aliases; checked against the built
+engine's `-help` in CI), `RemoteCommand` (the assembled string and the `ssh`
+argument vector).
 
 ### Step 2: discovery (first ssh session)
 
