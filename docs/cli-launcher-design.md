@@ -226,14 +226,26 @@ copies it out, exposed as `unison_bridge_command_line_profile()`.
   it on uninstall. There is no cask-level way to declare a conflict with a
   formula: Homebrew's `ConflictsWith` DSL accepts only `cask:`
   (`Library/Homebrew/cask/dsl/conflicts_with.rb`, `VALID_KEYS = [:cask]`).
-  What happens instead when the formula is linked: the `binary` artifact
-  finds `bin/unison` occupied, the installer raises "It seems there is
-  already a Binary at …", and its rescue path uninstalls the artifacts it
-  had placed (`cask/installer.rb`), so the app is not left half-installed.
-  The user then chooses: `brew unlink unison` and retry, or install the app
-  from the zip and keep the formula's CLI. Both paths are documented; the
-  second is the supported way to have the formula's text CLI and this GUI on
-  one machine.
+  What happens when `bin/unison` is occupied depends on the occupant
+  (`Library/Homebrew/cask/artifact/symlinked.rb`, `link`, Homebrew
+  6.0.22-131-geda443a, lines 74–96), four cases:
+
+  | Occupant | Homebrew's behavior | Evidence |
+  |---|---|---|
+  | symlink resolving to this cask's own `cltool` | accepted, "already linked", no change | code only |
+  | symlink resolving under the Cellar (a formula) | **skipped with a warning**; the cask installs, the formula keeps the command | executed, Heracles A1 |
+  | any other **resolving** target (file, or link elsewhere) | `CaskError "It seems there is already a Binary at …"`; the installer reverts the app | executed, Demeter, against the legacy `unison-app` link to upstream `Unison.app` |
+  | **dangling** symlink | `target.exist?` is false, so the conflict block is skipped and `ln --force` **replaces** the link | code only, not executed |
+
+  The Demeter refusal therefore shows the third case, not a rule for every
+  non-formula entry. The user's choice with the formula linked: keep the
+  formula's command and use the app from its window, or `brew unlink unison`
+  then `brew reinstall --cask unison-ui-mac` to give the command to the app
+  (executed on Heracles: both links into the app, bundle and receipt 0.7.0,
+  syncs in both roles). The manual's "Repair and migration" section carries the
+  user-facing procedure; this document keeps the evidence. Two earlier
+  revisions described the formula case as a refusal; that was inferred and
+  wrong.
 
   Downgrading through brew to a cask version that predates the `binary`
   stanza removes the link (artifacts follow the installed definition). A
@@ -249,16 +261,45 @@ incoming ssh see different PATHs, so the status is computed for **two named
 contexts**, both shown, and both labelled as what they are: reconstructions
 of a PATH, not measurements taken inside those execution contexts.
 
-- *Login shell*: the PATH a non-interactive login shell builds, obtained by
-  running `$SHELL -l -c 'printf %s "$PATH"'`. This reads `/etc/zprofile` and
-  `~/.zprofile` but not `~/.zshrc`, so a PATH change made only in `.zshrc`
-  is not seen. The label says "as a login shell sees it".
-- *Remote command*: the PATH `path_helper` builds from `/etc/paths` and
-  `/etc/paths.d`. An ssh command runs `$SHELL -c`, which on a stock macOS
-  does not read `/etc/zprofile` at all, so this reconstruction can include
-  `/etc/paths.d` entries the real remote command will not have. The label
-  says "as macOS defines it for non-interactive commands", and the manual
-  keeps `servercmd` as the reliable answer for remote peers.
+- *Terminal*: the PATH obtained by running the login shell non-interactively,
+  `$SHELL -l -c` printing `$PATH` between markers. This reads `/etc/zprofile`
+  and `~/.zprofile` but not `~/.zshrc`, so an interactive Terminal can resolve
+  `unison` differently. The label says the PATH came from a login-shell probe.
+- *Remote SSH command*: **not determined locally**. The PATH an incoming
+  `ssh host unison -server` receives is decided by the SSH server's
+  configuration (`SetEnv`, `PermitUserEnvironment`), by the login shell's
+  non-interactive startup files (`~/.zshenv`, `/etc/zshenv`), and by the
+  invoking peer; none of that can be evaluated from a GUI process on this Mac,
+  and the presence or absence of a `.zshenv` file establishes nothing either
+  way. The status carries no search path, so it can never be "known empty"
+  and neither satisfies nor blocks any gate. The panel says so and gives the
+  advice that does not depend on remote PATH: an absolute `servercmd` in the
+  peer's profile.
+
+  One measurement exists and is recorded as such: on Demeter (macOS 26.6.2,
+  zsh, no `~/.zshenv` or `/etc/zshenv`, stock `sshd_config`), `ssh demeter
+  'echo $PATH'` printed `/usr/bin:/bin:/usr/sbin:/sbin`. That is one machine's
+  observation, not a macOS guarantee. Two earlier revisions of this document
+  asserted a remote PATH without measuring (first `/etc/paths`, then sshd's
+  default as if universal); both are withdrawn.
+
+**Design change (0.7.x): gates use the Terminal context only.** Install and
+the first-launch offer require the Terminal PATH to have been obtained by the
+login-shell probe and to hold no `unison`; an unobtained PATH is not an
+absence. Repair and Remove act on the Terminal context's first entry. The
+remote context is informational and takes no part in any gate.
+
+What this establishes and what it does not: the probe establishes how a
+non-interactive login shell on this Mac resolves `unison`, nothing more.
+Remote resolution stays unknown, so Install gives **no assurance** about what
+an incoming ssh command will run; the only statement the app makes about ssh
+peers is to set an absolute `servercmd`. The original design (revision at
+#123) gated Install on both contexts being "known empty", which only ever held
+because a guessed remote PATH stood in for a measurement. A guess must not
+enable a privileged action, and requiring a truly undetermined context to be
+known-empty would disable Install permanently, so the gate moved to the one
+context that is measured. Recorded here as a change to the accepted design,
+not a clarification.
 
 For each context two things are found: the first PATH entry holding a
 `unison` **entry** of any kind (a file or a symlink, dangling included), and
@@ -283,9 +324,10 @@ The first entry is classified:
 classification and the resolved path in words. Actions are offered from the
 login-shell result and are gated by what the evidence proves:
 
-- `none` in both contexts: **Install** creates `/usr/local/bin/unison` as a
-  symlink to this installation's tool. One administrator prompt. If either
-  context already shows an entry, Install is withheld and the entry shown.
+- Terminal PATH obtained and holding no `unison`: **Install** creates
+  `/usr/local/bin/unison` as a symlink to this installation's tool. One
+  administrator prompt. Whether a given shell then finds it depends on that
+  shell's PATH; the copy says so and does not promise more.
 - `danglingLauncherPath`: **Repair** replaces the broken link with one to
   this installation. The confirmation shows the old target path and, when a
   later PATH entry currently executes, names that command and says Repair
@@ -299,7 +341,8 @@ login-shell result and are gated by what the evidence proves:
 **First-launch prompt.** Shown once per launch, after the picker appears,
 only when all hold:
 
-- Classification is `none` in both contexts, or `danglingLauncherPath`.
+- The Terminal PATH was obtained and its first entry is `none` or
+  `danglingLauncherPath`. The remote context plays no part.
 - The user has not checked "Do not ask again". That is a stored preference
   about prompting, which the app controls, not about the disk.
 - GUI launch. Command-line mode exits before AppKit. The existing XCTest and
@@ -322,11 +365,12 @@ Draft copy, subject to the usual review before release:
 | Scenario | Result | Notes |
 |---|---|---|
 | Brew formula only | Unchanged. Text UI; `-ui graphic` ignored. | Not this app's concern. |
-| Brew formula linked, then this cask | Cask install fails at the `binary` artifact ("already a Binary at …"); brew rolls back the app it had placed. | User chooses `brew unlink unison`, or the zip. |
+| Brew formula linked, then this cask | Cask installs; its `binary` link is skipped with "already a Binary … from formula unison; skipping link." The formula keeps the command. Executed on Heracles (A1). | To give the command to the app: `brew unlink unison`, then `brew reinstall --cask unison-ui-mac` (executed on Heracles, A2). |
+| Legacy `unison-app` cask link present and resolving, then this cask | Cask install refused ("already a Binary at …"), brew reverts the app. Executed on Demeter. | A resolving non-formula occupant. A *dangling* legacy link would instead be replaced by `ln --force` (code, not executed). Migration is explicit: manual, "Repair and migration". |
 | Brew formula plus this app from the zip | Both work. `unison` is the formula's CLI; the app runs from the picker. Install is offered only if nothing owns the name, so it is not offered here. | The supported way to keep the formula's CLI. |
-| This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Incoming ssh PATH lacks the brew prefix; peers set `servercmd`. On Intel, the prefix is `/usr/local`, so `bin/unison` is the same path a manual install would use, and the incoming-ssh PATH does include it. |
-| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, which is on the incoming-ssh PATH per `/etc/paths` on a stock macOS. Settings shows reconstructed PATHs for two contexts and says so; a `.zshrc` override or a remote shell's own environment can still pick another `unison`, and the prompt's copy promises only what the link does, not what every shell will resolve. |
-| Fresh install, first run over ssh | Gatekeeper's first-launch assessment of a quarantined app needs a GUI session; over ssh the exec may be refused. Homebrew quarantines cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh, whatever the install method. |
+| This app via cask | `unison -ui graphic` opens the app; `unison -ui text` runs in the terminal; `brew uninstall --cask` removes both. | Whether an incoming ssh command finds `<prefix>/bin/unison` is not determined by the app; peers set `servercmd = <prefix>/bin/unison`. |
+| This app via zip | Nothing on PATH until Install. | First-launch prompt or Settings. Link lands in `/usr/local/bin`, on the PATH `/etc/paths` gives login shells; whether an incoming ssh command finds it is not determined, so peers set `servercmd = /usr/local/bin/unison`. Settings shows the Terminal PATH as a login-shell probe result and the remote context as undetermined; the prompt's copy promises only what the link does. |
+| Fresh install, first run over ssh | macOS's check of a downloaded bundle runs at first GUI launch and needs a session; a headless ssh exec cannot answer it. Homebrew applies quarantine metadata to cask downloads too (`cask/download.rb`). | Manual: launch the app once from Finder before relying on ssh. That launch demonstrates GUI launch acceptance only: on Demeter the quarantine attribute string was unchanged after the launch, so no claim is made that opening removes it. |
 | Sparkle update | Link stays valid; bundled tool updates too. | The headless roles exit before Sparkle initializes; the `-ui graphic` continuation reaches Sparkle like any graphical launch. |
 | Bare `unison` over ssh, with a `default.prf` present | The text interface runs the default profile, as upstream's `unison` would. | Upstream semantics, stated as such. Not "prints usage". |
 | Script started from Terminal, `unison -batch p`, stdin inherited | Text UI. | No tty probe exists; the default applies. |

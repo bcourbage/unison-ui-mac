@@ -11,6 +11,36 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Fixed
+- **Settings → Command Line no longer presents a guessed PATH as the one an
+  incoming ssh command receives.** The "Remote SSH command" line now reads
+  "Not determined locally" and explains that SSH server configuration and the
+  login shell's startup files decide that PATH, with the advice that avoids the
+  question: an absolute `servercmd` in the peer's profile. Install and the
+  first-launch offer are gated on the Terminal probe alone; the remote context
+  can neither enable nor block them. The Terminal line is described as the
+  result of a login-shell probe, which an interactive shell's `.zshrc` can
+  differ from, and Install's copy says it creates `/usr/local/bin/unison`
+  without promising which shells will find it. The manual, the design document
+  and the 0.7.0 release notes are corrected in the same way; the manual records
+  the one measurement made (Demeter, macOS 26.6.2: `/usr/bin:/bin:/usr/sbin:/sbin`)
+  as that machine's observation, not as a rule.
+- **Homebrew's behavior when `unison` is already taken is now described
+  precisely, and the manual gains a Repair and migration section.** With the
+  `unison` formula linked, Homebrew installs the cask and skips the app's link
+  with a warning, leaving the command with the formula; a link already
+  pointing at the app is accepted; any other resolving occupant makes the
+  install fail with "already a Binary" and revert; a dangling link is replaced
+  (`cask/artifact/symlinked.rb`, Homebrew 6.0.22). The earlier text called the
+  formula case a refusal. The manual's new section explains which of the
+  three `unison` paths a shell or a peer's `servercmd` selects, what Settings'
+  Repair does and does not do, how to give the Homebrew command to the app
+  (`brew unlink unison`, then `brew reinstall --cask unison-ui-mac`), how to
+  migrate from the legacy `unison-app` cask while keeping the upstream server
+  as a fallback, how Sparkle and Homebrew updates interact, and how to verify
+  the intended remote server. The Finder first-launch step is described as
+  launch acceptance, not quarantine removal.
+
 ## [0.7.0] — 2026-09-06
 
 A command-line release. (Build 23.) The app bundle now carries a `unison`
