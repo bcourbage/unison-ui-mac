@@ -72,8 +72,12 @@ dropped; empty words are dropped):
   PATH. `addversionno = true` appends `-<major>` (currently `-2.54`) to that
   name before ` -server`.
 - `servercmd`, `sshcmd`, `sshargs` and `addversionno` are single, global
-  settings: a profile with two `ssh://` roots sends the same remote command to
-  both hosts.
+  settings. Upstream also refuses the configurations that would need more
+  than one: `src/globals.ml` line 58 raises "Wrong number of roots" unless
+  exactly two roots are given, and `src/uicommon.ml` line 1113 raises
+  "cannot synchronize more than one remote root". A profile therefore has at
+  most one remote host, and the check stops with upstream's message before
+  any ssh session when either rule is violated.
 
 ### What the remote shell then sees (OpenSSH behavior)
 
@@ -126,19 +130,22 @@ recording for every line its file and line number; stop at the first error
 Unison would report, and report it in Unison's words. Compute effective
 values for `root` (list), `servercmd`, `sshcmd`, `sshargs`, `addversionno`,
 with the location of the winning assignment and of every assignment it
-overrides. Parse each `ssh://` root into user, host, port and path with the
-`clroot` rules. Derive the **effective remote command**: the exact string
-Unison would send, per the assembly above.
+overrides. Apply upstream's root rules before anything else: not exactly two
+roots stops with "Wrong number of roots"; more than one `ssh://` root stops
+with "cannot synchronize more than one remote root"; no `ssh://` root means
+the check does not apply. Parse the one remote root into user, host, port and
+path with the `clroot` rules. Derive the **effective remote command**: the
+exact string Unison would send, per the assembly above.
 
 Reuse: `ProfileDocument` for line parsing and `ProfileRootResolver`'s include
 lookup. New: `EffectiveProfile` (values with provenance), `PrefsTokenizer`
 (matching `splitIntoWords`), `RemoteCommand` (the assembled string and the
 `ssh` argument vector).
 
-### Step 2: discovery (first ssh session per host)
+### Step 2: discovery (first ssh session)
 
-One non-interactive session per remote host runs a single POSIX `sh` command
-that prints, between unique markers:
+One non-interactive session to the remote host runs a single POSIX `sh`
+command that prints, between unique markers:
 
 - `uname -s`;
 - for the effective remote executable and for each well-known candidate
@@ -154,10 +161,10 @@ The session ends there. Nothing is written.
 
 ### Step 3: selection (no ssh)
 
-The user is shown, per host, the effective command as Unison would send it
-and the discovered candidates with their stored link target and version line,
-then selects the intended executable or keeps the current setting. The check
-never selects on the user's behalf; with one candidate it still asks.
+The user is shown the effective command as Unison would send it and the
+discovered candidates with their stored link target and version line, then
+selects the intended executable or keeps the current setting. The check never
+selects on the user's behalf; with one candidate it still asks.
 
 Composition rules for a proposed setting, applied before anything is verified:
 
@@ -170,24 +177,20 @@ Composition rules for a proposed setting, applied before anything is verified:
   previewed line under the same provenance rules. A selection is never
   double-suffixed, and the setting that Unison will run is always the one that
   was verified.
-- Two or more remote roots share the one `servercmd`. A proposal is composed
-  only if the same selected path was chosen for every host; otherwise the
-  check reports the conflict ("host A's intended command is X, host B's is Y;
-  Unison has one `servercmd`") and offers no edit.
 
-### Step 4: verification (second ssh session per host)
+### Step 4: verification (second ssh session)
 
 The proposed profile is composed in memory, its effective remote command
 re-derived exactly as in step 1, and that command string (with ` -version`)
-is run on each host through the same `ssh` argument vector Unison would use,
-plus the non-interactive options. The check's `ssh` argument vector is
+is run on the remote host through the same `ssh` argument vector Unison would
+use, plus the non-interactive options. The check's `ssh` argument vector is
 specified as: `<sshcmd> -o BatchMode=yes -o ConnectTimeout=<t>
 -o StrictHostKeyChecking=yes [-l user] [-p port] <host> -e none <sshargs…>
 <remote command string>`, that is upstream's order with the three options
 inserted first. Outcomes are classified from exit status and stderr with the
 probe's existing rules (host key, authentication refused, timeout, connection
 refused, remote command not found, version parsed). An edit is offered only
-after this step succeeds on every host.
+after this step succeeds.
 
 ### Step 5: result wording
 
@@ -216,8 +219,8 @@ not say:
 
 ### Step 6: previewed, approved edits
 
-Offered only after step 4 succeeded on every host. Each edit is a diff of the
-exact file it touches, shown before an **Apply** button.
+Offered only after step 4 succeeded. Each edit is a diff of the exact file it
+touches, shown before an **Apply** button.
 
 - `servercmd` (and `addversionno` when composition requires it): if the
   winning assignment is in the top-level profile, replace that line in
@@ -270,10 +273,13 @@ of the app. The deployment target is unchanged.
   `addversionno` true/false, quoted and escaped values, equals what upstream's
   tokenizer-and-join would produce; the `ssh` argument vector equals this
   document's specification for roots with and without user and port.
+- Root-rule tests: a profile with one root, three roots, or two `ssh://`
+  roots stops before any ssh session with upstream's exact message ("Wrong
+  number of roots", "cannot synchronize more than one remote root"); a
+  profile with no `ssh://` root reports that the check does not apply.
 - Composition tests: suffix stripping when `addversionno` is true and the
   selection ends in `-<major>`; `addversionno = false` added otherwise; unsafe
-  characters produce no proposal; two hosts with different selections produce
-  no proposal.
+  characters produce no proposal.
 - Classification tests for every ssh outcome, with recorded stderr fixtures.
 - Edit tests: replace in place; override after the last directive with the
   include's other users named; refusal when a pass-through directive follows;
