@@ -185,7 +185,7 @@ already hold it. Leave it and skip this section if you prefer: the app works
 from the profile picker either way. For Homebrew installs of the app: with
 the formula linked, Homebrew installs the app but skips the <code>unison</code> link with
 a warning and the formula keeps the command; to give the command to the app,
-run <code>brew unlink unison</code> and then <code>brew reinstall --cask unison-ui-mac</code>.</p>
+run <code>brew unlink unison</code> and then <code>brew reinstall --cask unison-ui</code>.</p>
 <p>If the app is moved, the link dangles and <code>unison</code> reports "command not
 found"; recreate it. To uninstall the command, remove the link:</p>
 <pre><code class="language-sh">sudo rm /usr/local/bin/unison
@@ -235,17 +235,17 @@ that the link is still broken and still stores the target the dialog showed;
 otherwise nothing changes. Broken links to anything else are shown but never
 replaced by the app. Remove or fix those by hand only if you own them.</p>
 <p><strong>Formula and app.</strong> Homebrew's <code>unison</code> formula and this app can be installed
-together. With the formula linked, <code>brew install --cask unison-ui-mac</code> (or an
+together. With the formula linked, <code>brew install --cask unison-ui</code> (or an
 upgrade) installs the app but keeps the formula's command: Homebrew prints
 "already a Binary … from formula unison; skipping link", and
 <code>/opt/homebrew/bin/unison</code>, and any <code>servercmd</code> naming it, runs the formula,
 not the app. To give the command to the app:</p>
 <pre><code class="language-sh">brew unlink unison
 </code></pre>
-<pre><code class="language-sh">brew reinstall --cask unison-ui-mac
+<pre><code class="language-sh">brew reinstall --cask unison-ui
 </code></pre>
 <p>The formula stays installed, only unlinked. To give the command back to the
-formula later, remove the app's cask (<code>brew uninstall --cask unison-ui-mac</code>)
+formula later, remove the app's cask (<code>brew uninstall --cask unison-ui</code>)
 and run <code>brew link unison</code>.</p>
 <p><strong>Migrating from the legacy <code>unison-app</code> cask.</strong> Older setups have
 <code>/opt/homebrew/bin/unison</code> linked to upstream's <code>Unison.app</code> launcher by the
@@ -260,13 +260,13 @@ verified.</p>
 <li>Install or refresh the cask so that Homebrew runs its artifacts, which is
    what creates <code>/opt/homebrew/bin/unison</code> pointing at this app's launcher.
    The command depends on what Homebrew already records:
-   - the app is not installed through Homebrew: <code>brew install --cask unison-ui-mac</code>;
-   - it is installed and a newer version exists: <code>brew upgrade --cask unison-ui-mac</code>;
-   - it is installed and already current: <code>brew reinstall --cask unison-ui-mac</code>.
+   - the app is not installed through Homebrew: <code>brew install --cask unison-ui</code>;
+   - it is installed and a newer version exists: <code>brew upgrade --cask unison-ui</code>;
+   - it is installed and already current: <code>brew reinstall --cask unison-ui</code>.
      An upgrade with nothing newer to install does not recreate the link.
    Homebrew records the installed version in
    <code>/opt/homebrew/Caskroom/unison-ui-mac/</code> (also shown by
-   <code>brew info --cask unison-ui-mac</code>); check it and pick the matching case.
+   <code>brew info --cask unison-ui</code>); check it and pick the matching case.
    Check afterwards that the link exists and points into this app:
    <code>readlink /opt/homebrew/bin/unison</code>.</li>
 <li>Launch the app once from Finder.</li>
@@ -291,7 +291,7 @@ and re-verify.</p>
 receipt keeps the version Homebrew itself installed. A later
 <code>brew upgrade --cask --greedy unison-ui-mac</code> reinstalls the current version and
 brings the receipt up to date; when the receipt already matches the current
-version, <code>brew reinstall --cask unison-ui-mac</code> is the command that reruns the
+version, <code>brew reinstall --cask unison-ui</code> is the command that reruns the
 artifacts. If the formula owns the command at that time,
 the upgrade succeeds and leaves the command with the formula, as described
 above; that is the expected outcome, not a failed upgrade.</p>
