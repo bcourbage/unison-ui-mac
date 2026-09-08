@@ -479,6 +479,8 @@ enum VersionCheck {
         /// pipe (the settle wait expired with a descendant still holding
         /// it), so a partial transcript is never presented as complete.
         static let incompleteSentinel = "\n[collection stopped before end of output]"
+        /// Appended when a read error ended collection; the errno follows.
+        static let readErrorSentinelPrefix = "\n[output collection failed: "
 
         /// Collects one pipe through a dispatch read source. Bytes arrive in
         /// the event handler (the descriptor is non-blocking) and are kept
@@ -493,13 +495,19 @@ enum VersionCheck {
             private var dropped = 0
             private let eof = DispatchSemaphore(value: 0)
             private var eofSignalled = false
-            /// True only when a read returned 0 or a read error ended the
-            /// stream; false when `stop()` ended collection.
+            /// True only when a read returned 0 bytes. A read error does not
+            /// count as EOF; neither does `stop()`.
             private var reachedEOF = false
+            /// The errno of the read error that ended collection, if any.
+            private var readError: Int32?
             private let source: DispatchSourceRead
             private let fd: Int32
+            /// The read call; injectable so a read failure can be exercised.
+            private let readCall: (Int32, UnsafeMutableRawPointer, Int) -> Int
 
-            init(_ handle: FileHandle) {
+            init(_ handle: FileHandle,
+                 read readCall: @escaping (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }) {
+                self.readCall = readCall
                 fd = handle.fileDescriptor
                 _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
                 source = DispatchSource.makeReadSource(fileDescriptor: fd,
@@ -515,7 +523,7 @@ enum VersionCheck {
             private func drain() {
                 var buffer = [UInt8](repeating: 0, count: 65536)
                 while true {
-                    let n = read(fd, &buffer, buffer.count)
+                    let n = buffer.withUnsafeMutableBytes { readCall(fd, $0.baseAddress!, $0.count) }
                     if n > 0 {
                         lock.lock()
                         let room = SubprocessProbeExecutor.outputCap - bytes.count
@@ -524,17 +532,19 @@ enum VersionCheck {
                         lock.unlock()
                         continue
                     }
-                    if n == 0 { finish(); return }                       // EOF
-                    if errno == EAGAIN || errno == EINTR { return }        // wait for the next event
-                    finish(); return                                       // read error: treat as EOF
+                    if n == 0 { finish(atEOF: true, error: nil); return }         // EOF: the only complete ending
+                    let err = errno
+                    if err == EAGAIN || err == EINTR { return }                  // wait for the next event
+                    finish(atEOF: false, error: err); return                       // read error: ended, not complete
                 }
             }
 
-            private func finish() {
+            private func finish(atEOF: Bool, error: Int32?) {
                 lock.lock()
                 let first = !eofSignalled
                 eofSignalled = true
-                reachedEOF = true
+                if atEOF { reachedEOF = true }
+                if let error, readError == nil { readError = error }
                 lock.unlock()
                 if first { eof.signal() }
                 source.cancel()
@@ -542,17 +552,23 @@ enum VersionCheck {
 
             /// Waits up to `settle` for EOF, then returns everything kept,
             /// with the sentinel appended when bytes were dropped.
-            /// Three states are distinguished in the returned text: EOF
+            /// Four states are distinguished in the returned text: EOF
             /// reached (no marker), bytes dropped at the size cap
-            /// (`truncationSentinel`), and collection ending before EOF
-            /// (`incompleteSentinel`); both markers appear when both apply.
+            /// (`truncationSentinel`), a read error ending collection
+            /// (`readErrorSentinelPrefix` + strerror), and collection stopped
+            /// before EOF (`incompleteSentinel`); the cap marker combines with
+            /// either of the other two. Only a zero-byte read is EOF.
             /// Markers are trailing lines, so first-line parsing is unaffected.
             func snapshot(settle: TimeInterval) -> String {
                 _ = eof.wait(timeout: .now() + settle)
                 lock.lock(); defer { lock.unlock() }
                 var text = String(decoding: bytes, as: UTF8.self)
                 if dropped > 0 { text += SubprocessProbeExecutor.truncationSentinel }
-                if !reachedEOF { text += SubprocessProbeExecutor.incompleteSentinel }
+                if let readError {
+                    text += SubprocessProbeExecutor.readErrorSentinelPrefix + String(cString: strerror(readError)) + "]"
+                } else if !reachedEOF {
+                    text += SubprocessProbeExecutor.incompleteSentinel
+                }
                 return text
             }
 

@@ -137,6 +137,35 @@ final class RemoteCheckSessionTests: XCTestCase {
         try? pipe.fileHandleForWriting.close()
     }
 
+    func test_collector_readError_isMarkedAsFailure_notEOF() {
+        let pipe = Pipe()
+        var calls = 0
+        let collector = VersionCheck.SubprocessProbeExecutor.PipeCollector(pipe.fileHandleForReading) { fd, buf, count in
+            calls += 1
+            if calls == 1 { return Darwin.read(fd, buf, count) }   // deliver the real first chunk
+            errno = EIO; return -1                                  // then fail
+        }
+        pipe.fileHandleForWriting.write("part".data(using: .utf8)!)
+        let text = collector.snapshot(settle: 2.0)
+        XCTAssertTrue(text.hasPrefix("part"), text)
+        XCTAssertTrue(text.contains(VersionCheck.SubprocessProbeExecutor.readErrorSentinelPrefix + String(cString: strerror(EIO)) + "]"), text)
+        XCTAssertFalse(text.contains(VersionCheck.SubprocessProbeExecutor.incompleteSentinel), "a read error is its own state")
+        XCTAssertTrue(collector.isStopped, "a read error ends collection")
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    func test_collector_readErrorBeforeAnyOutput_isNotAnEmptyCompleteCapture() {
+        let pipe = Pipe()
+        let collector = VersionCheck.SubprocessProbeExecutor.PipeCollector(pipe.fileHandleForReading) { _, _, _ in
+            errno = EIO; return -1
+        }
+        pipe.fileHandleForWriting.write("x".data(using: .utf8)!)   // triggers a read event
+        let text = collector.snapshot(settle: 2.0)
+        XCTAssertNotEqual(text, "", "the reviewer's fixture: an empty string would look like a complete capture")
+        XCTAssertTrue(text.hasPrefix(VersionCheck.SubprocessProbeExecutor.readErrorSentinelPrefix), text)
+        try? pipe.fileHandleForWriting.close()
+    }
+
     func test_collector_boundsRetainedOutput() {
         let exec = VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 1.0)
         // 3 MiB of output, above the 1 MiB cap.
