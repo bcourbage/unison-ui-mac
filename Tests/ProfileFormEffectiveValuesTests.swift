@@ -165,6 +165,35 @@ final class ProfileFormEffectiveValuesTests: XCTestCase {
         XCTAssertTrue(saved.contains("sshargs = \n"))
     }
 
+    // MARK: - Include precedence changes after the editor opened (review round 2)
+
+    func test_includeGainsTheKeyAfterOpen_saveStillPlacesTheChangedValueToWin() throws {
+        try write("p.prf", "servercmd = /old\nroot = /a\nroot = ssh://h//b\ninclude common\n")
+        try write("common.prf", "sshargs = -i /k\n")
+        let c = make("p")
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/old")
+        // While the editor is open, the include gains a competing assignment.
+        try write("common.prf", "sshargs = -i /k\nservercmd = /other\n")
+        c.setRemoteFieldForTesting("servercmd", "/wanted")
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting)
+        guard case .success(let e) = EffectiveProfile.load(profile: "p", unisonDirectory: dir) else { return XCTFail() }
+        XCTAssertEqual(e.scalar("servercmd")?.value, "/wanted")
+        XCTAssertTrue(try read("p.prf").hasSuffix("# Overrides common.prf: set here so this value takes effect\nservercmd = /wanted\n"))
+    }
+
+    func test_includeBreaksAfterOpen_saveIsRefusedWithUnisonsMessage() throws {
+        try write("p.prf", "root = /a\nroot = ssh://h//b\ninclude common\n")
+        try write("common.prf", "sshargs = -i /k\n")
+        let c = make("p")
+        try write("common.prf", "garbled line\n")
+        c.setRemoteFieldForTesting("servercmd", "/x")
+        c.invokeSaveForTesting()
+        XCTAssertEqual(c.lastAlertForTesting?.text, "This setting can’t be changed here")
+        XCTAssertTrue(c.lastAlertForTesting?.info.contains("Garbled line") ?? false)
+        XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://h//b\ninclude common\n")
+    }
+
     // MARK: - Conflict control
 
     func test_preferOverInheritedForce_neutralizesForce() throws {

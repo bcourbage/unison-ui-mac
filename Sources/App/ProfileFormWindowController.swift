@@ -1158,13 +1158,31 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Write one surfaced scalar if, and only if, the control's value differs
     /// from the effective value loaded. Placement, include overrides and the
     /// per-key default rules live in `ProfileScalarSemantics`.
+    /// The effective profile as the includes are NOW, for Save-time placement.
+    /// The one loaded with the editor shows the user what was effective then;
+    /// placement must follow the includes as they are at the moment of writing,
+    /// or a line could land before an include that has since gained the key.
+    private var saveTimeEffective: EffectiveProfile?
+
+    /// Re-resolve the profile for this save. Throws when Unison would not load
+    /// the includes as they are now, since placement cannot be decided.
+    private func refreshEffectiveForSave() throws {
+        saveTimeEffective = nil
+        guard effectiveProfile != nil, let name = initialProfileName else { return }
+        switch EffectiveProfile.load(profile: name, unisonDirectory: unisonDirectory) {
+        case .success(let e): saveTimeEffective = e
+        case .failure(let err):
+            throw ScalarSaveError.refused("The profile's included files changed since it was opened and Unison would not load them as they are now:\n\(err.message)")
+        }
+    }
+
     private func writeScalar(_ key: String, _ formValue: String?, into doc: inout ProfileDocument) throws {
         // Compare against what the control would have written right after load,
         // so a literal the control normalizes (`default`, `yes`) does not read
         // as a change. Keys without a captured control value (log, logfile)
         // are written only when their own dirty tracking says so.
         if let initial = initialControlValue[key], initial == formValue { return }
-        guard let e = effectiveProfile, let name = initialProfileName else {
+        guard let e = saveTimeEffective, let name = initialProfileName else {
             doc.setValue(formValue, forKey: key)   // new profile: no includes to override
             return
         }
@@ -1183,6 +1201,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func formIntoDocument() throws -> ProfileDocument {
+        try refreshEffectiveForSave()
         var doc = prfDocument  // start from the loaded doc so comments/order survive
 
         // Roots: rewrite the entire `root` list from the two fields,
@@ -1225,7 +1244,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             let loadedSelection: ProfileScalarSemantics.ConflictSelection =
                 !loadedForce.isEmpty ? .force(loadedForce) : (!loadedPrefer.isEmpty ? .prefer(loadedPrefer) : .none)
             if selection != loadedSelection {
-                if let e = effectiveProfile, let name = initialProfileName {
+                if let e = saveTimeEffective, let name = initialProfileName {
                     for outcome in ProfileScalarSemantics.applyConflict(
                         selection, to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
                         if case .refused(let reason) = outcome { throw ScalarSaveError.refused(reason) }
