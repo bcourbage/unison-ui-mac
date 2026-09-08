@@ -644,6 +644,12 @@ enum VersionCheck {
                 }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
                     canceller.clearTeardown()
+                    // The exit may be the result of a cancel that fired during
+                    // this wait (its teardown SIGTERMs the child). Report that
+                    // as .cancelled, not as an exit with a signal status.
+                    if canceller.isCancelled {
+                        out.stop(); err.stop(); return .cancelled
+                    }
                     let (stdout, stderr) = collected()
                     return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
                 }
