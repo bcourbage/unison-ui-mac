@@ -338,11 +338,20 @@ not say:
   sides of the 2.52 boundary and cannot connect." with no proposal applied.
   After any other failure, the failure sentences with "This check did not
   verify the remote command. What it observed is above."
+- When the current command did not pass and discovery found other
+  installations, the status ends with "Choose Another Command lists the N
+  installations found on `host`." For status 127 on a bare command name, the
+  failure adds what discovery's `sh` saw: "During discovery, command -v unison
+  printed nothing inside sh either." or what it printed, noting that the login
+  shell resolved differently.
 - Where the sentences appear: the result headline and one status line sit
   directly under the Remote unison field. The observation sentences
   (connection, program found, version, PATH) are grouped under three plain
   labels in a **Details…** popover with **Copy Report**; on a failure the
-  popover opens by itself. No result sentence names which implementation the
+  popover opens by itself. Details exist only when there is more than the
+  status line says; a result whose only extra sentence is the closing shows
+  no Details button. Details… and Choose Another Command… sit on their own
+  row under the status, and no row may widen the window. No result sentence names which implementation the
   remote runs beyond what the version line printed; the check does not prefer
   this app.
 

@@ -186,6 +186,10 @@ enum RemoteCheckWording {
                 } else if discovery.wasAbsent(path) {
                     out.append("During discovery no file was found at \(path).")
                 }
+            } else if status == 127, executablePath == nil, let discovery, let cv = discovery.commandV {
+                out.append(cv.isEmpty
+                    ? "During discovery, command -v unison printed nothing inside sh either."
+                    : "During discovery, command -v unison printed \(cv) inside sh; the login shell that ran the command resolved differently.")
             }
         case (true, .exited):
             let first = o.firstStdoutLine ?? ""

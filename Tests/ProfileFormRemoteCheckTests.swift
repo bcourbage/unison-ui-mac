@@ -20,6 +20,8 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
     /// Answers discovery with a record and verification with a version line, echoing the marker from argv.
     private final class Remote: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
         var version = "unison version 2.54.0 (ocaml 5.5.0)"
+        /// The login shell has no `unison` in PATH: a bare-name command fails 127.
+        var bareUnisonMissing = false
         var sessions = 0
         var remoteCommands: [String] = []
         func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
@@ -32,6 +34,9 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
             }
             if let r = remote.range(of: "printf '") {
                 let m = String(remote[r.upperBound...].prefix { $0 != "'" })
+                if bareUnisonMissing, remote.contains("; unison -version") {
+                    return .exited(status: 127, stdout: m, stderr: "zsh:1: command not found: unison\n")
+                }
                 return .exited(status: 0, stdout: "\(m)\(version)\n", stderr: "")
             }
             return .launchFailed("unexpected command")
@@ -116,6 +121,36 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         c.invokeSaveForTesting()
         XCTAssertNil(c.lastAlertForTesting)
         XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\nservercmd = /opt/homebrew/bin/unison\n")
+    }
+
+    func test_currentCommandNotFound_statusPointsAtTheInstallationsFound_detailsOnlyWhenMore() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting,
+                       "The remote shell emitted the start marker; the command line then exited with status 127; stderr: zsh:1: command not found: unison. "
+                       + "Choose Another Command lists the installation found on demeter.")
+        XCTAssertTrue(c.chooseButtonVisibleForTesting)
+        XCTAssertTrue(c.detailsButtonVisibleForTesting, "discovery's command -v observation is one more fact")
+        XCTAssertTrue(c.checkReportForTesting.contains("During discovery, command -v unison printed nothing inside sh either."))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "", "a failed current command proposes nothing by itself")
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
+        XCTAssertTrue(c.detailsButtonVisibleForTesting)
+    }
+
+    func test_checkResult_doesNotWidenTheWindow() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        c.window?.contentView?.layoutSubtreeIfNeeded()
+        let before = c.window!.frame.width
+        _ = await c.runCheck()
+        c.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(c.chooseButtonVisibleForTesting && c.detailsButtonVisibleForTesting, "both secondary buttons are showing")
+        XCTAssertEqual(c.window!.frame.width, before, "a result must not resize the editor")
     }
 
     func test_keepCurrentSetting_afterAProposal_restoresTheFormAndTheCurrentResult() async throws {

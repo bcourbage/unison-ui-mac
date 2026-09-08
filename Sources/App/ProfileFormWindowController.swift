@@ -237,6 +237,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Secondary action after the current command was verified: the menu of
     /// other installations discovery found.
     private let checkChooseButton = NSButton(title: "Choose Another Command…", target: nil, action: nil)
+    /// Details… and Choose Another Command… share a second row that is hidden
+    /// until a result exists, so the primary row never outgrows the column.
+    private var checkSecondaryRow: NSStackView?
+    var detailsButtonVisibleForTesting: Bool { !checkDetailsButton.isHidden }
     /// The verification of the current command, restored by Keep current setting.
     private var checkCurrentResult: RemoteCheckFlow.Verification?
     /// The form as it stood when the check started, so Keep current setting
@@ -833,16 +837,32 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkChooseButton.target = self
         checkChooseButton.action = #selector(checkChooseTapped(_:))
         checkChooseButton.isHidden = true
-        let controlsRow = hstack([checkRemoteButton, checkProgress, checkDetailsButton, checkChooseButton, checkHelpButton])
+        for b in [checkDetailsButton, checkChooseButton] {
+            b.controlSize = .small
+            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        }
+        // Two rows, each allowed to be narrower than its buttons (clipping
+        // resistance below required): a row that insists on its full width
+        // has only the window left to grow, and the editor widened by itself
+        // whenever a result added buttons.
+        let controlsRow = hstack([checkRemoteButton, checkProgress, checkHelpButton])
         controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         controlsRow.setHuggingPriority(.required, for: .vertical)
+        controlsRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        let secondaryRow = hstack([checkDetailsButton, checkChooseButton])
+        secondaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        secondaryRow.setHuggingPriority(.required, for: .vertical)
+        secondaryRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        secondaryRow.isHidden = true
+        checkSecondaryRow = secondaryRow
         let statusRow = NSStackView(views: [checkStatusLabel])
         statusRow.orientation = .horizontal
         statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         statusRow.setHuggingPriority(.required, for: .vertical)
+        statusRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
         statusRow.isHidden = true
         checkStatusRow = statusRow
-        let v = NSStackView(views: [controlsRow, statusRow])
+        let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
         v.setHuggingPriority(.required, for: .vertical)
         return v
@@ -852,6 +872,19 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkStatusLabel.stringValue = text ?? ""
         checkStatusLabel.isHidden = (text == nil)
         checkStatusRow?.isHidden = (text == nil)
+    }
+
+    private func refreshCheckSecondaryRow() {
+        checkSecondaryRow?.isHidden = checkDetailsButton.isHidden && checkChooseButton.isHidden
+    }
+
+    /// Where to find what discovery turned up, for a current command that did
+    /// not pass.
+    private func alternativesSentence(host: String) -> String? {
+        let n = checkDiscovery?.rows.filter { $0.selectionPath != nil }.count ?? 0
+        guard n > 0 else { return nil }
+        return n == 1 ? "Choose Another Command lists the installation found on \(host)."
+                      : "Choose Another Command lists the \(n) installations found on \(host)."
     }
 
     @objc private func checkHelpTapped(_ sender: NSButton) {
@@ -900,6 +933,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         cancelCheck()
         checkResult = nil; checkReport = []; checkDetailsButton.isHidden = true
         checkChooseButton.isHidden = true
+        refreshCheckSecondaryRow()
         checkCurrentResult = nil
         checkFieldAtStart = servercmdField.stringValue
         checkAdvancedAtStart = advancedView.values
@@ -1045,11 +1079,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 proposalChangedAdvanced = true
             }
         }
-        if selection == .keepCurrent { checkCurrentResult = v }
         // Alternatives are a secondary action once the current command has
         // an answer, whatever that answer is.
         checkChooseButton.isHidden = !(checkDiscovery?.rows.contains { $0.selectionPath != nil } ?? false)
         var headline = v.headline
+        if selection == .keepCurrent, v.compatible != true, v.verdict != .cancelled, let more = alternativesSentence(host: prepared.host) {
+            headline += " " + more
+        }
+        if selection == .keepCurrent {
+            checkCurrentResult = RemoteCheckFlow.Verification(
+                verdict: v.verdict, observation: v.observation, headline: headline, details: v.details, closing: v.closing,
+                proposal: v.proposal, proposalRefusal: v.proposalRefusal, compatible: v.compatible)
+        }
         if v.proposal != nil {
             headline += v.proposal?.setsAddversionnoFalse == true
                 ? " Remote unison is set to it and addversionno to false; Save to keep the change."
@@ -1061,8 +1102,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     private func showCheckReport(headline: String, details: [String], closing: String, openDetails: Bool) {
         setCheckStatus(headline)
-        checkReport = [headline] + details + (closing.isEmpty ? [] : [closing])
-        checkDetailsButton.isHidden = details.isEmpty && closing.isEmpty
+        // Details exist only when there is more than the status line says; a
+        // popover repeating the headline with a closing sentence adds nothing.
+        checkReport = details.isEmpty ? [headline] : [headline] + details + (closing.isEmpty ? [] : [closing])
+        checkDetailsButton.isHidden = details.isEmpty
+        refreshCheckSecondaryRow()
         if openDetails, !checkDetailsButton.isHidden, window?.isVisible == true { checkDetailsTapped(checkDetailsButton) }
     }
 
@@ -1095,6 +1139,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkResult = nil; checkDiscovery = nil; checkReport = []; checkCurrentResult = nil
         checkDetailsButton.isHidden = true
         checkChooseButton.isHidden = true
+        refreshCheckSecondaryRow()
         setCheckStatus("Not checked since the last change.")
     }
 
