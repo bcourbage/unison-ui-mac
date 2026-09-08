@@ -143,6 +143,28 @@ final class ProfileFormEffectiveValuesTests: XCTestCase {
         XCTAssertEqual(try read("p.prf"), "root = /a\nroot = /b\nignore = Name x\nservercmd = /three\n")
     }
 
+    // MARK: - Unchanged controls with normalized literals (review round 1)
+
+    func test_literalDefaultAndYes_unchanged_areNotRewritten() throws {
+        // `fastcheck = default` loads as the Default state; `rsrc = yes` as On
+        // (createBoolWithDefault accepts yes/no/default; createBool keys such as
+        // `times` accept only true/false and are refused by Unison otherwise).
+        // An unrelated save must leave these lines exactly as they are, and the
+        // include's fastcheck = false must stay hidden behind the local default.
+        let original = "root = /a\nroot = /b\ninclude common\nfastcheck = default\nrsrc = yes\nsshargs = \n"
+        try write("p.prf", original)
+        try write("common.prf", "fastcheck = false\n")
+        let c = make("p")
+        c.setRemoteFieldForTesting("clientHostName", "box")   // an unrelated change
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting)
+        let saved = try read("p.prf")
+        XCTAssertTrue(saved.hasPrefix(original), saved)
+        XCTAssertTrue(saved.contains("fastcheck = default\n"))
+        XCTAssertTrue(saved.contains("rsrc = yes\n"))
+        XCTAssertTrue(saved.contains("sshargs = \n"))
+    }
+
     // MARK: - Conflict control
 
     func test_preferOverInheritedForce_neutralizesForce() throws {

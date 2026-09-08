@@ -196,9 +196,14 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// the document; nil for a new profile or when the load failed. Surfaced
     /// scalars display its effective values, with provenance notes.
     private var effectiveProfile: EffectiveProfile?
-    /// Effective value of each surfaced scalar at load (nil = Unison's default).
-    /// Save writes only controls whose value differs from this.
+    /// Effective value of each surfaced scalar at load (nil = Unison's default),
+    /// as written in the file. Used for provenance and the conflict control.
     private var loadedScalar: [String: String?] = [:]
+    /// What each surfaced scalar control would write if saved right after load:
+    /// the loaded value passed through the control's own normalization (a
+    /// literal `fastcheck = default` or `times = yes` maps to the control state
+    /// and back). Save writes only controls whose current output differs.
+    private var initialControlValue: [String: String?] = [:]
     /// Provenance notes per key ("From common.prf, line 3"); hidden when Default or Local.
     private var scalarNotes: [String: NSTextField] = [:]
     /// Shown when a surfaced scalar is set more than once in the top-level file.
@@ -916,7 +921,47 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         includesDirty = false
         refreshIncludesBanner()
         refreshScalarNotes()
+        captureInitialControlValues()
         applyEditability()
+    }
+
+    /// The value a surfaced scalar control would write now (nil = default).
+    private func controlValue(for key: String) -> String? {
+        switch key {
+        case "servercmd": return blankToNil(servercmdField.stringValue)
+        case "sshcmd": return blankToNil(sshcmdField.stringValue)
+        case "sshargs": return blankToNil(sshargsField.stringValue)
+        case "clientHostName": return blankToNil(clientHostNameField.stringValue)
+        case "times": return triStateValue(timesPopup)
+        case "rsrc": return triStateValue(rsrcPopup)
+        case "owner": return triStateValue(ownerPopup)
+        case "group": return triStateValue(groupPopup)
+        case "dontchmod": return triStateValue(dontchmodPopup)
+        case "confirmbigdel": return triStateValue(confirmbigdelPopup)
+        case "auto": return triStateValue(autoPopup)
+        case "fastcheck": return triStateValue(fastcheckPopup)
+        case "perms":
+            switch permsPopup.indexOfSelectedItem {
+            case 1: return "0"
+            case 2: return blankToNil(permsMaskField.stringValue)
+            default: return nil
+            }
+        default: return nil
+        }
+    }
+
+    private func blankToNil(_ s: String) -> String? {
+        let v = s.trimmingCharacters(in: .whitespaces)
+        return v.isEmpty ? nil : v
+    }
+
+    private static let comparedScalarKeys = ["servercmd", "sshcmd", "sshargs", "clientHostName",
+                                             "times", "rsrc", "owner", "group", "dontchmod",
+                                             "confirmbigdel", "auto", "fastcheck", "perms"]
+
+    private func captureInitialControlValues() {
+        initialControlValue = [:]
+        for key in Self.comparedScalarKeys { initialControlValue[key] = controlValue(for: key) }
     }
 
     /// The effective value of a surfaced scalar at load, recorded so Save can
@@ -1114,8 +1159,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// from the effective value loaded. Placement, include overrides and the
     /// per-key default rules live in `ProfileScalarSemantics`.
     private func writeScalar(_ key: String, _ formValue: String?, into doc: inout ProfileDocument) throws {
-        let loaded: String? = loadedScalar[key] ?? nil
-        guard loaded != formValue else { return }
+        // Compare against what the control would have written right after load,
+        // so a literal the control normalizes (`default`, `yes`) does not read
+        // as a change. Keys without a captured control value (log, logfile)
+        // are written only when their own dirty tracking says so.
+        if let initial = initialControlValue[key], initial == formValue { return }
         guard let e = effectiveProfile, let name = initialProfileName else {
             doc.setValue(formValue, forKey: key)   // new profile: no includes to override
             return
@@ -1129,13 +1177,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// The remote scalars whose control differs from the loaded effective value.
     private var changedRemoteScalars: [String] {
-        var out: [String] = []
-        for (field, key) in [(servercmdField, "servercmd"), (sshcmdField, "sshcmd"),
-                             (sshargsField, "sshargs"), (clientHostNameField, "clientHostName")] {
-            let v = field.stringValue.trimmingCharacters(in: .whitespaces)
-            if (loadedScalar[key] ?? nil) != (v.isEmpty ? nil : v) { out.append(key) }
+        ["servercmd", "sshcmd", "sshargs", "clientHostName"].filter { key in
+            (initialControlValue[key] ?? nil) != controlValue(for: key)
         }
-        return out
     }
 
     private func formIntoDocument() throws -> ProfileDocument {
@@ -1160,34 +1204,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Remote connection keys, owned by Roots → Remote Connection. Written
         // only when changed from the loaded effective value; a blank field
         // means Unison's default.
-        for (field, key) in [(servercmdField, "servercmd"),
-                             (sshcmdField, "sshcmd"),
-                             (sshargsField, "sshargs"),
-                             (clientHostNameField, "clientHostName")] {
-            let v = field.stringValue.trimmingCharacters(in: .whitespaces)
-            try writeScalar(key, v.isEmpty ? nil : v, into: &doc)
+        for key in Self.comparedScalarKeys {
+            try writeScalar(key, controlValue(for: key), into: &doc)
         }
-
-        // File attributes (tri-state booleans + perms). Default → Unison's default.
-        try writeScalar("times", triStateValue(timesPopup), into: &doc)
-        try writeScalar("rsrc", triStateValue(rsrcPopup), into: &doc)
-        try writeScalar("owner", triStateValue(ownerPopup), into: &doc)
-        try writeScalar("group", triStateValue(groupPopup), into: &doc)
-        try writeScalar("dontchmod", triStateValue(dontchmodPopup), into: &doc)
-        let permsValue: String?
-        switch permsPopup.indexOfSelectedItem {
-        case 1: permsValue = "0"
-        case 2:
-            let m = permsMaskField.stringValue.trimmingCharacters(in: .whitespaces)
-            permsValue = m.isEmpty ? nil : m
-        default: permsValue = nil
-        }
-        try writeScalar("perms", permsValue, into: &doc)
-
-        // Options (tri-state behavior prefs).
-        try writeScalar("confirmbigdel", triStateValue(confirmbigdelPopup), into: &doc)
-        try writeScalar("auto", triStateValue(autoPopup), into: &doc)
-        try writeScalar("fastcheck", triStateValue(fastcheckPopup), into: &doc)
 
         // Conflict handling. The popup maps to one selection; upstream gives a
         // nonempty `force` precedence over `prefer`, so the semantics write both

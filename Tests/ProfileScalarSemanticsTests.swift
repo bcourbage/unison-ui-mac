@@ -206,6 +206,39 @@ final class ProfileScalarSemanticsTests: XCTestCase {
         XCTAssertEqual(text, "root = /a\nroot = /b\nprefer = /b\nforce = /a\n")
     }
 
+    // MARK: - Clearing a local override with an inherited value beneath (review round 1)
+
+    func test_clear_localOverrideWithIncludeBeneath_writesDefaultOverride_notRemoval() throws {
+        try write("p.prf", "root = /a\nroot = /b\ninclude common\nservercmd = /top\n")
+        try write("common.prf", "servercmd = /inc\n")
+        let text = try save("p") { doc, e in
+            XCTAssertEqual(S.apply(.clear, forKey: "servercmd", to: &doc, effective: e, topLevelPath: self.top("p")), .written)
+        }
+        XCTAssertFalse(text.contains("servercmd = /top"))
+        XCTAssertTrue(text.hasSuffix("# Overrides common.prf: set here so this value takes effect\nservercmd = \n"), text)
+        XCTAssertEqual(try effective("p").scalar("servercmd")?.value, "", "the include's /inc must not resurface")
+    }
+
+    func test_conflict_preferOverLocalForceWithInheritedForceBeneath_neutralizesBoth() throws {
+        // The reviewer's case: include sets force = /a; top level overrides with force = /b.
+        try write("p.prf", "root = /a\nroot = /b\ninclude common\nforce = /b\n")
+        try write("common.prf", "force = /a\n")
+        _ = try save("p") { doc, e in S.applyConflict(.prefer("/b"), to: &doc, effective: e, topLevelPath: self.top("p")) }
+        let e = try effective("p")
+        XCTAssertEqual(e.scalar("force")?.value, "", "force is neutralized, not reverted to /a")
+        XCTAssertEqual(e.scalar("prefer")?.value, "/b")
+    }
+
+    func test_consumerScan_followsSymlinkedSource() throws {
+        try write("edited.prf", "servercmd = /x\n")
+        try FileManager.default.createSymbolicLink(atPath: "\(dir!)/alias", withDestinationPath: "edited.prf")
+        try write("consumer.prf", "root = /c\nroot = ssh://h//d\nsource alias\n")
+        let r = ProfileConsumerScan.scan(unisonDirectory: dir, targetPath: top("edited"), excludingProfile: "edited")
+        XCTAssertEqual(r.consumers.map(\.profile), ["consumer"])
+        XCTAssertEqual(r.consumers.first?.host, "h")
+        XCTAssertTrue(r.unresolved.isEmpty)
+    }
+
     // MARK: - Consumer scan
 
     func test_consumerScan_directAndTransitive_withHosts_andUnresolved() throws {

@@ -30,9 +30,11 @@ struct ScalarState: Equatable {
 /// - a line appended or moved to override an include is preceded by one
 ///   generated comment naming the include; the comment is recognized by its
 ///   text and reused, so repeated saves do not accumulate comments;
-/// - clearing an inherited value writes an explicit assignment that reproduces
-///   Unison's default for that key, because removing a top-level line cannot
-///   override an include. Keys whose default is computed are refused.
+/// - clearing a value writes an explicit assignment that reproduces Unison's
+///   default for that key whenever any include sets the key, because removing
+///   the top-level lines would let the include's value take effect; with no
+///   include setting the key the top-level lines are removed. Keys whose
+///   default is computed are refused.
 ///
 /// Included files are never edited.
 enum ProfileScalarSemantics {
@@ -60,6 +62,16 @@ enum ProfileScalarSemantics {
     static func overridingInclude(for key: String, effective: EffectiveProfile, topLevelPath: String) -> String? {
         guard let last = effective.list(key).last else { return nil }
         if samePath(last.location.path, topLevelPath) { return nil }
+        return displayName(last.location.path)
+    }
+
+    /// The included file whose assignment of `key` would become effective if
+    /// every top-level line for the key were removed: the last include
+    /// assignment in spliced order, wherever the top-level lines sit. Nil when
+    /// no include sets the key.
+    static func includeSetting(_ key: String, effective: EffectiveProfile, topLevelPath: String) -> String? {
+        let fromIncludes = effective.list(key).filter { !samePath($0.location.path, topLevelPath) }
+        guard let last = fromIncludes.last else { return nil }
         return displayName(last.location.path)
     }
 
@@ -139,7 +151,10 @@ enum ProfileScalarSemantics {
             }
             return .written
         case .clear:
-            guard let include else {
+            // Removing the top-level lines is enough only when no include sets
+            // the key at all; otherwise the include's value would become
+            // effective, so the default must be written as an override.
+            guard let include = includeSetting(key, effective: effective, topLevelPath: topLevelPath) else {
                 doc.setValue(nil, forKey: key)
                 return .written
             }
@@ -227,6 +242,14 @@ enum ProfileScalarSemantics {
         (a as NSString).standardizingPath == (b as NSString).standardizingPath
     }
 
+    /// The path with every symlink resolved (`realpath(3)`), falling back to
+    /// the standardized spelling when it does not exist.
+    static func canonicalPath(_ path: String) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        if let r = realpath(path, &buffer) { return String(cString: r) }
+        return (path as NSString).standardizingPath
+    }
+
     static func displayName(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
@@ -253,10 +276,12 @@ enum ProfileConsumerScan {
     }
 
     /// Scan every `.prf` in `unisonDirectory` other than `excludingProfile`
-    /// and report which ones read `targetPath` (canonical comparison).
+    /// and report which ones read `targetPath`. Paths are compared with
+    /// symlinks resolved, so a profile that reaches the target through
+    /// `source alias` or an aliased directory is a consumer.
     static func scan(unisonDirectory: String, targetPath: String, excludingProfile: String,
                      read: @escaping (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead) -> Result {
-        let target = (targetPath as NSString).standardizingPath
+        let target = ProfileScalarSemantics.canonicalPath(targetPath)
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: unisonDirectory)) ?? [])
             .filter { $0.hasSuffix(".prf") }
             .map { String($0.dropLast(4)) }
@@ -267,7 +292,7 @@ enum ProfileConsumerScan {
         for name in names {
             switch EffectiveProfile.load(profile: name, unisonDirectory: unisonDirectory, read: read) {
             case .success(let profile):
-                let reads = profile.files.contains { ($0 as NSString).standardizingPath == target }
+                let reads = profile.files.contains { ProfileScalarSemantics.canonicalPath($0) == target }
                 if reads {
                     let host = profile.roots.lazy.compactMap { root -> String? in
                         if case .shell(_, let h, _, _, _) = try? UnisonRoot.parse(root) { return h }
