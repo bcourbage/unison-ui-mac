@@ -339,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     private func makeReconcileWindow(session s: SessionID, profile: String,
                                      mergeConfigured: Bool) -> ReconcileWindowController {
-        ReconcileWindowController(
+        let w = ReconcileWindowController(
             profile: profile,
             mergeConfigured: mergeConfigured,
             onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
@@ -381,6 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self?.abandonDiff(session: s)
             }
         )
+        w.onRemoteCheckRequested = { [weak self] profile in self?.checkRemoteCommand(forProfile: profile) }
+        return w
     }
 
     /// Issue a diff for `row` on behalf of `session`. Engine ownership is taken
@@ -673,8 +675,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // keeps no parallel "restartRequired" boolean, and each window latches
         // its own display-gating flag in `showRestartRequired`.
         log.write("engine restart required: \(reason)")
-        for (_, w) in windowBySession { w.showRestartRequired(reason: reason) }
+        // The failed-connection entry point into Check Remote Command: offered
+        // only when the connection never completed and the profile has an ssh
+        // root; worded as a diagnostic, not as the cause.
+        let failedWhileConnecting = engine.restartRequiredWhileConnecting
+        let offers: (String) -> Bool = { [unisonDirectory] profile in
+            RemoteCheckOfferPolicy.offers(
+                failedWhileConnecting: failedWhileConnecting,
+                roots: RemoteCheckOfferPolicy.roots(profile: profile, unisonDirectory: unisonDirectory))
+        }
+        for (s, w) in windowBySession {
+            w.showRestartRequired(reason: reason, offerRemoteCheck: profileBySession[s].map(offers) ?? false)
+        }
         if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason) }
+        let offeredProfile = lastAttemptedProfile.flatMap { offers($0) ? $0 : nil }
         // Always surface a modal notice, not only the inline window text (issue
         // #35 correction 3): a fatal/restart condition must be unmissable even
         // when a reconcile or waiting window is open. Deduplicated by
@@ -682,7 +696,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // user keeps picking profiles) never stack a second dialog. The inline
         // latch above stays so the window still reflects the state behind/after
         // the modal (e.g. if the user chooses "Later").
-        presentAppLevelRestartRequired(reason: reason)
+        presentAppLevelRestartRequired(reason: reason, remoteCheckProfile: offeredProfile)
+    }
+
+    /// Check Remote Command for `profile` from the picker menu or the
+    /// failed-connection offer: the Profile Editor opens (or comes forward)
+    /// and its form runs the check at the Roots section.
+    func checkRemoteCommand(forProfile profile: String) {
+        log.write("check remote command requested for '\(profile)'")
+        showProfileEditor(nil)
+        profileEditorWindowController?.openFormForRemoteCheck(profile: profile)
     }
 
     /// True while the app-level restart-required alert is on screen, so
@@ -702,20 +725,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// picker, else app-modal. `profileWindowController` may still own a closed,
     /// invisible picker window, so anchoring blindly to it would put the sheet on
     /// a window the user cannot see.
-    private func presentAppLevelRestartRequired(reason: String) {
+    private func presentAppLevelRestartRequired(reason: String, remoteCheckProfile: String? = nil) {
         guard !restartAlertVisible else { return }
         restartAlertVisible = true
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Unison needs to be restarted"
-        alert.informativeText = reason.isEmpty
+        var text = reason.isEmpty
             ? "Quit Unison and open it again to continue."
             : "\(reason)\n\nQuit Unison and open it again to continue."
+        if remoteCheckProfile != nil {
+            text += " You can check the remote command for this profile first."
+        }
+        alert.informativeText = text
         alert.addButton(withTitle: "Quit Unison")
         alert.addButton(withTitle: "Later")
+        if remoteCheckProfile != nil { alert.addButton(withTitle: "Check Remote Command…") }
         let handler: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
             self?.restartAlertVisible = false
             if resp == .alertFirstButtonReturn { NSApp.terminate(nil) }
+            if resp == .alertThirdButtonReturn, let profile = remoteCheckProfile {
+                self?.checkRemoteCommand(forProfile: profile)
+            }
         }
         // Ordered candidate windows: reconcile session windows, then the waiting
         // window. The pure selector picks the first VISIBLE one.
@@ -1738,6 +1769,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile in
                 self?.profileSelected(profile)
             }
+        controller.onRemoteCheckRequested = { [weak self] profile in
+            self?.checkRemoteCommand(forProfile: profile)
+        }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         // Apply explicit selection AFTER showing/keying — the

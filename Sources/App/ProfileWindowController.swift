@@ -12,7 +12,12 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
 
     private let unisonDirectory: String
     private let onComplete: Completion
+    /// Set by the owner: the context menu's Check Remote Command for a profile.
+    var onRemoteCheckRequested: ((String) -> Void)?
     private var profiles: [String] = []
+    /// The row the context menu was opened on, or the selection when the
+    /// menu came from the keyboard.
+    private var contextRow: Int?
 
     private let tableView = NSTableView()
     // "Run" matches the CLI verb (`unison <profile>`) and the workflow —
@@ -70,6 +75,15 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         tableView.doubleAction = #selector(runSelected)
         tableView.style = .inset
         tableView.rowSizeStyle = .default
+        // Context menu: Run (as the button) and the remote-command check,
+        // which opens the profile in the editor at its Roots section. The
+        // picker stays pure otherwise; managing profiles lives in the
+        // Profile Editor.
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.addItem(withTitle: "Run", action: #selector(runFromMenu(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Check Remote Command…", action: #selector(checkRemoteFromMenu(_:)), keyEquivalent: "").target = self
+        tableView.menu = menu
 
         let scroll = NSScrollView()
         scroll.documentView = tableView
@@ -203,12 +217,54 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         NSApp.terminate(nil)
     }
 
+    var contextMenuTitlesForTesting: [String] { tableView.menu?.items.map(\.title) ?? [] }
+
+    /// The profile a context-menu command acts on: the clicked row, else the
+    /// selection.
+    private func contextProfile() -> String? {
+        if let row = contextRow, profiles.indices.contains(row) { return profiles[row] }
+        return currentlySelectedProfile()
+    }
+
+    @objc private func runFromMenu(_ sender: Any?) {
+        guard let profile = contextProfile() else { NSSound.beep(); return }
+        TraceLog.shared.write("ProfileWindow: menu Run '\(profile)'")
+        onComplete(profile)
+    }
+
+    @objc private func checkRemoteFromMenu(_ sender: Any?) {
+        guard let profile = contextProfile() else { NSSound.beep(); return }
+        TraceLog.shared.write("ProfileWindow: menu Check Remote Command '\(profile)'")
+        onRemoteCheckRequested?(profile)
+    }
+
+    func performContextCommandForTesting(title: String, row: Int) {
+        contextRow = row
+        if title == "Run" { runFromMenu(nil) } else if title == "Check Remote Command…" { checkRemoteFromMenu(nil) }
+        contextRow = nil
+    }
+
     @objc private func runSelected() {
         let row = tableView.selectedRow
         guard row >= 0, row < profiles.count else { NSSound.beep(); return }
         let profile = profiles[row]
         TraceLog.shared.write("ProfileWindow: selected '\(profile)' — handing off to AppDelegate")
         onComplete(profile)
+    }
+}
+
+extension ProfileWindowController: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        let clicked = tableView.clickedRow
+        contextRow = clicked >= 0 ? clicked : nil
+        if let row = contextRow {
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+    }
+    func menuDidClose(_ menu: NSMenu) {
+        // Keep the row for the action that follows the close; clear on the
+        // next turn of the run loop.
+        DispatchQueue.main.async { [weak self] in self?.contextRow = nil }
     }
 }
 

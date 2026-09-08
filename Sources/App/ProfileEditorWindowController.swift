@@ -420,6 +420,43 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         formController = form
     }
 
+    /// Check Remote Command for `profile` from outside this window. An editor
+    /// already open on that profile is reused as it stands; one open on another
+    /// profile is brought forward and named instead of being replaced, since
+    /// replacing it would discard its edits.
+    func openFormForRemoteCheck(profile: String) {
+        let openProfile: String? = (formController?.window?.isVisible == true) ? formController?.editingProfileName : nil
+        switch RemoteCheckOfferPolicy.route(openEditorProfile: openProfile, target: profile) {
+        case .reuseOpen:
+            formController?.window?.makeKeyAndOrderFront(nil)
+            formController?.beginRemoteCheck()
+        case .blockedBy(let other):
+            formController?.window?.makeKeyAndOrderFront(nil)
+            let alert = NSAlert()
+            alert.messageText = "Finish editing “\(other)” first"
+            alert.informativeText = "The profile editor is open on “\(other)”. Save or close it, then check the remote command for “\(profile)”."
+            alert.addButton(withTitle: "OK")
+            if let w = formController?.window, !suppressAlertsForTesting {
+                alert.beginSheetModal(for: w) { _ in }
+            }
+            lastEntryAlertForTesting = alert.messageText
+        case .openNew:
+            if let idx = profiles.firstIndex(of: profile) {
+                tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                tableView.scrollRowToVisible(idx)
+            }
+            openForm(for: profile)
+            // openForm declines while Settings is open; only a form on this
+            // profile starts the check.
+            guard let form = formController, form.editingProfileName == profile else { return }
+            form.beginRemoteCheck()
+        }
+    }
+
+    var suppressAlertsForTesting = false
+    private(set) var lastEntryAlertForTesting: String?
+    var formControllerForTesting: ProfileFormWindowController? { formController }
+
     private func handleFormSaved(savedName: String, wasNew: Bool) {
         TraceLog.shared.write("ProfileEditor: form saved '\(savedName)' (new=\(wasNew))")
         // Re-read prefs from disk first — the form may have mutated

@@ -37,6 +37,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     // successfully, so a failed save leaves the controller's identity matching
     // the (unchanged) on-disk state and a retry behaves correctly (Finding #11).
     private var initialProfileName: String?   // nil = new profile
+    /// The profile this editor opened on (nil for a new profile).
+    var editingProfileName: String? { initialProfileName }
+    var shownSectionTitleForTesting: String? { shownSectionIndex.map { sectionViews[$0].title } }
+    private var shownSectionIndex: Int?
     private let onSaved: SaveCompletion
     private var prfDocument: ProfileDocument
 
@@ -674,8 +678,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// Swap the right-side container to show the selected section. Views
     /// are reused (the array retains them), so control state persists.
+    /// Entry point for the picker menu and the failed-connection offer:
+    /// shows the Roots section and starts the check against the form as it
+    /// stands, so an editor that was already open keeps its edits.
+    func beginRemoteCheck() {
+        if let i = sectionViews.firstIndex(where: { $0.title == "Roots" }) {
+            if let row = visibleSectionIndices.firstIndex(of: i) {
+                sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            showSection(i)
+        }
+        Task { await self.runCheck() }
+    }
+
     private func showSection(_ index: Int) {
         guard sectionViews.indices.contains(index) else { return }
+        shownSectionIndex = index
         refreshIncludesBanner()
         sectionContainer.subviews.forEach { $0.removeFromSuperview() }
         let v = sectionViews[index].view

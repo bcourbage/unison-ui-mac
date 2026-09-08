@@ -139,15 +139,24 @@ that failure under the field and opens no session. The check runs against the
 profile as the form currently has it: the form's Remote unison, SSH command,
 SSH args and roots, composed with the effective settings from the profile's
 includes on disk. No save is required before checking; the user saves after
-seeing the result. The profile picker's context menu offers the same command,
-which opens the editor at that section and starts the check.
+seeing the result. The profile picker's context menu (**Run**, **Check Remote
+Command…**) offers the same command, which opens the profile in the Profile
+Editor at that section and starts the check; the picker itself stays a pure
+list, so no other management command joins the menu.
 
 A second entry point is a failed connection: when a sync cannot connect to an
-ssh root, the reconcile window's error offers **Check Remote Command…**, worded
-as a diagnostic ("Check the remote command for this profile") without claiming
-the remote command caused the failure. It opens the exact profile that failed;
-if an editor for it is already open with unsaved changes, that window is
-brought forward and its state preserved.
+ssh root, the restart notice and the reconcile window's summary offer **Check
+Remote Command…**, worded as a diagnostic ("You can check the remote command
+for this profile first") without claiming the remote command caused the
+failure. The offer appears only when the failure happened while connecting
+(the coordinator records that the restart was entered from its opening phase)
+and the profile's effective roots include an `ssh://` root; a scan or sync
+failure makes no offer. It opens the exact profile that failed; if an editor
+for it is already open, that window is brought forward and the check runs
+against the form as it stands, so unsaved edits survive. An editor open on a
+different profile is brought forward and named instead of being replaced.
+The check runs its own ssh subprocess, so it works while the engine is in its
+restart-required state.
 
 ### Step 1: effective settings
 
@@ -523,6 +532,5 @@ of the app. The deployment target is unchanged.
 
 ## Open questions
 
-- Offering Check Remote from the reconcile window after a connect failure.
 - Whether the version-mismatch probe on open should reuse this check's
   results; not in the first implementation.

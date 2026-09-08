@@ -141,6 +141,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// summary label also picks up the full text as a `toolTip` so the
     /// detail is one hover away.
     private let statusDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    /// Shown by `showRestartRequired` when the connection never completed
+    /// and the profile has an ssh root; opens the editor's check for this
+    /// window's exact profile.
+    private let checkRemoteButton = NSButton(title: "Check Remote Command…", target: nil, action: nil)
+    /// Set by the owner; receives this window's profile name.
+    var onRemoteCheckRequested: ((String) -> Void)?
+    var remoteCheckOfferVisibleForTesting: Bool { !checkRemoteButton.isHidden }
+    func requestRemoteCheckForTesting() { checkRemoteTapped(checkRemoteButton) }
     /// Cached full text for the Details button. Reset on every status
     /// update so we never show stale messages.
     private var lastMultiLineStatus: String?
@@ -419,6 +427,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusDetailsButton.controlSize = .small
         statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusDetailsButton.isHidden = true
+        checkRemoteButton.target = self
+        checkRemoteButton.action = #selector(checkRemoteTapped(_:))
+        checkRemoteButton.bezelStyle = .inline
+        checkRemoteButton.controlSize = .small
+        checkRemoteButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        checkRemoteButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
         // Column titles use the upstream manual's terminology: the two
@@ -481,7 +495,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusIcon.isHidden = true
         statusIcon.setContentHuggingPriority(.required, for: .horizontal)
         statusIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let summaryRow = NSStackView(views: [statusIcon, summaryLabel, statusDetailsButton])
+        let summaryRow = NSStackView(views: [statusIcon, summaryLabel, statusDetailsButton, checkRemoteButton])
         summaryRow.orientation = .horizontal
         summaryRow.spacing = 6
         summaryRow.alignment = .firstBaseline
@@ -501,6 +515,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         summaryLabel.setContentCompressionResistancePriority(
             .defaultLow, for: .horizontal)
         statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
+        checkRemoteButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: [summaryRow, progressBar, scroll, detailsScroll])
         stack.orientation = .vertical
@@ -1162,8 +1177,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// row/sync/rescan actions are disabled (`restartRequired` latch), and
     /// the summary tells the user the one recovery — quit and reopen. Only
     /// navigation (Profiles / Quit) stays live.
-    func showRestartRequired(reason: String) {
+    /// `offerRemoteCheck`: the connection never completed and the profile has
+    /// an ssh root (see `RemoteCheckOfferPolicy`); the summary then offers
+    /// Check Remote Command for this window's profile.
+    func showRestartRequired(reason: String, offerRemoteCheck: Bool = false) {
         restartRequired = true
+        checkRemoteButton.isHidden = !offerRemoteCheck
         isSyncing = false
         isScanning = false
         cancelSyncStallDetector()
@@ -1181,6 +1200,10 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusIcon.isHidden = false
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: restart required (\(reason))")
+    }
+
+    @objc private func checkRemoteTapped(_ sender: NSButton) {
+        onRemoteCheckRequested?(profile)
     }
 
     /// Diff-result presentation. AppDelegate calls this ONLY after the

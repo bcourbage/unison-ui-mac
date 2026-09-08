@@ -129,6 +129,10 @@ final class EngineSessionCoordinator {
     }
 
     private(set) var phase: Phase = .idle
+    /// True when the current `.restartRequired` was entered from `.opening`,
+    /// i.e. the connection to the remote never completed. Read by the
+    /// restart notice to decide whether to offer Check Remote Command.
+    private(set) var restartRequiredWhileConnecting = false
     private(set) var connection: ConnectionState = .disconnected
 
     private var abandoned = false
@@ -529,6 +533,7 @@ final class EngineSessionCoordinator {
     }
 
     private func enterRestartRequired(_ reason: String) -> [Effect] {
+        if case .opening = phase { restartRequiredWhileConnecting = true } else { restartRequiredWhileConnecting = false }
         phase = .restartRequired(reason)
         abandoned = false
         queued = nil
