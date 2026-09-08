@@ -225,7 +225,7 @@ enum RemoteCheckFlow {
         }
         let keep = AlternativeRow(kind: .keepCurrent, title: "Keep current setting", path: current.isEmpty ? nil : current,
                                   subtitle: current.isEmpty
-                                      ? "Currently configured for this profile; the remote PATH decides which unison runs."
+                                      ? "No command is set for this profile; the remote PATH decides which unison runs."
                                       : "Currently configured for this profile.")
         var rows: [AlternativeRow] = []
         var keepPlaced = false

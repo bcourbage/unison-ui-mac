@@ -260,6 +260,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let fits = f.maxX <= row.bounds.maxX + 0.5 && f.height > 20
         return (fits, "label \(f) in row \(row.bounds), section width \(sectionContainer.bounds.width)")
     }
+    /// After layout, the Check Remote Command button's width: its natural size,
+    /// not the column's.
+    var checkButtonWidthForTesting: CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return checkRemoteButton.frame.width
+    }
     /// The verification of the current command, restored by Keep current setting.
     private var checkCurrentResult: RemoteCheckFlow.Verification?
     /// The form as it stood when the check started, so Keep current setting
@@ -864,11 +870,21 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // resistance below required): a row that insists on its full width
         // has only the window left to grow, and the editor widened by itself
         // whenever a result added buttons.
-        let controlsRow = hstack([checkRemoteButton, checkProgress, checkHelpButton])
+        // Each button row ends with a flexible spacer that takes the column's
+        // spare width, so the buttons keep their natural size once the row
+        // is pinned to the column.
+        func flexibleSpacer() -> NSView {
+            let v = NSView()
+            v.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            v.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            v.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            return v
+        }
+        let controlsRow = hstack([checkRemoteButton, checkProgress, checkHelpButton, flexibleSpacer()])
         controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         controlsRow.setHuggingPriority(.required, for: .vertical)
         controlsRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
-        let secondaryRow = hstack([checkDetailsButton, checkChooseButton])
+        let secondaryRow = hstack([checkDetailsButton, checkChooseButton, flexibleSpacer()])
         secondaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         secondaryRow.setHuggingPriority(.required, for: .vertical)
         secondaryRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
@@ -878,7 +894,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         statusRow.orientation = .horizontal
         statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         statusRow.setHuggingPriority(.required, for: .vertical)
-        statusRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        // The status row never clips: the label compresses and wraps instead.
+        // Letting the row clip at the same priority tied with the label's
+        // compression, and the label then wrapped or clipped at random.
         statusRow.isHidden = true
         checkStatusRow = statusRow
         let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])

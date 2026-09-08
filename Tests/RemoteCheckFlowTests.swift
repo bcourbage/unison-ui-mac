@@ -215,7 +215,7 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertTrue(d.succeeded)
         XCTAssertEqual(d.rows, [
             .init(kind: .keepCurrent, title: "Keep current setting", path: nil,
-                  subtitle: "Currently configured for this profile; the remote PATH decides which unison runs."),
+                  subtitle: "No command is set for this profile; the remote PATH decides which unison runs."),
             .init(kind: .link, title: "Use the command link", path: "/opt/homebrew/bin/unison",
                   subtitle: "Uses whichever installation this link points to; now /Applications/unison-ui-mac.app/Contents/MacOS/cltool. Version 2.54.0."),
         ])

@@ -226,7 +226,9 @@ the menu opens by itself once the current command has its answer, so a user
 with nothing configured picks without another click; a configured command
 gets its answer and the button. Most users get an answer without making a
 choice. The menu behind the button
-lists **Keep current setting** ("Currently configured for this profile"),
+lists **Keep current setting** ("Currently configured for this profile", or
+"No command is set for this profile; the remote PATH decides which unison
+runs" when Remote unison is empty),
 then one row per other installation found, titled by what choosing it means
 rather than by a maintenance policy the check cannot see: **Use this
 installation directly** ("Uses the program at this location", adding "even if

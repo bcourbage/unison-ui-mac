@@ -114,7 +114,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         _ = await c.runCheck()
         XCTAssertEqual(c.checkStatusForTesting, "No change needed.", "the PATH-resolved command answered")
         XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent, .direct])
-        XCTAssertEqual(c.checkAlternativesForTesting?.first?.subtitle, "Currently configured for this profile; the remote PATH decides which unison runs.")
+        XCTAssertEqual(c.checkAlternativesForTesting?.first?.subtitle, "No command is set for this profile; the remote PATH decides which unison runs.")
         XCTAssertTrue(c.chooseButtonVisibleForTesting)
         XCTAssertTrue(c.checkMenuAutoPresentedForTesting, "no servercmd: the alternatives open even after a pass")
         await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
@@ -165,6 +165,11 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         _ = await c.runCheck()
         let g = c.checkStatusGeometryForTesting
         XCTAssertTrue(g.fits, "the status wraps to several lines inside its row instead of running past it: \(g.description)")
+        let w = c.checkButtonWidthForTesting
+        XCTAssertTrue(w > 120 && w < 280, "the button keeps its natural width rather than filling the column: \(w)")
+        c.window?.setContentSize(NSSize(width: 1100, height: 720))
+        let wide = c.checkButtonWidthForTesting
+        XCTAssertEqual(Int(wide.rounded()), Int(w.rounded()), "the button does not grow with the window")
     }
 
     func test_keepCurrentSetting_afterAProposal_restoresTheFormAndTheCurrentResult() async throws {
