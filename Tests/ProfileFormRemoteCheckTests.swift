@@ -47,6 +47,23 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         return c
     }
 
+    func test_checkRow_sitsRightUnderRemoteUnison_atAnyWindowHeight_everyOpen() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        var gaps: [CGFloat] = []
+        for height in [640, 1100, 1500] {
+            let c = make("p", remote: Remote())
+            c.window?.setContentSize(NSSize(width: 900, height: CGFloat(height)))
+            c.showSectionForTesting(title: "Roots")
+            gaps.append(c.checkRowGapForTesting)
+            c.close()
+        }
+        for g in gaps {
+            XCTAssertGreaterThanOrEqual(g, 0, "\(gaps)")
+            XCTAssertLessThanOrEqual(g, 24, "the row must not float away from its field: \(gaps)")
+        }
+        XCTAssertEqual(Set(gaps.map { Int($0.rounded()) }).count, 1, "same gap at every height: \(gaps)")
+    }
+
     func test_checkStatusRow_takesNoHeightUntilThereIsAStatus() async throws {
         try write("p.prf", "root = /a\nroot = /b\n")
         let c = make("p", remote: Remote())

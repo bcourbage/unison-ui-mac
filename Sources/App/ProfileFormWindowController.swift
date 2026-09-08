@@ -234,6 +234,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private var checkStatusRow: NSStackView?
     var checkStatusRowHiddenForTesting: Bool { checkStatusRow?.isHidden ?? true }
     var checkHelpTextForTesting: [String] { RemoteCheckFlow.helpText(localVersion: localEngineVersionBare()) }
+    /// Points between the bottom of the Remote unison field and the top of the
+    /// Check Remote Command button, after layout at the window's current size.
+    var checkRowGapForTesting: CGFloat {
+        guard let content = window?.contentView else { return -1 }
+        content.layoutSubtreeIfNeeded()
+        let field = servercmdField.convert(servercmdField.bounds, to: content)
+        let button = checkRemoteButton.convert(checkRemoteButton.bounds, to: content)
+        return field.minY - button.maxY
+    }
+    func showSectionForTesting(title: String) {
+        guard let i = sectionViews.firstIndex(where: { $0.title == title }) else { return }
+        if let row = visibleSectionIndices.firstIndex(of: i) {
+            sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        showSection(i)
+    }
     /// The Advanced `addversionno` values as loaded, so Save can tell a changed
     /// assignment (by the user or by a check's proposal) from an untouched one.
     private var initialAddversionnoAdvanced: [String] = []
@@ -424,6 +440,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         remoteGroup.orientation = .vertical
         remoteGroup.alignment = .leading
         remoteGroup.spacing = 8
+        remoteGroup.setHuggingPriority(.required, for: .vertical)
         let remoteRows: [NSView] = [
             remoteHeader, remoteHelp,
             labeledRowWithNote(label: "Remote unison", control: servercmdField, key: "servercmd"),
@@ -673,7 +690,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // let their text view absorb the space instead.
         if !fill {
             let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+            // Strictly the lowest hugging in the section. NSStackView rows hug
+            // at defaultLow (250) as well, so a spacer at defaultLow tied with
+            // them and Auto Layout split the leftover height between the
+            // spacer and a row at random; the Remote unison row then grew by
+            // a different amount on each open.
+            spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
             spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
             s.addArrangedSubview(spacer)
             spacer.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
@@ -740,14 +762,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// A labeled row whose note sits beneath the control, aligned with it.
     private func labeledRowWithNote(label: String, control: NSView, key: String) -> NSStackView {
         let note = noteLabel(forKey: key)
-        let noteRow = NSStackView(views: [NSView(), note])
+        // Indent with an inset, not a spacer view: a spacer has no height of
+        // its own, so with the note hidden this row could take any height and
+        // the field above it floated away from the controls below.
+        let noteRow = NSStackView(views: [note])
         noteRow.orientation = .horizontal
-        noteRow.spacing = 8
-        noteRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        noteRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        noteRow.setHuggingPriority(.required, for: .vertical)
         let v = NSStackView(views: [labeledRow(label: label, control: control), noteRow])
         v.orientation = .vertical
         v.alignment = .leading
         v.spacing = 2
+        v.setHuggingPriority(.required, for: .vertical)
         return v
     }
 

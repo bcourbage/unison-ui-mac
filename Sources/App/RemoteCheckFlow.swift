@@ -203,7 +203,7 @@ enum RemoteCheckFlow {
         [
             "Why the choice matters",
             "Unison on this Mac and on the server must speak the same protocol. Versions on the same side of 2.52 connect; anything older cannot talk to this Mac's \(localVersion).",
-            "Prefer the command that is kept current the way the server is maintained: Homebrew's if brew updates the server, the one bundled with unison-ui-mac if that app is installed there. A symlink runs the installation it points to, so two entries with the same target are the same program.",
+            "Prefer the command that is kept current the way the server is maintained: Homebrew's if brew updates the server, the one bundled with unison-ui-mac if that app is installed there.",
             "Saving writes the chosen path as Remote unison, and Unison runs exactly that command over ssh.",
         ]
     }
