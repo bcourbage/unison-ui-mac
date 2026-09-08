@@ -546,8 +546,10 @@ enum VersionCheck {
                 if atEOF { reachedEOF = true }
                 if let error, readError == nil { readError = error }
                 lock.unlock()
-                if first { eof.signal() }
+                // Cancel before waking a waiting snapshot, so a caller that
+                // wakes on the semaphore already observes the source stopped.
                 source.cancel()
+                if first { eof.signal() }
             }
 
             /// Waits up to `settle` for EOF, then returns everything kept,
@@ -579,8 +581,8 @@ enum VersionCheck {
                 let first = !eofSignalled
                 eofSignalled = true
                 lock.unlock()
-                if first { eof.signal() }
                 if !source.isCancelled { source.cancel() }
+                if first { eof.signal() }
             }
 
             var isStopped: Bool { source.isCancelled }
