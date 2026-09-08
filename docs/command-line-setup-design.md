@@ -13,7 +13,7 @@ The app's role: "Put this app's command on your PATH, and keep it there while yo
 
 `Contents/SharedSupport/bin/unison` is a symlink to `../../MacOS/cltool`; the launcher resolves its own path with `realpath` and requires the `/Contents/MacOS/cltool` suffix, so it needs no change. The directory holds only that entry. The symlink is part of the signed bundle; `scripts/sign-app.sh`, `scripts/test-cltool.sh` and `scripts/smoke-cli.sh` gain a case resolving the command through it.
 
-**Bundle precondition for adding.** Before Add to PATH, Use This Copy, or a startup rewrite, the app checks that `Bundle.main` contains `Contents/SharedSupport/bin/unison`, a symlink whose resolved path is this bundle's `Contents/MacOS/cltool`, and that the target is a regular executable file. Failure blocks those three operations with the note "This app's command is missing from the bundle. Reinstall the app." It does not block Remove from PATH.
+**Bundle precondition for adding.** Before Add Terminal Setup, Use This Copy, or a startup rewrite, the app checks that `Bundle.main` contains `Contents/SharedSupport/bin/unison`, a symlink whose resolved path is this bundle's `Contents/MacOS/cltool`, and that the target is a regular executable file. Failure blocks those three operations with the note "This app's command is missing from the bundle. Reinstall the app." It does not block Remove Terminal Setup.
 
 ## Three facts, kept separate
 
@@ -21,7 +21,7 @@ The app's role: "Put this app's command on your PATH, and keep it there while yo
 - **Block state**: whether this app's entry exists in the selected file, what location it records, and whether this account owns it.
 - **File safety**: whether the file can be identified, is inside the editable bound, and can be replaced with its metadata preserved.
 
-Two kinds of badge: **This app**, **Not this app** and **Not installed** report resolution; **Unknown** and **Manual setup** report that the check itself could not establish resolution or eligibility. Actions and startup writes depend on block state, file safety and, for adding, the bundle precondition. Throughout, a read failure or failed query is "could not be established" and is never treated as absence.
+Each row leads with a verdict line qualified by what established it: **This app selected by the check**, **Another unison selected by the check**, **No unison selected by the check**, **Could not be checked**, **Needs manual setup**. The badge is the short form (This app, Not this app, Not installed, Unknown, Manual setup). The check is the non-interactive login-shell probe, and the limits sentence carries the consequence. Beneath the verdict, in muted monospace, the resolved path is the evidence; a path inside this app's bundle is abbreviated as `unison-ui-mac.app › SharedSupport/bin/unison`, and Copy This App's Command Path carries the full path. Actions and startup writes depend on block state, file safety and, for adding, the bundle precondition. Throughout, a read failure or failed query is "could not be established" and is never treated as absence.
 
 ## The PATH entry
 
@@ -120,49 +120,50 @@ After a Remove, the status line reports "PATH entry removed." on success, and a 
 
 The existing marker-delimited probe, run as a non-interactive login shell (`zsh -l -c`, `bash -l -c`, `fish -l -c`), reports what `unison` resolves to and whether the bundle's `bin` directory is on PATH and at which position. A separate non-login `fish -c` probe reports `__fish_config_dir`. Limit, stated in the pane and manual: a non-interactive login shell runs the login files, not the interactive ones (zsh: not `.zshrc`), and aliases or functions can select a command without changing PATH. The probe reports what a login shell selects; a Terminal window may differ.
 
-## Preferences
+## Preference
 
-- **Keep the unison command on PATH** (`commandLine.keepOnPath`).
-- **Offer command-line setup at launch** (`commandLine.offerAtLaunch`); Don't ask again clears it; the Settings checkbox turns it back on.
+One per account: **Keep unison in Terminal pointing at this app** (`commandLine.keepInTerminal`). Off: the app neither offers nor writes. On with no block: the startup offer is shown when `unison` does not resolve to this app (rows 11 and 12). On with a block: the block is maintained at each launch (row 6). **Don't ask again** in the offer turns it off; the Settings checkbox turns it back on. Add Terminal Setup and Use This Copy turn it on; Remove Terminal Setup turns it off. It is hidden in rows 1 to 3.
+
+Initial value for an account that has never run a version with this preference: **on**, so the first launch offers setup in rows 11 and 12 and a correct state stays silent. Migration from 0.7.0: on, unless `commandLineTool.doNotAsk` is true, in which case off; the old key is then removed. No block exists at migration, so the first post-upgrade launch behaves as a first launch.
 
 ## State table
 
 Evaluated in order; the first matching row decides. "Current" means the block records this bundle's present path. "Owned" means inside the editable bound with a matching record.
 
-| # | Condition | Badge | Note | Action | Startup write (Keep on) |
+| # | Condition | Badge | Note | Action | Startup behavior (preference on) |
 |---|---|---|---|---|---|
 | 1 | Probe failed or timed out | Unknown | Your shell's PATH could not be read. | none | none |
 | 2 | Unsupported shell; zsh outside the stock bound or bound uncertain; file outside the editable bound; unrepresentable path; foreign block or fish file | Manual setup | one line naming the reason | none; the directory to add shown; the intended file named and Copy Setup Text offered only when the shell syntax is supported and the intended destination is established, otherwise the limitation only | none |
-| 3 | Bundle precondition failed | from resolution | This app's command is missing from the bundle. Reinstall the app. | Remove from PATH… if an owned block exists, else none | none |
+| 3 | Bundle precondition failed | from resolution | This app's command is missing from the bundle. Reinstall the app. | Remove Terminal Setup… if an owned block exists, else none | none |
 | 4 | Owned block, recorded path is an existing copy of this app other than the running one | from resolution | Another copy of this app owns the PATH entry. | Use This Copy… (shows block; rewrites on consent; records) | none |
 | 5 | Owned block, recorded path cannot be inspected (any error other than `ENOENT`) | from resolution | The previous app location could not be checked. | Use This Copy… | none |
-| 6 | Owned block, recorded path absent (`ENOENT`) or present but not a copy of this app | from resolution | none | Remove from PATH… | rewrite with the current path; status "PATH entry updated to this app's location."; outcome reported |
-| 7 | Owned block, current; resolution is this app's entry | This app | none | Remove from PATH… | none |
-| 8 | Owned block, current; resolution is another unison | Not this app | Your shell still selects another unison. | Remove from PATH… | none |
-| 9 | Owned block, current; resolution is nothing | Not installed | Your shell still selects no unison. | Remove from PATH… | none |
-| 10 | No block; resolution is this app (Homebrew or 0.7.0 link) | This app | none | Add to PATH… | none |
-| 11 | No block; resolution is another unison | Not this app | Another unison comes first on your PATH. | Add to PATH… | write; outcome reported |
-| 12 | No block; resolution is nothing | Not installed | none | Add to PATH… | write; outcome reported |
+| 6 | Owned block, recorded path absent (`ENOENT`) or present but not a copy of this app | from resolution | none | Remove Terminal Setup… | rewrite with the current path; status "PATH entry updated to this app's location."; outcome reported |
+| 7 | Owned block, current; resolution is this app's entry | This app | none | Remove Terminal Setup… | none |
+| 8 | Owned block, current; resolution is another unison | Not this app | Your shell still selects another unison. | Remove Terminal Setup… | none |
+| 9 | Owned block, current; resolution is nothing | Not installed | Your shell still selects no unison. | Remove Terminal Setup… | none |
+| 10 | No block; resolution is this app (Homebrew or 0.7.0 link) | This app | none | Add Terminal Setup… | none |
+| 11 | No block; resolution is another unison | Not this app | Another unison comes first on your PATH. | Add Terminal Setup… | show the offer; on Add, write and report the outcome |
+| 12 | No block; resolution is nothing | Not installed | none | Add Terminal Setup… | show the offer; on Add, write and report the outcome |
 
-Transitions: Add to PATH… shows the block and file, writes on consent, records, turns Keep on. Use This Copy… does the same for rows 4–5. Remove from PATH… shows the file, removes on consent, deletes the records, turns Keep off. Turning Keep on in rows 10–12 runs Add to PATH…, in rows 4–5 runs Use This Copy…; cancelling leaves Keep off. Turning Keep off changes nothing on disk. Keep is hidden in rows 1–3. The startup check writes at most once per launch, only in rows 6, 11 and 12, never in headless, server or test-host launches, and only when the bundle precondition holds. A startup write in row 6 does not assert why the recorded path is gone.
+Transitions: Add Terminal Setup… shows the block and file, writes on consent, records, turns the preference on. Use This Copy… does the same for rows 4–5. Remove Terminal Setup… shows the file, removes on consent, deletes the records, turns the preference off. Turning the preference on in rows 10–12 runs Add Terminal Setup…, in rows 4–5 runs Use This Copy…; cancelling leaves it off. Turning it off changes nothing on disk. The startup check writes at most once per launch, only in row 6 and, after the user chooses Add in the offer, in rows 11 and 12; never in headless, server or test-host launches, and only when the bundle precondition holds. A startup write in row 6 does not assert why the recorded path is gone.
 
 ## Startup offer
 
-Shown once per launch, after the profile picker, when `offerAtLaunch` is on and the state is row 11 or 12:
+Shown once per launch, after the profile picker, when the preference is on, no block exists, and the state is row 11 or 12:
 
-> **Use this app for the unison command?**
-> Adds this app's command directory to the PATH of your login shell, in ~/.zprofile. Shells set up differently may still select another unison.
-> [Add to PATH…] [Not Now] [Don't ask again]
+> **Use this app for unison in Terminal?**
+> Adds this app's command to your Terminal by writing one marked block to ~/.zprofile. A shell set up differently may still choose another unison.
+> [Add Terminal Setup…] [Not Now] [Don't ask again]
 
-Not Now is the default button.
+For fish the second sentence reads "… by writing a dedicated file in your fish configuration." The file named is the one selected for the account's login shell. Not Now is the default button.
 
 ## Settings > Command Line
 
-One row: path in monospace as primary datum (or "No unison command"); badge; at most one note; **Refresh** with **Checked N minutes ago** (**Not checked yet** before the first check); the status line from the last write, removal or startup check; the single action with a footnote naming the file ("Writes one marked block to ~/.zprofile." / "Removes this app's block from ~/.zprofile." / for fish, the dedicated file); in Manual setup, the directory to add in its own field, and, only when the shell syntax is supported and the intended destination is established, the intended file in its own field and **Copy Setup Text**; otherwise the limitation in the note; **Copy This App's Command Path**, which copies `<bundle>/Contents/SharedSupport/bin/unison` regardless of the row, with the note "Contains characters that need care in a profile's servercmd; the remote check can assess it." when the path has characters outside `A–Z a–z 0–9 . _ / + -`; the two checkboxes; and the limits sentence:
+Title: **unison in Terminal**. One row: the verdict line, the badge, the path line in muted monospace (or "No unison command"), at most one note; **Refresh** with **Checked N minutes ago** (**Not checked yet** before the first check); the status line from the last write, removal or startup check ("Set up in Terminal." on a later launch when the block is current and selected); the single action, **Add Terminal Setup…** or **Remove Terminal Setup…**, with a footnote naming the mechanism and the file: "Adds this app's command to your Terminal by writing one marked block to ~/.zprofile, the file your login shell reads." / "Removes this app's block from ~/.zprofile. Another link may still select this app." / for fish: "… by writing a dedicated file in your fish configuration." and "Removes this app's file from your fish configuration. Another link may still select this app."; in Manual setup, the directory to add in its own field and, only when the shell syntax is supported and the intended destination is established, the intended file in its own field and **Copy Setup Text**, otherwise the limitation in the note; **Copy This App's Command Path**, which copies `<bundle>/Contents/SharedSupport/bin/unison` regardless of the row, with the footnote "The full path, for servercmd in a profile on another machine." and, when the path has characters outside `A–Z a–z 0–9 . _ / + -`, the note "Contains characters that need care in a profile's servercmd; the remote check can assess it."; the checkbox **Keep unison in Terminal pointing at this app** with its explanation "Offers setup at launch when it is missing, and repairs it if the app moves."; and the limits sentence:
 
-> Configured for this account's login shell. Shells set up differently, scripts and ssh sessions are not configured by this feature.
+> Applies to new Terminal windows for this account. A shell set up differently can still choose another unison.
 
-Copy Setup Text and Copy This App's Command Path are distinct controls with distinct labels. Homebrew is not mentioned in the pane.
+Copy Setup Text and Copy This App's Command Path are distinct controls with distinct labels. Use This Copy… keeps its label in rows 4 and 5. Homebrew is not named anywhere in the pane.
 
 ## Removed from the app
 
@@ -190,7 +191,8 @@ Per account and per login shell. Adding or removing the entry changes future log
 - Outcomes: the six write outcomes and the removal outcome with its separate resolution line, each from fixtures (a `.zlogin` that reorders PATH; an alias in `.zlogin`; an empty PATH; a startup file that exits; an injected read-back failure; an injected ambiguous rename error; removal with a Homebrew link still present). A `.zshrc` fixture that reorders PATH demonstrates the probe's blind spot and is documented as such.
 - fish: owned file created, rewritten, removed; foreign content refused; `status is-login` guard verified; no universal variable changed.
 - State table: every row; Remove clears Keep and the records; Keep-on transitions in rows 4–5 and 10–12; rows 4, 5, 8, 9 never write at startup; at most one write per launch; none in headless, server, test-host launches; row 3 permits Remove and nothing else; Copy Setup Text absent when the destination is uncertain or the path does not serialize.
-- View-model tests per row; controller tests with injected time for Refresh, aging, offer buttons, Copy Setup Text and Copy This App's Command Path; Debug screenshot smoke.
+- View-model tests per row, including the verdict wording and the abbreviated path with the full path in Copy This App's Command Path; controller tests with injected time for Refresh, aging, offer buttons, Copy Setup Text and Copy This App's Command Path; Debug screenshot smoke.
+- Preference migration matrix: no prior key → on; `commandLineTool.doNotAsk` true → off; false → on; the old key removed. The fish footnote and offer variants render.
 - Release gate as named.
 - Copy: no first person, no dash as punctuation, only the file being written is named in the pane.
 
