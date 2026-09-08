@@ -15,6 +15,9 @@ enum RemoteCheckFlow {
         var servercmd: String
         var sshcmd: String
         var sshargs: String
+        /// The pending `addversionno`: the form's Advanced text when it sets the
+        /// key, else nil to use the effective value from disk.
+        var addversionno: Bool? = nil
         /// The local engine's version string, as `unison_bridge_get_version` reports it.
         var localEngineVersion: String
         var sessionID: UUID
@@ -58,8 +61,10 @@ enum RemoteCheckFlow {
         case .success(let e): effective = e
         case .failure(let err): return .failure(.profile(err.message))
         }
+        // Upstream's root rules apply to the effective root list: the form's two
+        // roots stand in for the top-level file's, and roots from includes stay.
         let root: UnisonRoot
-        switch RootRules.evaluate(roots: inputs.roots) {
+        switch RootRules.evaluate(roots: pendingRoots(inputs: inputs, effective: effective)) {
         case .failure(.fatal(let m)): return .failure(.roots(m))
         case .success(.notApplicable(let why)): return .failure(.notApplicable(why))
         case .success(.ssh(let remote, _)): root = remote
@@ -71,7 +76,7 @@ enum RemoteCheckFlow {
         let settings = RemoteSettings(servercmd: inputs.servercmd,
                                       sshcmd: inputs.sshcmd.isEmpty ? "ssh" : inputs.sshcmd,
                                       sshargs: inputs.sshargs,
-                                      addversionno: effective.bool("addversionno") ?? false)
+                                      addversionno: inputs.addversionno ?? effective.bool("addversionno") ?? false)
         guard let command = RemoteCommand.compose(settings: settings, root: root, majorVersion: major) else {
             return .failure(.notApplicable(.noRemoteRoot))
         }
@@ -89,17 +94,39 @@ enum RemoteCheckFlow {
                                  localVersion: localVersion, inputs: inputs))
     }
 
+    /// The effective root list the pending profile would have: every root from
+    /// the includes in spliced order, with the top-level file's roots replaced
+    /// by the form's at their position (or appended when the top-level file has
+    /// none, which is where a save would put them).
+    static func pendingRoots(inputs: Inputs, effective: EffectiveProfile) -> [String] {
+        let top = effective.files.first ?? ""
+        var out: [String] = []
+        var placed = false
+        for a in effective.list("root") {
+            if ProfileScalarSemantics.samePath(a.location.path, top) {
+                if !placed { out += inputs.roots; placed = true }
+            } else {
+                out.append(a.value)
+            }
+        }
+        if !placed { out += inputs.roots }
+        return out
+    }
+
     /// Whether the configuration a check started with is still the one the
-    /// form and the files describe. Runs a fresh resolution.
-    static func tokenStillValid(_ p: Prepared,
+    /// form and the files describe: a fresh resolution and the form's current
+    /// values (`current`, which may differ from the inputs the check began
+    /// with) must reproduce the token.
+    static func tokenStillValid(_ p: Prepared, current: Inputs? = nil,
                                 read: @escaping (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead) -> Bool {
-        guard case .success(let e) = EffectiveProfile.load(profile: p.inputs.profile, unisonDirectory: p.inputs.unisonDirectory, read: read) else {
+        let i = current ?? p.inputs
+        guard case .success(let e) = EffectiveProfile.load(profile: i.profile, unisonDirectory: i.unisonDirectory, read: read) else {
             return false
         }
         let fresh = RemoteCheckToken.make(
-            form: .init(roots: p.inputs.roots, servercmd: p.inputs.servercmd, sshcmd: p.inputs.sshcmd,
-                        sshargs: p.inputs.sshargs, addversionno: p.settings.addversionno),
-            effective: e, sessionID: p.inputs.sessionID)
+            form: .init(roots: i.roots, servercmd: i.servercmd, sshcmd: i.sshcmd, sshargs: i.sshargs,
+                        addversionno: i.addversionno ?? e.bool("addversionno") ?? false),
+            effective: e, sessionID: i.sessionID)
         return fresh == p.token
     }
 

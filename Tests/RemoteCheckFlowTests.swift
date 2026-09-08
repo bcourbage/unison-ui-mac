@@ -27,10 +27,11 @@ final class RemoteCheckFlowTests: XCTestCase {
     }
     private func factory(_ stub: Stub) -> F.ExecutorFactory { { _ in stub } }
 
+    private let sessionID = UUID()
     private func inputs(servercmd: String = "/opt/homebrew/bin/unison", roots: [String]? = nil) -> F.Inputs {
         F.Inputs(profile: "p", unisonDirectory: dir, roots: roots ?? ["/Users/me/Home", "ssh://bruno@demeter//Users/bruno/Home"],
                  servercmd: servercmd, sshcmd: "/usr/bin/ssh", sshargs: "-i /k",
-                 localEngineVersion: "2.54.0 (ocaml 5.5.0)", sessionID: UUID())
+                 localEngineVersion: "2.54.0 (ocaml 5.5.0)", sessionID: sessionID)
     }
     private func prepared(_ i: F.Inputs? = nil) throws -> F.Prepared {
         try write("p.prf", "root = /Users/me/Home\nroot = ssh://bruno@demeter//Users/bruno/Home\n")
@@ -93,6 +94,44 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertEqual(name, "nossh")
         var j = inputs(); j.localEngineVersion = "unknown"
         guard case .failure(.localVersion) = F.prepare(j) else { return XCTFail() }
+    }
+
+    func test_prepare_appliesRootRulesToEffectiveRoots_includingIncludes() throws {
+        // Two form roots (one ssh) plus an included ssh root: upstream refuses.
+        try write("p.prf", "root = /a\nroot = ssh://h//b\ninclude common\n")
+        try write("common.prf", "root = ssh://other//c\n")
+        guard case .failure(.roots(let m)) = F.prepare(inputs(roots: ["/a", "ssh://h//b"])) else { return XCTFail("expected a root-rule failure") }
+        XCTAssertEqual(m, "cannot synchronize more than one remote root")
+    }
+
+    func test_pendingRoots_replaceTopLevelRootsAtTheirPosition() throws {
+        try write("p.prf", "root = /old1\ninclude common\nroot = /old2\n")
+        try write("common.prf", "root = /inc\n")
+        guard case .success(let e) = EffectiveProfile.load(profile: "p", unisonDirectory: dir) else { return XCTFail() }
+        XCTAssertEqual(F.pendingRoots(inputs: inputs(roots: ["/new1", "/new2"]), effective: e), ["/new1", "/new2", "/inc"])
+        try write("q.prf", "include common\n")
+        guard case .success(let q) = EffectiveProfile.load(profile: "q", unisonDirectory: dir) else { return XCTFail() }
+        var i = inputs(roots: ["/n1", "/n2"]); i.profile = "q"
+        XCTAssertEqual(F.pendingRoots(inputs: i, effective: q), ["/inc", "/n1", "/n2"], "no top-level roots: form roots go where a save would append them")
+    }
+
+    func test_prepare_usesPendingAddversionno_overDisk() throws {
+        try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = true\n")
+        var i = inputs(); i.addversionno = false
+        guard case .success(let p) = F.prepare(i) else { return XCTFail() }
+        XCTAssertFalse(p.settings.addversionno)
+        XCTAssertEqual(p.command.versionCommandString, "/opt/homebrew/bin/unison -version")
+        guard case .success(let q) = F.prepare(inputs()) else { return XCTFail() }
+        XCTAssertTrue(q.settings.addversionno, "nil pending → disk value")
+        XCTAssertEqual(q.command.versionCommandString, "/opt/homebrew/bin/unison-2.54 -version")
+    }
+
+    func test_tokenStillValid_isFalse_whenTheCurrentFormDiffers() throws {
+        try write("p.prf", "root = /a\nroot = ssh://h//b\n")
+        guard case .success(let p) = F.prepare(inputs()) else { return XCTFail() }
+        XCTAssertTrue(F.tokenStillValid(p, current: inputs()))
+        var changed = inputs(); changed.addversionno = true
+        XCTAssertFalse(F.tokenStillValid(p, current: changed), "an Advanced edit to addversionno changes the pending configuration")
     }
 
     func test_tokenStillValid_isFalse_afterAnIncludeChanges() throws {

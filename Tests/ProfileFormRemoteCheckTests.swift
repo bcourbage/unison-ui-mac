@@ -129,6 +129,36 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertTrue(try read("p.prf").contains("times = true\n"), "save proceeded")
     }
 
+    func test_proposalSettingAddversionnoFalse_winsOverAnInclude_atSave() async throws {
+        // Reviewer's case: top-level addversionno = true before an include that
+        // also sets it true. The candidate has no -2.54 suffix, so the proposal
+        // sets addversionno false; Save must make that the effective value.
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\ninclude common\n")
+        try write("common.prf", "addversionno = true\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertEqual(c.checkResultForTesting?.proposal, .init(servercmd: "/opt/homebrew/bin/unison", setsAddversionnoFalse: true))
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"))
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting)
+        guard case .success(let e) = EffectiveProfile.load(profile: "p", unisonDirectory: dir) else { return XCTFail() }
+        XCTAssertEqual(e.bool("addversionno"), false, "the saved profile runs the command that was verified")
+        XCTAssertEqual(e.scalar("servercmd")?.value, "/opt/homebrew/bin/unison")
+        XCTAssertEqual(RemoteSettings(profile: e).addversionno, false)
+    }
+
+    func test_includedSshRoot_failsStep1_beforeAnySession() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://demeter//x\ninclude common\n")
+        try write("common.prf", "root = ssh://other//y\n")
+        let remote = Remote()
+        let c = make("p", remote: remote)
+        let d = await c.runCheck()
+        XCTAssertNil(d)
+        XCTAssertEqual(c.checkStatusForTesting, "cannot synchronize more than one remote root")
+        XCTAssertEqual(remote.sessions, 0)
+    }
+
     func test_unsavedProfile_cannotBeChecked() async {
         let c = ProfileFormWindowController(unisonDirectory: dir, profileName: nil, onSaved: { _ in })
         c.suppressAlertsForTesting = true

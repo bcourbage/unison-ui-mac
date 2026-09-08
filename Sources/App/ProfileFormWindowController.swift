@@ -225,6 +225,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
     private var checkReport: [String] = []
     private var checkPopover: NSPopover?
+    /// Set when a verified proposal requires `addversionno = false`; written at
+    /// Save with include-aware placement (Advanced alone would rewrite an earlier
+    /// occurrence that an include then overrides).
+    private var pendingAddversionnoFalse = false
     /// Injectable for tests: the ssh executor factory and the local engine version.
     var checkExecutorFactoryForTesting: RemoteCheckFlow.ExecutorFactory?
     var engineVersionForTesting: String?
@@ -773,7 +777,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                                       servercmd: servercmdField.stringValue.trimmingCharacters(in: .whitespaces),
                                       sshcmd: sshcmdField.stringValue.trimmingCharacters(in: .whitespaces),
                                       sshargs: sshargsField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      addversionno: pendingAddversionno(),
                                       localEngineVersion: version, sessionID: checkSessionID)
+    }
+
+    /// The `addversionno` the pending profile would save: the last such line in
+    /// Advanced (the key's home in the form), or nil for the value on disk.
+    private func pendingAddversionno() -> Bool? {
+        var value: Bool?
+        for line in advancedView.values {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            guard key == "addversionno" else { continue }
+            let v = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if v == "true" { value = true } else if v == "false" { value = false }
+        }
+        return value
     }
 
     @objc private func checkRemoteTapped(_ sender: NSButton) {
@@ -817,7 +836,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkTask = nil
         checkProgress.stopAnimation(nil)
         checkRemoteButton.title = "Check Remote Command…"
-        guard RemoteCheckFlow.tokenStillValid(prepared) else {
+        guard RemoteCheckFlow.tokenStillValid(prepared, current: checkInputs()) else {
             TraceLog.shared.write("remote check: discovery completed for a stale configuration; discarded")
             setCheckStatus("Not checked since the last change."); checkDiscovery = nil; return
         }
@@ -892,7 +911,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkTask = nil
         checkProgress.stopAnimation(nil)
         checkRemoteButton.title = "Check Remote Command…"
-        guard RemoteCheckFlow.tokenStillValid(prepared) else {
+        guard RemoteCheckFlow.tokenStillValid(prepared, current: checkInputs()) else {
             TraceLog.shared.write("remote check: verification completed for a stale configuration; discarded")
             setCheckStatus("Not checked since the last change."); return
         }
@@ -900,10 +919,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if let proposal = v.proposal {
             servercmdField.stringValue = proposal.servercmd
             if proposal.setsAddversionnoFalse {
-                // addversionno has no dedicated control; it lives in Advanced.
+                // addversionno has no dedicated control; show it in Advanced and
+                // write it at Save with include-aware placement.
                 var lines = advancedView.values.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("addversionno") }
                 lines.append("addversionno = false")
                 advancedView.values = lines
+                pendingAddversionnoFalse = true
             }
         }
         var headline = v.headline
@@ -960,6 +981,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         guard checkResult != nil || checkDiscovery != nil || checkTask != nil else { return }
         cancelCheck()
         checkResult = nil; checkDiscovery = nil; checkReport = []
+        pendingAddversionnoFalse = false
         checkDetailsButton.isHidden = true
         setCheckStatus("Not checked since the last change.")
     }
@@ -1588,6 +1610,16 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setValues(seenAdvancedKeys[k] ?? [], forKey: k)
         }
 
+        // A verified proposal's `addversionno = false` must take effect over any
+        // include that sets the key: the Advanced reconciler above wrote it at
+        // the first occurrence; place it so it wins.
+        if pendingAddversionnoFalse, let e = effectiveProfile, let name = initialProfileName {
+            if case .refused(let reason) = ProfileScalarSemantics.apply(
+                .set("false"), forKey: "addversionno", to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
+                throw ScalarSaveError.refused(reason)
+            }
+        }
+
         // Includes LAST — after every key-value write above. `setIncludes`
         // positions bottom includes right after the last key-value entry,
         // so writing them last guarantees they sit below newly-added
@@ -1919,7 +1951,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         // A displayed check result describes the configuration it was made for;
         // if the files changed since, say so. Save proceeds either way.
-        if let prepared = checkPrepared, checkResult != nil, !RemoteCheckFlow.tokenStillValid(prepared) {
+        if let prepared = checkPrepared, checkResult != nil, !RemoteCheckFlow.tokenStillValid(prepared, current: checkInputs()) {
             setCheckStatus("The remote command changed since it was checked.")
             checkResult = nil
         }
