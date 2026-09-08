@@ -131,10 +131,23 @@ tokenizer difference is a bug: the check and the probe must share one
 
 ### Entry point
 
-A **Check Remote…** button in the Profile Form's Remote Connection group
-(shown only when a root is `ssh://`), and the same command in the profile
-picker's context menu. It operates on the **saved** profile file; if the form
-has unsaved changes, the check says so and offers to save first.
+The check lives in the Profile Editor, Roots section, Remote Connection
+group, as a **Check Remote Command…** button beside the **Remote unison**
+field. It is enabled when a root is `ssh://`; Step 1 (effective settings and
+root rules) runs before any session, and a profile that fails Step 1 shows
+that failure under the field and opens no session. The check runs against the
+profile as the form currently has it: the form's Remote unison, SSH command,
+SSH args and roots, composed with the effective settings from the profile's
+includes on disk. No save is required before checking; the user saves after
+seeing the result. The profile picker's context menu offers the same command,
+which opens the editor at that section and starts the check.
+
+A second entry point is a failed connection: when a sync cannot connect to an
+ssh root, the reconcile window's error offers **Check Remote Command…**, worded
+as a diagnostic ("Check the remote command for this profile") without claiming
+the remote command caused the failure. It opens the exact profile that failed;
+if an editor for it is already open with unsaved changes, that window is
+brought forward and its state preserved.
 
 ### Step 1: effective settings
 
@@ -184,22 +197,25 @@ The session ends there. Nothing is written.
 
 ### Step 3: selection (no ssh)
 
-The user is shown the effective command as Unison would send it and the
-discovered candidates with their stored link target and version line, then
-selects the intended executable or keeps the current setting. The check never
-selects on the user's behalf; with one candidate it still asks.
+After discovery, the button's menu lists what was found on the remote: each
+candidate with its version line and, where it is a symlink, its stored target;
+**Keep current setting**; and, when the field is empty, the current effect as
+the first, non-selectable line ("Remote PATH decides which unison runs"). The
+check never preselects; with one candidate it still waits for the user.
+Choosing a candidate runs Step 4 for that candidate and, on success, fills the
+Remote unison field with the proposed value under the composition rules below.
+Choosing Keep current setting runs Step 4 for the effective command as it is.
 
 Composition rules for a proposed setting, applied before anything is verified:
 
 - The proposed `servercmd` is the selected absolute path, safe characters
-  only (else no proposal, see above).
+  only (else no proposal; the menu entry says why).
 - `addversionno`: if the effective value is `true`, Unison will append
   `-<major>`. If the selected path ends with that suffix, the proposal writes
   `servercmd` **without** the suffix and leaves `addversionno` alone; if it
-  does not, the proposal also sets `addversionno = false`, as a second
-  previewed line under the same provenance rules. A selection is never
-  double-suffixed, and the setting that Unison will run is always the one that
-  was verified.
+  does not, the proposal also sets `addversionno = false`, shown as a second
+  change in the status line. A selection is never double-suffixed, and the
+  setting that Unison will run is always the one that was verified.
 
 ### Step 4: verification (second ssh session)
 
@@ -219,6 +235,22 @@ probe's existing rules (host key, authentication refused, timeout, connection
 refused, remote command not found, version parsed). An edit is offered only
 after this step succeeds.
 
+Each check is bound to a **configuration token**: a hash over the form's
+roots, Remote unison, SSH command, SSH args and `addversionno` as effective
+values; the editor session identifier; and, for every path that took part in
+resolution, present or absent, its existence and, when present, identity and
+content hash. The paths are the top-level file; for each include directive
+both lookup candidates (the exact name and the `.prf` form), the one used and
+the one absent; and for each optional directive the absent target. An optional
+include that appears, or an exact-name candidate that appears and takes
+precedence over an unchanged `.prf`, therefore changes the token. The token is
+taken when the check starts. A completion is accepted only after a fresh
+Step 1 resolution, run at completion time from the current form values and
+the includes on disk, reproduces that token; otherwise the completion is
+discarded and logged, no field or result changes, and the status line reads
+"Not checked since the last change." Any edit to a field that participates
+in the token clears the displayed result the same way.
+
 ### Step 5: result wording
 
 Every sentence names an observation. Templates, with what each may and may
@@ -232,9 +264,6 @@ not say:
   has `readlink -f` or `realpath`, the fully resolved path is shown as a
   second, separately labelled line.
 - Version: "`<remote command>` printed `unison version 2.54.0 (ocaml 5.5.0)`."
-  Identity by path text only: "That path is inside a `unison-ui-mac.app`
-  bundle." / "…is in Homebrew's Cellar." / "…is upstream `Unison.app`'s
-  launcher." Labelled "by path"; the remote bundle is not inspected.
 - PATH: "This profile does not set `servercmd`, so the remote machine's PATH
   decides which `unison` runs; the check cannot see that PATH."
 - Protocol boundary: "2.54.0 (this Mac) and 2.53.5 (`host`) are on the same
@@ -263,38 +292,58 @@ not say:
   - marker received, exit 0, output not a Unison version line: "The remote
     shell emitted the start marker; the command line printed `<first line>`,
     which is not a Unison version line." What ran remains unverified.
-- Closing, by outcome: after a parsed version, "The command started over ssh
-  and reported its version. Only a synchronization confirms the server
-  protocol; run the profile to test that." After any failure, "This check did
-  not verify the remote command. What it observed is above."
+- Closing, by outcome. After a parsed version whose comparison with this
+  Mac's version (`VersionCheck.classify`) is not across the 2.52 boundary:
+  for the current setting, "This check found no change to make."; for a
+  selected candidate, "The command you selected started over ssh and reported
+  its version."; both followed by "Only a synchronization confirms the server
+  protocol; run the profile to test that." After a parsed version across the
+  boundary, the result is "The command started over ssh and reported version
+  `<remote>`. `<remote>` (`host`) and `<local>` (this Mac) are on opposite
+  sides of the 2.52 boundary and cannot connect." with no proposal applied.
+  After any other failure, the failure sentences with "This check did not
+  verify the remote command. What it observed is above."
+- Where the sentences appear: the result headline and one status line sit
+  directly under the Remote unison field. The observation sentences
+  (connection, program found, version, PATH) are grouped under three plain
+  labels in a **Details…** popover with **Copy Report**; on a failure the
+  popover opens by itself. No result sentence names which implementation the
+  remote runs beyond what the version line printed; the check does not prefer
+  this app.
 
-### Step 6: previewed, approved edits
+### Step 6: the profile change
 
-Offered only after step 4 succeeded. Each edit is a diff of the exact file it
-touches, shown before an **Apply** button.
+The check changes nothing on disk. Selecting a verified, compatible candidate
+sets the Remote unison field (and the `addversionno` control when composition
+requires) in the open editor; the change is applied by the editor's ordinary
+Save under the field semantics of "The Remote unison field" below, and written
+by `ProfileSaveTransaction` to the top-level profile only. Included files are
+never edited.
 
-- Before any edit, the check resolves every other profile in the Unison
-  directory and finds those that include, directly or through further
-  includes, **the file it is about to edit**. The profile being checked can
-  itself be an include of another profile. If any other profile consumes the
-  target file, the edit is **refused**: the check names those profiles and
-  the remote host each of them uses, and leaves the change to the user. The
-  edit proceeds only when the target file is consumed by the checked profile
-  alone. Two rules make that scan fail closed: a profile that cannot be read
-  or resolved (unreadable file, garbled line, missing required include,
-  cycle) is **not** a proven non-consumer and is listed as "could not be
-  resolved", which refuses the edit like a consumer would; and the scan's
-  result is part of the pre-Apply snapshot, so a consumer that appears or
-  changes between the check and Apply invalidates the edit.
-- `servercmd` (and `addversionno` when composition requires it): if the
-  winning assignment is in the top-level profile, replace that line in
-  place. If it is in an included file, do **not** edit the include; append
-  the override to the top-level profile **after the last directive line**,
-  with a comment naming the include it overrides. If a pass-through directive
-  follows the insertion point, refuse and explain.
-- No line is ever removed; a replaced line is kept as a `#`-prefixed copy
-  directly above the new line.
-- Nothing else is edited. Writes go through `ProfileSaveTransaction`.
+Shared-profile disclosure. Before a Save that changes any remote scalar
+(`servercmd`, `sshcmd`, `sshargs`, `addversionno`, `clientHostName`), the
+editor resolves every other profile in the Unison directory with
+`EffectiveProfile` (reads only) and classifies each as a consumer (it includes
+the file being saved, directly or transitively), a non-consumer, or could not
+be resolved. The scan completes before the decision. Disclosure is shown when
+at least one profile is a consumer or could not be resolved:
+
+> These profiles include this file and may be affected: `<name>` (`<host>`),
+> `<name>` (`<host>`).
+> Could not be resolved: `<name>`.
+> [Save Anyway] [Cancel]
+
+Either line is omitted when empty. Hosts come from each consumer's own
+effective roots. A save changing no remote scalar shows no disclosure. Cancel
+leaves the file untouched. The disclosure is consent, not refusal: the user is
+editing a file they own, and the effect on other profiles does not depend on
+whether the value was typed or selected from the check's menu.
+
+At Save the app runs a fresh Step 1 resolution, re-derives the effective
+remote command from what it is about to write composed with the includes on
+disk at that moment, and compares the result with the token of the displayed
+check result. A difference sets the status line to "The remote command changed
+since it was checked." and Save proceeds; the old result is cleared.
 
 ### Cancellation and timeouts
 
@@ -306,19 +355,88 @@ Include expansion is bounded (depth 16, files 64).
 
 ### Concurrent profile edits
 
-When the check starts it snapshots every path that took part in resolution,
-**present or absent**: the top-level file; for each directive both lookup
-candidates (exact name and `.prf` form), the one used and the one absent;
-for optional directives the absent target. Each snapshot records existence,
-size, mtime and content hash where present. The snapshot also holds the
-consumer scan's result: every profile in the Unison directory with its
-content hash and its resolution outcome (consumer, non-consumer, could not be
-resolved). Before Apply the check re-reads every snapshotted path, re-runs
-the consumer scan, and compares; any difference, including a file that has
-appeared or a profile whose consumer status changed, refuses the edit: "the
-profile, its includes, or the profiles that share them changed since the
-check ran; run it again". The Profile Form disables Save for that profile
-while a check runs; one check per profile at a time.
+The editor's existing rules apply. A check result is attached to the
+configuration token that produced it; any edit to a participating field, or a
+resolution that no longer reproduces the token, clears the result and sets the
+status line to "Not checked since the last change." An in-flight check whose
+token no longer matches at completion is discarded. Save behaves as today for
+a file changed on disk since it was opened.
+
+### The Remote unison field
+
+Applies to every scalar the form surfaces with a dedicated control (its
+`surfacedScalarKeys`: the remote, attribute and option scalars), not only
+`servercmd`.
+
+Each surfaced scalar has an effective value and a provenance, computed by
+`EffectiveProfile` at load:
+
+- **Default**: no assignment in the top-level file or its includes. The
+  control shows Unison's default and is not marked.
+- **Local**: the winning assignment is in the top-level file. The control
+  shows it unmarked.
+- **Inherited**: the winning assignment is in an include. The control shows
+  it with the note "From `<file>`, line `<n>`" and the value styled as
+  inherited.
+
+Save writes only controls whose value differs from the effective value shown
+at load. An unchanged inherited value is never written to the top-level file;
+unrelated saves do not materialize overrides. A changed value is written as a
+top-level assignment placed so that it wins: an existing top-level line is
+rewritten in place when no include after it sets the key, and moved to the
+end of the file when one does; an absent line is appended at the end. When a
+line is appended or moved to override an include, one comment line precedes
+it: "# Overrides <include>: set here so this value takes effect". The comment
+is recognized by its exact text and reused on later saves, so repeated saves
+do not accumulate comments; comments already attached to a moved line move
+with it. Settings the form does not surface are preserved byte for byte,
+except changes the user makes through the form's Advanced editor, which are
+written as that editor writes them today.
+
+Clearing an inherited value ("use Unison's default") writes an explicit
+top-level assignment that reproduces the default, because removing a top-level
+line cannot override an include. The written value is Local provenance with
+default behavior; the note under the control reads "Set here so Unison's
+default applies instead of `<include>`". The assignment is defined per
+preference from the upstream defaults at commit `91421d0`:
+
+| Key | Upstream default | Default override written | Basis |
+|---|---|---|---|
+| `servercmd` | `""` | `servercmd =` | `remote.ml` substitutes `unison` when the value is empty |
+| `sshcmd` | `"ssh"` | `sshcmd = ssh` | the value is used as given; empty would not restore `ssh` |
+| `sshargs` | `""` | `sshargs =` | empty splits to no words |
+| `clientHostName` | computed (local canonical host name) | none: clearing an inherited value is refused with "This app cannot express Unison's default for this setting as a local override. Remove it from `<include>` to use the default; that may affect other profiles that include it." | no literal reproduces a computed default |
+| `times`, `owner`, `group`, `dontchmod`, `auto` | `false` | `<key> = false` | `createBool` defaults |
+| `log`, `confirmbigdel` | `true` | `<key> = true` | `createBool` defaults |
+| `perms` | `0o1777` (1023) | `perms = 1023` | `createInt` default; `int_of_string` accepts decimal |
+| `fastcheck`, `rsrc` | `default` | `<key> = default` | `createBoolWithDefault` accepts `default` |
+| `logfile` | `"unison.log"` | `logfile = unison.log` | `createString` literal default |
+| `prefer`, `force` | `""` | `<key> =` | `recon.ml` `lookupPreferredRoot` uses a nonempty `force`, else a nonempty `prefer`, else none; an empty assignment disables that global preference |
+
+Clearing a Local value with no include setting the key removes the line, as
+today. Booleans have no cleared state: the control shows the effective value,
+a changed value is written explicitly under the same placement rules, and
+their tests exercise explicit changes, not a clear.
+
+The combined conflict control (None / Prefer / Force) writes both keys
+together, because upstream gives a nonempty `force` precedence over `prefer`:
+selecting Prefer writes `prefer = <root>` and, when an effective `force` is
+nonempty, `force =` to neutralize it; selecting Force writes `force = <root>`
+and leaves `prefer` as it is (it cannot win); selecting None writes `force =`
+and `prefer =` for whichever of the two is effective and nonempty, and removes
+Local lines that no include re-sets. This concerns the two global preferences
+only; `forcepartial` and `preferpartial` rules are not surfaced and are not
+touched.
+
+The duplicate-scalar refusal (SF5) is lifted for surfaced scalars under these
+semantics: a duplicated scalar in the top-level file shows the effective
+(last) value with the note "This file sets `<key>` more than once; saving a
+change keeps the last value and removes the others." An unchanged duplicated
+value is left as it is; a changed one is written at the last occurrence with
+earlier duplicates removed, as `setValue` does today. The refusal remains for
+any other reason the form cannot represent a file, and a Step 1 fatal error
+(unknown option, garbled line) disables editing with Unison's message, as the
+unreadable-file rule does today.
 
 ### macOS 15 compatibility
 
@@ -345,13 +463,6 @@ of the app. The deployment target is unchanged.
   upstream's exact message ("Wrong number of roots", "cannot synchronize more
   than one remote root"); a profile whose single remote root is `socket://`,
   or that has no remote root, reports that the check does not apply.
-- Consumer tests: an edit is refused, naming the consuming profiles and
-  their remote hosts, when the target file is included directly or
-  transitively by another profile; it proceeds when the checked profile is
-  the only consumer; a profile that cannot be read or resolved is listed as
-  "could not be resolved" and refuses the edit; a consumer that appears, or
-  a profile whose consumer status changes, between the check and Apply
-  invalidates the edit.
 - Classification tests distinguish by observation only: marker not received
   with ssh's stderr (batch-mode authentication, host key, connection refused)
   or with the deadline expired, each worded "No start marker was received …
@@ -365,16 +476,50 @@ of the app. The deployment target is unchanged.
   selection ends in `-<major>`; `addversionno = false` added otherwise; unsafe
   characters produce no proposal.
 - Classification tests for every ssh outcome, with recorded stderr fixtures.
-- Edit tests: replace in place; override after the last directive with the
-  include's other users named; refusal when a pass-through directive follows;
-  refusal on any snapshot difference including a newly present optional
-  include; replaced lines kept commented.
 - Process cleanup: the executor exposes the child PID; after cancel, `kill -0
   <pid>` fails and `waitpid` has reaped it. No pattern-based `pgrep`.
+- Field tests: the Remote unison field shows the effective value when an
+  include sets `servercmd` after the top-level line, with the note naming the
+  include; saving a changed value appends or moves the top-level line to the
+  end with the comment, and a reload shows the effective value equal to the
+  saved one. Duplicates before, between and after includes show the effective
+  value; unchanged, the file is byte-identical after save; changed, one line
+  remains at the effective position with earlier duplicates removed. Every
+  row of the default-override table round-trips (inherited value cleared, the
+  listed assignment appended after the include with the comment, reload shows
+  Local provenance with default behavior and the note); `clientHostName`
+  clearing is refused with its note. Inherited-force-to-Prefer writes
+  `prefer` and `force =`; inherited-conflict-to-None writes both empties;
+  reload shows the selected behavior; `forcepartial`/`preferpartial` lines are
+  untouched. Repeated saves of a moved line produce exactly one generated
+  comment; a user comment directly above a moved line moves with it. Every
+  surfaced scalar participates; unsurfaced keys are byte-identical across
+  saves unless edited in the Advanced editor.
+- Token tests: a check started for host A completes after the root is changed
+  to host B: no field change, no result shown, one log line; the same for each
+  participating field, for an optional include created after the check
+  started, and for an exact-name file created beside a `.prf` after the check
+  started.
+- Compatibility: a remote printing `unison version 2.51.5` yields the
+  boundary sentence as the result and no proposal; `2.53.7` yields the
+  success closing.
+- Disclosure tests: a file included by two profiles shows both with their
+  hosts before a remote-scalar save; a single potential consumer that cannot
+  be resolved triggers the disclosure with only the "Could not be resolved"
+  line; a consumer whose own later assignment overrides the saved key is
+  still listed; a save changing only a non-remote key shows no disclosure;
+  Cancel leaves the file untouched.
+- Entry points: the button is enabled only with an `ssh://` root and Step 1
+  passing; a Step 1 failure shows under the field with no session; the
+  reconcile offer opens the exact profile and preserves an open editor's
+  unsaved state.
+- Result placement: the success headline, the status line, and the Details
+  popover contents for each classified outcome; the popover opens on failure;
+  no output contains a sentence naming which implementation the remote runs.
 - Live (Demeter): a profile without `servercmd` lists the real candidates with
   stored targets and versions; a profile with `servercmd = /opt/homebrew/bin/unison`
-  verifies; a proposal's diff equals the file after Apply; a cancelled check
-  leaves its child PID gone.
+  reports no change to make; selecting a candidate fills the field and Save
+  writes it after the includes; a cancelled check leaves its child PID gone.
 
 ## Open questions
 
