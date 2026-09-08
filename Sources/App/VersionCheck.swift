@@ -452,16 +452,20 @@ enum VersionCheck {
         var grace: TimeInterval = VersionCheck.terminateGrace
         /// How long to wait, after the child is gone, for its pipes to reach
         /// EOF before taking the output collected so far and stopping the
-        /// collectors. A ProxyCommand or other descendant that inherited the
-        /// pipes can keep them open; after this wait they are closed anyway.
-        var outputSettle: TimeInterval = 1.0
+        /// collectors. On a natural exit EOF normally follows within
+        /// milliseconds, but the read handler runs on a global queue and can
+        /// be scheduled late under load, so the bound is generous; a
+        /// ProxyCommand or other descendant that inherited the pipes can keep
+        /// them open, and after this wait they are closed anyway with the
+        /// transcript marked incomplete.
+        var outputSettle: TimeInterval = 5.0
         /// Called once with the child's pid right after a successful launch,
         /// so a caller can record which process the session owns.
         var onLaunch: (@Sendable (pid_t) -> Void)? = nil
 
         init(deadlinePollInterval: TimeInterval = 0.05,
              grace: TimeInterval = VersionCheck.terminateGrace,
-             outputSettle: TimeInterval = 1.0,
+             outputSettle: TimeInterval = 5.0,
              onLaunch: (@Sendable (pid_t) -> Void)? = nil) {
             self.deadlinePollInterval = deadlinePollInterval
             self.grace = grace

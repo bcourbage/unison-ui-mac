@@ -95,6 +95,18 @@ struct EffectiveProfile: Equatable {
     /// Files read, in the order Unison opens them (top-level first). A file
     /// included twice appears twice, as upstream reads it twice.
     let files: [String]
+
+    /// A path whose existence decided how resolution proceeded: every lookup
+    /// candidate `profilePathname` probed (the exact name and the `.prf`
+    /// form), every optional target found absent, and every file read. A
+    /// path that later appears or disappears changes the effective profile
+    /// even when no file that was read has changed.
+    struct ResolutionDependency: Equatable, Hashable {
+        let path: String
+        let present: Bool
+    }
+    /// Deduplicated, in first-encounter order.
+    let dependencies: [ResolutionDependency]
     /// Every validated assignment in spliced order.
     let assignments: [ProfileAssignment]
 
@@ -142,6 +154,7 @@ struct EffectiveProfile: Equatable {
             let assignments = try process(parsed)
             return .success(EffectiveProfile(profile: profile,
                                              files: loader.filesRead,
+                                             dependencies: loader.dependencies,
                                              assignments: assignments))
         } catch let e as LoadError {
             return .failure(e)
@@ -161,6 +174,12 @@ struct EffectiveProfile: Equatable {
         let unisonDirectory: String
         let read: (String) -> ProfileRootResolver.ReadResult
         var filesRead: [String] = []
+        var dependencies: [ResolutionDependency] = []
+
+        private mutating func note(_ path: String, present: Bool) {
+            let d = ResolutionDependency(path: path, present: present)
+            if !dependencies.contains(d) { dependencies.append(d) }
+        }
         /// Canonical paths of the files currently being read (cycle check).
         var openStack: [String] = []
 
@@ -175,9 +194,12 @@ struct EffectiveProfile: Equatable {
         }
 
         /// `Prefs.profilePathname`.
-        private func profilePathname(_ n: String, addExt: Bool) -> String {
+        private mutating func profilePathname(_ n: String, addExt: Bool) -> String {
             let f = ProfileRootResolver.fileInUnisonDir(unisonDirectory, n)
-            if !addExt || exists(f) { return f }
+            if !addExt { return f }
+            let exact = exists(f)
+            note(f, present: exact)
+            if exact { return f }
             return ProfileRootResolver.fileInUnisonDir(unisonDirectory, n + ".prf")
         }
 
@@ -191,6 +213,7 @@ struct EffectiveProfile: Equatable {
             let text: String
             switch read(path) {
             case .missing:
+                note(path, present: false)
                 if !fail { return [] }
                 if addExt {
                     throw LoadError.fatal("Profile \(filename) not found (looking for file \(path))")
@@ -216,6 +239,7 @@ struct EffectiveProfile: Equatable {
                 throw LoadError.notEstablished(
                     "\(locName): the profile reads more than \(EffectiveProfile.maxFileReads) files through its includes.")
             }
+            note(path, present: true)
             filesRead.append(path)
             openStack.append(canonical)
             defer { openStack.removeLast() }
