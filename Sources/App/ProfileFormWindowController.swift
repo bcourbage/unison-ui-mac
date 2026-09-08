@@ -192,6 +192,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// that matches neither field) so it still round-trips on save.
     private var rawConflict: (key: String, value: String)?
 
+    /// The profile as Unison reads it (top-level file plus includes), loaded with
+    /// the document; nil for a new profile or when the load failed. Surfaced
+    /// scalars display its effective values, with provenance notes.
+    private var effectiveProfile: EffectiveProfile?
+    /// Effective value of each surfaced scalar at load (nil = Unison's default).
+    /// Save writes only controls whose value differs from this.
+    private var loadedScalar: [String: String?] = [:]
+    /// Provenance notes per key ("From common.prf, line 3"); hidden when Default or Local.
+    private var scalarNotes: [String: NSTextField] = [:]
+    /// Shown when a surfaced scalar is set more than once in the top-level file.
+    private let duplicatesBanner = NSTextField(labelWithString: "")
+
     private static let attrKeys = ["times", "perms", "rsrc", "owner", "group", "dontchmod"]
     private static let optionKeys = ["confirmbigdel", "auto", "fastcheck", "prefer", "force", "log", "logfile"]
     /// All keys with dedicated UI — excluded from the Advanced catch-all.
@@ -377,10 +389,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         remoteGroup.spacing = 8
         let remoteRows: [NSView] = [
             remoteHeader, remoteHelp,
-            labeledRow(label: "Remote unison", control: servercmdField),
-            labeledRow(label: "SSH command", control: sshcmdField),
-            labeledRow(label: "SSH args", control: sshargsField),
-            labeledRow(label: "Client host", control: clientHostNameField),
+            labeledRowWithNote(label: "Remote unison", control: servercmdField, key: "servercmd"),
+            labeledRowWithNote(label: "SSH command", control: sshcmdField, key: "sshcmd"),
+            labeledRowWithNote(label: "SSH args", control: sshargsField, key: "sshargs"),
+            labeledRowWithNote(label: "Client host", control: clientHostNameField, key: "clientHostName"),
         ]
         for v in remoteRows {
             remoteGroup.addArrangedSubview(v)
@@ -436,12 +448,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         let fileAttrs = sectionStack([
             attrHelp,
-            attrRow("Modification times", timesPopup),
+            attrRow("Modification times", timesPopup, key: "times"),
             permsRow,
-            attrRow("Resource forks", rsrcPopup),
-            attrRow("Owner", ownerPopup),
-            attrRow("Group", groupPopup),
-            attrRow("Suppress chmod", dontchmodPopup),
+            attrRow("Resource forks", rsrcPopup, key: "rsrc"),
+            attrRow("Owner", ownerPopup, key: "owner"),
+            attrRow("Group", groupPopup, key: "group"),
+            attrRow("Suppress chmod", dontchmodPopup, key: "dontchmod"),
         ])
 
         // ----- Options section -----
@@ -484,13 +496,14 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         let options = sectionStack([
             optionsHelp,
-            attrRow("Conflict handling", conflictPopup),
+            attrRow("Conflict handling", conflictPopup, key: "conflict"),
             conflictHelp,
-            attrRow("Confirm big deletions", confirmbigdelPopup),
-            attrRow("Auto-accept changes", autoPopup),
-            attrRow("Fast update check", fastcheckPopup),
+            attrRow("Confirm big deletions", confirmbigdelPopup, key: "confirmbigdel"),
+            attrRow("Auto-accept changes", autoPopup, key: "auto"),
+            attrRow("Fast update check", fastcheckPopup, key: "fastcheck"),
             sectionDivider(),
             logCheckbox,
+            noteLabel(forKey: "log"),
             logFolderRow,
             logNameRow,
         ])
@@ -570,8 +583,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         includesBanner.lineBreakMode = .byTruncatingTail
         includesBanner.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         includesBanner.isHidden = true
+        duplicatesBanner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        duplicatesBanner.textColor = .secondaryLabelColor
+        duplicatesBanner.lineBreakMode = .byTruncatingTail
+        duplicatesBanner.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        duplicatesBanner.isHidden = true
 
-        let rightSide = NSStackView(views: [popOutBar, includesBanner, sectionContainer, buttonRow])
+        let rightSide = NSStackView(views: [popOutBar, includesBanner, duplicatesBanner, sectionContainer, buttonRow])
         rightSide.orientation = .vertical
         rightSide.spacing = 10
         rightSide.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
@@ -653,6 +671,64 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         return row
     }
 
+    /// A small secondary label that reports where a surfaced scalar's effective
+    /// value comes from when it is inherited from an include. Hidden otherwise.
+    private func noteLabel(forKey key: String) -> NSTextField {
+        let n = NSTextField(labelWithString: "")
+        n.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        n.textColor = .secondaryLabelColor
+        n.lineBreakMode = .byTruncatingMiddle
+        n.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        n.isHidden = true
+        scalarNotes[key] = n
+        return n
+    }
+
+    /// A labeled row whose note sits beneath the control, aligned with it.
+    private func labeledRowWithNote(label: String, control: NSView, key: String) -> NSStackView {
+        let note = noteLabel(forKey: key)
+        let noteRow = NSStackView(views: [NSView(), note])
+        noteRow.orientation = .horizontal
+        noteRow.spacing = 8
+        noteRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let v = NSStackView(views: [labeledRow(label: label, control: control), noteRow])
+        v.orientation = .vertical
+        v.alignment = .leading
+        v.spacing = 2
+        return v
+    }
+
+    /// Reflect each surfaced scalar's provenance in its note label.
+    private func refreshScalarNotes() {
+        guard let e = effectiveProfile, let name = initialProfileName else {
+            for n in scalarNotes.values { n.isHidden = true }
+            return
+        }
+        let top = profileURL(forName: name).path
+        func text(_ key: String) -> String? {
+            if case let .inherited(file, line) = ProfileScalarSemantics.state(for: key, effective: e, topLevelPath: top).provenance {
+                return "From \(file), line \(line)"
+            }
+            return nil
+        }
+        for (key, n) in scalarNotes {
+            let t: String?
+            switch key {
+            case "conflict":
+                // Whichever global preference is effective and nonempty; force wins.
+                if !(e.scalar("force")?.value.isEmpty ?? true), let f = text("force") { t = f + " (force)" }
+                else if !(e.scalar("prefer")?.value.isEmpty ?? true), let p = text("prefer") { t = p + " (prefer)" }
+                else { t = nil }
+            case "log":
+                t = text("log") ?? text("logfile")
+            default:
+                t = text(key)
+            }
+            n.stringValue = t ?? ""
+            n.isHidden = (t == nil)
+        }
+    }
+
     /// Show/hide the Tier-1 inheritance banner from the current includes.
     private func refreshIncludesBanner() {
         let names = includesView.entries.map { $0.name }
@@ -732,6 +808,17 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             let url = profileURL(forName: name)
             if let text = try? String(contentsOf: url, encoding: .utf8) {
                 prfDocument = ProfileDocument.parse(text)
+                // The profile as Unison reads it, includes spliced in. A file
+                // Unison would refuse to load has no effective values to edit.
+                switch EffectiveProfile.load(profile: name, unisonDirectory: unisonDirectory) {
+                case .success(let e):
+                    effectiveProfile = e
+                case .failure(let err):
+                    effectiveProfile = nil
+                    notEditableReason =
+                        "Unison would not load this profile as it is:\n\(err.message)\n\n"
+                        + "Editing is disabled until the file loads. Use “Open .prf File…” to fix it in a text editor, then reload."
+                }
             } else {
                 // B4: the profile couldn't be read (permissions) or isn't UTF-8.
                 // Do NOT present a blank editable form that would overwrite the
@@ -743,19 +830,16 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                     + "disabled — open it in a text editor instead:\n\n\(url.path)"
             }
         }
-        // SF5: a scalar setting duplicated in the file has an effective (last)
-        // value the single-field form can't safely represent — a save would
-        // collapse the duplicates and could flip the effective value. Refuse
-        // editing (the effective value is still shown, read-only).
-        if notEditableReason == nil {
-            let dups = prfDocument.duplicatedScalarKeys(among: Self.surfacedScalarKeys)
-            if !dups.isEmpty {
-                notEditableReason =
-                    "This profile sets " + dups.joined(separator: ", ") + " more than once. Unison "
-                    + "uses the last value, which a single-field editor can’t safely round-trip. "
-                    + "Editing is disabled — adjust the duplicates in a text editor first."
-            }
+        // A scalar set more than once in the top-level file shows its effective
+        // (last) value; a changed value is written at that position with the
+        // earlier duplicates removed, and an unchanged one is left alone.
+        let dups = prfDocument.duplicatedScalarKeys(among: Self.surfacedScalarKeys)
+        duplicatesBanner.isHidden = dups.isEmpty
+        if !dups.isEmpty {
+            duplicatesBanner.stringValue = "This file sets " + dups.joined(separator: ", ")
+                + " more than once; saving a change keeps the last value and removes the others."
         }
+        loadedScalar = [:]
         // Top-level fields: the two `root = …` lines in document order.
         // Either can be a local path or an ssh://… / socket://… URL.
         let roots = prfDocument.values(forKey: "root")
@@ -773,10 +857,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         // Remote connection fields (owned by Roots → Remote Connection).
         // Scalars read the EFFECTIVE (last) value — Unison's last-wins order (SF5).
-        servercmdField.stringValue = prfDocument.lastValue(forKey: "servercmd") ?? ""
-        sshcmdField.stringValue = prfDocument.lastValue(forKey: "sshcmd") ?? ""
-        sshargsField.stringValue = prfDocument.lastValue(forKey: "sshargs") ?? ""
-        clientHostNameField.stringValue = prfDocument.lastValue(forKey: "clientHostName") ?? ""
+        servercmdField.stringValue = loadScalar("servercmd") ?? ""
+        sshcmdField.stringValue = loadScalar("sshcmd") ?? ""
+        sshargsField.stringValue = loadScalar("sshargs") ?? ""
+        clientHostNameField.stringValue = loadScalar("clientHostName") ?? ""
         updateRemoteVisibility()
 
         // Picker visibility (mirrors the Profile Editor's eye toggle).
@@ -786,12 +870,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         visibilityCheckbox.state = isHidden ? .off : .on
 
         // File attributes
-        setTriState(timesPopup, from: prfDocument.lastValue(forKey: "times"))
-        setTriState(rsrcPopup, from: prfDocument.lastValue(forKey: "rsrc"))
-        setTriState(ownerPopup, from: prfDocument.lastValue(forKey: "owner"))
-        setTriState(groupPopup, from: prfDocument.lastValue(forKey: "group"))
-        setTriState(dontchmodPopup, from: prfDocument.lastValue(forKey: "dontchmod"))
-        switch prfDocument.lastValue(forKey: "perms") {
+        setTriState(timesPopup, from: loadScalar("times"))
+        setTriState(rsrcPopup, from: loadScalar("rsrc"))
+        setTriState(ownerPopup, from: loadScalar("owner"))
+        setTriState(groupPopup, from: loadScalar("group"))
+        setTriState(dontchmodPopup, from: loadScalar("dontchmod"))
+        switch loadScalar("perms") {
         case nil:        permsPopup.selectItem(at: 0)
         case "0"?:       permsPopup.selectItem(at: 1)
         case let mask?:  permsPopup.selectItem(at: 2); permsMaskField.stringValue = mask
@@ -799,20 +883,20 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         updatePermsMaskVisibility()
 
         // Options
-        setTriState(confirmbigdelPopup, from: prfDocument.lastValue(forKey: "confirmbigdel"))
-        setTriState(autoPopup, from: prfDocument.lastValue(forKey: "auto"))
-        setTriState(fastcheckPopup, from: prfDocument.lastValue(forKey: "fastcheck"))
+        setTriState(confirmbigdelPopup, from: loadScalar("confirmbigdel"))
+        setTriState(autoPopup, from: loadScalar("auto"))
+        setTriState(fastcheckPopup, from: loadScalar("fastcheck"))
         loadConflict()
 
         // Logging. Unison's `log` default is TRUE, so an absent `log` shows ON —
         // an unrelated save then leaves an explicit `logfile` in place (SF6).
         // Split an existing logfile into folder + name. Leave the folder blank when
         // it matches the default so the placeholder shows through.
-        originalLog = prfDocument.lastValue(forKey: "log")
+        originalLog = loadScalar("log")
         loggingDirty = false
         logCheckbox.state = Self.logEnabled(originalLog) ? .on : .off
         logNameField.placeholderString = defaultLogName()
-        if let lf = prfDocument.lastValue(forKey: "logfile"), !lf.isEmpty {
+        if let lf = loadScalar("logfile"), !lf.isEmpty {
             let dir = (lf as NSString).deletingLastPathComponent
             logFolderField.stringValue = (dir == SettingsModel.defaultLogDirectory()) ? "" : dir
             logNameField.stringValue = (lf as NSString).lastPathComponent
@@ -831,7 +915,19 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // reset the dirty flag explicitly so a fresh form is never seen as edited.
         includesDirty = false
         refreshIncludesBanner()
+        refreshScalarNotes()
         applyEditability()
+    }
+
+    /// The effective value of a surfaced scalar at load, recorded so Save can
+    /// tell a changed control from an unchanged one. With no effective profile
+    /// (new profile, or a load failure that already disabled editing) the
+    /// top-level document's last value is used.
+    private func loadScalar(_ key: String) -> String? {
+        let v: String?
+        if let e = effectiveProfile { v = e.scalar(key)?.value } else { v = prfDocument.lastValue(forKey: key) }
+        loadedScalar[key] = v
+        return v
     }
 
     /// Reflect `notEditableReason`: when set, disable Save so a profile that could
@@ -871,8 +967,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         // `force` wins over `prefer` if a profile somehow sets both.
         let pair: (String, String)?
-        if let f = prfDocument.lastValue(forKey: "force") { pair = ("force", f) }
-        else if let p = prfDocument.lastValue(forKey: "prefer") { pair = ("prefer", p) }
+        // Effective values: a nonempty force wins over prefer (upstream recon.ml).
+        let f = loadScalar("force"), p = loadScalar("prefer")
+        if let f, !f.isEmpty { pair = ("force", f) }
+        else if let p, !p.isEmpty { pair = ("prefer", p) }
         else { pair = nil }
 
         guard let (key, value) = pair else { conflictPopup.selectItem(at: 0); return }
@@ -925,6 +1023,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// A label + left-aligned control row for the File Attributes section.
     private func attrRow(_ label: String, _ control: NSView) -> NSView {
         labeledRow(label: label, control: hstack([control, NSView()]))
+    }
+
+    /// An attribute row whose provenance note sits to the right of the popup.
+    private func attrRow(_ label: String, _ control: NSView, key: String) -> NSView {
+        labeledRow(label: label, control: hstack([control, noteLabel(forKey: key)]))
     }
 
     /// Popup positions for the Default/On/Off tri-state options. Raw
@@ -1004,7 +1107,38 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Push the form fields back into `document` and serialize. We do this
     /// in a deterministic order so the editor's output is stable: known
     /// fields first (in display order), then the advanced raw lines.
-    private func formIntoDocument() -> ProfileDocument {
+    /// A surfaced scalar change the effective-value semantics refused.
+    enum ScalarSaveError: Error { case refused(String) }
+
+    /// Write one surfaced scalar if, and only if, the control's value differs
+    /// from the effective value loaded. Placement, include overrides and the
+    /// per-key default rules live in `ProfileScalarSemantics`.
+    private func writeScalar(_ key: String, _ formValue: String?, into doc: inout ProfileDocument) throws {
+        let loaded: String? = loadedScalar[key] ?? nil
+        guard loaded != formValue else { return }
+        guard let e = effectiveProfile, let name = initialProfileName else {
+            doc.setValue(formValue, forKey: key)   // new profile: no includes to override
+            return
+        }
+        let change: ProfileScalarSemantics.Change = formValue.map { .set($0) } ?? .clear
+        if case .refused(let reason) = ProfileScalarSemantics.apply(
+            change, forKey: key, to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
+            throw ScalarSaveError.refused(reason)
+        }
+    }
+
+    /// The remote scalars whose control differs from the loaded effective value.
+    private var changedRemoteScalars: [String] {
+        var out: [String] = []
+        for (field, key) in [(servercmdField, "servercmd"), (sshcmdField, "sshcmd"),
+                             (sshargsField, "sshargs"), (clientHostNameField, "clientHostName")] {
+            let v = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if (loadedScalar[key] ?? nil) != (v.isEmpty ? nil : v) { out.append(key) }
+        }
+        return out
+    }
+
+    private func formIntoDocument() throws -> ProfileDocument {
         var doc = prfDocument  // start from the loaded doc so comments/order survive
 
         // Roots: rewrite the entire `root` list from the two fields,
@@ -1023,49 +1157,68 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         doc.setValuesWithComments(ignoreView.values, forKey: "ignore")
         doc.setValuesWithComments(ignorenotView.values, forKey: "ignorenot")
 
-        // Remote connection keys, owned by Roots → Remote Connection. Set
-        // the value or remove the key when the field is blank.
+        // Remote connection keys, owned by Roots → Remote Connection. Written
+        // only when changed from the loaded effective value; a blank field
+        // means Unison's default.
         for (field, key) in [(servercmdField, "servercmd"),
                              (sshcmdField, "sshcmd"),
                              (sshargsField, "sshargs"),
                              (clientHostNameField, "clientHostName")] {
             let v = field.stringValue.trimmingCharacters(in: .whitespaces)
-            doc.setValue(v.isEmpty ? nil : v, forKey: key)
+            try writeScalar(key, v.isEmpty ? nil : v, into: &doc)
         }
 
-        // File attributes (tri-state booleans + perms). Default → no line.
-        doc.setValue(triStateValue(timesPopup), forKey: "times")
-        doc.setValue(triStateValue(rsrcPopup), forKey: "rsrc")
-        doc.setValue(triStateValue(ownerPopup), forKey: "owner")
-        doc.setValue(triStateValue(groupPopup), forKey: "group")
-        doc.setValue(triStateValue(dontchmodPopup), forKey: "dontchmod")
+        // File attributes (tri-state booleans + perms). Default → Unison's default.
+        try writeScalar("times", triStateValue(timesPopup), into: &doc)
+        try writeScalar("rsrc", triStateValue(rsrcPopup), into: &doc)
+        try writeScalar("owner", triStateValue(ownerPopup), into: &doc)
+        try writeScalar("group", triStateValue(groupPopup), into: &doc)
+        try writeScalar("dontchmod", triStateValue(dontchmodPopup), into: &doc)
+        let permsValue: String?
         switch permsPopup.indexOfSelectedItem {
-        case 1: doc.setValue("0", forKey: "perms")
+        case 1: permsValue = "0"
         case 2:
             let m = permsMaskField.stringValue.trimmingCharacters(in: .whitespaces)
-            doc.setValue(m.isEmpty ? nil : m, forKey: "perms")
-        default: doc.setValue(nil, forKey: "perms")
+            permsValue = m.isEmpty ? nil : m
+        default: permsValue = nil
         }
+        try writeScalar("perms", permsValue, into: &doc)
 
-        // Options (tri-state behavior prefs). Default → no line.
-        doc.setValue(triStateValue(confirmbigdelPopup), forKey: "confirmbigdel")
-        doc.setValue(triStateValue(autoPopup), forKey: "auto")
-        doc.setValue(triStateValue(fastcheckPopup), forKey: "fastcheck")
+        // Options (tri-state behavior prefs).
+        try writeScalar("confirmbigdel", triStateValue(confirmbigdelPopup), into: &doc)
+        try writeScalar("auto", triStateValue(autoPopup), into: &doc)
+        try writeScalar("fastcheck", triStateValue(fastcheckPopup), into: &doc)
 
-        // Conflict handling: resolve the popup (or a raw value it can't
-        // represent) into a single (key, value) and apply it via
-        // ProfileDocument.setConflict, which sets in place and clears the
-        // other key. See that method for why position matters here.
+        // Conflict handling. The popup maps to one selection; upstream gives a
+        // nonempty `force` precedence over `prefer`, so the semantics write both
+        // keys together (Prefer neutralizes an effective force; None neutralizes
+        // both). A raw value the popup cannot represent is left as loaded.
         let sel = conflictPopup.indexOfSelectedItem
         if sel < Self.conflictChoices.count {
             let c = Self.conflictChoices[sel]
+            let selection: ProfileScalarSemantics.ConflictSelection
             if let key = c.key, let target = c.target {
-                doc.setConflict(key: key, value: conflictValue(forTarget: target))
+                selection = key == "force" ? .force(conflictValue(forTarget: target)) : .prefer(conflictValue(forTarget: target))
             } else {
-                doc.setConflict(key: nil, value: nil)   // Default (ask on conflict)
+                selection = .none
             }
-        } else if let raw = rawConflict {
-            doc.setConflict(key: raw.key, value: raw.value)
+            let loadedForce = (loadedScalar["force"] ?? nil) ?? "", loadedPrefer = (loadedScalar["prefer"] ?? nil) ?? ""
+            let loadedSelection: ProfileScalarSemantics.ConflictSelection =
+                !loadedForce.isEmpty ? .force(loadedForce) : (!loadedPrefer.isEmpty ? .prefer(loadedPrefer) : .none)
+            if selection != loadedSelection {
+                if let e = effectiveProfile, let name = initialProfileName {
+                    for outcome in ProfileScalarSemantics.applyConflict(
+                        selection, to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
+                        if case .refused(let reason) = outcome { throw ScalarSaveError.refused(reason) }
+                    }
+                } else {
+                    switch selection {
+                    case .none: doc.setConflict(key: nil, value: nil)
+                    case .force(let v): doc.setConflict(key: "force", value: v)
+                    case .prefer(let v): doc.setConflict(key: "prefer", value: v)
+                    }
+                }
+            }
         }
 
         // Logging. SF6: only rewrite `log`/`logfile` when the user actually changed
@@ -1075,26 +1228,26 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if !loggingDirty {
             // leave doc's log/logfile untouched
         } else if logCheckbox.state == .on {
-            doc.setValue("true", forKey: "log")
+            try writeScalar("log", "true", into: &doc)
             let nameRaw = logNameField.stringValue.trimmingCharacters(in: .whitespaces)
             let name = nameRaw.isEmpty ? defaultLogName() : nameRaw
             let folderRaw = logFolderField.stringValue.trimmingCharacters(in: .whitespaces)
             let perProfileFolder = folderRaw.isEmpty
                 ? SettingsModel.defaultLogDirectory()
                 : (folderRaw as NSString).expandingTildeInPath
-            doc.setValue(SettingsModel.composeLogfile(
+            try writeScalar("logfile", SettingsModel.composeLogfile(
                 mode: SettingsModel.loggingMode(),
                 name: name,
                 sharedFile: SettingsModel.sharedLogFile(),
                 sharedDirectory: SettingsModel.sharedLogDirectory(),
-                perProfileFolder: perProfileFolder), forKey: "logfile")
+                perProfileFolder: perProfileFolder), into: &doc)
         } else {
             // Off: write `log = false` unconditionally. Unison's default is TRUE,
             // so leaving `log` ABSENT (or any non-false value) would keep logging
             // ENABLED — the user explicitly turned it off, so it must be recorded
             // as false (SF6, review round 2).
-            doc.setValue("false", forKey: "log")
-            doc.setValue(nil, forKey: "logfile")
+            try writeScalar("log", "false", into: &doc)
+            try writeScalar("logfile", nil, into: &doc)
         }
 
         // Reconcile the advanced field with the existing document. Each
@@ -1432,7 +1585,28 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        let doc = formIntoDocument()
+        let doc: ProfileDocument
+        do {
+            doc = try formIntoDocument()
+        } catch ScalarSaveError.refused(let reason) {
+            showAlert(text: "This setting can’t be changed here", info: reason, style: .warning)
+            return
+        } catch {
+            showAlert(text: "Failed to prepare the profile", info: "\(error)", style: .critical)
+            return
+        }
+        // Shared-profile disclosure: a remote setting is changing in a file
+        // that other profiles include (or might; an unresolvable profile counts).
+        if !isNew, let current = initialProfileName, !changedRemoteScalars.isEmpty {
+            let scan = ProfileConsumerScan.scan(unisonDirectory: unisonDirectory,
+                                                targetPath: profileURL(forName: current).path,
+                                                excludingProfile: current)
+            if let disclosure = ProfileConsumerScan.disclosure(scan) {
+                lastDisclosureForTesting = disclosure
+                let proceed = disclosureDecisionForTesting ?? runDisclosureAlert(disclosure)
+                if !proceed { return }
+            }
+        }
         let text = doc.serialized
 
         // Failure-safe, retry-consistent commit (Finding #11): backs up before
@@ -1520,6 +1694,17 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         URL(fileURLWithPath: unisonDirectory).appendingPathComponent("\(name).prf")
     }
 
+    /// Save Anyway / Cancel for the shared-profile disclosure. Returns true to proceed.
+    private func runDisclosureAlert(_ disclosure: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Other profiles share this file"
+        alert.informativeText = disclosure
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func showAlert(text: String, info: String, style: NSAlert.Style) {
         // Tests drive save/guard paths headlessly; a modal alert would block the
         // hosted run. Record the last alert instead of presenting it.
@@ -1541,6 +1726,50 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     var ignorenotViewForTesting: ListFieldView { ignorenotView }
     var isSaveEnabledForTesting: Bool { saveButton.isEnabled }
     var notEditableReasonForTesting: String? { notEditableReason }
+    /// Decides the shared-profile disclosure without a modal alert: true = Save Anyway.
+    var disclosureDecisionForTesting: Bool?
+    private(set) var lastDisclosureForTesting: String?
+    var duplicatesBannerForTesting: String? { duplicatesBanner.isHidden ? nil : duplicatesBanner.stringValue }
+    func scalarNoteForTesting(_ key: String) -> String? {
+        guard let n = scalarNotes[key], !n.isHidden else { return nil }
+        return n.stringValue
+    }
+    func remoteFieldForTesting(_ key: String) -> String {
+        switch key {
+        case "servercmd": return servercmdField.stringValue
+        case "sshcmd": return sshcmdField.stringValue
+        case "sshargs": return sshargsField.stringValue
+        default: return clientHostNameField.stringValue
+        }
+    }
+    func setRemoteFieldForTesting(_ key: String, _ value: String) {
+        switch key {
+        case "servercmd": servercmdField.stringValue = value
+        case "sshcmd": sshcmdField.stringValue = value
+        case "sshargs": sshargsField.stringValue = value
+        default: clientHostNameField.stringValue = value
+        }
+    }
+    func setTriStateForTesting(_ key: String, _ state: TriState) {
+        let popup: NSPopUpButton
+        switch key {
+        case "times": popup = timesPopup
+        case "rsrc": popup = rsrcPopup
+        case "owner": popup = ownerPopup
+        case "group": popup = groupPopup
+        case "dontchmod": popup = dontchmodPopup
+        case "confirmbigdel": popup = confirmbigdelPopup
+        case "auto": popup = autoPopup
+        default: popup = fastcheckPopup
+        }
+        popup.selectItem(at: state.rawValue)
+    }
+    var conflictSelectionIndexForTesting: Int { conflictPopup.indexOfSelectedItem }
+    /// Index of the popup choice for (key, target), e.g. ("prefer", "second").
+    func conflictChoiceIndexForTesting(key: String, target: String) -> Int? {
+        Self.conflictChoices.firstIndex { $0.key == key && $0.target == target }
+    }
+    func setConflictSelectionForTesting(_ index: Int) { conflictPopup.selectItem(at: index) }
     func invokeSaveForTesting() { saveAction(saveButton) }
     func setLogCheckboxForTesting(on: Bool) {
         logCheckbox.state = on ? .on : .off
