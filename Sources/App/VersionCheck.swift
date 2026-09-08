@@ -473,7 +473,12 @@ enum VersionCheck {
         /// discovery record are a few hundred bytes; anything beyond this is
         /// counted, dropped, and marked with a trailing sentinel line.
         static let outputCap = 1 << 20
+        /// Appended when bytes beyond `outputCap` were dropped.
         static let truncationSentinel = "\n[output truncated]"
+        /// Appended when collection stopped before the writer closed the
+        /// pipe (the settle wait expired with a descendant still holding
+        /// it), so a partial transcript is never presented as complete.
+        static let incompleteSentinel = "\n[collection stopped before end of output]"
 
         /// Collects one pipe through a dispatch read source. Bytes arrive in
         /// the event handler (the descriptor is non-blocking) and are kept
@@ -488,6 +493,9 @@ enum VersionCheck {
             private var dropped = 0
             private let eof = DispatchSemaphore(value: 0)
             private var eofSignalled = false
+            /// True only when a read returned 0 or a read error ended the
+            /// stream; false when `stop()` ended collection.
+            private var reachedEOF = false
             private let source: DispatchSourceRead
             private let fd: Int32
 
@@ -526,6 +534,7 @@ enum VersionCheck {
                 lock.lock()
                 let first = !eofSignalled
                 eofSignalled = true
+                reachedEOF = true
                 lock.unlock()
                 if first { eof.signal() }
                 source.cancel()
@@ -533,11 +542,17 @@ enum VersionCheck {
 
             /// Waits up to `settle` for EOF, then returns everything kept,
             /// with the sentinel appended when bytes were dropped.
+            /// Three states are distinguished in the returned text: EOF
+            /// reached (no marker), bytes dropped at the size cap
+            /// (`truncationSentinel`), and collection ending before EOF
+            /// (`incompleteSentinel`); both markers appear when both apply.
+            /// Markers are trailing lines, so first-line parsing is unaffected.
             func snapshot(settle: TimeInterval) -> String {
                 _ = eof.wait(timeout: .now() + settle)
                 lock.lock(); defer { lock.unlock() }
                 var text = String(decoding: bytes, as: UTF8.self)
                 if dropped > 0 { text += SubprocessProbeExecutor.truncationSentinel }
+                if !reachedEOF { text += SubprocessProbeExecutor.incompleteSentinel }
                 return text
             }
 

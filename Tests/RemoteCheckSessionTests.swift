@@ -40,7 +40,9 @@ final class RemoteCheckSessionTests: XCTestCase {
             VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 0.5, onLaunch: record)
         }
         guard case .timedOut(let stdout, _) = result else { return XCTFail("expected timedOut, got \(result)") }
-        XCTAssertEqual(stdout, "MARK-1")
+        // The killed child closes the pipe on death, so EOF is normally reached;
+        // either way the text begins with what was received.
+        XCTAssertTrue(stdout.hasPrefix("MARK-1"), stdout)
         if let pid = handle.childPID {
             XCTAssertEqual(kill(pid, 0), -1, "child must be gone after the deadline")
         } else {
@@ -87,9 +89,29 @@ final class RemoteCheckSessionTests: XCTestCase {
         let start = Date()
         let result = exec.execute(sh("(sleep 3; echo late) & echo early; exit 0"), deadline: 10, canceller: VersionCheck.ProbeCanceller())
         XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "must not wait for the descendant")
-        guard case .exited(let status, let stdout, _) = result else { return XCTFail("\(result)") }
+        guard case .exited(let status, let stdout, let stderr) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(status, 0)
-        XCTAssertEqual(stdout, "early\n")
+        // The descendant still held both pipes when collection stopped, so
+        // both transcripts carry the incompleteness marker and no truncation marker.
+        XCTAssertEqual(stdout, "early\n" + VersionCheck.SubprocessProbeExecutor.incompleteSentinel)
+        XCTAssertEqual(stderr, VersionCheck.SubprocessProbeExecutor.incompleteSentinel)
+        XCTAssertFalse(stdout.contains(VersionCheck.SubprocessProbeExecutor.truncationSentinel))
+    }
+
+    func test_collector_eofReached_hasNoMarker() {
+        let exec = VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 1.0)
+        let result = exec.execute(sh("echo done"), deadline: 10, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(_, let stdout, let stderr) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(stdout, "done\n")
+        XCTAssertEqual(stderr, "")
+    }
+
+    func test_collector_stoppedBeforeEOF_andCapped_carryBothMarkers() {
+        let exec = VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 0.2)
+        // 2 MiB now, then a descendant keeps stdout open after the child exits.
+        let result = exec.execute(sh("head -c 2097152 /dev/zero | tr '\\0' 'x'; (sleep 3) & exit 0"), deadline: 20, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(_, let stdout, _) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(stdout.hasSuffix(VersionCheck.SubprocessProbeExecutor.truncationSentinel + VersionCheck.SubprocessProbeExecutor.incompleteSentinel))
     }
 
     func test_collector_stop_closesDescriptorAndAllowsDeallocation() throws {
@@ -98,8 +120,8 @@ final class RemoteCheckSessionTests: XCTestCase {
         var collector: VersionCheck.SubprocessProbeExecutor.PipeCollector? = .init(pipe.fileHandleForReading)
         weak var weak = collector
         pipe.fileHandleForWriting.write("partial".data(using: .utf8)!)
-        // Writer stays open: no EOF. snapshot returns what arrived so far.
-        XCTAssertEqual(collector!.snapshot(settle: 0.2), "partial")
+        // Writer stays open: no EOF. snapshot returns what arrived so far, marked incomplete.
+        XCTAssertEqual(collector!.snapshot(settle: 0.2), "partial" + VersionCheck.SubprocessProbeExecutor.incompleteSentinel)
         collector!.stop()
         XCTAssertTrue(collector!.isStopped)
         collector = nil
