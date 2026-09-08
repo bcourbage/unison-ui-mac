@@ -221,7 +221,11 @@ the user sees:
 - it did not start or did not report a version: the failure sentences are
   shown, and the button offers what discovery found.
 
-Most users get an answer without making a choice. The menu behind the button
+When the profile sets no `servercmd`, the remote PATH decides what runs, and
+the menu opens by itself once the current command has its answer, so a user
+with nothing configured picks without another click; a configured command
+gets its answer and the button. Most users get an answer without making a
+choice. The menu behind the button
 lists **Keep current setting** ("Currently configured for this profile"),
 then one row per other installation found, titled by what choosing it means
 rather than by a maintenance policy the check cannot see: **Use this

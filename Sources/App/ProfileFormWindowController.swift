@@ -241,6 +241,25 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// until a result exists, so the primary row never outgrows the column.
     private var checkSecondaryRow: NSStackView?
     var detailsButtonVisibleForTesting: Bool { !checkDetailsButton.isHidden }
+    /// Set when the alternatives menu opened by itself after the current
+    /// command's answer (a profile with no servercmd).
+    private(set) var checkMenuAutoPresentedForTesting = false
+    /// After layout, whether the status label stays inside its row and wraps
+    /// rather than running past the column.
+    var checkStatusFitsForTesting: Bool { checkStatusGeometryForTesting.fits }
+    var checkStatusGeometryForTesting: (fits: Bool, description: String) {
+        // Wrapping labels settle their height on the pass after their width
+        // is known, as they do in the running app.
+        window?.contentView?.layoutSubtreeIfNeeded()
+        checkStatusLabel.invalidateIntrinsicContentSize()
+        window?.contentView?.layoutSubtreeIfNeeded()
+        guard let row = checkStatusRow else { return (false, "no row") }
+        // The alignment rectangle is what Auto Layout positions; the frame
+        // carries the text field's bezel padding outside it.
+        let f = checkStatusLabel.alignmentRect(forFrame: checkStatusLabel.frame)
+        let fits = f.maxX <= row.bounds.maxX + 0.5 && f.height > 20
+        return (fits, "label \(f) in row \(row.bounds), section width \(sectionContainer.bounds.width)")
+    }
     /// The verification of the current command, restored by Keep current setting.
     private var checkCurrentResult: RemoteCheckFlow.Verification?
     /// The form as it stood when the check started, so Keep current setting
@@ -865,6 +884,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
         v.setHuggingPriority(.required, for: .vertical)
+        // A leading-aligned stack gives each row only its content width; the
+        // status label needs the column's width to wrap against.
+        for row in [controlsRow, statusRow, secondaryRow] {
+            row.widthAnchor.constraint(equalTo: v.widthAnchor).isActive = true
+        }
         return v
     }
 
@@ -931,9 +955,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func runCheck() async -> RemoteCheckFlow.Discovery? {
         cancelCheck()
-        checkResult = nil; checkReport = []; checkDetailsButton.isHidden = true
-        checkChooseButton.isHidden = true
-        refreshCheckSecondaryRow()
+        // A previous result's buttons stay in place, disabled, until the new
+        // answer replaces them; hiding and re-showing them made the row jump.
+        checkResult = nil; checkReport = []
+        checkDetailsButton.isEnabled = false
+        checkChooseButton.isEnabled = false
+        checkMenuAutoPresentedForTesting = false
         checkCurrentResult = nil
         checkFieldAtStart = servercmdField.stringValue
         checkAdvancedAtStart = advancedView.values
@@ -979,6 +1006,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if d.succeeded {
             setCheckStatus("Verifying the current command on \(prepared.host)…")
         } else {
+            checkChooseButton.isHidden = true
             showCheckReport(headline: d.failureSentences.first ?? RemoteCheckWording.closingAfterFailure,
                             details: Array(d.failureSentences.dropFirst().dropLast()),
                             closing: d.failureSentences.last ?? RemoteCheckWording.closingAfterFailure,
@@ -1096,8 +1124,16 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 ? " Remote unison is set to it and addversionno to false; Save to keep the change."
                 : " Remote unison is set to it; Save to keep the change."
         }
+        // A profile with no servercmd relies on the remote PATH; once the
+        // current command has its answer, the alternatives open by themselves
+        // so the user picks without another click.
+        let autoPresent = selection == .keepCurrent && prepared.settings.servercmd.isEmpty && !checkChooseButton.isHidden
         showCheckReport(headline: headline, details: v.details, closing: v.closing,
-                        openDetails: v.verdict == .notVerified)
+                        openDetails: v.verdict == .notVerified && !autoPresent)
+        if autoPresent, let rows = checkDiscovery?.rows {
+            checkMenuAutoPresentedForTesting = true
+            if window?.isVisible == true { presentCheckMenu(rows) }
+        }
     }
 
     private func showCheckReport(headline: String, details: [String], closing: String, openDetails: Bool) {
@@ -1106,6 +1142,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // popover repeating the headline with a closing sentence adds nothing.
         checkReport = details.isEmpty ? [headline] : [headline] + details + (closing.isEmpty ? [] : [closing])
         checkDetailsButton.isHidden = details.isEmpty
+        checkDetailsButton.isEnabled = true
+        checkChooseButton.isEnabled = true
         refreshCheckSecondaryRow()
         if openDetails, !checkDetailsButton.isHidden, window?.isVisible == true { checkDetailsTapped(checkDetailsButton) }
     }
@@ -1139,6 +1177,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkResult = nil; checkDiscovery = nil; checkReport = []; checkCurrentResult = nil
         checkDetailsButton.isHidden = true
         checkChooseButton.isHidden = true
+        checkDetailsButton.isEnabled = true
+        checkChooseButton.isEnabled = true
         refreshCheckSecondaryRow()
         setCheckStatus("Not checked since the last change.")
     }

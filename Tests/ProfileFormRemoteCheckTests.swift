@@ -103,6 +103,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison", "unchanged")
         XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent], "the only installation found is the current one")
         XCTAssertFalse(c.chooseButtonVisibleForTesting, "nothing else to choose")
+        XCTAssertFalse(c.checkMenuAutoPresentedForTesting, "a configured servercmd gets its answer, not a menu")
     }
 
     func test_candidate_fillsField_andSaveWritesIt() async throws {
@@ -115,6 +116,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent, .direct])
         XCTAssertEqual(c.checkAlternativesForTesting?.first?.subtitle, "Currently configured for this profile; the remote PATH decides which unison runs.")
         XCTAssertTrue(c.chooseButtonVisibleForTesting)
+        XCTAssertTrue(c.checkMenuAutoPresentedForTesting, "no servercmd: the alternatives open even after a pass")
         await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
         XCTAssertEqual(c.checkStatusForTesting, "The command you selected started over ssh and reported its version. Remote unison is set to it; Save to keep the change.")
@@ -132,6 +134,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
                        "The remote shell emitted the start marker; the command line then exited with status 127; stderr: zsh:1: command not found: unison. "
                        + "Choose Another Command lists the installation found on demeter.")
         XCTAssertTrue(c.chooseButtonVisibleForTesting)
+        XCTAssertTrue(c.checkMenuAutoPresentedForTesting, "no servercmd: the alternatives open without another click")
         XCTAssertTrue(c.detailsButtonVisibleForTesting, "discovery's command -v observation is one more fact")
         XCTAssertTrue(c.checkReportForTesting.contains("During discovery, command -v unison printed nothing inside sh either."))
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "", "a failed current command proposes nothing by itself")
@@ -151,6 +154,17 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         c.window?.contentView?.layoutSubtreeIfNeeded()
         XCTAssertTrue(c.chooseButtonVisibleForTesting && c.detailsButtonVisibleForTesting, "both secondary buttons are showing")
         XCTAssertEqual(c.window!.frame.width, before, "a result must not resize the editor")
+    }
+
+    func test_longStatus_wrapsInsideTheColumn() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        _ = await c.runCheck()
+        let g = c.checkStatusGeometryForTesting
+        XCTAssertTrue(g.fits, "the status wraps to several lines inside its row instead of running past it: \(g.description)")
     }
 
     func test_keepCurrentSetting_afterAProposal_restoresTheFormAndTheCurrentResult() async throws {
