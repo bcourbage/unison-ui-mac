@@ -1,458 +1,199 @@
-# Command-line setup and restoration
+# Command-line setup
 
-**Status:** Proposed design, under review  
-**Scope:** Local command installation, replacement, repair, and restoration. Separate from the guided remote-profile check.
+**Status:** Proposed design, under review
+**Scope:** How a user's `unison` command comes to run this app. Replaces the takeover-with-restoration design in this PR's earlier revisions. Separate from the guided remote-profile check.
 
 ## Purpose
 
-A user who prefers Unison UI for macOS should be able to make an existing `unison` command use this app, with clear consent and a way to undo the change.
+A user who prefers this app should be able to type `unison` in Terminal and get it, and to name this app's command from another machine. The app achieves both without writing outside the user's own files: the command lives inside the bundle, and the user's login shell is told where to find it.
 
-The app’s role is deliberately limited:
+The app's role: "Put this app's command on your PATH, and keep it there while you want it." It never writes to a system directory, never requests administrator authorization, and never replaces another program's command. It edits a startup file automatically only inside a narrow, stated set of conditions; everything outside them is Manual setup, where the pane shows what to add and where. Homebrew's link is Homebrew's operation.
 
-> “Use this app for this command.”
+## The command inside the bundle
 
-It does not manage a roster of alternative providers. Restoring a displaced command reverses the app’s own action; it is not a general provider-selection feature.
+`Contents/SharedSupport/bin/unison` is a symlink to `../../MacOS/cltool`; the launcher resolves its own path with `realpath` and requires the `/Contents/MacOS/cltool` suffix, so it needs no change. The directory holds only that entry. The symlink is part of the signed bundle; `scripts/sign-app.sh`, `scripts/test-cltool.sh` and `scripts/smoke-cli.sh` gain a case resolving the command through it.
 
-## User experience
+**Bundle precondition for adding.** Before Add to PATH, Use This Copy, or a startup rewrite, the app checks that `Bundle.main` contains `Contents/SharedSupport/bin/unison`, a symlink whose resolved path is this bundle's `Contents/MacOS/cltool`, and that the target is a regular executable file. Failure blocks those three operations with the note "This app's command is missing from the bundle. Reinstall the app." It does not block Remove from PATH.
 
-Command-line setup is available through a startup offer and **Settings → Command Line**. There is no additional App-menu command.
+## Three facts, kept separate
 
-The pane answers two questions: does this command use this app, and, if it does not, does the user want this app to take its place? It is not a provider roster or a guide to using Unison. Terminal examples, SSH instructions, profile settings, and `servercmd` guidance do not appear in it.
+- **Resolution**: what `unison` resolves to in this account's login shell (the probe).
+- **Block state**: whether this app's entry exists in the selected file, what location it records, and whether this account owns it.
+- **File safety**: whether the file can be identified, is inside the editable bound, and can be replaced with its metadata preserved.
 
-### Startup check
+Two kinds of badge: **This app**, **Not this app** and **Not installed** report resolution; **Unknown** and **Manual setup** report that the check itself could not establish resolution or eligibility. Actions and startup writes depend on block state, file safety and, for adding, the bundle precondition. Throughout, a read failure or failed query is "could not be established" and is never treated as absence.
 
-During normal GUI startup, the app checks asynchronously without delaying the window. When the startup preference is enabled, the offer gate includes an established absent command, an eligible broken link, or another supported occupant eligible for replacement. Correct links are silent. Unknown, unreadable, unsupported, or unresolved transaction states do not trigger takeover offers. Headless CLI/server invocations and test hosts never run the offer.
+## The PATH entry
 
-The offer has **Use This App…**, **Not Now** as the default button, and **Don’t ask again**. Use This App opens the applicable confirmation; it does not authorize mutation. Replacement confirmation follows that explicit choice and precedes elevation. The offer concerns only the selected command path, or the ordinary proposed installation path after the check establishes absence; it never silently operates on multiple rows.
+### Content
 
-### Settings layout and copy
+zsh and bash, one block:
 
-Settings shows one row per distinct managed or checked path. Existing journaled paths remain visible even when absent or outside the checked PATH, as does the proposed installation path when no command is found. Package-manager declarations alone never create rows for nonexistent entries.
-
-Each row is label-free in its primary layout:
-
-- The exact command path is always visible in monospace as the primary datum. It is not hidden in a disclosure or embedded in a sentence.
-- The verdict badge uses only **This app**, **Not this app**, **Broken link**, **Not installed**, **Unknown**, or **Needs attention**. Needs attention takes precedence for an unresolved transaction; Unknown denotes insufficient inspection; Broken link denotes an inspected dangling symlink. A badge does not itself establish removal authority.
-- At most one plain note line supplements the badge. Generated paths, static explanation, badges, and actions occupy distinct columns or typographic roles, rather than one body-text block. A longer explanation belongs in the applicable confirmation or recovery view.
-- **Copy Path** copies that row’s command path. An absent destination identifies it as **Proposed installation path**; copying does not install it.
-
-**Refresh** and **Checked N minutes ago** share one line and read as one control. The relative age updates while the window is open without silently rerunning the check. Before the first check, it reads **Not checked yet**. Refresh is read-only; on completion the timestamp and row results update together. A failed refresh reports Unknown with a short note and the attempted-check age; it does not present an old successful verdict as newly checked.
-
-Each eligible ordinary row offers exactly one action: **Install Command…**, **Repair Command…**, **Replace Command…**, **Remove Command…**, or **Remove and Restore Previous Command…**. A correct link offers removal only when eligible under the journal or compatibility rule. Unknown, unsupported, or correct Homebrew-managed entries can have no mutation action. A Needs attention row instead has **Review Recovery…**, the sole recovery action. These exceptions prevent the one-action layout from forcing an unsafe operation.
-
-The footnote under an offered mutation action describes only what that action does to the one public command entry and says **Requires administrator authorization; macOS may ask for a password.** Any generated path appears in its own monospace field, never interpolated into the footnote sentence. Suggested action-specific text is:
-
-| Offered action | Footnote description, preceding the authorization sentence |
-|---|---|
-| Install Command… | Creates this command link. |
-| Repair Command… | Replaces this broken command link. |
-| Replace Command… | Replaces this command entry and preserves the previous entry. |
-| Remove Command… | Removes this command link. |
-| Remove and Restore Previous Command… | Replaces this command link with the preserved previous entry. |
-
-No footnote mentions a different action or describes an action that is unavailable. Preservation and journal details are explained in the confirmation, not expanded into general instructions under the button. For a correct Homebrew-managed row with no app mutation action, the status footnote is simply **Installed by Homebrew.** This is a management disclosure, not another provider row or removal instruction. If an action is offered, package-manager involvement is disclosed in its confirmation instead of adding an unrelated action footnote.
-
-The checkbox is **Offer to set up the unison command at launch**. Its gate is the absent-name, eligible-broken-link, and other-eligible-occupant rule above, including replacement. Don’t ask again clears it; re-enabling restores unsolicited offers. Existing suppression preferences survive the upgrade. Suppression never disables Refresh, Copy Path, or manual actions.
-
-One plain limits sentence appears at the bottom:
-
-> Shows the command found by this check. Your Terminal window may run another unison.
-
-This deliberately avoids promising what a new Terminal window will run: the existing non-interactive login-shell check does not establish every interactive Terminal configuration. The pane contains no shell startup filenames and none of the terms “probe”, “login shell”, or “reconstruction”. No badge or successful refresh is presented as evidence about SSH peers or other shells.
-
-### Recovery presentation
-
-A blocked row visibly reads **Needs attention** and offers **Review Recovery…**. Opening recovery is read-only. The view lists the current command path, the recorded retained-entry paths, and the reason for the block; paths are separate monospace fields. Retained entries live in the root-only entries directory, so the app cannot observe them itself: observations of retained entries come from the helper's last run and are labelled with that run's time, and a fresh observation is a helper action. It exposes the available recovery decisions or manual-recovery evidence. Applying a decision invokes the authorized helper; cancelling authorization leaves state unchanged. Review Recovery’s footnote describes reviewing retained entries, not an unavailable Install or Remove action.
-
-## What is being managed
-
-Three distinct facts are kept separate:
-
-1. **Destination:** the exact filesystem entry being managed.
-2. **Current target:** what that entry currently points to or contains.
-3. **Management history:** whether this app installed or replaced it, and whether a package manager also declares that path.
-
-For the usual installation:
-
-```text
-/usr/local/bin/unison
-    → /Applications/unison-ui-mac.app/Contents/MacOS/cltool
+```
+# >>> unison-ui-mac command >>>
+# Managed by Unison UI for macOS (Settings > Command Line). Text inside this block is rewritten by the app.
+export PATH='/Applications/unison-ui-mac.app/Contents/SharedSupport/bin':"$PATH"
+# <<< unison-ui-mac command <<<
 ```
 
-For the Apple Silicon Homebrew cask:
+fish, one dedicated file `<fish config dir>/conf.d/unison-ui-mac.fish`, whole content:
 
-```text
-/opt/homebrew/bin/unison
-    → /Applications/unison-ui-mac.app/Contents/MacOS/cltool
+```
+# Managed by Unison UI for macOS (Settings > Command Line). This file is rewritten by the app.
+if status is-login
+    set -gx PATH '/Applications/unison-ui-mac.app/Contents/SharedSupport/bin' $PATH
+end
 ```
 
-The app owns an action at a specific path. It cannot establish universal ownership of the name `unison` across every shell, account, and SSH connection.
+The directory is `Bundle.main.bundleURL` plus `/Contents/SharedSupport/bin`, computed at every write. POSIX serialization is a single-quoted literal with `'` as `'\''` (measured against `$USER`, `$(…)`, backticks, an apostrophe, spaces and a semicolon in zsh and bash: no expansion, no substitution). fish serialization is a single-quoted string with `'` as `\'` and `\` as `\\` (from documentation; to be measured). A path containing a colon, a newline, or bytes that are not valid UTF-8 cannot be represented: Manual setup with the limitation shown, and no setup text offered.
 
-### Selecting the destination
+The fish file sets a global variable for that shell only. `status is-login` limits it to login shells, which include Terminal and interactive ssh logins and exclude non-login `ssh host command`. It never touches `fish_user_paths` or any universal variable.
 
-The proposed destination is explicit:
+### Selecting the file
 
-- When the login-shell probe identifies an existing `unison` entry, that path is the candidate for replacement or repair.
-- When no entry is found, the ordinary installation destination is `/usr/local/bin/unison`.
-- Existing app installation records remain discoverable even when their paths are no longer on the probed PATH.
-- Multiple managed paths are represented separately; one confirmation never silently changes both.
+Login shell and home directory come from the account record (`getpwuid`), never from `$SHELL` or the launching environment.
 
-The final action always names its destination. An unavailable probe does not establish that no command exists.
+| Shell | File | Automatic editing only when | Otherwise |
+|---|---|---|---|
+| zsh | `$HOME/.zprofile` | the stock layout is established positively: `/etc/zshenv` does not exist (`ENOENT`); `$HOME/.zshenv` does not exist (`ENOENT`); `/etc/zprofile` is readable and byte-identical to a known stock text; `ZDOTDIR` is absent from the launchd user environment as listed by `launchctl print gui/<uid>` (present with any value, empty included, disqualifies; a failed or unparsable query is uncertainty) and absent from the app's own environment | Manual setup, naming `$HOME/.zprofile` as the usual file; the app does not choose. Any `.zshenv`, a non-stock or unreadable `/etc/zprofile`, a set `ZDOTDIR`, or an uncertain query is outside the bound |
+| bash | first existing, readable of `~/.bash_profile`, `~/.bash_login`, `~/.profile`; `~/.bash_profile` created if none exists | bash reads only the first (measured) | one of the three exists but cannot be read: Manual setup |
+| fish | `$__fish_config_dir/conf.d/unison-ui-mac.fish` | a non-login `fish -c` probe prints an absolute existing directory for `$__fish_config_dir` | Manual setup |
+| other | none | never | Manual setup: the directory to add is shown |
 
-## State and action behavior
+Known stock texts are embedded fixtures: the text measured on macOS 26.6.2 (a `LANG=C.UTF-8` default and the `path_helper` eval, nothing else), and the macOS 15 text captured by the release pipeline's macOS 15 job before this feature ships. That gate verifies the recognized stock file on the tested macOS 15 image, not every macOS 15 installation; the evidence preserves the OS version and build and the exact fixture bytes. A future macOS revision that changes the file moves accounts to Manual setup until its text is measured and added; that is the intended refusal, not a defect.
 
-| State at the selected path | Primary behavior | Preservation |
-|---|---|---|
-| Nothing exists | **Install** | Records that no predecessor existed |
-| Symlink resolves to this installation’s launcher | **Installed**; no replacement needed | Preserves any existing restoration record |
-| Broken link known to have been installed by this app | **Repair** | Preserves any earlier predecessor record |
-| Symlink points to another app copy or another provider | **Replace** after confirmation | Records the stored link target |
-| Other dangling symlink | **Replace** after confirmation | Records its stored target; does not claim the target is usable |
-| Regular file | **Replace** after confirmation | Exchanges the file into protected staging on the same filesystem |
-| Anything other than a symlink or regular file, including a directory, socket, or device | No replacement | Explains why the entry cannot be managed |
-| Entry cannot be inspected reliably | No replacement | Reports unknown state |
+Why the bound is sufficient for what it claims: before zsh selects `$ZDOTDIR/.zprofile` it has read only `/etc/zshenv` and `$ZDOTDIR/.zshenv`, with `ZDOTDIR` initially taken from the environment; `/etc/zprofile` runs before the user's `.zprofile` and could change `ZDOTDIR` for later files. With both `.zshenv` files absent, the variable absent from the environments a Terminal shell inherits, and `/etc/zprofile` known verbatim, the profile read is `$HOME/.zprofile`. The bound is re-established at every launch and before every write; if it stops holding, the account moves to Manual setup and an existing block is reported as present but no longer maintained.
 
-A broken pathname resembling this app’s launcher is suggestive, not proof that this app created it. The existing `danglingLauncherPath` classification becomes a display hint, not authority to discard a target or offer Repair. Without a valid journal, an old 0.7.0 dangling link is **Replace**, with confirmation and preservation of its stored target: its Settings row shows the badge **Broken link** with **Replace Command…** and the Replace footnote, not Repair Command…, which appears only for a journal-backed broken link. A journal-backed Repair retains the original predecessor; it never starts a new restoration chain.
+`launchctl getenv` cannot serve the three-way distinction: it exits 0 with no output for both an unset and an empty variable (measured). `launchctl print gui/<uid>` lists a set variable in its environment section, including an empty one, and omits an unset one.
 
-Replacing a link that already points correctly to this installation accomplishes nothing and does not remove another installer’s claim to the pathname. There is no Force Replace action for a correct Homebrew link.
+### Editable-file bound (zsh and bash)
 
-### Existing installations without a journal
+A startup file is inside the bound only if all of the following hold. Each failure is Manual setup, with the reason in the note.
 
-A compatibility rule preserves Remove Command for existing direct installations, including 0.7.0. A path is eligible when all of the following hold:
+1. **No heredoc syntax.** No line of the file contains `<<`, except lines byte-equal to the two marker lines, whose end marker contains that sequence by design. Parse checks accept an open heredoc at end of file (measured), and delimiter matching can be defeated (`cat <<ONE <<TWO` with both delimiters present but the second heredoc still open), so the design does not detect heredoc regions; it refuses files that could contain one. Here-strings and comments containing `<<` are refused by the same rule; false refusals are accepted.
+2. **Parses cleanly, whole file and prefix.** `zsh -n` or `bash -n` exits 0 on the whole file and, for a rewrite or removal, on the text before the begin marker. The prefix check refuses a block that a completed multiline quote, function body or compound command has enclosed since it was written, which whole-file parsing alone accepts. Neither check understands shell semantics; together they refuse the constructs this design knows about. What they accept is edited at the user's risk, which is why ownership, effect verification and the manual's limits remain.
+3. **Marker grammar.** Zero marker lines (append), or exactly one begin marker followed later by exactly one end marker (rewrite or removal), both at the start of a line. Any other arrangement is refused.
+4. **Ownership.** For a rewrite or removal, this account's record must name this file's resolved path and hold a hash equal to the existing block's text. No record, or a different hash, means foreign: the pane says a block exists that this app did not write or that was edited, and shows both texts.
+5. **Template match.** The existing block must equal the app's template with some bundle path.
+6. **Metadata.** The file is a regular file after following symlinks once, owned by this account, without an immutable flag, and `copyfile(3)` with `COPYFILE_SECURITY | COPYFILE_XATTR | COPYFILE_STAT` succeeds in cloning its metadata onto the temporary file.
+7. **Newline.** A file without a final newline gets one before an appended block. Removal deletes the block lines and the newline after the end marker; in the no-final-newline case a round trip leaves a trailing newline, otherwise text outside the block is byte-identical.
 
-- It is a symlink resolving to this installation’s launcher, using resolved filesystem identity rather than spelling, capitalization, or bundle identifier alone.
-- There is no installation record or incomplete transaction for the destination. A corrupt or unreadable journal is not an absent journal.
-- Package-manager inspection establishes that no installed cask declares this destination. Incomplete or unavailable inspection is unknown and does not satisfy this condition.
+### Ownership record
 
-The app treats this as an **inferred existing installation with no recorded predecessor** and offers Remove Command. This does not prove who created the link or whether something was displaced in the past. It is the sole exception allowing removal authority to be inferred without an app transaction record. Provider labels and pathname hints never independently authorize an action.
+Per account, in defaults, two slots for the selected file: `confirmed` and `pending`. Each holds the resolved file path, the block hash, the bundle path written, and a date.
 
-The removal confirmation states that no previous command is recorded and none will be restored. The privileged operation journals the inference and the removal before acting, rechecking the same eligibility conditions. Inspection alone does not create a claim of ownership. A correct link declared by a cask remains Homebrew-managed and has no Remove action without an app takeover record.
+- Add or rewrite: write `pending` with the new hash, leaving `confirmed` untouched. If writing `pending` fails, refuse before touching the file: "The entry could not be recorded. Nothing was written."
+- Outcome classification: **not mutated** when the failure happens before the rename is issued, or the rename fails with an error that guarantees no change (`ENOENT`, `EACCES`, `EPERM`, `EEXIST`, `ENOTDIR`, `EXDEV`; this list is a reading of `rename(2)` and is verified for both `renameat` and `renameatx_np` with `RENAME_EXCL` during implementation review): delete `pending`; `confirmed` still matches the unchanged file. **Mutated** when the rename returned success: keep `pending`. **Uncertain** when the rename returned any error outside the list: keep `pending`.
+- Promotion: after a successful read-back, `pending` becomes `confirmed`.
+- Removal: after the file change succeeds, delete both slots.
+- Ownership test: the existing block's hash equals `confirmed`, or equals `pending`. A block matching neither is foreign.
+- The record is keyed by resolved path, not inode, so an editor's replace-save keeps ownership. A user edit inside the block, or loss of defaults, makes the block foreign; the pane explains and shows the file and block. No automatic recovery.
 
-### Cask-declaration inspection
+### Write procedure: replacement
 
-Inspection reads installed metadata under each relevant Homebrew prefix’s Caskroom without invoking `brew` or evaluating Ruby caskfiles. It looks for installed `binary` artifacts and resolves their destination using the recorded target and applicable prefix. It records the metadata source and whether inspection was complete.
+Snapshot on read: resolved target, device, inode, size, modification time, content hash, and an open descriptor on the parent directory. Immediately before the rename, re-read identity and content through the directory descriptor and refuse on any difference: "The file changed while the entry was being prepared. Nothing was written." Then `renameat` of the temporary file over the target within that directory descriptor. Read back and compare before reporting written.
 
-An established absence of Homebrew in the inspected scope is a negative finding, not unknown. An existing but unreadable Caskroom is unknown. Legacy records without an artifact list, unsupported metadata formats, unresolved target expressions, and incomplete enumeration are also unknown; none proves that a destination is unclaimed. A missing artifact list is especially relevant to the previously observed legacy `unison-app` record.
+**Residual, stated without a duration:** between the final check and the rename, another writer's save can be lost; scheduling can widen that window. The app writes only its own block; the exposure is the other writer's change in that window. Accepted for editing a user's own startup file and stated in the manual.
 
-The implementation specifies the supported metadata formats and prefix discovery rules and tests both. Checking only a conventional prefix does not establish that no custom-prefix installation exists. The compatibility inference is withheld where a relevant prefix or declaration cannot be resolved. Metadata changes between presentation and execution invalidate the eligibility snapshot. The privileged helper reads metadata as data; it never executes Homebrew code with administrator privileges.
+### Write procedure: creation
 
-## Replacement confirmation
+For an absent startup file or fish file: snapshot the absence through the parent descriptor with `fstatat(…, AT_SYMLINK_NOFOLLOW)` returning `ENOENT` (any other result, including a dangling symlink or a permission error, is not absence: Manual setup); write the temporary file with mode `0666 & ~umask`; place it with `renameatx_np(…, RENAME_EXCL)`, which fails atomically if the name became occupied, in which case nothing is overwritten and the operation is refused with the message above. fish's `conf.d` is created with `mkdir` at `0777 & ~umask` when absent; an existing non-directory at that path is Manual setup.
 
-The confirmation identifies:
+### fish rules
 
-- The exact path being changed.
-- The current provider, when established, or the observed target/type otherwise.
-- That the new command will run this installation.
-- What is preserved and what restoration can recover.
-- Shared-account impact.
-- Package-manager involvement, when known.
+The dedicated file is app-owned only if its entire content matches the template with some bundle path (whitespace exact, trailing newline optional) and the ownership record matches. Rewrite, creation and removal follow the procedures above; removal is `unlinkat` through the directory descriptor after the re-check. Any other content is foreign: left alone, with the intended content offered through Copy Setup Text when its conditions hold.
 
-Example:
+### Outcomes
 
-> **Replace `/usr/local/bin/unison`?**  
-> This command currently launches upstream Unison.app. Unison UI for macOS will take its place. The previous link will be preserved for restoration.  
->  
-> This affects other accounts that use this shared command.
+After an Add, Use This Copy or startup rewrite, the status line reports one of:
 
-For a regular file, the confirmation explains that the previous executable will be preserved in this app’s protected recovery directory and shows its backup path. It does not promise that the executable can run from that relocated path.
+- "Entry written and selected." (the login-shell probe, run again, resolves `unison` to this app's entry). The only success.
+- "Entry written; your shell still selects another unison."
+- "Entry written; your shell selects no unison."
+- "Entry written; command selection could not be checked." (the probe did not complete, timed out, or produced output the app could not parse, with no claim about why).
+- "Entry written; the result could not be read back." (the rename returned success and the read-back failed; `pending` kept).
+- "The file operation's result could not be established." (the rename returned an error outside the no-change list; `pending` kept; the app does not claim the entry was written).
 
-An administrator password authorizes the filesystem operation. It does not substitute for explaining the replacement.
+After a Remove, the status line reports "PATH entry removed." on success, and a second line reports the subsequent resolution separately: "Your shell now selects <path>.", "Your shell now selects no unison.", or "Command selection could not be checked." Removal is successful when the configuration is gone; it does not promise that every route to this app disappears, since a Homebrew link or a 0.7.0 link may still be selected.
 
-## Preservation and recovery
+## The probe
 
-### Symlink occupant
+The existing marker-delimited probe, run as a non-interactive login shell (`zsh -l -c`, `bash -l -c`, `fish -l -c`), reports what `unison` resolves to and whether the bundle's `bin` directory is on PATH and at which position. A separate non-login `fish -c` probe reports `__fish_config_dir`. Limit, stated in the pane and manual: a non-interactive login shell runs the login files, not the interactive ones (zsh: not `.zshrc`), and aliases or functions can select a command without changing PATH. The probe reports what a login shell selects; a Terminal window may differ.
 
-The app records the link’s stored target before replacing it.
+## Preferences
 
-Restoration returns the preserved symlink to its original destination, or stages a recreation from a valid stored-target record, then exchanges it with the current app link. The stored target bytes, including relative spelling, remain unchanged. A relative symlink may resolve differently or be dangling while in staging: validation reads the link itself and interprets its intended target relative to the original destination’s parent, never to the staging directory. Neither preservation nor restoration promises the target still exists or contains the same software later.
+- **Keep the unison command on PATH** (`commandLine.keepOnPath`).
+- **Offer command-line setup at launch** (`commandLine.offerAtLaunch`); Don't ask again clears it; the Settings checkbox turns it back on.
 
-### Regular-file occupant
+## State table
 
-The app atomically exchanges the entry with a launcher symlink in protected staging on the same filesystem. The displaced file remains under the staging name as its unique backup, preserving the file rather than copying its contents.
+Evaluated in order; the first matching row decides. "Current" means the block records this bundle's present path. "Owned" means inside the editable bound with a matching record.
 
-The backup name is unique, for example:
+| # | Condition | Badge | Note | Action | Startup write (Keep on) |
+|---|---|---|---|---|---|
+| 1 | Probe failed or timed out | Unknown | Your shell's PATH could not be read. | none | none |
+| 2 | Unsupported shell; zsh outside the stock bound or bound uncertain; file outside the editable bound; unrepresentable path; foreign block or fish file | Manual setup | one line naming the reason | none; the directory to add shown; the intended file named and Copy Setup Text offered only when the shell syntax is supported and the intended destination is established, otherwise the limitation only | none |
+| 3 | Bundle precondition failed | from resolution | This app's command is missing from the bundle. Reinstall the app. | Remove from PATH… if an owned block exists, else none | none |
+| 4 | Owned block, recorded path is an existing copy of this app other than the running one | from resolution | Another copy of this app owns the PATH entry. | Use This Copy… (shows block; rewrites on consent; records) | none |
+| 5 | Owned block, recorded path cannot be inspected (any error other than `ENOENT`) | from resolution | The previous app location could not be checked. | Use This Copy… | none |
+| 6 | Owned block, recorded path absent (`ENOENT`) or present but not a copy of this app | from resolution | none | Remove from PATH… | rewrite with the current path; status "PATH entry updated to this app's location."; outcome reported |
+| 7 | Owned block, current; resolution is this app's entry | This app | none | Remove from PATH… | none |
+| 8 | Owned block, current; resolution is another unison | Not this app | Your shell still selects another unison. | Remove from PATH… | none |
+| 9 | Owned block, current; resolution is nothing | Not installed | Your shell still selects no unison. | Remove from PATH… | none |
+| 10 | No block; resolution is this app (Homebrew or 0.7.0 link) | This app | none | Add to PATH… | none |
+| 11 | No block; resolution is another unison | Not this app | Another unison comes first on your PATH. | Add to PATH… | write; outcome reported |
+| 12 | No block; resolution is nothing | Not installed | none | Add to PATH… | write; outcome reported |
 
-```text
-/Library/Application Support/unison-ui-mac/command-installations/entry.<unique-id>
-```
+Transitions: Add to PATH… shows the block and file, writes on consent, records, turns Keep on. Use This Copy… does the same for rows 4–5. Remove from PATH… shows the file, removes on consent, deletes the records, turns Keep off. Turning Keep on in rows 10–12 runs Add to PATH…, in rows 4–5 runs Use This Copy…; cancelling leaves Keep off. Turning Keep off changes nothing on disk. Keep is hidden in rows 1–3. The startup check writes at most once per launch, only in rows 6, 11 and 12, never in headless, server or test-host launches, and only when the bundle precondition holds. A startup write in row 6 does not assert why the recorded path is gone.
 
-An existing backup is never overwritten. Unsupported files or states are refused rather than coerced into this workflow. The backup is outside PATH, inside the root-only entries directory, and is preserved without changing its own ownership or mode. No ordinary account can read or run it there; that is deliberate, because relocating a file must not widen who can read it. Relocation may also break executable-relative resource or library lookup, and the helper never executes a preserved binary to inspect it. Preservation is for restoration, not a promise of a working alternate launcher.
+## Startup offer
 
-### Existing app link
+Shown once per launch, after the profile picker, when `offerAtLaunch` is on and the state is row 11 or 12:
 
-Repair does not create a new predecessor or replace an older restoration record. Repeated Install or Repair must not lose the command originally displaced.
+> **Use this app for the unison command?**
+> Adds this app's command directory to the PATH of your login shell, in ~/.zprofile. Shells set up differently may still select another unison.
+> [Add to PATH…] [Not Now] [Don't ask again]
 
-## Durable installation record
+Not Now is the default button.
 
-Current status is derived from the filesystem. A persistent record explains what the app previously did and what it can undo.
+## Settings > Command Line
 
-Each transaction records:
+One row: path in monospace as primary datum (or "No unison command"); badge; at most one note; **Refresh** with **Checked N minutes ago** (**Not checked yet** before the first check); the status line from the last write, removal or startup check; the single action with a footnote naming the file ("Writes one marked block to ~/.zprofile." / "Removes this app's block from ~/.zprofile." / for fish, the dedicated file); in Manual setup, the directory to add in its own field, and, only when the shell syntax is supported and the intended destination is established, the intended file in its own field and **Copy Setup Text**; otherwise the limitation in the note; **Copy This App's Command Path**, which copies `<bundle>/Contents/SharedSupport/bin/unison` regardless of the row, with the note "Contains characters that need care in a profile's servercmd; the remote check can assess it." when the path has characters outside `A–Z a–z 0–9 . _ / + -`; the two checkboxes; and the limits sentence:
 
-- Destination path and transaction identifier.
-- Previous entry kind.
-- Previous symlink target or backup filename.
-- Identity information needed to recognize the preserved file.
-- New launcher target.
-- Date and the classification disclosed to the user.
-- Transaction progress and completion state.
+> Configured for this account's login shell. Shells set up differently, scripts and ssh sessions are not configured by this feature.
 
-Defaults retain only the startup-offer preference. Journal and staging share `/Library/Application Support/unison-ui-mac/command-installations/`. The directory is `root:wheel`, mode `0755`; journal and lock files are root-owned, with journal files mode `0644`, so any account can read what the app did. Captured, staged, and retired entries live in the subdirectory `entries/`, `root:wheel`, mode `0700`: only root can list, read, or traverse it. A captured file keeps its own ownership and mode, but its effective access is now root-only through the ancestor, whatever it was before. Moving a file into a shared, readable directory would widen access to it (a user's private wrapper script in a `0700` directory would become readable by every account), so the entries directory is never readable or traversable by ordinary accounts. Distinct journal, lock, and entry naming conventions prevent namespace collisions.
+Copy Setup Text and Copy This App's Command Path are distinct controls with distinct labels. Homebrew is not mentioned in the pane.
 
-The coder reports measurements on 7 September 2026: `/`, `/Library`, and `/Library/Application Support` are mode `0755` with no ACLs on both Macs; `/Library/Application Support` is `root:admin`. The app-specific directory did not yet exist. These are reported evidence, not measurements repeated for this revision. Root ownership with a non-writable admin group is acceptable for an ancestor; ancestors need not be `root:wheel`. On first authorized use the helper creates its own directory hierarchy exclusively with the specified ownership and mode, and validates an existing hierarchy rather than overwriting it.
+## Removed from the app
 
-Before every operation the helper validates the directory chain, effective permissions including ACLs, and opened directory identities. No ancestor may grant write access to anyone but root through effective mode or ACL permissions; filesystem flags are also checked for restrictions affecting creation and mutation. An immutable flag is not used to excuse unsafe ownership or write grants. In particular, checking only the world-write bit is insufficient because group permissions or ACLs may grant that access. Unexpected ownership, symlinks, or writable ancestors cause refusal. The helper neither silently repairs unrelated system-directory permissions nor follows a GUI-supplied path as journal authority.
+The 0.7.0 Install, Repair and Remove actions, their `do shell script … with administrator privileges` calls, the `/etc/paths` reconstruction, the "Remote command" row and the offer to install `/usr/local/bin/unison` are deleted in the same release with their specific tests. Release gate "known elevation APIs absent": none of `with administrator privileges`, `AuthorizationExecuteWithPrivileges`, `AuthorizationCreate`, `SMAppService`, `SMJobBless`, `requestAuthorization(to:` appears in the source. It proves those identifiers are absent, not that every elevation path is; code review covers the rest.
 
-Public destination and protected staging must support the required rename operation on the same filesystem. Cross-filesystem destinations are refused, including `EXDEV` failures. There is no same-directory, copy, or capture-then-install fallback. The refusal explains that the command is on a filesystem this app’s protected recovery storage cannot manage.
+A 0.7.0 link at `/usr/local/bin/unison` keeps working and is left alone. Manual: run `readlink /usr/local/bin/unison`; only if it prints this app's launcher path is the link the obsolete one, and `sudo rm /usr/local/bin/unison` removes it. Peers whose `servercmd` names that path depend on it; update those profiles first or keep the link.
 
-The same authorized privileged operation writes the journal and mutates the destination. GUI-provided classifications are disclosure history, not trusted instructions for restoration. Destination, backup, and transaction paths are validated against the recorded operation; a record never authorizes an unrelated privileged move or deletion.
+## ssh peers
 
-Journal updates are written durably before the next filesystem mutation. A single authorization covers preservation, installation, and their journal transitions, rather than obtaining a separate password for the backup. The journal is a recovery protocol across several filesystem operations, not a claim that the entire sequence is one atomic filesystem transaction.
+Unchanged: a peer names this app's command by absolute path in `servercmd`. Copy This App's Command Path supplies the string; whether it is usable verbatim depends on its characters, and the guided remote-profile check can assess it and refuses some paths by its own rules. A moved app changes that path; the local entry follows, remote profiles do not.
 
-The journal survives normal app updates and replacement of the bundle. Lost or inconsistent history produces an explicit recovery limitation, not a guessed restore operation.
+## Limits, for the manual
 
-### Entry identity and execution-time checks
-
-The confirmation snapshot defines what the user authorized:
-
-- For a symlink, the stored target bytes are compared exactly, including relative spelling. The entry type and filesystem identity are also checked. Comparison does not normalize or follow the stored target, and does not lose trailing bytes through shell command substitution.
-- For a regular file, the snapshot includes device, inode, size, modification and change timestamps at available precision, and a content digest. Metadata alone is not treated as evidence that contents are unchanged. Inspection does not follow a replacement symlink.
-- For an absent destination, absence means neither an entry nor a dangling symlink exists there.
-- The destination’s parent and any existing backup are checked as well; changing an ancestor must not redirect an authorized operation to another directory.
-
-A mismatch before mutation stops the operation with “The command changed since it was shown. Check again.” The app does not silently refresh the snapshot and proceed under the old consent.
-
-### Privileged transaction helper
-
-A small compiled C helper, distinct from `cltool`, performs installation, repair, replacement, removal, and restoration and is the only journal writer. Each invocation handles one authorized operation, one destination, and one confirmation snapshot. Inputs are structured data, not shell fragments. The helper independently validates the destination, snapshot, launcher, journal chain, and recovery state; privilege does not make GUI inputs trustworthy.
-
-The helper acquires an advisory lock on a root-owned lock file in the journal directory for the destination. The lock identity accounts for equivalent paths to the same parent directory and entry. It serializes this app’s operations across accounts, including recovery. Homebrew and unrelated processes do not participate in that lock.
-
-The helper is bundled, signed, and tested as a separate executable with macOS 15 compatibility. Existing `cltool` packaging is precedent, not evidence that this new helper is correctly authorized or deployed. The implementation review includes the elevation boundary below, input boundaries, signing order, hardened-runtime configuration, and release-artifact inclusion. It is not a general-purpose privileged filesystem utility. A test harness may supply an explicit scratch destination through the same validated transaction interface; no bypass of authorization or path validation ships for testing.
-
-### Elevation and retirement of the old actions
-
-Elevation uses AppleScript **`do shell script … with administrator privileges`** to launch the compiled helper by its absolute path in the current validated bundle. No SMAppService daemon or XPC service is introduced in this design.
-
-This AppleScript API accepts shell text, not a native argv array. The adapter therefore emits only a fixed helper invocation: the absolute helper path and each independently encoded argument are shell-quoted with AppleScript’s `quoted form` or a proven equivalent. Structured request fields are serialized with a versioned bounded format; pathname and symlink bytes that cannot be represented directly are encoded losslessly. No input is concatenated as shell syntax. AppleScript source is fixed and receives data as values rather than interpolated source. No `eval`, variable command selection, redirection, pipeline, or filesystem mutation command is generated.
-
-Apple documents both the shell-text interface and quoting facility: [AppleScript command reference](https://developer.apple.com/library/archive/documentation/AppleScript/Conceptual/AppleScriptLangGuide/reference/ASLR_cmds.html) and [Calling Command-Line Tools](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/CallCommandLineUtilities.html). Authorization can be reused by macOS, so UI copy does not promise a password prompt on every invocation.
-
-**Executable authenticity.** The installed bundle is owned by the login account (measured on both Macs on 7 September 2026: `/Applications` is `root:admin` `0775`, the app bundle and its `Contents/MacOS` are user-owned `0755`). Any process of that account can therefore replace the helper on disk before elevation, and an administrator typing the password would then run the substitute as root. Input validation inside the genuine helper does not address this, because the substitute runs instead of it. The elevated shell therefore never executes the bundle's helper in place. The fixed AppleScript text does three things as root: it copies the helper into a fresh `0700` root-owned directory under the journal root, verifies the copy's code signature with `codesign --verify --strict` against a fixed designated requirement (this app's Developer ID Team identifier and the helper's bundle identifier), and executes the verified copy. A copy that fails verification is discarded and the operation is refused with "The helper could not be verified." Verification and execution operate on the same bytes because only root can write where the copy lives. Ad-hoc-signed or unsigned development builds fail this check by design; the helper's logic is exercised unprivileged through the scratch-destination interface, and the elevation path only with a Developer ID-signed build.
-
-**Residual, stated plainly.** The AppleScript text is emitted by the app process, which is itself user-owned code. A process that controls the app can emit any command; macOS shows the authorization prompt in the app's name and does not display the command. This residual is inherent to `do shell script … with administrator privileges` and to the 0.7.0 path. It is closed only by a launchd-managed privileged daemon (`SMAppService`) whose code requirements on both the daemon and its client the system enforces at every connection. That alternative costs a persistently installed root daemon for an action used rarely, a registration and uninstall lifecycle visible in System Settings, and an XPC protocol with its own review. **Decision pending:** this document records the mitigation and the residual; whether the residual is accepted or the daemon adopted is the owner's decision before the helper PR, and the helper PR does not start until it is made.
-
-The helper remains the only authority for journal writes and filesystem mutations. It rejects malformed or out-of-scope requests, independently revalidates valid requests, and never treats a GUI-written snapshot file as privileged authority. Authorization to run the helper is not proof that arbitrary supplied paths were approved. The review covers the copy-verify-execute sequence, request boundaries, shell/AppleScript injection, and inherited execution environment. “Hostile argv can only cause refusal” is a testable input-validation objective for the genuine helper, not a guarantee of executable authenticity, which the signature verification above provides.
-
-The same release deletes the 0.7.0 shell-based Install, Repair, and Remove implementations and the tests specific to those obsolete algorithms. Their relevant behavioral regression coverage is migrated to the helper. Both startup and Settings invoke only the new adapter and compiled helper. There is no fallback to shell filesystem operations on helper failure. AppleScript’s shell-based launch transport remains; the old shell mutation path does not.
-
-### Other writers and staging authority
-
-The coder reports that `/opt/homebrew/bin` is login-account-owned with mode 775 on both Macs, while `/usr/local/bin` is root-owned with mode 755. These are recorded machine observations, not assumed properties of every installation. At the Homebrew destination, a competing writer can be an ordinary process of the owning account or a member of the writable group, not just an elevated administrator. Effective access also depends on ACLs, flags, and ancestor permissions; mode bits alone are not a complete permission audit.
-
-The entries directory is not listable by ordinary accounts, but the journal that names its entries is intentionally readable across accounts, so entry names are known. Unpredictable names prevent accidental collision; they are not a security boundary and cannot justify a “negligible” replacement-to-unlink race. Root ownership of a file does not by itself prevent a writer of its containing directory from replacing that directory entry.
-
-The helper never unlinks the public destination. Automatic deletion from a staging directory writable by unrelated processes is also excluded: an inode check followed by pathname unlink has the same race. Moving an entry to yet another random name in that directory does not close it. [Apple’s unlink API](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/unlink.2) removes the entry named by a path, not an expected inode.
-
-Protected staging prevents unprivileged directory writers at the public destination from replacing captured staging entries. This protection is supplied by the validated directory chain and effective permissions, not by unpredictable names. It does not make preserved file contents immutable: original ownership and permissions may allow writes, and another hard link or an already-open writable descriptor may still reach the inode. The helper validates content again before restoration and refuses a changed predecessor. An independently privileged writer remains outside this protection.
-
-This release retains retired launcher links and temporary recovery entries under journaled names rather than automatically deleting them. Remove Command removes the public command entry, not all transaction artifacts. Protected staging makes a future cleanup procedure feasible under the stated writer model, but this design does not authorize it.
-
-A journal records preservation history; recovery still reports missing or changed evidence honestly. It does not guarantee permanent findability against a privileged writer or immutable contents against other existing access to the file.
-
-### Atomic namespace operations
-
-The selected primitive is `renameatx_np`, using separate validated directory descriptors for the public parent and protected staging, with relative entry names:
-
-- For an absent destination, a staged launcher symlink is installed using **`RENAME_EXCL`**. An existing destination is a conflict, including a dangling symlink.
-- For replacement of an existing entry, **`RENAME_SWAP`** exchanges the destination with the staged launcher symlink. The displaced entry lands under the staging name. A missing destination causes a refusal rather than creating a new installation under the replacement consent.
-- For restoration while the expected app link occupies the destination, **`RENAME_SWAP`** exchanges that link with the selected preserved file or staged symlink. The retired app link lands in protected staging and is retained.
-- These are separate flag choices; they are never combined.
-
-Apple documents atomic exchange and exclusive-destination behavior, with unsupported flags producing `ENOTSUP`. The API does not take an expected inode or snapshot. See [Apple’s rename manual source](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/rename.2).
-
-Unsupported operation or filesystem capability is refused without a move-then-rename fallback. The design relies on demonstrated capability at the destination, not a blanket APFS or HFS+ label. Successful replacement or swap-based restoration introduces no missing-name interval of its own, so the previous routine interruption disclosure is removed. This establishes namespace continuity for that operation, not uninterrupted service under competing writes, crashes, or later execution failure.
-
-The staging symlink is created exclusively at a fresh name; `RENAME_SWAP` does not create a fresh backup name on its own. A regular-file reservation followed by unlink-and-symlink is not exclusive symlink creation. The journal records the staged entry’s identity before exchange. Exclusive creation prevents an initial name collision; it does not prevent another directory writer from replacing the entry later. Both sides remain subject to identity checks and conflict handling.
-
-The coder reports APFS scratch measurements for symlink and regular-file swaps, exclusive-install refusal at a dangling link, exclusive install at an absent path, and swap refusal when the destination disappears. Additional reported measurements cover swaps and exclusive capture across directories on one filesystem, restoration by swap, and `EXDEV` across a temporary disk image. The three relevant directories on both Macs reportedly reside on the Data volume; the helper checks its actual operands rather than assuming that layout. These are reported measurements, not independently repeated in this design revision. They establish individual syscall behavior in that environment, not concurrent rollback correctness, HFS+ behavior, crash durability, or release compatibility on macOS 15.
-
-### Interrupted operations and concurrency
-
-Replacement and restoration are journaled, recoverable operations. The journal records intent, staging, exchange, displaced-entry validation, and verified completion. Recovery inspects actual entries as well as the recorded stage: interruption can happen after a syscall succeeds but before its completion record is written. Atomic namespace exchange does not make the filesystem change and journal update one atomic durable transaction. Incomplete transactions block ordinary actions until reconciled.
-
-After an exchange, the helper validates both the displaced entry and the installed link. A post-operation comparison accounts for metadata changes legitimately caused by the operation; it does not blindly compare pre-rename timestamps or ignore unexpected content changes. Until validation succeeds, the displaced entry remains recovery evidence and is neither deleted nor treated as an approved predecessor. The helper must also handle an unexpected entry type displaced by a race, rather than treating it as a regular-file backup.
-
-**A second swap is not an unconditional rollback.** Suppose the approved entry is A, another process replaces it with B before the first swap, and the helper swaps B into the staging name. If another process then installs C at the destination, swapping again puts B at the destination and displaces C. That does not restore the state immediately preceding rollback. Rechecking immediately before the second swap creates another check-to-mutation interval; the advisory lock does not close it for other writers.
-
-On an observed conflict, the helper stops automatic mutation, retains available recovery entries and the journal, and reports that the command changed during installation and recovery needs attention. It does not report “nothing changed” after a successful exchange. It never deletes an unfamiliar entry or blindly swaps back. A fresh recovery action must disclose current state and preserve any newly displaced entry under the same transaction rules.
-
-### Transaction states
-
-Each mutation has a durable pre-operation record naming both entries and the expected identities. A syscall result is recorded separately from validation. A crash between those writes is resolved by observation, not by assuming that the last recorded step did or did not execute.
-
-| Operation | States and behavior |
-|---|---|
-| Install into an absent destination | `intent` → `stage_intent` → `staged` → `install_intent` → exclusive rename → `installed_unvalidated` → validate the destination → `complete` |
-| Replace or Repair | `intent` → `stage_intent` → `staged` → `exchange_intent` → swap → `exchanged_unvalidated` → validate both entries → `complete` |
-| Remove without restoration | `intent` → `capture_intent` → exclusive rename of the public entry to a fresh journaled name → `captured_unvalidated` → validate captured link and observe destination → `complete`; captured link is retained |
-| Remove and restore | `intent` → validate preserved file or prepare a symlink in protected staging → `restore_intent` → swap predecessor with the expected public app link → `restored_unvalidated` → validate restored predecessor and captured app link → `complete`; retired app link is retained |
-
-Stages are operation-specific: Install has no displaced predecessor, and Remove has no newly installed public link. If exclusive rename refuses a newly occupied destination, that entry remains untouched and the transaction records the refusal and retained artifacts. A missing source, missing evidence, validation mismatch, unexpected type, or ambiguous syscall outcome cannot become success.
-
-Restoration uses one exchange and has no capture-then-install interval. The corresponding interruption disclosure from v4 is removed. If the public entry disappears before the swap, the operation refuses; it does not silently become Install. If it changes to a different entry, post-swap validation enters conflict and preserves that entry in protected staging without automatic rollback. Missing-destination recovery requires a separately previewed exclusive-install transaction, not implicit permission under Remove and Restore.
-
-Post-mutation validation checks the destination as well as the displaced or captured entry. Symlink comparison includes stored target bytes and filesystem identity; file comparison includes content and identity, allowing only documented metadata changes from the operation. A matching predecessor alone does not establish that the public entry is still this app’s link. Completion records what was verified at that time, not a promise that no later writer can change it.
-
-The rule is **after a mismatch, no further automatic filesystem mutation**. “After any mutation, only observe and record” is too broad for operations that include staging and journaled namespace changes. Successful validation can advance a previously authorized operation to its next journaled step; any conflict stops that progression. Automatic cleanup is excluded even on the success path.
-
-### Conflict and recovery actions
-
-A validation conflict retains all available entries and an immutable record of the original approved snapshot. The display reports current observations separately from where entries were previously placed. In the A/B/C example, B may remain at the staging name while C is now at the destination; the app must not claim its own link remains there.
-
-- **Keep This Command** is available only after a fresh inspection establishes that the destination is this app’s intended link and the displaced entry can be inspected. The confirmation shows the actual displaced entry and asks whether to retain it as the predecessor. Acceptance appends a new decision to history; it does not rewrite the original approval or discard earlier predecessor records. If state changed again, the decision is refused. Unknown or unsupported displaced entries require manual recovery: the view provides the journaled path, observed type and availability, Copy Path, and an exportable recovery record. It states that the app will not move, execute, or delete that unsupported entry. After external recovery, Refresh refreshes observations and Review Recovery can request helper reconciliation; no generic clear-history action bypasses an unresolved state.
-- **Restore Displaced Command…** is a new, previewed transaction, not unconditional Undo. It names the current destination and the particular preserved entry to restore, and uses the same protected-stage, swap, validation, and conflict rules. A new writer can cause this transaction to conflict as well. The original and all subsequent recovery records and available displaced entries remain linked and retained.
-- If the destination is no longer this app’s expected link, neither action silently adopts or removes it. The app presents the changed state and retains evidence for a fresh, explicit recovery decision.
-
-On GUI launch, recovery inspection performs no filesystem mutation. It can classify a transaction as verified complete, not applied, conflict, or unresolved; it must not force an interrupted, ambiguous operation into complete. Any durable journal reconciliation is performed only by the authorized helper. A missing staged entry, partially created stage without recorded identity, inaccessible directory, or missing backup is unresolved evidence, not permission to guess. Ordinary actions remain blocked for the affected destination until that state is resolved.
-
-**Remaining implementation review gate:** this state machine supplies the normal and conflict paths but still requires demonstration in the compiled helper. Tests must cover every pre-operation record/syscall/post-operation record boundary, changes to both names, and retention without destructive cleanup. Tests must establish protected-namespace enforcement against ordinary destination-directory writers, separately from content mutation through retained file access. The design does not claim permanent findability under arbitrary privileged mutations. No public-name unlink, automatic swap-back, or random-name-based unlink safety claim is permitted.
-
-## Removal and restoration
-
-Removal is offered when the app has a valid record of installing or taking over the path and the current entry is still the expected app link, or when the narrowly defined existing-installation compatibility rule applies.
-
-| Recovery state | Offered action |
-|---|---|
-| No predecessor was displaced, or the compatibility rule establishes an inferred existing installation with no recorded predecessor | **Remove Command**, with the distinction disclosed |
-| Previous symlink is recorded | **Remove and Restore Previous Command…** |
-| Preserved regular file is present and matches the record | **Remove and Restore Previous Command…** |
-| Restoration data is missing or changed, but valid installation evidence still establishes the expected app link | Explain that restoration is unavailable; offer **Remove Command** separately |
-| Installation authority itself is unreadable, corrupt, or inconsistent | No ordinary removal or restoration; explain the recovery limitation |
-| Current entry no longer matches the app’s expected link | Refuse removal/restoration until the changed state is understood |
-
-An action promising restoration never silently degrades to removal alone.
-
-After restoration, the app verifies the resulting entry. Restoring a pathname does not establish that the previous program still functions; any missing target is reported.
-
-## Multiple users
-
-The ordinary `/usr/local/bin` installation is shared. The prompt preference is personal to each account; the command replacement is not.
-
-User A can open this GUI without changing User B’s command. If A requests replacement of a shared command, the confirmation explains the broader effect.
-
-Independent CLI selection for A and B requires per-user shell configuration. This design does not introduce automatic per-user PATH management or silently edit shell startup files.
-
-The installation journal and authorization checks cannot depend solely on the account that originally performed a shared installation.
-
-## PATH and success reporting
-
-Installing a link and making a particular shell select it are different outcomes.
-
-When the link is installed but its directory is absent from the probed PATH, the result says:
-
-> “The command link was installed. Your Terminal window may run another unison.”
-
-When another directory takes precedence, Settings conveys the result through its path rows, badges, and at most one note per row. It does not claim bare `unison` selects this app merely because a link was installed.
-
-The manual and technical validation records identify the mechanism as a non-interactive login-shell probe and explain its limits. That terminology stays out of the pane. The pane uses only the plain limits sentence specified above; detailed PATH and remote-command guidance belongs in documentation or the separate guided remote-profile check.
-
-## Homebrew interaction
-
-Homebrew involvement is an additional fact, not a mutually exclusive installation state. A Homebrew-managed path can be correct, broken, or point elsewhere.
-
-- If the link already points to this installation, the app reports it as installed.
-- If Homebrew also declares that path, Settings can disclose that fact.
-- An explicit app-directed replacement records the app’s action but does not transfer or erase Homebrew’s package ownership.
-- Without an app installation or takeover record, removal of a cask-created link remains Homebrew’s responsibility.
-- With a valid takeover record, the app can offer to undo its own replacement, subject to current-state checks.
-
-The confirmation contains a short disclosure when appropriate:
-
-> “Homebrew also manages this command path and may change it during a later package operation.”
-
-Detailed consequences belong in the manual. Documentation distinguishes measured scenarios from source-based expectations, including:
-
-- Formula linking versus cask linking.
-- Cask upgrades that skip a formula-owned command.
-- Legacy-cask uninstall behavior that can remove a replacement link.
-- Recovery when another installer deletes or changes the app’s command.
-
-A later formula upgrade after app-directed takeover remains a distinct scenario to verify before promising that the replacement link survives.
-
-### Validation of package-manager behavior
-
-Existing observations are retained with their limits. Formula linking after a cask install, a cask upgrade while a formula is linked, and a legacy-cask collision are different checks. None establishes the result of a future formula upgrade after this app replaces its link.
-
-Before the implementation’s Homebrew disclosure becomes more specific than “may change this command,” validation distinguishes:
-
-| Check | What it establishes |
-|---|---|
-| Actual `brew link unison` against a foreign link | Whether that link attempt preserves or changes the occupant, with exit status and before/after identity |
-| No-op `brew upgrade unison` | Only the no-op outcome; it does not test upgrade-time relinking |
-| `brew reinstall unison` in a disposable prefix against a foreign link | Reinstall behavior and a proxy for upgrade-time linking; record versions, before/after entries, exit status, and the evidence for the shared linking path |
-| An actual formula version upgrade against a foreign link, when available | Direct upgrade evidence for the recorded versions; not a prerequisite that depends on a new formula release becoming available |
-| Legacy `unison-app` uninstall | Whether that uninstall removes the replacement path and upstream app; a source inspection or dry run is not execution evidence |
-
-The reinstall proxy does not establish all upgrade behavior. Until an actual upgrade is observed, the manual retains that distinction and avoids a guarantee that a future upgrade preserves the app’s link.
-
-These are validation cases, not authorization to alter either Mac. Disposable environments are preferred where they can exercise the relevant behavior, and their limits are recorded. Live changes on Heracles require their own authorization and verified recovery. Demeter’s updates, legacy cleanup, and removal of existing test artifacts remain deferred until after the planned release. The upstream fallback remains available until the separately authorized cleanup.
-
-## Relationship to the guided remote-profile check
-
-This feature manages a local filesystem entry. It does not choose or edit another machine’s `servercmd`.
-
-The guided remote-profile check remains separate: it helps users inspect the intended remote command, verify observations over SSH, and preview profile edits.
-
-Taking over a local path does not prove that any remote peer selects that path.
-
-## Implementation sequence
-
-1. **Helper PR, no UI changes.** The compiled helper, transaction protocol, elevation adapter, packaging/signing integration, and fault-injection suite are reviewed first. It is not wired to product actions in this PR. The review demonstrates each journal/syscall/journal boundary and the privilege boundary independently of pane work.
-2. **Settings and startup PR, on top of the reviewed helper.** This implements the layout, fixed badge vocabulary, action-specific footnotes, Refresh age, checkbox gate, and recovery presentation. It switches both entry points together and deletes the old shell mutation implementation and its obsolete tests. There is no runtime selector or fallback between implementations.
-
-The first PR may temporarily coexist with the old product code during development; no release is cut between these two PRs. The release includes the completed migration to one privileged mutation path. Live Demeter acceptance remains after the release under the existing authorization and recovery plan.
+Per account and per login shell. Adding or removing the entry changes future login shells only: shells already open, and processes they started, keep the PATH they have. The probe runs login files, not interactive ones; a Terminal window can select differently through `.zshrc`, aliases or functions. Automatic editing applies only to the stock zsh layout, a bash profile without heredoc syntax, and a fish config directory the probe can name; everything else is Manual setup. Scripts from cron and launchd keep their own PATH. ssh sessions use `servercmd`.
 
 ## Acceptance criteria
 
-The implementation is reviewed against these behaviors:
+- Bundle: `Contents/SharedSupport/bin/unison` resolves to `cltool`; launcher and smoke scripts exercise it; signed bundle verifies; with the symlink removed or retargeted, Add and startup rewrites refuse while Remove of an owned block still works.
+- Serialization: the measured hostile names round-trip in zsh and bash without substitution; colon, newline, invalid UTF-8 refused and Copy Setup Text withheld; fish escaping measured in a disposable fish install before merge.
+- Bound: a file containing exactly the app's block passes rule 1; refusal for any other line containing `<<` (the `cat <<ONE <<TWO` fixture, a here-string, a comment), for whole-file parse failure, for prefix parse failure (the block enclosed in a completed multiline quote and in a function body), for each malformed marker state, for an unrecorded or edited block, for a template mismatch, for an immutable or foreign-owned file, and when copyfile fails.
+- zsh bound: automatic only when both `.zshenv` files return `ENOENT`, `/etc/zprofile` matches an embedded stock text, and `ZDOTDIR` is absent from the launchd listing and the app environment; Manual setup for a `.zshenv` containing only `source ~/.shell-location`, for a modified or unreadable `/etc/zprofile`, for `ZDOTDIR` present with any value including empty, and for a `launchctl print` failure or unparsable output, which is uncertainty and not absence. The macOS 15 stock text is captured by the release pipeline's macOS 15 job with the OS version and build recorded, compared to the embedded fixture before the feature ships; a mismatch fails the pipeline. The gate is named for what it verifies: the recognized stock file on the tested macOS 15 image.
+- Write: re-check refusal when the target changed at the seam; `renameat` through the parent descriptor unaffected by an ancestor rename during the operation; metadata identical before and after; symlinked file edited through to its target with the link preserved; text outside the block byte-identical, with the no-final-newline case leaving one trailing newline.
+- Creation: `RENAME_EXCL` refusal when the absent name becomes occupied by a file or a dangling symlink; a permission error on the absence check is Manual setup, not absence; created file mode `0666 & ~umask`.
+- Ownership: replace-save keeps ownership; edit inside the block makes it foreign; a refused rewrite (seam change) leaves `confirmed` intact and the block owned; a rename that fails with `EACCES` deletes `pending`; a rename that succeeds followed by an injected read-back failure keeps `pending` and reports "the result could not be read back", and the next launch treats the new block as owned; a rename returning an ambiguous error keeps `pending` and reports "could not be established", tested separately from the read-back case; failure to write `pending` refuses before any file change; removal deletes both slots; the no-change error list is verified against both rename calls at implementation review.
+- Outcomes: the six write outcomes and the removal outcome with its separate resolution line, each from fixtures (a `.zlogin` that reorders PATH; an alias in `.zlogin`; an empty PATH; a startup file that exits; an injected read-back failure; an injected ambiguous rename error; removal with a Homebrew link still present). A `.zshrc` fixture that reorders PATH demonstrates the probe's blind spot and is documented as such.
+- fish: owned file created, rewritten, removed; foreign content refused; `status is-login` guard verified; no universal variable changed.
+- State table: every row; Remove clears Keep and the records; Keep-on transitions in rows 4–5 and 10–12; rows 4, 5, 8, 9 never write at startup; at most one write per launch; none in headless, server, test-host launches; row 3 permits Remove and nothing else; Copy Setup Text absent when the destination is uncertain or the path does not serialize.
+- View-model tests per row; controller tests with injected time for Refresh, aging, offer buttons, Copy Setup Text and Copy This App's Command Path; Debug screenshot smoke.
+- Release gate as named.
+- Copy: no first person, no dash as punctuation, only the file being written is named in the pane.
 
-- Startup offers are asynchronous, limited to normal GUI launches, and respect suppression; Not Now is the default, and replacement confirmation follows an explicit Use This App choice.
-- Refresh is read-only and paired with an aging relative timestamp; suppression never disables manual actions. Copy Path copies the selected row’s exact command path. Multiple paths have separate statuses and actions.
-- View-model tests cover every fixed badge, eligible one-action row, no-action exception, action-specific footnote, Needs attention recovery action, and absence of declaration-only rows for missing entries; they establish state selection only. Controller tests with injected time and a stub elevation adapter cover button wiring, timestamp aging, and authorization cancellation. The Debug screenshot smoke covers sampled rendering. None of the three is reported as establishing the others.
-- Paths remain visible in monospace fields and outside explanatory sentences. The pane excludes usage instructions and internal shell terminology.
-- Elevation tests include paths and request fields containing spaces, quotes, newlines, backticks, and shell substitution text, plus malformed or oversized structured requests. They verify literal argument delivery and refusal without mutation. Authenticity tests run the copy-verify-execute sequence against a helper copy with one altered byte and against an ad-hoc-signed helper; both are refused before execution, and the verified copy is the executed one.
-- Release verification establishes that startup and Settings use only the helper, the old shell mutation code is absent, and the helper is signed and included.
-- Correct links cause no unnecessary replacement or password prompt.
-- Every replacement confirmation identifies one destination and its displaced entry.
-- Symlink targets and regular-file backups remain recoverable.
-- Initial staging-name collisions are refused. Tests also replace the staging entry after creation and establish that exclusive creation is not mistaken for lasting ownership of the name.
-- Repair preserves the original restoration history.
-- Changes detected before mutation abort the action. Deterministic concurrent-change tests exercise the interval between inspection and mutation and demonstrate the conflict and recovery behavior specified above.
-- Interrupted replacement and restoration enter recorded recovery states. Tests inject C after the initial swap and verify the displayed destination is C, no unconditional swap-back occurs, and retained evidence is not deleted.
-- Removal retains the captured link. Restoration uses a single swap, validates both sides, refuses a vanished destination, and records a raced replacement as conflict without swap-back. Cross-filesystem and unsupported-operation cases refuse without fallback.
-- Tests show that an ordinary destination-directory writer can enumerate but cannot replace entries in protected staging. Fault injection separately exercises privileged tampering; names are never assumed secret. No automatic entry deletion occurs.
-- Relative symlinks survive staging and restoration with identical stored bytes. Neither staged-link resolution nor successful execution from a relocated backup is an identity gate.
-- Tests modify a retained file through allowed file access, an alternate hard link, or an existing writable descriptor; restoration detects the changed content.
-- Needs attention and Review Recovery expose blocked states, retained paths, authorization cancellation, unsupported-entry guidance, and reconciliation after external recovery.
-- Recovery distinguishes not-applied, complete, conflict, and unresolved outcomes and does not manufacture completion from missing evidence.
-- Keep and Restore decisions preserve the original snapshot and every earlier predecessor record.
-- Missing backups never turn a restoration promise into silent removal.
-- Homebrew-created links and app-recorded takeovers are distinguished without relying solely on a cask receipt.
-- Shared-account effects and PATH limitations are accurately disclosed.
-- Direct 0.7.0 links without records retain Remove only through the compatibility rule; cask declarations and unknown package-manager state prevent that inference.
-- Unjournaled stale links use Replace and retain their stored target, even when their pathname resembles this app.
-- Journal ownership, permissions, ancestor validation, and cross-account access are tested; unprivileged input cannot forge restoration authority.
-- Regular-file identity tests include changed content, and crash tests cover every journal/filesystem transition, including the operation succeeding before its completion record is written.
-- Directory, socket, device, and unreadable-entry cases fail closed.
-- Compatibility remains macOS 15 and later on the app’s supported architecture, including the separately signed helper. Unsupported swap/exclusive capability refuses without fallback.
-- Tests distinguish atomic exchange, snapshot validation, and journal durability; none is reported as proving the other two.
-- Cask inspection fixtures include absent Homebrew, unreadable metadata, legacy missing artifacts, supported binary targets, and unknown prefix or target resolution.
-- A valid removal/restoration record does not bypass the helper’s concurrent-change handling.
+## What was set aside, and why
 
-### Live restoration acceptance
-
-A separately authorized Demeter test exercises symlink replacement and restoration using `/opt/homebrew/bin/unison.upstream-link`, the preserved upstream fallback link, after the release under the existing schedule. Preconditions establish the exact test path, its stored target, its working fallback, and an uncontested recovery path. The test replaces that one link through the app’s transaction flow, invokes `-version` through that exact path, restores through Remove and Restore, and compares the restored target bytes with the original capture.
-
-The observed version output is recorded alongside the resolved app path; a version string alone is not proof of bundle identity. This check demonstrates symlink restoration, not regular-file restoration or server-protocol readiness. An isolated regular-file case separately verifies that restoration returns the preserved file with its identity, contents, ownership, and permissions intact.
-
-The harness invokes the helper directly for this explicitly authorized destination; no PATH probe or Settings proposal is expected to discover `unison.upstream-link`. It exercises the production transaction validation, journaling, and recovery rules. The live test does not authorize legacy-cask uninstall or changes to production profiles, and does not add arbitrary-path selection to Settings.
+Earlier revisions of this document designed a privileged takeover of `/usr/local/bin/unison` or `/opt/homebrew/bin/unison` with journaled restoration: a compiled root helper, `renameatx_np` swap into protected staging, a conflict state machine, and signature-verified elevation through AppleScript. Two findings could not be closed within that model: no macOS primitive replaces a directory entry conditionally on its identity, so consent to "replace what you were shown" could only be checked after the fact; and the elevated command text comes from a user-owned app, so a replaced app could misuse the prompt, which only a launchd-managed daemon prevents. Apple's authorized file-operation service was tested and blocked on service admission, and would not have provided identity-conditional replacement either. A command inside the bundle plus a PATH entry in the user's own files needs none of that and resolves #122 for interactive use; the ssh case was always served by an absolute `servercmd`.
