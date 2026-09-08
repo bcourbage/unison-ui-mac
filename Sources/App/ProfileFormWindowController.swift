@@ -223,6 +223,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let checkDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
     private let checkProgress = NSProgressIndicator()
     private let checkStatusLabel = NSTextField(wrappingLabelWithString: "")
+    /// Vertical hugging for the form's stacks: above the section spacer and
+    /// the default 250 so leftover height goes to the spacer, below content
+    /// compression resistance (750) so a stack never shrinks its own views.
+    /// At required, a row with a 1-point spacer hugged down to 3 points and
+    /// its buttons were compressed to that height.
+    private static let stackHug = NSLayoutConstraint.Priority(500)
     /// One per editor window; part of the check's configuration token.
     private let checkSessionID = UUID()
     private var checkHandle: RemoteCheckSession.Handle?
@@ -259,6 +265,28 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let f = checkStatusLabel.alignmentRect(forFrame: checkStatusLabel.frame)
         let fits = f.maxX <= row.bounds.maxX + 0.5 && f.height > 20
         return (fits, "label \(f) in row \(row.bounds), section width \(sectionContainer.bounds.width)")
+    }
+    /// After layout, the vertical clearances around the check rows in points:
+    /// the check button above the SSH command field, and the secondary row
+    /// above that field. Negative means overlap.
+    var checkRowClearancesForTesting: (buttonToSSH: CGFloat, secondaryToSSH: CGFloat, statusToSecondary: CGFloat) {
+        guard let content = window?.contentView else { return (-1, -1, -1) }
+        content.layoutSubtreeIfNeeded()
+        func r(_ v: NSView) -> NSRect { v.convert(v.alignmentRect(forFrame: v.bounds), to: content) }
+        let ssh = r(sshcmdField), button = r(checkRemoteButton)
+        let secondary = checkSecondaryRow.map(r) ?? button
+        let status = r(checkStatusLabel)
+        let secondaryVisible = checkSecondaryRow?.isHidden == false
+        return (button.minY - ssh.maxY,
+                secondaryVisible ? secondary.minY - ssh.maxY : button.minY - ssh.maxY,
+                secondaryVisible ? status.minY - secondary.maxY : 0)
+    }
+    /// After layout, the smallest height among the check row's visible
+    /// buttons; a compressed row shows up here as a few points.
+    var checkButtonsMinHeightForTesting: CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return [checkRemoteButton, checkHelpButton, checkDetailsButton, checkChooseButton]
+            .filter { !$0.isHidden }.map { $0.frame.height }.min() ?? 0
     }
     /// After layout, the Check Remote Command button's width: its natural size,
     /// not the column's.
@@ -483,7 +511,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         remoteGroup.orientation = .vertical
         remoteGroup.alignment = .leading
         remoteGroup.spacing = 8
-        remoteGroup.setHuggingPriority(.required, for: .vertical)
+        remoteGroup.setHuggingPriority(Self.stackHug, for: .vertical)
         let remoteRows: [NSView] = [
             remoteHeader, remoteHelp,
             labeledRowWithNote(label: "Remote unison", control: servercmdField, key: "servercmd"),
@@ -823,12 +851,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let noteRow = NSStackView(views: [note])
         noteRow.orientation = .horizontal
         noteRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
-        noteRow.setHuggingPriority(.required, for: .vertical)
+        noteRow.setHuggingPriority(Self.stackHug, for: .vertical)
         let v = NSStackView(views: [labeledRow(label: label, control: control), noteRow])
         v.orientation = .vertical
         v.alignment = .leading
         v.spacing = 2
-        v.setHuggingPriority(.required, for: .vertical)
+        v.setHuggingPriority(Self.stackHug, for: .vertical)
         return v
     }
 
@@ -882,18 +910,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         let controlsRow = hstack([checkRemoteButton, checkProgress, checkHelpButton, flexibleSpacer()])
         controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
-        controlsRow.setHuggingPriority(.required, for: .vertical)
+        controlsRow.setHuggingPriority(Self.stackHug, for: .vertical)
         controlsRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
         let secondaryRow = hstack([checkDetailsButton, checkChooseButton, flexibleSpacer()])
         secondaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
-        secondaryRow.setHuggingPriority(.required, for: .vertical)
+        secondaryRow.setHuggingPriority(Self.stackHug, for: .vertical)
         secondaryRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
         secondaryRow.isHidden = true
         checkSecondaryRow = secondaryRow
         let statusRow = NSStackView(views: [checkStatusLabel])
         statusRow.orientation = .horizontal
         statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
-        statusRow.setHuggingPriority(.required, for: .vertical)
+        statusRow.setHuggingPriority(Self.stackHug, for: .vertical)
         // The status row never clips: the label compresses and wraps instead.
         // Letting the row clip at the same priority tied with the label's
         // compression, and the label then wrapped or clipped at random.
@@ -901,7 +929,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkStatusRow = statusRow
         let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
-        v.setHuggingPriority(.required, for: .vertical)
+        v.setHuggingPriority(Self.stackHug, for: .vertical)
         // A leading-aligned stack gives each row only its content width; the
         // status label needs the column's width to wrap against.
         for row in [controlsRow, statusRow, secondaryRow] {

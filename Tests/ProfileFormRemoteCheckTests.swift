@@ -156,6 +156,23 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(c.window!.frame.width, before, "a result must not resize the editor")
     }
 
+    func test_checkRows_keepTheirHeight_beforeAndAfterAResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        let before = c.checkRowClearancesForTesting
+        XCTAssertGreaterThanOrEqual(before.buttonToSSH, 4, "before a check, the button clears the SSH command field: \(before)")
+        XCTAssertGreaterThanOrEqual(c.checkButtonsMinHeightForTesting, 20, "buttons keep their height; a hugging row must not compress them")
+        _ = await c.runCheck()
+        XCTAssertGreaterThanOrEqual(c.checkButtonsMinHeightForTesting, 18, "small-size secondary buttons keep their height too")
+        let after = c.checkRowClearancesForTesting
+        XCTAssertGreaterThanOrEqual(after.buttonToSSH, 4, "after a result, the button clears the SSH command field: \(after)")
+        XCTAssertGreaterThanOrEqual(after.secondaryToSSH, 4, "the secondary buttons clear the SSH command field: \(after)")
+        XCTAssertGreaterThanOrEqual(after.statusToSecondary, 0, "the status does not overlap the secondary buttons: \(after)")
+    }
+
     func test_longStatus_wrapsInsideTheColumn() async throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
         let remote = Remote(); remote.bareUnisonMissing = true
