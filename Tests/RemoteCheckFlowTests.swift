@@ -115,22 +115,36 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertEqual(F.pendingRoots(inputs: i, effective: q), ["/inc", "/n1", "/n2"], "no top-level roots: form roots go where a save would append them")
     }
 
-    func test_prepare_usesPendingAddversionno_overDisk() throws {
-        try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = true\n")
-        var i = inputs(); i.addversionno = false
+    func test_pendingAddversionno_followsThePendingDocumentsIncludeOrder() throws {
+        // Untouched local false before an include setting true: Unison uses true.
+        try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = false\ninclude common\n")
+        try write("common.prf", "addversionno = true\n")
+        var i = inputs(); i.addversionnoAdvanced = ["false"]
         guard case .success(let p) = F.prepare(i) else { return XCTFail() }
-        XCTAssertFalse(p.settings.addversionno)
-        XCTAssertEqual(p.command.versionCommandString, "/opt/homebrew/bin/unison -version")
-        guard case .success(let q) = F.prepare(inputs()) else { return XCTFail() }
-        XCTAssertTrue(q.settings.addversionno, "nil pending → disk value")
-        XCTAssertEqual(q.command.versionCommandString, "/opt/homebrew/bin/unison-2.54 -version")
+        XCTAssertTrue(p.settings.addversionno)
+        XCTAssertEqual(p.command.versionCommandString, "/opt/homebrew/bin/unison-2.54 -version")
+        // The user deletes the sole assignment from Advanced: the include still wins.
+        i.addversionnoAdvanced = []
+        guard case .success(let q) = F.prepare(i) else { return XCTFail() }
+        XCTAssertTrue(q.settings.addversionno)
+        // Without the include, deleting the assignment restores the default false.
+        try write("common.prf", "sshargs = -i /k\n")
+        guard case .success(let r) = F.prepare(i) else { return XCTFail() }
+        XCTAssertFalse(r.settings.addversionno)
+        XCTAssertEqual(r.command.versionCommandString, "/opt/homebrew/bin/unison -version")
+        // Local assignment after the include (Advanced writes at that position): local wins.
+        try write("q.prf", "root = /a\nroot = ssh://h//b\ninclude common2\naddversionno = false\n")
+        try write("common2.prf", "addversionno = true\n")
+        var j = inputs(); j.profile = "q"; j.addversionnoAdvanced = ["false"]
+        guard case .success(let s) = F.prepare(j) else { return XCTFail() }
+        XCTAssertFalse(s.settings.addversionno)
     }
 
     func test_tokenStillValid_isFalse_whenTheCurrentFormDiffers() throws {
         try write("p.prf", "root = /a\nroot = ssh://h//b\n")
         guard case .success(let p) = F.prepare(inputs()) else { return XCTFail() }
         XCTAssertTrue(F.tokenStillValid(p, current: inputs()))
-        var changed = inputs(); changed.addversionno = true
+        var changed = inputs(); changed.addversionnoAdvanced = ["true"]
         XCTAssertFalse(F.tokenStillValid(p, current: changed), "an Advanced edit to addversionno changes the pending configuration")
     }
 

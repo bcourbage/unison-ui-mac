@@ -15,9 +15,10 @@ enum RemoteCheckFlow {
         var servercmd: String
         var sshcmd: String
         var sshargs: String
-        /// The pending `addversionno`: the form's Advanced text when it sets the
-        /// key, else nil to use the effective value from disk.
-        var addversionno: Bool? = nil
+        /// The values of the form's Advanced `addversionno = …` lines, in order
+        /// (empty when Advanced has none). The pending effective value is
+        /// derived from these and the includes; see `pendingAddversionno`.
+        var addversionnoAdvanced: [String] = []
         /// The local engine's version string, as `unison_bridge_get_version` reports it.
         var localEngineVersion: String
         var sessionID: UUID
@@ -76,7 +77,7 @@ enum RemoteCheckFlow {
         let settings = RemoteSettings(servercmd: inputs.servercmd,
                                       sshcmd: inputs.sshcmd.isEmpty ? "ssh" : inputs.sshcmd,
                                       sshargs: inputs.sshargs,
-                                      addversionno: inputs.addversionno ?? effective.bool("addversionno") ?? false)
+                                      addversionno: pendingAddversionno(inputs: inputs, effective: effective))
         guard let command = RemoteCommand.compose(settings: settings, root: root, majorVersion: major) else {
             return .failure(.notApplicable(.noRemoteRoot))
         }
@@ -113,6 +114,27 @@ enum RemoteCheckFlow {
         return out
     }
 
+    /// The `addversionno` the pending profile would have once saved: the
+    /// Advanced lines stand in for the top-level file's assignments at their
+    /// position (the Advanced reconciler writes at the first previous
+    /// occurrence, or the end when there was none), assignments from includes
+    /// stay, and the last one wins. No assignment anywhere is Unison's default,
+    /// false.
+    static func pendingAddversionno(inputs: Inputs, effective: EffectiveProfile) -> Bool {
+        let top = effective.files.first ?? ""
+        var values: [String] = []
+        var placed = false
+        for a in effective.list("addversionno") {
+            if ProfileScalarSemantics.samePath(a.location.path, top) {
+                if !placed { values += inputs.addversionnoAdvanced; placed = true }
+            } else {
+                values.append(a.value)
+            }
+        }
+        if !placed { values += inputs.addversionnoAdvanced }
+        return values.last == "true"
+    }
+
     /// Whether the configuration a check started with is still the one the
     /// form and the files describe: a fresh resolution and the form's current
     /// values (`current`, which may differ from the inputs the check began
@@ -125,7 +147,7 @@ enum RemoteCheckFlow {
         }
         let fresh = RemoteCheckToken.make(
             form: .init(roots: i.roots, servercmd: i.servercmd, sshcmd: i.sshcmd, sshargs: i.sshargs,
-                        addversionno: i.addversionno ?? e.bool("addversionno") ?? false),
+                        addversionno: pendingAddversionno(inputs: i, effective: e)),
             effective: e, sessionID: i.sessionID)
         return fresh == p.token
     }

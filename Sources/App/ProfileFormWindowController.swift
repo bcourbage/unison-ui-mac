@@ -225,10 +225,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
     private var checkReport: [String] = []
     private var checkPopover: NSPopover?
-    /// Set when a verified proposal requires `addversionno = false`; written at
-    /// Save with include-aware placement (Advanced alone would rewrite an earlier
-    /// occurrence that an include then overrides).
-    private var pendingAddversionnoFalse = false
+    /// The Advanced `addversionno` values as loaded, so Save can tell a changed
+    /// assignment (by the user or by a check's proposal) from an untouched one.
+    private var initialAddversionnoAdvanced: [String] = []
     /// Injectable for tests: the ssh executor factory and the local engine version.
     var checkExecutorFactoryForTesting: RemoteCheckFlow.ExecutorFactory?
     var engineVersionForTesting: String?
@@ -777,22 +776,17 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                                       servercmd: servercmdField.stringValue.trimmingCharacters(in: .whitespaces),
                                       sshcmd: sshcmdField.stringValue.trimmingCharacters(in: .whitespaces),
                                       sshargs: sshargsField.stringValue.trimmingCharacters(in: .whitespaces),
-                                      addversionno: pendingAddversionno(),
+                                      addversionnoAdvanced: advancedValues(forKey: "addversionno"),
                                       localEngineVersion: version, sessionID: checkSessionID)
     }
 
-    /// The `addversionno` the pending profile would save: the last such line in
-    /// Advanced (the key's home in the form), or nil for the value on disk.
-    private func pendingAddversionno() -> Bool? {
-        var value: Bool?
-        for line in advancedView.values {
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            guard key == "addversionno" else { continue }
-            let v = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if v == "true" { value = true } else if v == "false" { value = false }
+    /// The values of the Advanced lines for `key`, in order.
+    private func advancedValues(forKey key: String) -> [String] {
+        advancedView.values.compactMap { line in
+            guard let eq = line.firstIndex(of: "=") else { return nil }
+            guard line[..<eq].trimmingCharacters(in: .whitespaces) == key else { return nil }
+            return line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
         }
-        return value
     }
 
     @objc private func checkRemoteTapped(_ sender: NSButton) {
@@ -919,12 +913,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         if let proposal = v.proposal {
             servercmdField.stringValue = proposal.servercmd
             if proposal.setsAddversionnoFalse {
-                // addversionno has no dedicated control; show it in Advanced and
-                // write it at Save with include-aware placement.
+                // addversionno has no dedicated control; it lives in Advanced, where
+                // the user can still change it before saving. Save places a changed
+                // value so it wins over an include.
                 var lines = advancedView.values.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("addversionno") }
                 lines.append("addversionno = false")
                 advancedView.values = lines
-                pendingAddversionnoFalse = true
             }
         }
         var headline = v.headline
@@ -981,7 +975,6 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         guard checkResult != nil || checkDiscovery != nil || checkTask != nil else { return }
         cancelCheck()
         checkResult = nil; checkDiscovery = nil; checkReport = []
-        pendingAddversionnoFalse = false
         checkDetailsButton.isHidden = true
         setCheckStatus("Not checked since the last change.")
     }
@@ -1256,6 +1249,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private func captureInitialControlValues() {
         initialControlValue = [:]
         for key in Self.comparedScalarKeys { initialControlValue[key] = controlValue(for: key) }
+        initialAddversionnoAdvanced = advancedValues(forKey: "addversionno")
     }
 
     /// The effective value of a surfaced scalar at load, recorded so Save can
@@ -1610,12 +1604,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             doc.setValues(seenAdvancedKeys[k] ?? [], forKey: k)
         }
 
-        // A verified proposal's `addversionno = false` must take effect over any
-        // include that sets the key: the Advanced reconciler above wrote it at
-        // the first occurrence; place it so it wins.
-        if pendingAddversionnoFalse, let e = effectiveProfile, let name = initialProfileName {
+        // A changed Advanced `addversionno` (by the user or by a check's
+        // proposal) must take effect over any include that sets the key: the
+        // reconciler above wrote it at the first occurrence; place its last value
+        // so it wins. An untouched assignment is left where it was.
+        let addversionnoNow = advancedValues(forKey: "addversionno")
+        if addversionnoNow != initialAddversionnoAdvanced, let last = addversionnoNow.last,
+           let e = saveTimeEffective, let name = initialProfileName {
             if case .refused(let reason) = ProfileScalarSemantics.apply(
-                .set("false"), forKey: "addversionno", to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
+                .set(last), forKey: "addversionno", to: &doc, effective: e, topLevelPath: profileURL(forName: name).path) {
                 throw ScalarSaveError.refused(reason)
             }
         }
@@ -2118,6 +2115,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     var checkResultForTesting: RemoteCheckFlow.Verification? { checkResult }
     var checkIsRunningForTesting: Bool { checkTask != nil }
     var advancedLinesForTesting: [String] { advancedView.values }
+    func setAdvancedLinesForTesting(_ lines: [String]) { advancedView.values = lines }
     func setRootFieldForTesting(second value: String) { secondRootField.stringValue = value; invalidateCheckResult() }
     var conflictSelectionIndexForTesting: Int { conflictPopup.indexOfSelectedItem }
     /// Index of the popup choice for (key, target), e.g. ("prefer", "second").

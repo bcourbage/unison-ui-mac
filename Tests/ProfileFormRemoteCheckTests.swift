@@ -148,6 +148,32 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(RemoteSettings(profile: e).addversionno, false)
     }
 
+    func test_userOverridesProposedAddversionno_inAdvanced_saveKeepsTheUsersValue() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\ninclude common\n")
+        try write("common.prf", "addversionno = true\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"))
+        // The user deliberately puts it back to true before saving.
+        c.setAdvancedLinesForTesting(c.advancedLinesForTesting.filter { !$0.hasPrefix("addversionno") } + ["addversionno = true"])
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting)
+        guard case .success(let e) = EffectiveProfile.load(profile: "p", unisonDirectory: dir) else { return XCTFail() }
+        XCTAssertEqual(e.bool("addversionno"), true, "the user's edit wins; no hidden flag overrides it")
+    }
+
+    func test_editingAnSshField_afterAProposal_leavesTheAdvancedLineVisible() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"))
+        c.setRemoteFieldForTesting("sshargs", "-i /other"); c.setRootFieldForTesting(second: "ssh://bruno@demeter//x")
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"), "the visible line is ordinary editor state")
+        XCTAssertNil(c.checkResultForTesting)
+    }
+
     func test_includedSshRoot_failsStep1_beforeAnySession() async throws {
         try write("p.prf", "root = /a\nroot = ssh://demeter//x\ninclude common\n")
         try write("common.prf", "root = ssh://other//y\n")
