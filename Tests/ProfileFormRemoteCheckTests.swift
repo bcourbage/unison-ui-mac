@@ -21,9 +21,11 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
     private final class Remote: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
         var version = "unison version 2.54.0 (ocaml 5.5.0)"
         var sessions = 0
+        var remoteCommands: [String] = []
         func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
             sessions += 1
             let remote = config.arguments.last ?? ""
+            remoteCommands.append(remote)
             if let r = remote.range(of: "M=") {
                 let m = String(remote[r.upperBound...].prefix { $0 != ";" })
                 return .exited(status: 0, stdout: "\(m) BEGIN\nuname: Darwin\npath: /opt/homebrew/bin/unison\nkind: regular\nversion: \(version)\nabsent: /usr/local/bin/unison\ncommandv: \n\(m) END\n", stderr: "")
@@ -146,6 +148,28 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(e.bool("addversionno"), false, "the saved profile runs the command that was verified")
         XCTAssertEqual(e.scalar("servercmd")?.value, "/opt/homebrew/bin/unison")
         XCTAssertEqual(RemoteSettings(profile: e).addversionno, false)
+    }
+
+    func test_changedAddversionno_checkVerifiesTheCommandSaveWillRun() async throws {
+        // Reviewer's case: local true before an include also setting true; the user
+        // changes Advanced to false and checks the current command. Save places the
+        // changed value after the include, so the check must verify the unversioned
+        // command and its token must stay valid through Save.
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\ninclude common\n")
+        try write("common.prf", "addversionno = true\n")
+        let remote = Remote()
+        let c = make("p", remote: remote)
+        c.setAdvancedLinesForTesting(c.advancedLinesForTesting.filter { !$0.hasPrefix("addversionno") } + ["addversionno = false"])
+        _ = await c.runCheck()
+        await c.chooseCandidate(.keepCurrent)
+        let verified = remote.remoteCommands.last ?? ""
+        XCTAssertTrue(verified.contains("unison -version"), verified)
+        XCTAssertFalse(verified.contains("unison-2.54"), verified)
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting, "the token still describes the saved profile")
+        guard case .success(let e) = EffectiveProfile.load(profile: "p", unisonDirectory: dir) else { return XCTFail() }
+        XCTAssertEqual(RemoteSettings(profile: e).addversionno, false)
+        XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\n# Overrides common.prf: set here so this value takes effect\naddversionno = false\n")
     }
 
     func test_userOverridesProposedAddversionno_inAdvanced_saveKeepsTheUsersValue() async throws {

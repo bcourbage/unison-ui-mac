@@ -19,6 +19,9 @@ enum RemoteCheckFlow {
         /// (empty when Advanced has none). The pending effective value is
         /// derived from these and the includes; see `pendingAddversionno`.
         var addversionnoAdvanced: [String] = []
+        /// The same values as the editor loaded them. Save treats a changed
+        /// assignment differently from an untouched one; so does the check.
+        var addversionnoAdvancedAtLoad: [String] = []
         /// The local engine's version string, as `unison_bridge_get_version` reports it.
         var localEngineVersion: String
         var sessionID: UUID
@@ -114,13 +117,17 @@ enum RemoteCheckFlow {
         return out
     }
 
-    /// The `addversionno` the pending profile would have once saved: the
-    /// Advanced lines stand in for the top-level file's assignments at their
-    /// position (the Advanced reconciler writes at the first previous
-    /// occurrence, or the end when there was none), assignments from includes
-    /// stay, and the last one wins. No assignment anywhere is Unison's default,
-    /// false.
+    /// The `addversionno` the pending profile would have once saved, by the
+    /// rules Save applies. A changed Advanced assignment is placed so it wins
+    /// over any include: its last value is the answer. Otherwise the Advanced
+    /// lines stand in for the top-level file's assignments at their position
+    /// (the Advanced reconciler writes at the first previous occurrence, or the
+    /// end when there was none), assignments from includes stay, and the last
+    /// one wins. No assignment anywhere is Unison's default, false.
     static func pendingAddversionno(inputs: Inputs, effective: EffectiveProfile) -> Bool {
+        if inputs.addversionnoAdvanced != inputs.addversionnoAdvancedAtLoad, let last = inputs.addversionnoAdvanced.last {
+            return last == "true"
+        }
         let top = effective.files.first ?? ""
         var values: [String] = []
         var placed = false

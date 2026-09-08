@@ -119,7 +119,7 @@ final class RemoteCheckFlowTests: XCTestCase {
         // Untouched local false before an include setting true: Unison uses true.
         try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = false\ninclude common\n")
         try write("common.prf", "addversionno = true\n")
-        var i = inputs(); i.addversionnoAdvanced = ["false"]
+        var i = inputs(); i.addversionnoAdvancedAtLoad = ["false"]; i.addversionnoAdvanced = ["false"]
         guard case .success(let p) = F.prepare(i) else { return XCTFail() }
         XCTAssertTrue(p.settings.addversionno)
         XCTAssertEqual(p.command.versionCommandString, "/opt/homebrew/bin/unison-2.54 -version")
@@ -135,9 +135,29 @@ final class RemoteCheckFlowTests: XCTestCase {
         // Local assignment after the include (Advanced writes at that position): local wins.
         try write("q.prf", "root = /a\nroot = ssh://h//b\ninclude common2\naddversionno = false\n")
         try write("common2.prf", "addversionno = true\n")
-        var j = inputs(); j.profile = "q"; j.addversionnoAdvanced = ["false"]
+        var j = inputs(); j.profile = "q"; j.addversionnoAdvancedAtLoad = ["false"]; j.addversionnoAdvanced = ["false"]
         guard case .success(let s) = F.prepare(j) else { return XCTFail() }
         XCTAssertFalse(s.settings.addversionno)
+    }
+
+    func test_pendingAddversionno_changedAssignmentWinsOverTheInclude_asSavePlacesIt() throws {
+        // Local true before an include also setting true; the user changes Advanced
+        // to false. Save places the changed value after the include, so the check
+        // must verify the unversioned command.
+        try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = true\ninclude common\n")
+        try write("common.prf", "addversionno = true\n")
+        var i = inputs(); i.addversionnoAdvancedAtLoad = ["true"]; i.addversionnoAdvanced = ["false"]
+        guard case .success(let p) = F.prepare(i) else { return XCTFail() }
+        XCTAssertFalse(p.settings.addversionno)
+        XCTAssertEqual(p.command.versionCommandString, "/opt/homebrew/bin/unison -version")
+        // The same lines untouched: the include's true stands.
+        i.addversionnoAdvanced = ["true"]
+        guard case .success(let q) = F.prepare(i) else { return XCTFail() }
+        XCTAssertTrue(q.settings.addversionno)
+        // Deleting the assignment is a change, but with no value to place the include wins.
+        i.addversionnoAdvanced = []
+        guard case .success(let r) = F.prepare(i) else { return XCTFail() }
+        XCTAssertTrue(r.settings.addversionno)
     }
 
     func test_tokenStillValid_isFalse_whenTheCurrentFormDiffers() throws {

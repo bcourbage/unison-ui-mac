@@ -777,6 +777,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                                       sshcmd: sshcmdField.stringValue.trimmingCharacters(in: .whitespaces),
                                       sshargs: sshargsField.stringValue.trimmingCharacters(in: .whitespaces),
                                       addversionnoAdvanced: advancedValues(forKey: "addversionno"),
+                                      addversionnoAdvancedAtLoad: initialAddversionnoAdvanced,
                                       localEngineVersion: version, sessionID: checkSessionID)
     }
 
