@@ -209,6 +209,26 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Shown when a surfaced scalar is set more than once in the top-level file.
     private let duplicatesBanner = NSTextField(labelWithString: "")
 
+    // MARK: Check Remote Command (guided remote check, docs/remote-profile-check-design.md)
+
+    private let checkRemoteButton = NSButton(title: "Check Remote Command…", target: nil, action: nil)
+    private let checkDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    private let checkProgress = NSProgressIndicator()
+    private let checkStatusLabel = NSTextField(wrappingLabelWithString: "")
+    /// One per editor window; part of the check's configuration token.
+    private let checkSessionID = UUID()
+    private var checkHandle: RemoteCheckSession.Handle?
+    private var checkTask: Task<Void, Never>?
+    private var checkPrepared: RemoteCheckFlow.Prepared?
+    private var checkDiscovery: RemoteCheckFlow.Discovery?
+    private var checkResult: RemoteCheckFlow.Verification?
+    /// Sentences for the Details popover and Copy Report: headline, details, closing.
+    private var checkReport: [String] = []
+    private var checkPopover: NSPopover?
+    /// Injectable for tests: the ssh executor factory and the local engine version.
+    var checkExecutorFactoryForTesting: RemoteCheckFlow.ExecutorFactory?
+    var engineVersionForTesting: String?
+
     private static let attrKeys = ["times", "perms", "rsrc", "owner", "group", "dontchmod"]
     private static let optionKeys = ["confirmbigdel", "auto", "fastcheck", "prefer", "force", "log", "logfile"]
     /// All keys with dedicated UI — excluded from the Advanced catch-all.
@@ -395,6 +415,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let remoteRows: [NSView] = [
             remoteHeader, remoteHelp,
             labeledRowWithNote(label: "Remote unison", control: servercmdField, key: "servercmd"),
+            checkRow(),
             labeledRowWithNote(label: "SSH command", control: sshcmdField, key: "sshcmd"),
             labeledRowWithNote(label: "SSH args", control: sshargsField, key: "sshargs"),
             labeledRowWithNote(label: "Client host", control: clientHostNameField, key: "clientHostName"),
@@ -406,6 +427,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // Live remote detection: show/hide the subsection as roots change.
         firstRootField.delegate = self
         secondRootField.delegate = self
+        for f in [servercmdField, sshcmdField, sshargsField] { f.delegate = self }
 
         // Let the editable list views absorb a section's spare vertical
         // space instead of leaving it empty at the bottom.
@@ -701,6 +723,256 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         v.alignment = .leading
         v.spacing = 2
         return v
+    }
+
+    /// The Check Remote Command controls: button, spinner, Details, and the
+    /// status line beneath, aligned with the field column.
+    private func checkRow() -> NSStackView {
+        checkRemoteButton.bezelStyle = .rounded
+        checkRemoteButton.target = self
+        checkRemoteButton.action = #selector(checkRemoteTapped(_:))
+        checkDetailsButton.bezelStyle = .rounded
+        checkDetailsButton.target = self
+        checkDetailsButton.action = #selector(checkDetailsTapped(_:))
+        checkDetailsButton.isHidden = true
+        checkProgress.style = .spinning
+        checkProgress.controlSize = .small
+        checkProgress.isDisplayedWhenStopped = false
+        checkStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        checkStatusLabel.textColor = .secondaryLabelColor
+        checkStatusLabel.maximumNumberOfLines = 0
+        checkStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        checkStatusLabel.isHidden = true
+        let controls = hstack([checkRemoteButton, checkProgress, checkDetailsButton, NSView()])
+        let controlsRow = NSStackView(views: [NSView(), controls])
+        controlsRow.orientation = .horizontal; controlsRow.spacing = 8
+        controlsRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let statusRow = NSStackView(views: [NSView(), checkStatusLabel])
+        statusRow.orientation = .horizontal; statusRow.spacing = 8
+        statusRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let v = NSStackView(views: [controlsRow, statusRow])
+        v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
+        return v
+    }
+
+    private func setCheckStatus(_ text: String?) {
+        checkStatusLabel.stringValue = text ?? ""
+        checkStatusLabel.isHidden = (text == nil)
+    }
+
+    /// The form's current values as the check's inputs.
+    private func checkInputs() -> RemoteCheckFlow.Inputs? {
+        guard let name = initialProfileName else { return nil }
+        var roots: [String] = []
+        for f in [firstRootField, secondRootField] {
+            let v = f.stringValue.trimmingCharacters(in: .whitespaces)
+            if !v.isEmpty { roots.append(v) }
+        }
+        let version = engineVersionForTesting ?? (unison_bridge_get_version().map { String(cString: $0) } ?? "")
+        return RemoteCheckFlow.Inputs(profile: name, unisonDirectory: unisonDirectory, roots: roots,
+                                      servercmd: servercmdField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      sshcmd: sshcmdField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      sshargs: sshargsField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      localEngineVersion: version, sessionID: checkSessionID)
+    }
+
+    @objc private func checkRemoteTapped(_ sender: NSButton) {
+        if checkTask != nil { cancelCheck(); return }
+        Task { await self.runCheck() }
+    }
+
+    /// Step 1 and 2: prepare from the form, run discovery, then offer the menu.
+    /// Returns the discovery so tests can drive the selection.
+    @discardableResult
+    func runCheck() async -> RemoteCheckFlow.Discovery? {
+        cancelCheck()
+        checkResult = nil; checkReport = []; checkDetailsButton.isHidden = true
+        guard let inputs = checkInputs() else {
+            setCheckStatus("Save the profile once before checking its remote command."); return nil
+        }
+        let prepared: RemoteCheckFlow.Prepared
+        switch RemoteCheckFlow.prepare(inputs) {
+        case .success(let p): prepared = p
+        case .failure(let why):
+            setCheckStatus(Self.startFailureText(why)); return nil
+        }
+        checkPrepared = prepared
+        let handle = RemoteCheckSession.Handle()
+        checkHandle = handle
+        checkRemoteButton.title = "Cancel Check"
+        checkProgress.startAnimation(nil)
+        setCheckStatus("Checking \(prepared.host)…")
+        let factory = checkExecutorFactoryForTesting ?? RemoteCheckFlow.defaultExecutor
+        let task = Task { [weak self] in
+            let d = await RemoteCheckFlow.discover(prepared, handle: handle, makeExecutor: factory)
+            await MainActor.run { self?.finishDiscovery(d, prepared: prepared, handle: handle) }
+        }
+        checkTask = task
+        await task.value
+        return checkDiscovery
+    }
+
+    private func finishDiscovery(_ d: RemoteCheckFlow.Discovery, prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
+        guard checkHandle === handle else { return }           // cancelled or superseded
+        checkTask = nil
+        checkProgress.stopAnimation(nil)
+        checkRemoteButton.title = "Check Remote Command…"
+        guard RemoteCheckFlow.tokenStillValid(prepared) else {
+            TraceLog.shared.write("remote check: discovery completed for a stale configuration; discarded")
+            setCheckStatus("Not checked since the last change."); checkDiscovery = nil; return
+        }
+        checkDiscovery = d
+        if d.succeeded {
+            setCheckStatus("Choose the command to verify on \(prepared.host).")
+            presentCheckMenu(d.menu)
+        } else {
+            showCheckReport(headline: d.failureSentences.first ?? RemoteCheckWording.closingAfterFailure,
+                            details: Array(d.failureSentences.dropFirst().dropLast()),
+                            closing: d.failureSentences.last ?? RemoteCheckWording.closingAfterFailure,
+                            openDetails: true)
+        }
+    }
+
+    private func presentCheckMenu(_ items: [RemoteCheckFlow.MenuItem]) {
+        let menu = NSMenu(title: "Remote command")
+        for item in items {
+            switch item {
+            case .currentEffect(let text):
+                let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+                mi.isEnabled = false
+                menu.addItem(mi)
+                menu.addItem(.separator())
+            case .candidate(let path, let version, let stored):
+                var title = path
+                if let version { title += " — " + version }
+                let mi = NSMenuItem(title: title, action: #selector(checkMenuChose(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = path
+                if let stored { mi.toolTip = "Symlink; stored target " + stored }
+                menu.addItem(mi)
+            case .keepCurrent:
+                menu.addItem(.separator())
+                let mi = NSMenuItem(title: "Keep current setting", action: #selector(checkMenuChose(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = ""
+                menu.addItem(mi)
+            }
+        }
+        menu.autoenablesItems = false
+        if window?.isVisible == true {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: checkRemoteButton.bounds.height), in: checkRemoteButton)
+        }
+    }
+
+    @objc private func checkMenuChose(_ sender: NSMenuItem) {
+        let path = sender.representedObject as? String ?? ""
+        Task { await self.chooseCandidate(path.isEmpty ? .keepCurrent : .candidate(path)) }
+    }
+
+    /// Step 4 and 5 for one selection. Public for tests.
+    func chooseCandidate(_ selection: RemoteCheckFlow.Selection) async {
+        guard let prepared = checkPrepared else { return }
+        let handle = RemoteCheckSession.Handle()
+        checkHandle = handle
+        checkRemoteButton.title = "Cancel Check"
+        checkProgress.startAnimation(nil)
+        setCheckStatus("Verifying on \(prepared.host)…")
+        let factory = checkExecutorFactoryForTesting ?? RemoteCheckFlow.defaultExecutor
+        let record = checkDiscovery?.record
+        let task = Task { [weak self] in
+            let v = await RemoteCheckFlow.verify(prepared, selection: selection, discovery: record, handle: handle, makeExecutor: factory)
+            await MainActor.run { self?.finishVerification(v, prepared: prepared, handle: handle) }
+        }
+        checkTask = task
+        await task.value
+    }
+
+    private func finishVerification(_ v: RemoteCheckFlow.Verification, prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
+        guard checkHandle === handle else { return }
+        checkTask = nil
+        checkProgress.stopAnimation(nil)
+        checkRemoteButton.title = "Check Remote Command…"
+        guard RemoteCheckFlow.tokenStillValid(prepared) else {
+            TraceLog.shared.write("remote check: verification completed for a stale configuration; discarded")
+            setCheckStatus("Not checked since the last change."); return
+        }
+        checkResult = v
+        if let proposal = v.proposal {
+            servercmdField.stringValue = proposal.servercmd
+            if proposal.setsAddversionnoFalse {
+                // addversionno has no dedicated control; it lives in Advanced.
+                var lines = advancedView.values.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("addversionno") }
+                lines.append("addversionno = false")
+                advancedView.values = lines
+            }
+        }
+        var headline = v.headline
+        if v.proposal != nil {
+            headline += v.proposal?.setsAddversionnoFalse == true
+                ? " Remote unison is set to it and addversionno to false; Save to keep the change."
+                : " Remote unison is set to it; Save to keep the change."
+        }
+        showCheckReport(headline: headline, details: v.details, closing: v.closing,
+                        openDetails: v.verdict == .notVerified)
+    }
+
+    private func showCheckReport(headline: String, details: [String], closing: String, openDetails: Bool) {
+        setCheckStatus(headline)
+        checkReport = [headline] + details + (closing.isEmpty ? [] : [closing])
+        checkDetailsButton.isHidden = details.isEmpty && closing.isEmpty
+        if openDetails, !checkDetailsButton.isHidden, window?.isVisible == true { checkDetailsTapped(checkDetailsButton) }
+    }
+
+    @objc private func checkDetailsTapped(_ sender: NSButton) {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let text = NSTextField(wrappingLabelWithString: checkReport.joined(separator: "\n\n"))
+        text.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        text.preferredMaxLayoutWidth = 420
+        let copy = NSButton(title: "Copy Report", target: self, action: #selector(copyCheckReport(_:)))
+        copy.bezelStyle = .rounded
+        let stack = NSStackView(views: [text, copy])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        let vc = NSViewController(); vc.view = stack
+        popover.contentViewController = vc
+        checkPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    @objc private func copyCheckReport(_ sender: NSButton) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(checkReport.joined(separator: "\n"), forType: .string)
+    }
+
+    private func cancelCheck() {
+        checkHandle?.cancel()
+        checkHandle = nil
+        checkTask?.cancel()
+        checkTask = nil
+        checkProgress.stopAnimation(nil)
+        checkRemoteButton.title = "Check Remote Command…"
+    }
+
+    /// A field that participates in the check's configuration changed: the
+    /// displayed result no longer describes the form.
+    private func invalidateCheckResult() {
+        guard checkResult != nil || checkDiscovery != nil || checkTask != nil else { return }
+        cancelCheck()
+        checkResult = nil; checkDiscovery = nil; checkReport = []
+        checkDetailsButton.isHidden = true
+        setCheckStatus("Not checked since the last change.")
+    }
+
+    static func startFailureText(_ why: RemoteCheckFlow.StartFailure) -> String {
+        switch why {
+        case .profile(let m): return "Unison would not load this profile as it is: " + m
+        case .roots(let m): return m
+        case .notApplicable(.noRemoteRoot): return "Neither root is an ssh:// root; there is no remote command to check."
+        case .notApplicable(.socketRoot): return "The remote root uses socket://; Unison runs no remote command for it, so there is nothing to check."
+        case .shellCommandNotFound(let name, let searched): return "The SSH command \"\(name)\" was not found in \(searched.joined(separator: ", "))."
+        case .localVersion(let v): return "This app's Unison version could not be read (\(v))."
+        }
     }
 
     /// Reflect each surfaced scalar's provenance in its note label.
@@ -1645,6 +1917,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 if !proceed { return }
             }
         }
+        // A displayed check result describes the configuration it was made for;
+        // if the files changed since, say so. Save proceeds either way.
+        if let prepared = checkPrepared, checkResult != nil, !RemoteCheckFlow.tokenStillValid(prepared) {
+            setCheckStatus("The remote command changed since it was checked.")
+            checkResult = nil
+        }
         let text = doc.serialized
 
         // Failure-safe, retry-consistent commit (Finding #11): backs up before
@@ -1802,6 +2080,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         popup.selectItem(at: state.rawValue)
     }
+    var checkStatusForTesting: String? { checkStatusLabel.isHidden ? nil : checkStatusLabel.stringValue }
+    var checkReportForTesting: [String] { checkReport }
+    var checkMenuForTesting: [RemoteCheckFlow.MenuItem]? { checkDiscovery?.menu }
+    var checkResultForTesting: RemoteCheckFlow.Verification? { checkResult }
+    var checkIsRunningForTesting: Bool { checkTask != nil }
+    var advancedLinesForTesting: [String] { advancedView.values }
+    func setRootFieldForTesting(second value: String) { secondRootField.stringValue = value; invalidateCheckResult() }
     var conflictSelectionIndexForTesting: Int { conflictPopup.indexOfSelectedItem }
     /// Index of the popup choice for (key, target), e.g. ("prefer", "second").
     func conflictChoiceIndexForTesting(key: String, target: String) -> Int? {
@@ -1967,6 +2252,10 @@ extension ProfileFormWindowController: NSSearchFieldDelegate {
             loggingDirty = true          // SF6: a logfile edit must be saved
         } else {
             updateRemoteVisibility()
+            if o === firstRootField || o === secondRootField || o === servercmdField
+                || o === sshcmdField || o === sshargsField {
+                invalidateCheckResult()
+            }
         }
     }
 }

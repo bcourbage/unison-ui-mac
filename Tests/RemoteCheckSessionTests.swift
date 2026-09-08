@@ -56,7 +56,8 @@ final class RemoteCheckSessionTests: XCTestCase {
         let result = await S.run(config: sh(remote), deadline: 10, handle: S.Handle())
         let o = RemoteVerification.observe(raw: result, marker: marker, deadline: 10)
         XCTAssertTrue(o.markerReceived)
-        XCTAssertEqual(RemoteVerification.verdict(o), .verified(version: "2.54.0", firstLine: "unison version 2.54.0 (ocaml 5.5.0)"))
+        XCTAssertEqual(RemoteVerification.verdict(o), .verified(version: "2.54.0", firstLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+                       "raw=\(result) observation=\(o)")
     }
 
     func test_run_markerRoundTrip_commandNotFound_is127WithMarker() async {

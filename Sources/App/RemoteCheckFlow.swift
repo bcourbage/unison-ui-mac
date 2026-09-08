@@ -121,7 +121,7 @@ enum RemoteCheckFlow {
         var succeeded: Bool { record?.complete == true }
     }
 
-    typealias ExecutorFactory = (@escaping @Sendable (pid_t) -> Void) -> VersionCheck.VersionProbeExecutor
+    typealias ExecutorFactory = @Sendable (@escaping @Sendable (pid_t) -> Void) -> VersionCheck.VersionProbeExecutor
 
     static func defaultExecutor(_ onLaunch: @escaping @Sendable (pid_t) -> Void) -> VersionCheck.VersionProbeExecutor {
         VersionCheck.SubprocessProbeExecutor(onLaunch: onLaunch)

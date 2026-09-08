@@ -108,7 +108,8 @@ final class RemoteCheckFlowTests: XCTestCase {
 
     func test_discover_buildsMenu_withCurrentEffectWhenFieldEmpty() async throws {
         let p = try prepared(inputs(servercmd: ""))
-        let stub = EchoingDiscoveryStub { self.discoveryStdout(marker: $0) }
+        let text = discoveryStdout(marker: "")
+        let stub = EchoingDiscoveryStub { m in text.replacingOccurrences(of: " BEGIN", with: "\(m) BEGIN").replacingOccurrences(of: " END", with: "\(m) END") }
         let d = await F.discover(p, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertTrue(d.succeeded)
         XCTAssertEqual(d.menu, [
@@ -142,7 +143,8 @@ final class RemoteCheckFlowTests: XCTestCase {
     func test_verify_keepCurrent_compatible_noChangeHeadline() async throws {
         let p = try prepared()
         let record = RemoteDiscovery.parse(stdout: discoveryStdout(marker: "X"), marker: "X")
-        let v = await F.verify(p, selection: .keepCurrent, discovery: record, handle: .init(), makeExecutor: { _ in self.verifiedStub() })
+        let stub = verifiedStub()
+        let v = await F.verify(p, selection: .keepCurrent, discovery: record, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertEqual(v.verdict, .verified(version: "2.54.0", firstLine: "unison version 2.54.0 (ocaml 5.5.0)"))
         XCTAssertEqual(v.headline, "This check found no change to make.")
         XCTAssertEqual(v.closing, "Only a synchronization confirms the server protocol; run the profile to test that.")
@@ -160,7 +162,8 @@ final class RemoteCheckFlowTests: XCTestCase {
 
     func test_verify_candidate_compatible_proposes() async throws {
         let p = try prepared(inputs(servercmd: ""))
-        let v = await F.verify(p, selection: .candidate("/opt/homebrew/bin/unison"), discovery: nil, handle: .init(), makeExecutor: { _ in self.verifiedStub() })
+        let stub = verifiedStub()
+        let v = await F.verify(p, selection: .candidate("/opt/homebrew/bin/unison"), discovery: nil, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertEqual(v.headline, "The command you selected started over ssh and reported its version.")
         XCTAssertEqual(v.proposal, .init(servercmd: "/opt/homebrew/bin/unison", setsAddversionnoFalse: false))
         XCTAssertTrue(v.details.contains("This profile does not set servercmd, so the remote machine's PATH decides which unison runs; the check cannot see that PATH."))
@@ -168,7 +171,8 @@ final class RemoteCheckFlowTests: XCTestCase {
 
     func test_verify_incompatibleVersion_isNotNothingToChange_andNoProposal() async throws {
         let p = try prepared()
-        let v = await F.verify(p, selection: .candidate("/opt/homebrew/bin/unison"), discovery: nil, handle: .init(), makeExecutor: { _ in self.verifiedStub(version: "2.51.5") })
+        let stub = verifiedStub(version: "2.51.5")
+        let v = await F.verify(p, selection: .candidate("/opt/homebrew/bin/unison"), discovery: nil, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertEqual(v.compatible, false)
         XCTAssertNil(v.proposal)
         XCTAssertEqual(v.headline, "The command started over ssh and reported version 2.51.5. 2.51.5 (demeter) and 2.54.0 (this Mac) are on opposite sides of the 2.52 boundary and cannot connect.")
