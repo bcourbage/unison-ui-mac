@@ -66,6 +66,22 @@ final class RemoteVerificationTests: XCTestCase {
         XCTAssertEqual(V.verdict(V.observe(raw: .launchFailed("no such file"), marker: marker, deadline: 10)), .notVerified)
     }
 
+    func test_verdict_requiresUnisonLabel_notABareNumber() {
+        // Another program's version output after the marker, exit 0.
+        for line in ["2.54.0", "2.54.0 is the wrapper version", "version 2.54.0", "Unison-wrapper 2.54.0"] {
+            let o = V.observe(raw: .exited(status: 0, stdout: "\(marker)\(line)\n", stderr: ""), marker: marker, deadline: 10)
+            XCTAssertEqual(V.verdict(o), .notVerified, line)
+            let s = W.failure(o, executablePath: nil, discovery: nil)
+            XCTAssertEqual(s[0], "The remote shell emitted the start marker; the command line printed \(line), which is not a Unison version line.")
+        }
+        XCTAssertEqual(V.verdict(V.observe(raw: .exited(status: 0, stdout: "\(marker)unison version 2.53.5\n", stderr: ""), marker: marker, deadline: 10)),
+                       .verified(version: "2.53.5", firstLine: "unison version 2.53.5"))
+        XCTAssertEqual(V.verdict(V.observe(raw: .exited(status: 0, stdout: "\(marker)UNISON version 2.54.0 (ocaml 5.5.0)\n", stderr: ""), marker: marker, deadline: 10)),
+                       .verified(version: "2.54.0", firstLine: "UNISON version 2.54.0 (ocaml 5.5.0)"))
+        XCTAssertNil(VersionCheck.parseUnisonVersionLine("unison version 2.54.0beta"))
+        XCTAssertEqual(VersionCheck.parseUnisonVersionLine("  unison version 2.54.0 (ocaml 5.5.0)"), "2.54.0")
+    }
+
     func test_verdict_markerWithNonZeroExit_orNonVersionLine_isNotVerified() {
         XCTAssertEqual(V.verdict(V.observe(raw: .exited(status: 127, stdout: marker, stderr: "x"), marker: marker, deadline: 10)), .notVerified)
         XCTAssertEqual(V.verdict(V.observe(raw: .exited(status: 0, stdout: "\(marker)hello\n", stderr: ""), marker: marker, deadline: 10)), .notVerified)
@@ -185,8 +201,11 @@ final class RemoteVerificationTests: XCTestCase {
         XCTAssertEqual(W.protocolBoundary(local: "2.54.0", remote: "2.51.5", host: "demeter"),
                        "2.54.0 (this Mac) and 2.51.5 (demeter) are on opposite sides of the 2.52 boundary and cannot connect.")
         XCTAssertTrue(W.pathDecidedByRemote(host: "demeter").contains("cannot see that PATH"))
-        XCTAssertTrue(W.commandV("", host: "demeter").contains("resolved no unison"))
-        XCTAssertTrue(W.commandV("/usr/local/bin/unison", host: "demeter").contains("resolves unison to /usr/local/bin/unison"))
+        XCTAssertEqual(W.commandV("", host: "demeter"),
+                       "A plain sh on demeter found no unison on its PATH through command -v; the login shell and Unison's ssh command may resolve differently.")
+        XCTAssertEqual(W.commandV("/usr/local/bin/unison", host: "demeter"),
+                       "A plain sh on demeter resolves unison to /usr/local/bin/unison through command -v; the login shell and Unison's ssh command may resolve differently.")
+        XCTAssertFalse(W.commandV("/x", host: "h").contains("login shell on"), "the lookup ran in sh, not the login shell")
     }
 
     func test_noWording_usesFirstPerson() {

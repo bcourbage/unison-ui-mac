@@ -65,7 +65,9 @@ enum RemoteVerification {
 
     enum Verdict: Equatable {
         /// The marker was received, the command line exited 0, and the first
-        /// line after the marker is a Unison version line.
+        /// line after the marker is a Unison version line: it starts with
+        /// Unison's own label (`unison version 2.54.0 (ocaml 5.5.0)`). A bare
+        /// number or another program's version sentence does not qualify.
         case verified(version: String, firstLine: String)
         case notVerified
         case cancelled
@@ -75,7 +77,7 @@ enum RemoteVerification {
         if case .cancelled = o.termination { return .cancelled }
         guard o.markerReceived, case .exited(0) = o.termination,
               let first = o.firstStdoutLine,
-              let version = VersionCheck.parseVersionString(first) else { return .notVerified }
+              let version = VersionCheck.parseUnisonVersionLine(first) else { return .notVerified }
         return .verified(version: version, firstLine: first)
     }
 }
@@ -126,11 +128,14 @@ enum RemoteCheckWording {
         "This profile does not set servercmd, so the remote machine's PATH decides which unison runs; the check cannot see that PATH."
     }
 
+    /// `command -v unison` ran inside the discovery script's `sh`, which
+    /// inherits the remote environment but not the login shell's aliases or
+    /// functions; the sentence names that shell, not the login shell.
     static func commandV(_ value: String?, host: String) -> String {
         guard let value, !value.isEmpty else {
-            return "The login shell on \(host) resolved no unison on its own PATH through command -v; Unison's ssh command may resolve differently."
+            return "A plain sh on \(host) found no unison on its PATH through command -v; the login shell and Unison's ssh command may resolve differently."
         }
-        return "The login shell on \(host) resolves unison to \(value) through command -v; Unison's ssh command may resolve differently."
+        return "A plain sh on \(host) resolves unison to \(value) through command -v; the login shell and Unison's ssh command may resolve differently."
     }
 
     static func protocolBoundary(local: String, remote: String, host: String) -> String {

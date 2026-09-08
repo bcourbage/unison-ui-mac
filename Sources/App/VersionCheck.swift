@@ -451,8 +451,9 @@ enum VersionCheck {
         var deadlinePollInterval: TimeInterval = 0.05
         var grace: TimeInterval = VersionCheck.terminateGrace
         /// How long to wait, after the child is gone, for its pipes to reach
-        /// EOF before taking the output collected so far. A ProxyCommand or
-        /// other descendant that inherited the pipes can keep them open.
+        /// EOF before taking the output collected so far and stopping the
+        /// collectors. A ProxyCommand or other descendant that inherited the
+        /// pipes can keep them open; after this wait they are closed anyway.
         var outputSettle: TimeInterval = 1.0
         /// Called once with the child's pid right after a successful launch,
         /// so a caller can record which process the session owns.
@@ -468,35 +469,90 @@ enum VersionCheck {
             self.onLaunch = onLaunch
         }
 
-        /// Reads one pipe to EOF on its own thread, accumulating bytes under
-        /// a lock, so the child can never block on a full pipe buffer and the
-        /// caller can take a snapshot at any moment (natural exit, deadline,
-        /// cancel). The reader owns the file handle and closes it at EOF; a
-        /// descendant that keeps the write end open leaves the reader parked,
-        /// which is preferable to closing a handle another thread is reading.
+        /// Upper bound on bytes kept per stream. `-version` output and the
+        /// discovery record are a few hundred bytes; anything beyond this is
+        /// counted, dropped, and marked with a trailing sentinel line.
+        static let outputCap = 1 << 20
+        static let truncationSentinel = "\n[output truncated]"
+
+        /// Collects one pipe through a dispatch read source. Bytes arrive in
+        /// the event handler (the descriptor is non-blocking) and are kept
+        /// under a lock up to `outputCap`. EOF cancels the source. `stop()`
+        /// cancels it too, so a descendant that inherited the write end
+        /// cannot keep a reader alive after the executor has returned: the
+        /// cancel handler closes the descriptor and releases the collector.
+        /// Nothing is parked on a thread and no retention outlives `stop()`.
         final class PipeCollector: @unchecked Sendable {
             private let lock = NSLock()
             private var bytes = Data()
+            private var dropped = 0
             private let eof = DispatchSemaphore(value: 0)
+            private var eofSignalled = false
+            private let source: DispatchSourceRead
+            private let fd: Int32
 
             init(_ handle: FileHandle) {
-                DispatchQueue.global(qos: .utility).async {
-                    while true {
-                        let chunk = handle.availableData
-                        if chunk.isEmpty { break }
-                        self.lock.lock(); self.bytes.append(chunk); self.lock.unlock()
+                fd = handle.fileDescriptor
+                _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                source = DispatchSource.makeReadSource(fileDescriptor: fd,
+                                                       queue: DispatchQueue.global(qos: .utility))
+                source.setEventHandler { [weak self] in self?.drain() }
+                // Close through the FileHandle, which then knows it is closed
+                // and will not close the (possibly reused) number again on
+                // deallocation.
+                source.setCancelHandler { try? handle.close() }
+                source.resume()
+            }
+
+            private func drain() {
+                var buffer = [UInt8](repeating: 0, count: 65536)
+                while true {
+                    let n = read(fd, &buffer, buffer.count)
+                    if n > 0 {
+                        lock.lock()
+                        let room = SubprocessProbeExecutor.outputCap - bytes.count
+                        if room > 0 { bytes.append(contentsOf: buffer[0..<min(n, room)]) }
+                        dropped += max(0, n - max(0, room))
+                        lock.unlock()
+                        continue
                     }
-                    try? handle.close()
-                    self.eof.signal()
+                    if n == 0 { finish(); return }                       // EOF
+                    if errno == EAGAIN || errno == EINTR { return }        // wait for the next event
+                    finish(); return                                       // read error: treat as EOF
                 }
             }
 
-            /// Waits up to `settle` for EOF, then returns everything read.
+            private func finish() {
+                lock.lock()
+                let first = !eofSignalled
+                eofSignalled = true
+                lock.unlock()
+                if first { eof.signal() }
+                source.cancel()
+            }
+
+            /// Waits up to `settle` for EOF, then returns everything kept,
+            /// with the sentinel appended when bytes were dropped.
             func snapshot(settle: TimeInterval) -> String {
                 _ = eof.wait(timeout: .now() + settle)
                 lock.lock(); defer { lock.unlock() }
-                return String(decoding: bytes, as: UTF8.self)
+                var text = String(decoding: bytes, as: UTF8.self)
+                if dropped > 0 { text += SubprocessProbeExecutor.truncationSentinel }
+                return text
             }
+
+            /// Stops collecting and closes the descriptor. Idempotent. Called
+            /// by the executor before it returns, on every path.
+            func stop() {
+                lock.lock()
+                let first = !eofSignalled
+                eofSignalled = true
+                lock.unlock()
+                if first { eof.signal() }
+                if !source.isCancelled { source.cancel() }
+            }
+
+            var isStopped: Bool { source.isCancelled }
         }
 
         func execute(_ config: ProbeConfig,
@@ -544,7 +600,9 @@ enum VersionCheck {
                 }
             }
             func collected() -> (String, String) {
-                (out.snapshot(settle: outputSettle), err.snapshot(settle: outputSettle))
+                let result = (out.snapshot(settle: outputSettle), err.snapshot(settle: outputSettle))
+                out.stop(); err.stop()
+                return result
             }
 
             // Register a DETERMINISTIC teardown: the instant cancel() runs
@@ -555,7 +613,7 @@ enum VersionCheck {
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
-                reapExactChild(); canceller.clearTeardown(); return .cancelled
+                reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
             }
 
             // Deadline is measured from HERE — just after the local spawn
@@ -567,7 +625,7 @@ enum VersionCheck {
                 // `exited`, and we must report .cancelled (not .exited with a
                 // signal status) when the reason we stopped was a cancel.
                 if canceller.isCancelled {
-                    reapExactChild(); canceller.clearTeardown(); return .cancelled
+                    reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
                 }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
                     canceller.clearTeardown()
@@ -678,6 +736,15 @@ enum VersionCheck {
     /// if no line carries that label do we accept a bare version, and then only a
     /// line that STARTS with it — the `2.54.0 (ocaml …)` form the local bridge
     /// returns (last such line wins). A dotted number mid-line is never accepted.
+    /// The strict form the remote check requires: a line that starts with
+    /// Unison's own label, `unison version X.Y[.Z]`, optionally followed by
+    /// more text such as `(ocaml 5.5.0)`. A bare number, or a number inside
+    /// another program's sentence, is not a Unison version line. Returns the
+    /// dotted version, or nil.
+    static func parseUnisonVersionLine(_ line: String) -> String? {
+        firstCapture(#"(?i)^\s*unison\s+version\s+(\d+\.\d+(?:\.\d+)?)(?:\s|$)"#, in: line)
+    }
+
     static func parseVersionString(_ raw: String) -> String? {
         let lines = raw.split(whereSeparator: \.isNewline).map(String.init)
         // Labelled lines first; the last one is the real command response.

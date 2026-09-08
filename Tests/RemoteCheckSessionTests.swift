@@ -77,6 +77,53 @@ final class RemoteCheckSessionTests: XCTestCase {
         XCTAssertNil(handle.childPID)
     }
 
+    // MARK: - collector lifecycle
+
+    func test_collector_stopsAndReleases_whenADescendantKeepsThePipeOpen() async throws {
+        // The child exits at once; a background subshell it started keeps
+        // stdout open for 3 s. The executor must return on the child's exit
+        // and leave no live collector behind.
+        let exec = VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 0.2)
+        let start = Date()
+        let result = exec.execute(sh("(sleep 3; echo late) & echo early; exit 0"), deadline: 10, canceller: VersionCheck.ProbeCanceller())
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "must not wait for the descendant")
+        guard case .exited(let status, let stdout, _) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(stdout, "early\n")
+    }
+
+    func test_collector_stop_closesDescriptorAndAllowsDeallocation() throws {
+        let pipe = Pipe()
+        let fd = pipe.fileHandleForReading.fileDescriptor
+        var collector: VersionCheck.SubprocessProbeExecutor.PipeCollector? = .init(pipe.fileHandleForReading)
+        weak var weak = collector
+        pipe.fileHandleForWriting.write("partial".data(using: .utf8)!)
+        // Writer stays open: no EOF. snapshot returns what arrived so far.
+        XCTAssertEqual(collector!.snapshot(settle: 0.2), "partial")
+        collector!.stop()
+        XCTAssertTrue(collector!.isStopped)
+        collector = nil
+        // The cancel handler runs asynchronously on its queue; wait for both
+        // the closure of the descriptor and the release of the collector.
+        let deadline = Date().addingTimeInterval(2)
+        while (weak != nil || fcntl(fd, F_GETFD) != -1) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertNil(weak, "collector must not be retained after stop()")
+        XCTAssertEqual(fcntl(fd, F_GETFD), -1, "read descriptor must be closed after stop()")
+        XCTAssertEqual(errno, EBADF)
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    func test_collector_boundsRetainedOutput() {
+        let exec = VersionCheck.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.5, outputSettle: 1.0)
+        // 3 MiB of output, above the 1 MiB cap.
+        let result = exec.execute(sh("head -c 3145728 /dev/zero | tr '\\0' 'x'"), deadline: 20, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(_, let stdout, _) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(stdout.hasSuffix(VersionCheck.SubprocessProbeExecutor.truncationSentinel))
+        XCTAssertLessThanOrEqual(stdout.utf8.count, VersionCheck.SubprocessProbeExecutor.outputCap + VersionCheck.SubprocessProbeExecutor.truncationSentinel.utf8.count)
+    }
+
     // MARK: - configuration
 
     func test_probeConfig_usesDesignArgumentVector() {

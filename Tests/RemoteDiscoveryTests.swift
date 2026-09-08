@@ -26,11 +26,12 @@ final class RemoteDiscoveryTests: XCTestCase {
     func test_plan_absoluteSafeExecutable_isProbedFirst_withoutDuplicates() {
         let p = D.plan(effectiveExecutable: "/usr/local/bin/unison")
         XCTAssertEqual(p.candidatePaths, ["/usr/local/bin/unison", "/opt/homebrew/bin/unison",
+                                          "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison",
                                           "/Applications/unison-ui-mac.app/Contents/MacOS/cltool", "/usr/bin/unison"])
         XCTAssertNil(p.unprobedExecutable)
         let q = D.plan(effectiveExecutable: "/srv/bin/unison-2.54")
         XCTAssertEqual(q.candidatePaths.first, "/srv/bin/unison-2.54")
-        XCTAssertEqual(q.candidatePaths.count, 5)
+        XCTAssertEqual(q.candidatePaths.count, 6)
     }
 
     func test_plan_bareName_isNotProbed() {
@@ -52,7 +53,7 @@ final class RemoteDiscoveryTests: XCTestCase {
         let inner = cmd.dropFirst("sh -c '".count).dropLast()
         XCTAssertFalse(inner.contains("'"), "the script must not contain a single quote")
         XCTAssertTrue(inner.contains("M=UUM-1"))
-        XCTAssertTrue(inner.contains("for p in /opt/homebrew/bin/unison /usr/local/bin/unison /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/bin/unison; do"))
+        XCTAssertTrue(inner.contains("for p in /opt/homebrew/bin/unison /usr/local/bin/unison /Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/bin/unison; do"))
         XCTAssertTrue(inner.contains("command -v unison"))
         // The only redirections are to /dev/null or stderr-to-stdout merges.
         let redirections = inner.replacingOccurrences(of: ">/dev/null", with: "").replacingOccurrences(of: "2>&1", with: "")

@@ -171,12 +171,14 @@ command that prints, between unique markers:
 - `uname -s`;
 - for the effective remote executable and for each well-known candidate
   (`/opt/homebrew/bin/unison`, `/usr/local/bin/unison`,
+  `/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison`,
   `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`, `/usr/bin/unison`)
   that exists: the path, `readlink` of it when it is a symlink (the **stored**
   target, which may be relative or itself a link; reported as such), and the
   first line of `<path> -version`;
-- `command -v unison`, labelled as what that remote login shell resolves,
-  which may differ from what Unison's own ssh command resolves.
+- `command -v unison`, labelled as what the discovery script's `sh`
+  resolves; the remote login shell (aliases, functions) and Unison's own ssh
+  command may each resolve differently.
 
 The session ends there. Nothing is written.
 

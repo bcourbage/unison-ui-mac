@@ -4,7 +4,8 @@ import Foundation
 /// single POSIX `sh` command and prints, between unique markers, the remote
 /// OS name, what exists at each candidate path (stored link target, resolved
 /// path when the remote can resolve it, first `-version` line), and what the
-/// remote login shell's `command -v unison` resolves. Nothing is written on
+/// discovery script's `sh` resolves through `command -v unison` (not what the
+/// remote login shell would, which may use aliases or functions). Nothing is written on
 /// the remote.
 enum RemoteDiscovery {
 
@@ -13,6 +14,7 @@ enum RemoteDiscovery {
     static let wellKnownCandidates = [
         "/opt/homebrew/bin/unison",
         "/usr/local/bin/unison",
+        "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison",
         "/Applications/unison-ui-mac.app/Contents/MacOS/cltool",
         "/usr/bin/unison",
     ]
@@ -100,7 +102,7 @@ enum RemoteDiscovery {
         let uname: String?
         let present: [Candidate]
         let absent: [String]
-        /// What the remote login shell's `command -v unison` printed (empty
+        /// What `command -v unison` printed inside the discovery `sh` (empty
         /// when nothing), or nil when the line was not received.
         let commandV: String?
 
