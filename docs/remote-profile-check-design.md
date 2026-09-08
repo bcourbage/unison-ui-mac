@@ -139,16 +139,23 @@ that failure under the field and opens no session. The check runs against the
 profile as the form currently has it: the form's Remote unison, SSH command,
 SSH args and roots, composed with the effective settings from the profile's
 includes on disk. No save is required before checking; the user saves after
-seeing the result. The profile picker's context menu (**Run**, **Check Remote
+seeing the result. Each candidate in the menu carries a subtitle saying why
+one would pick it: whether its version can connect to this Mac's, and who
+keeps it current (Homebrew, the unison-ui-mac bundle on the server, or
+neither); a symlink onto another entry is named as the same program. A help
+button beside Check Remote Command… explains the same in prose. The profile
+picker's context menu (**Run**, **Check Remote
 Command…**) offers the same command, which opens the profile in the Profile
 Editor at that section and starts the check; the picker itself stays a pure
 list, so no other management command joins the menu.
 
 A second entry point is a failed connection: when a sync cannot connect to an
-ssh root, the restart notice and the reconcile window's summary offer **Check
-Remote Command…**, worded as a diagnostic ("You can check the remote command
-for this profile first") without claiming the remote command caused the
-failure. The offer appears only when the failure happened while connecting
+ssh root, the restart notice offers **Check Remote Command…** as a third
+button, and the reconcile window's summary keeps to a short headline ("Could
+not connect to the remote. Unison must be restarted to continue.") whose
+**Details** popover holds the full reason, the next step, and the same button.
+Both are worded as a diagnostic ("You can check the remote command for this
+profile first") without claiming the remote command caused the failure. The offer appears only when the failure happened while connecting
 (the coordinator records that the restart was entered from its opening phase)
 and the profile's effective roots include an `ssh://` root; a scan or sync
 failure makes no offer. It opens the exact profile that failed; if an editor

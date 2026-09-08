@@ -685,9 +685,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 roots: RemoteCheckOfferPolicy.roots(profile: profile, unisonDirectory: unisonDirectory))
         }
         for (s, w) in windowBySession {
-            w.showRestartRequired(reason: reason, offerRemoteCheck: profileBySession[s].map(offers) ?? false)
+            w.showRestartRequired(reason: reason, connectFailure: failedWhileConnecting,
+                                  offerRemoteCheck: profileBySession[s].map(offers) ?? false)
         }
-        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason) }
+        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason, connectFailure: failedWhileConnecting) }
         let offeredProfile = lastAttemptedProfile.flatMap { offers($0) ? $0 : nil }
         // Always surface a modal notice, not only the inline window text (issue
         // #35 correction 3): a fatal/restart condition must be unmissable even

@@ -27,13 +27,19 @@ final class RemoteCheckEntryPointsTests: XCTestCase {
 
     // MARK: Reconcile window offer
 
-    func test_restartRequired_offersTheCheckOnlyWhenAsked_andNamesItsOwnProfile() {
+    func test_restartRequired_shortHeadline_reasonAndOfferBehindDetails() {
         let w = reconcile(profile: "Sync-Demeter")
-        XCTAssertFalse(w.remoteCheckOfferVisibleForTesting)
-        w.showRestartRequired(reason: "Couldn’t connect to the remote (no progress for 120 s)")
-        XCTAssertFalse(w.remoteCheckOfferVisibleForTesting, "no offer without the caller's decision")
-        w.showRestartRequired(reason: "Couldn’t connect to the remote (no progress for 120 s)", offerRemoteCheck: true)
-        XCTAssertTrue(w.remoteCheckOfferVisibleForTesting)
+        XCTAssertFalse(w.remoteCheckOfferedForTesting)
+        w.showRestartRequired(reason: "sync abort could not be requested (status 3)")
+        XCTAssertEqual(w.summaryTextForTesting, "Unison must be restarted to continue.")
+        XCTAssertEqual(w.statusDetailsTextForTesting, "sync abort could not be requested (status 3)\n\nQuit Unison and open the profile again.")
+        XCTAssertFalse(w.remoteCheckOfferedForTesting, "no offer without the caller's decision")
+
+        let reason = "Couldn’t connect to the remote (no progress for 60 seconds). The connection may be stuck."
+        w.showRestartRequired(reason: reason, connectFailure: true, offerRemoteCheck: true)
+        XCTAssertEqual(w.summaryTextForTesting, "Could not connect to the remote. Unison must be restarted to continue.")
+        XCTAssertEqual(w.statusDetailsTextForTesting, reason + "\n\nQuit Unison and open the profile again.")
+        XCTAssertTrue(w.remoteCheckOfferedForTesting)
         var requested: [String] = []
         w.onRemoteCheckRequested = { requested.append($0) }
         w.requestRemoteCheckForTesting()

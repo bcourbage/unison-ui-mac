@@ -47,6 +47,15 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         return c
     }
 
+    func test_checkStatusRow_takesNoHeightUntilThereIsAStatus() async throws {
+        try write("p.prf", "root = /a\nroot = /b\n")
+        let c = make("p", remote: Remote())
+        XCTAssertTrue(c.checkStatusRowHiddenForTesting)
+        _ = await c.runCheck()
+        XCTAssertFalse(c.checkStatusRowHiddenForTesting)
+        XCTAssertEqual(c.checkHelpTextForTesting.first, "Why the choice matters")
+    }
+
     func test_step1Failure_showsUnderField_andRunsNoSession() async throws {
         try write("p.prf", "root = /a\nroot = /b\n")
         let remote = Remote()

@@ -229,6 +229,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
     private var checkReport: [String] = []
     private var checkPopover: NSPopover?
+    private let checkHelpButton = NSButton(title: "", target: nil, action: nil)
+    /// The status line's row; hidden with the label so it takes no height.
+    private var checkStatusRow: NSStackView?
+    var checkStatusRowHiddenForTesting: Bool { checkStatusRow?.isHidden ?? true }
+    var checkHelpTextForTesting: [String] { RemoteCheckFlow.helpText(localVersion: localEngineVersionBare()) }
     /// The Advanced `addversionno` values as loaded, so Save can tell a changed
     /// assignment (by the user or by a check's proposal) from an untouched one.
     private var initialAddversionnoAdvanced: [String] = []
@@ -764,21 +769,46 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkStatusLabel.maximumNumberOfLines = 0
         checkStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         checkStatusLabel.isHidden = true
-        let controls = hstack([checkRemoteButton, checkProgress, checkDetailsButton, NSView()])
-        let controlsRow = NSStackView(views: [NSView(), controls])
-        controlsRow.orientation = .horizontal; controlsRow.spacing = 8
-        controlsRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        let statusRow = NSStackView(views: [NSView(), checkStatusLabel])
-        statusRow.orientation = .horizontal; statusRow.spacing = 8
-        statusRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        checkHelpButton.bezelStyle = .helpButton
+        checkHelpButton.target = self
+        checkHelpButton.action = #selector(checkHelpTapped(_:))
+        checkHelpButton.toolTip = "Why the choice matters"
+        // Rows are indented to the field column with insets, not spacer
+        // views: a spacer has no height of its own, and with the status
+        // label hidden its row shared the section's leftover height at
+        // random, so the gap under Remote unison varied between opens.
+        let controlsRow = hstack([checkRemoteButton, checkProgress, checkDetailsButton, checkHelpButton])
+        controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        controlsRow.setHuggingPriority(.required, for: .vertical)
+        let statusRow = NSStackView(views: [checkStatusLabel])
+        statusRow.orientation = .horizontal
+        statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        statusRow.setHuggingPriority(.required, for: .vertical)
+        statusRow.isHidden = true
+        checkStatusRow = statusRow
         let v = NSStackView(views: [controlsRow, statusRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
+        v.setHuggingPriority(.required, for: .vertical)
         return v
     }
 
     private func setCheckStatus(_ text: String?) {
         checkStatusLabel.stringValue = text ?? ""
         checkStatusLabel.isHidden = (text == nil)
+        checkStatusRow?.isHidden = (text == nil)
+    }
+
+    /// This Mac's Unison version without the OCaml suffix, for the help and
+    /// the menu subtitles.
+    private func localEngineVersionBare() -> String {
+        let full = engineVersionForTesting ?? (unison_bridge_get_version().map { String(cString: $0) } ?? "")
+        return VersionCheck.parseVersionString(full) ?? full
+    }
+
+    @objc private func checkHelpTapped(_ sender: NSButton) {
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(checkHelpTextForTesting), width: 440)
+        checkPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     /// The form's current values as the check's inputs.
@@ -875,11 +905,15 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 menu.addItem(mi)
                 menu.addItem(.separator())
             case .candidate(let path, let version, let stored):
-                var title = path
-                if let version { title += " — " + version }
-                let mi = NSMenuItem(title: title, action: #selector(checkMenuChose(_:)), keyEquivalent: "")
+                let mi = NSMenuItem(title: path, action: #selector(checkMenuChose(_:)), keyEquivalent: "")
                 mi.target = self
                 mi.representedObject = path
+                let others: [(path: String, storedTarget: String?)] = items.compactMap {
+                    if case .candidate(let p, _, let s) = $0, p != path { return (p, s) } else { return nil }
+                }
+                mi.subtitle = RemoteCheckFlow.candidateSubtitle(
+                    path: path, versionLine: version, storedTarget: stored,
+                    localVersion: localEngineVersionBare(), others: others)
                 if let stored { mi.toolTip = "Symlink; stored target " + stored }
                 menu.addItem(mi)
             case .keepCurrent:
@@ -958,18 +992,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func checkDetailsTapped(_ sender: NSButton) {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        let text = NSTextField(wrappingLabelWithString: checkReport.joined(separator: "\n\n"))
-        text.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        text.preferredMaxLayoutWidth = 420
         let copy = NSButton(title: "Copy Report", target: self, action: #selector(copyCheckReport(_:)))
-        copy.bezelStyle = .rounded
-        let stack = NSStackView(views: [text, copy])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        let vc = NSViewController(); vc.view = stack
-        popover.contentViewController = vc
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(checkReport), buttons: [copy])
         checkPopover = popover
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }

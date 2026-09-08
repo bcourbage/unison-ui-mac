@@ -141,14 +141,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// summary label also picks up the full text as a `toolTip` so the
     /// detail is one hover away.
     private let statusDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
-    /// Shown by `showRestartRequired` when the connection never completed
-    /// and the profile has an ssh root; opens the editor's check for this
-    /// window's exact profile.
-    private let checkRemoteButton = NSButton(title: "Check Remote Command…", target: nil, action: nil)
+    /// Set by `showRestartRequired` when the connection never completed and
+    /// the profile has an ssh root: the status Details then offer Check Remote
+    /// Command for this window's exact profile.
+    private var remoteCheckOffered = false
+    private var statusPopover: NSPopover?
     /// Set by the owner; receives this window's profile name.
     var onRemoteCheckRequested: ((String) -> Void)?
-    var remoteCheckOfferVisibleForTesting: Bool { !checkRemoteButton.isHidden }
-    func requestRemoteCheckForTesting() { checkRemoteTapped(checkRemoteButton) }
+    var remoteCheckOfferedForTesting: Bool { remoteCheckOffered }
+    var summaryTextForTesting: String { summaryLabel.stringValue }
+    var statusDetailsTextForTesting: String? { lastMultiLineStatus }
+    func requestRemoteCheckForTesting() { checkRemoteTapped(nil) }
     /// Cached full text for the Details button. Reset on every status
     /// update so we never show stale messages.
     private var lastMultiLineStatus: String?
@@ -427,12 +430,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusDetailsButton.controlSize = .small
         statusDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusDetailsButton.isHidden = true
-        checkRemoteButton.target = self
-        checkRemoteButton.action = #selector(checkRemoteTapped(_:))
-        checkRemoteButton.bezelStyle = .inline
-        checkRemoteButton.controlSize = .small
-        checkRemoteButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        checkRemoteButton.isHidden = true
 
         addColumn(.path, title: "Path", width: 380, min: 200, isPrimary: true)
         // Column titles use the upstream manual's terminology: the two
@@ -495,7 +492,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusIcon.isHidden = true
         statusIcon.setContentHuggingPriority(.required, for: .horizontal)
         statusIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let summaryRow = NSStackView(views: [statusIcon, summaryLabel, statusDetailsButton, checkRemoteButton])
+        let summaryRow = NSStackView(views: [statusIcon, summaryLabel, statusDetailsButton])
         summaryRow.orientation = .horizontal
         summaryRow.spacing = 6
         summaryRow.alignment = .firstBaseline
@@ -515,7 +512,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         summaryLabel.setContentCompressionResistancePriority(
             .defaultLow, for: .horizontal)
         statusDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
-        checkRemoteButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: [summaryRow, progressBar, scroll, detailsScroll])
         stack.orientation = .vertical
@@ -881,25 +877,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     @objc private func showStatusDetails(_ sender: Any?) {
         guard let text = lastMultiLineStatus, !text.isEmpty else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Status details"
-        // NSAlert truncates `informativeText` aggressively for long
-        // strings — use an accessoryView with a scrolling text view so
-        // multi-screen SSH error dumps stay readable + selectable. Wrap
-        // mode (vertical scroll) via the canonical geometry — without it
-        // a long dump clips with a dead scroller. See ScrollableTextView.
-        let (scroll, textView) = ScrollableTextView.make(
-            mode: .wrap, initialSize: NSSize(width: 520, height: 240))
-        scroll.borderType = .lineBorder
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.string = text
-        alert.accessoryView = scroll
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        // A popover anchored to the button, not an alert: wrapping, selectable
+        // text at a readable width, and the failed-connection offer when there
+        // is one.
+        var buttons: [NSButton] = []
+        if remoteCheckOffered {
+            buttons.append(NSButton(title: "Check Remote Command…", target: self, action: #selector(checkRemoteTapped(_:))))
+        }
+        let lines = text.components(separatedBy: "\n\n")
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(lines), buttons: buttons)
+        statusPopover = popover
+        popover.show(relativeTo: statusDetailsButton.bounds, of: statusDetailsButton, preferredEdge: .maxY)
     }
 
     /// Forwarded by AppDelegate's permanent progress handler for the live
@@ -1177,20 +1165,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// row/sync/rescan actions are disabled (`restartRequired` latch), and
     /// the summary tells the user the one recovery — quit and reopen. Only
     /// navigation (Profiles / Quit) stays live.
-    /// `offerRemoteCheck`: the connection never completed and the profile has
-    /// an ssh root (see `RemoteCheckOfferPolicy`); the summary then offers
-    /// Check Remote Command for this window's profile.
-    func showRestartRequired(reason: String, offerRemoteCheck: Bool = false) {
+    /// The summary keeps to a short headline; the full reason and the next
+    /// step live behind Details. `connectFailure`: the restart was entered
+    /// while connecting, so the headline says the remote was not reached.
+    /// `offerRemoteCheck`: that failure concerns a profile with an ssh root
+    /// (see `RemoteCheckOfferPolicy`); Details then offer Check Remote
+    /// Command for this window's profile.
+    func showRestartRequired(reason: String, connectFailure: Bool = false, offerRemoteCheck: Bool = false) {
         restartRequired = true
-        checkRemoteButton.isHidden = !offerRemoteCheck
+        remoteCheckOffered = offerRemoteCheck
         isSyncing = false
         isScanning = false
         cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
         progressBar.isHidden = true
-        setSummary("Unison must be restarted to continue. Quit Unison and "
-                   + "reopen the profile. (\(reason))")
+        setSummary(connectFailure
+                   ? "Could not connect to the remote. Unison must be restarted to continue."
+                   : "Unison must be restarted to continue.")
+        lastMultiLineStatus = (reason.isEmpty ? "" : reason + "\n\n") + "Quit Unison and open the profile again."
+        statusDetailsButton.isHidden = false
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
@@ -1202,7 +1196,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         TraceLog.shared.write("ReconcileWindow: restart required (\(reason))")
     }
 
-    @objc private func checkRemoteTapped(_ sender: NSButton) {
+    @objc private func checkRemoteTapped(_ sender: Any?) {
+        statusPopover?.close()
         onRemoteCheckRequested?(profile)
     }
 

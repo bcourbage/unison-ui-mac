@@ -115,6 +115,25 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertEqual(F.pendingRoots(inputs: i, effective: q), ["/inc", "/n1", "/n2"], "no top-level roots: form roots go where a save would append them")
     }
 
+    func test_candidateSubtitle_saysWhetherItConnects_andWhoKeepsItCurrent() {
+        typealias O = (path: String, storedTarget: String?)
+        let brew = "/opt/homebrew/bin/unison"
+        let cellar = "../Cellar/unison/2.54.0/bin/unison"
+        let others: [O] = [(brew, cellar), ("/usr/local/bin/unison", nil)]
+        XCTAssertEqual(F.candidateSubtitle(path: brew, versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: cellar, localVersion: "2.54.0", others: []),
+                       "Same version as this Mac · Homebrew keeps it current")
+        XCTAssertEqual(F.candidateSubtitle(path: "/usr/local/bin/unison", versionLine: "unison version 2.51.5 (ocaml 4.14.0)", storedTarget: nil, localVersion: "2.54.0", others: others),
+                       "2.51.5 cannot connect to this Mac's 2.54.0 · Not managed by Homebrew or an app")
+        XCTAssertEqual(F.candidateSubtitle(path: "/usr/bin/unison", versionLine: "unison version 2.53.3 (ocaml 5.1.0)", storedTarget: nil, localVersion: "2.54.0", others: others),
+                       "2.53.3 can connect to this Mac's 2.54.0 · Not managed by Homebrew or an app")
+        XCTAssertEqual(F.candidateSubtitle(path: "/usr/local/bin/unison", versionLine: nil, storedTarget: "/opt/homebrew/bin/unison", localVersion: "2.54.0", others: others),
+                       "Did not report a version · Same program as /opt/homebrew/bin/unison")
+        XCTAssertEqual(F.candidateSubtitle(path: "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: "../../MacOS/cltool", localVersion: "2.54.0", others: []),
+                       "Same version as this Mac · Updates with unison-ui-mac on the server")
+        XCTAssertEqual(F.helpText(localVersion: "2.54.0").first, "Why the choice matters")
+        XCTAssertTrue(F.helpText(localVersion: "2.54.0")[1].contains("this Mac's 2.54.0"))
+    }
+
     func test_pendingAddversionno_followsThePendingDocumentsIncludeOrder() throws {
         // Untouched local false before an include setting true: Unison uses true.
         try write("p.prf", "root = /a\nroot = ssh://h//b\naddversionno = false\ninclude common\n")

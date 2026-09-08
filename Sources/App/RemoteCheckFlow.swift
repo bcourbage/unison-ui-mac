@@ -161,6 +161,53 @@ enum RemoteCheckFlow {
 
     // MARK: - Step 2 and 3
 
+    /// Why a user would pick one candidate over another: whether it can
+    /// connect to this Mac's Unison, and who keeps it current. `others` are
+    /// the other candidates' paths and stored targets, so a symlink onto
+    /// another entry is named as the same program.
+    static func candidateSubtitle(path: String, versionLine: String?, storedTarget: String?,
+                                  localVersion: String,
+                                  others: [(path: String, storedTarget: String?)]) -> String {
+        let compat: String
+        if let line = versionLine, let remote = VersionCheck.parseUnisonVersionLine(line) {
+            if remote == localVersion {
+                compat = "Same version as this Mac"
+            } else if case .incompatibleAcrossBoundary = VersionCheck.classify(local: localVersion, remote: remote) {
+                compat = "\(remote) cannot connect to this Mac's \(localVersion)"
+            } else {
+                compat = "\(remote) can connect to this Mac's \(localVersion)"
+            }
+        } else {
+            compat = "Did not report a version"
+        }
+        let origin: String
+        let target = storedTarget.map { t -> String in
+            t.hasPrefix("/") ? t : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(t)
+        }.map { ($0 as NSString).standardizingPath }
+        if let target, let same = others.first(where: { $0.path == target }) {
+            origin = "Same program as \(same.path)"
+        } else if (target ?? path).contains("/Cellar/") || path.hasPrefix("/opt/homebrew/") {
+            origin = "Homebrew keeps it current"
+        } else if (target ?? path).contains("unison-ui-mac.app/Contents/") {
+            origin = "Updates with unison-ui-mac on the server"
+        } else if (target ?? path).contains(".app/Contents/") {
+            origin = "Belongs to an app on the server"
+        } else {
+            origin = "Not managed by Homebrew or an app"
+        }
+        return compat + " · " + origin
+    }
+
+    /// The help shown beside the button: why the choice matters.
+    static func helpText(localVersion: String) -> [String] {
+        [
+            "Why the choice matters",
+            "Unison on this Mac and on the server must speak the same protocol. Versions on the same side of 2.52 connect; anything older cannot talk to this Mac's \(localVersion).",
+            "Prefer the command that is kept current the way the server is maintained: Homebrew's if brew updates the server, the one bundled with unison-ui-mac if that app is installed there. A symlink runs the installation it points to, so two entries with the same target are the same program.",
+            "Saving writes the chosen path as Remote unison, and Unison runs exactly that command over ssh.",
+        ]
+    }
+
     enum MenuItem: Equatable {
         /// Non-selectable first line when the field is empty.
         case currentEffect(String)
