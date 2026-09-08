@@ -40,7 +40,7 @@ final class VersionProbeTests: XCTestCase {
         func execute(_ config: V.ProbeConfig, deadline: TimeInterval,
                      canceller: V.ProbeCanceller) -> V.RawExecResult {
             if canceller.waitForCancellation(timeout: .now() + 4) { return .cancelled }
-            return .timedOut
+            return .timedOut(stdout: "", stderr: "")
         }
     }
 
@@ -178,7 +178,7 @@ final class VersionProbeTests: XCTestCase {
         XCTAssertEqual(r, .sshFailed(exitCode: 255, stderr: "kex_exchange_identification: connection reset"))
     }
     func test_classifyRaw_timeoutCancelLaunch() {
-        XCTAssertEqual(V.classifyRaw(.timedOut), .timedOut)
+        XCTAssertEqual(V.classifyRaw(.timedOut(stdout: "", stderr: "")), .timedOut)
         XCTAssertEqual(V.classifyRaw(.cancelled), .cancelled)
         XCTAssertEqual(V.classifyRaw(.launchFailed("x")), .launchFailed("x"))
     }
@@ -206,7 +206,7 @@ final class VersionProbeTests: XCTestCase {
     func test_runSync_timeout_isProbeFailed() throws {
         try sshProfile()
         let o = V.runSync(profile: "p", unisonDirectory: dir, localBridgeVersion: "2.54.0",
-                          deadline: 7, executor: StubExecutor(result: .timedOut))
+                          deadline: 7, executor: StubExecutor(result: .timedOut(stdout: "", stderr: "")))
         guard case .probeFailed(let reason) = o else { return XCTFail("expected probeFailed, got \(o)") }
         XCTAssertTrue(reason.contains("timed out"), reason)
     }
@@ -270,7 +270,7 @@ final class VersionProbeTests: XCTestCase {
         let start = Date()
         let result = exec.execute(cfg, deadline: 0.3, canceller: V.ProbeCanceller())
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertEqual(result, .timedOut)
+        guard case .timedOut = result else { return XCTFail("expected .timedOut, got \(result)") }
         // If terminate/reap didn't work we'd wait the full 5s.
         XCTAssertLessThan(elapsed, 3.0, "deadline must terminate the child, not wait for it")
     }

@@ -334,7 +334,8 @@ enum VersionCheck {
         /// The wall-clock deadline (measured from just after launch) elapsed;
         /// the ssh child was SIGTERM'd, then SIGKILL'd, and best-effort reaped
         /// (its ProxyCommand/remote descendants are not guaranteed reaped).
-        case timedOut
+        /// Carries whatever the child had written before it was torn down.
+        case timedOut(stdout: String, stderr: String)
         /// Cancellation was requested; the ssh child was SIGTERM'd (synchronously
         /// at cancel time), then SIGKILL'd if needed, and best-effort reaped
         /// (same descendant caveat as `timedOut`).
@@ -449,6 +450,143 @@ enum VersionCheck {
     struct SubprocessProbeExecutor: VersionProbeExecutor {
         var deadlinePollInterval: TimeInterval = 0.05
         var grace: TimeInterval = VersionCheck.terminateGrace
+        /// How long to wait, after the child is gone, for its pipes to reach
+        /// EOF before taking the output collected so far and stopping the
+        /// collectors. A ProxyCommand or other descendant that inherited the
+        /// pipes can keep them open; after this wait they are closed anyway.
+        var outputSettle: TimeInterval = 1.0
+        /// Called once with the child's pid right after a successful launch,
+        /// so a caller can record which process the session owns.
+        var onLaunch: (@Sendable (pid_t) -> Void)? = nil
+
+        init(deadlinePollInterval: TimeInterval = 0.05,
+             grace: TimeInterval = VersionCheck.terminateGrace,
+             outputSettle: TimeInterval = 1.0,
+             onLaunch: (@Sendable (pid_t) -> Void)? = nil) {
+            self.deadlinePollInterval = deadlinePollInterval
+            self.grace = grace
+            self.outputSettle = outputSettle
+            self.onLaunch = onLaunch
+        }
+
+        /// Upper bound on bytes kept per stream. `-version` output and the
+        /// discovery record are a few hundred bytes; anything beyond this is
+        /// counted, dropped, and marked with a trailing sentinel line.
+        static let outputCap = 1 << 20
+        /// Appended when bytes beyond `outputCap` were dropped.
+        static let truncationSentinel = "\n[output truncated]"
+        /// Appended when collection stopped before the writer closed the
+        /// pipe (the settle wait expired with a descendant still holding
+        /// it), so a partial transcript is never presented as complete.
+        static let incompleteSentinel = "\n[collection stopped before end of output]"
+        /// Appended when a read error ended collection; the errno follows.
+        static let readErrorSentinelPrefix = "\n[output collection failed: "
+
+        /// Collects one pipe through a dispatch read source. Bytes arrive in
+        /// the event handler (the descriptor is non-blocking) and are kept
+        /// under a lock up to `outputCap`. EOF cancels the source. `stop()`
+        /// cancels it too, so a descendant that inherited the write end
+        /// cannot keep a reader alive after the executor has returned: the
+        /// cancel handler closes the descriptor and releases the collector.
+        /// Nothing is parked on a thread and no retention outlives `stop()`.
+        final class PipeCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var bytes = Data()
+            private var dropped = 0
+            private let eof = DispatchSemaphore(value: 0)
+            private var eofSignalled = false
+            /// True only when a read returned 0 bytes. A read error does not
+            /// count as EOF; neither does `stop()`.
+            private var reachedEOF = false
+            /// The errno of the read error that ended collection, if any.
+            private var readError: Int32?
+            private let source: DispatchSourceRead
+            private let fd: Int32
+            /// The read call; injectable so a read failure can be exercised.
+            private let readCall: (Int32, UnsafeMutableRawPointer, Int) -> Int
+
+            init(_ handle: FileHandle,
+                 read readCall: @escaping (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }) {
+                self.readCall = readCall
+                fd = handle.fileDescriptor
+                _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                source = DispatchSource.makeReadSource(fileDescriptor: fd,
+                                                       queue: DispatchQueue.global(qos: .utility))
+                source.setEventHandler { [weak self] in self?.drain() }
+                // Close through the FileHandle, which then knows it is closed
+                // and will not close the (possibly reused) number again on
+                // deallocation.
+                source.setCancelHandler { try? handle.close() }
+                source.resume()
+            }
+
+            private func drain() {
+                var buffer = [UInt8](repeating: 0, count: 65536)
+                while true {
+                    let n = buffer.withUnsafeMutableBytes { readCall(fd, $0.baseAddress!, $0.count) }
+                    if n > 0 {
+                        lock.lock()
+                        let room = SubprocessProbeExecutor.outputCap - bytes.count
+                        if room > 0 { bytes.append(contentsOf: buffer[0..<min(n, room)]) }
+                        dropped += max(0, n - max(0, room))
+                        lock.unlock()
+                        continue
+                    }
+                    if n == 0 { finish(atEOF: true, error: nil); return }         // EOF: the only complete ending
+                    let err = errno
+                    if err == EAGAIN || err == EINTR { return }                  // wait for the next event
+                    finish(atEOF: false, error: err); return                       // read error: ended, not complete
+                }
+            }
+
+            private func finish(atEOF: Bool, error: Int32?) {
+                lock.lock()
+                let first = !eofSignalled
+                eofSignalled = true
+                if atEOF { reachedEOF = true }
+                if let error, readError == nil { readError = error }
+                lock.unlock()
+                // Cancel before waking a waiting snapshot, so a caller that
+                // wakes on the semaphore already observes the source stopped.
+                source.cancel()
+                if first { eof.signal() }
+            }
+
+            /// Waits up to `settle` for EOF, then returns everything kept,
+            /// with the sentinel appended when bytes were dropped.
+            /// Four states are distinguished in the returned text: EOF
+            /// reached (no marker), bytes dropped at the size cap
+            /// (`truncationSentinel`), a read error ending collection
+            /// (`readErrorSentinelPrefix` + strerror), and collection stopped
+            /// before EOF (`incompleteSentinel`); the cap marker combines with
+            /// either of the other two. Only a zero-byte read is EOF.
+            /// Markers are trailing lines, so first-line parsing is unaffected.
+            func snapshot(settle: TimeInterval) -> String {
+                _ = eof.wait(timeout: .now() + settle)
+                lock.lock(); defer { lock.unlock() }
+                var text = String(decoding: bytes, as: UTF8.self)
+                if dropped > 0 { text += SubprocessProbeExecutor.truncationSentinel }
+                if let readError {
+                    text += SubprocessProbeExecutor.readErrorSentinelPrefix + String(cString: strerror(readError)) + "]"
+                } else if !reachedEOF {
+                    text += SubprocessProbeExecutor.incompleteSentinel
+                }
+                return text
+            }
+
+            /// Stops collecting and closes the descriptor. Idempotent. Called
+            /// by the executor before it returns, on every path.
+            func stop() {
+                lock.lock()
+                let first = !eofSignalled
+                eofSignalled = true
+                lock.unlock()
+                if !source.isCancelled { source.cancel() }
+                if first { eof.signal() }
+            }
+
+            var isStopped: Bool { source.isCancelled }
+        }
 
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
@@ -467,6 +605,9 @@ enum VersionCheck {
             do { try process.run() } catch {
                 return .launchFailed(error.localizedDescription)
             }
+            onLaunch?(process.processIdentifier)
+            let out = PipeCollector(outPipe.fileHandleForReading)
+            let err = PipeCollector(errPipe.fileHandleForReading)
 
             // Wait for natural exit on a background thread; the main flow waits
             // for exit / cancellation / deadline so it can never block forever.
@@ -491,9 +632,10 @@ enum VersionCheck {
                     _ = exited.wait(timeout: .now() + grace)
                 }
             }
-            func closePipes() {
-                try? outPipe.fileHandleForReading.close()
-                try? errPipe.fileHandleForReading.close()
+            func collected() -> (String, String) {
+                let result = (out.snapshot(settle: outputSettle), err.snapshot(settle: outputSettle))
+                out.stop(); err.stop()
+                return result
             }
 
             // Register a DETERMINISTIC teardown: the instant cancel() runs
@@ -504,7 +646,7 @@ enum VersionCheck {
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
-                reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+                reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
             }
 
             // Deadline is measured from HERE — just after the local spawn
@@ -516,22 +658,23 @@ enum VersionCheck {
                 // `exited`, and we must report .cancelled (not .exited with a
                 // signal status) when the reason we stopped was a cancel.
                 if canceller.isCancelled {
-                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .cancelled
+                    reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
                 }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
-                    // Natural exit. `-version` output is tiny, so reading now
-                    // can't deadlock on a full pipe buffer.
                     canceller.clearTeardown()
-                    let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    closePipes()
-                    return .exited(
-                        status: process.terminationStatus,
-                        stdout: String(data: outData, encoding: .utf8) ?? "",
-                        stderr: String(data: errData, encoding: .utf8) ?? "")
+                    // The exit may be the result of a cancel that fired during
+                    // this wait (its teardown SIGTERMs the child). Report that
+                    // as .cancelled, not as an exit with a signal status.
+                    if canceller.isCancelled {
+                        out.stop(); err.stop(); return .cancelled
+                    }
+                    let (stdout, stderr) = collected()
+                    return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
                 }
                 if DispatchTime.now() >= deadlineAt {
-                    reapExactChild(); canceller.clearTeardown(); closePipes(); return .timedOut
+                    reapExactChild(); canceller.clearTeardown()
+                    let (stdout, stderr) = collected()
+                    return .timedOut(stdout: stdout, stderr: stderr)
                 }
             }
         }
@@ -632,6 +775,15 @@ enum VersionCheck {
     /// if no line carries that label do we accept a bare version, and then only a
     /// line that STARTS with it — the `2.54.0 (ocaml …)` form the local bridge
     /// returns (last such line wins). A dotted number mid-line is never accepted.
+    /// The strict form the remote check requires: a line that starts with
+    /// Unison's own label, `unison version X.Y[.Z]`, optionally followed by
+    /// more text such as `(ocaml 5.5.0)`. A bare number, or a number inside
+    /// another program's sentence, is not a Unison version line. Returns the
+    /// dotted version, or nil.
+    static func parseUnisonVersionLine(_ line: String) -> String? {
+        firstCapture(#"(?i)^\s*unison\s+version\s+(\d+\.\d+(?:\.\d+)?)(?:\s|$)"#, in: line)
+    }
+
     static func parseVersionString(_ raw: String) -> String? {
         let lines = raw.split(whereSeparator: \.isNewline).map(String.init)
         // Labelled lines first; the last one is the real command response.

@@ -93,4 +93,8 @@ enum Log {
     /// Version-check subprocess + result. Low volume (one per
     /// profile open with a remote root).
     static let versionCheck = Logger(subsystem: subsystem, category: "version-check")
+
+    /// Guided remote-profile check: the two ssh sessions and their
+    /// observations. Low volume (user-initiated).
+    static let remoteCheck = Logger(subsystem: subsystem, category: "remote-check")
 }
