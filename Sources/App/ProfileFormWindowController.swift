@@ -288,12 +288,24 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         return [checkRemoteButton, checkHelpButton, checkDetailsButton, checkChooseButton]
             .filter { !$0.isHidden }.map { $0.frame.height }.min() ?? 0
     }
+    /// After layout, the Check Remote Command button's width when it carries a
+    /// given title, so a title toggle that changed its width would show here.
+    func widthOfCheckButtonForTesting(withTitle t: String) -> CGFloat {
+        let saved = checkRemoteButton.title
+        checkRemoteButton.title = t
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let w = checkRemoteButton.frame.width
+        checkRemoteButton.title = saved
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return w
+    }
     /// After layout, the Check Remote Command button's width: its natural size,
     /// not the column's.
     var checkButtonWidthForTesting: CGFloat {
         window?.contentView?.layoutSubtreeIfNeeded()
         return checkRemoteButton.frame.width
     }
+    func enforceFixedWidthForTesting() { enforceFixedWidth() }
     /// The verification of the current command, restored by Keep current setting.
     private var checkCurrentResult: RemoteCheckFlow.Verification?
     /// The form as it stood when the check started, so Keep current setting
@@ -375,11 +387,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         self.prfDocument = ProfileDocument()
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: Self.formWidth, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = profileName.map { "Edit Profile — \($0)" } ?? "New Profile"
+        // The form is a fixed-width column; only its height varies. contentMin/
+        // MaxSize pin the width for interactive resize, and enforceFixedWidth()
+        // heals a stale autosaved frame (an old build saved 1100 before the
+        // width-growth fixes): min/max do not constrain a programmatic setFrame,
+        // so the autosave restore alone would still reopen wide.
+        window.contentMinSize = NSSize(width: Self.formWidth, height: 480)
+        window.contentMaxSize = NSSize(width: Self.formWidth, height: 100_000)
         window.center()
         super.init(window: window)
         // Form (single-profile content editor) has its own autosave key
@@ -393,6 +412,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         configure()
         loadDocumentIntoForm()
+        // The autosave name above just restored the saved frame; force the
+        // width back, keeping the remembered height and origin.
+        enforceFixedWidth()
+    }
+
+    /// The form's fixed content width (== window width; the form has no side
+    /// borders). Only the height varies.
+    static let formWidth: CGFloat = 620
+
+    /// Restore the fixed width after any frame change that could have widened
+    /// the window (an autosaved frame from an older, pollutable build).
+    private func enforceFixedWidth() {
+        guard let win = window, abs(win.frame.width - Self.formWidth) > 0.5 else { return }
+        var f = win.frame
+        f.size.width = Self.formWidth
+        win.setFrame(f, display: false)
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
@@ -866,6 +901,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkRemoteButton.bezelStyle = .rounded
         checkRemoteButton.target = self
         checkRemoteButton.action = #selector(checkRemoteTapped(_:))
+        // The title toggles to "Cancel Check" while a check runs; pin the width
+        // to the longer resting title so the spinner and ? beside it hold still.
+        checkRemoteButton.widthAnchor.constraint(equalToConstant: max(checkRemoteButton.fittingSize.width, 170)).isActive = true
         checkDetailsButton.bezelStyle = .rounded
         checkDetailsButton.target = self
         checkDetailsButton.action = #selector(checkDetailsTapped(_:))
@@ -908,7 +946,16 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             v.heightAnchor.constraint(equalToConstant: 1).isActive = true
             return v
         }
-        let controlsRow = hstack([checkRemoteButton, checkProgress, checkHelpButton, flexibleSpacer()])
+        let spinnerSlot = NSView()
+        spinnerSlot.translatesAutoresizingMaskIntoConstraints = false
+        spinnerSlot.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        checkProgress.translatesAutoresizingMaskIntoConstraints = false
+        spinnerSlot.addSubview(checkProgress)
+        NSLayoutConstraint.activate([
+            checkProgress.centerXAnchor.constraint(equalTo: spinnerSlot.centerXAnchor),
+            checkProgress.centerYAnchor.constraint(equalTo: spinnerSlot.centerYAnchor),
+        ])
+        let controlsRow = hstack([checkRemoteButton, spinnerSlot, checkHelpButton, flexibleSpacer()])
         controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
         controlsRow.setHuggingPriority(Self.stackHug, for: .vertical)
         controlsRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
@@ -1042,16 +1089,21 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private func finishDiscovery(_ d: RemoteCheckFlow.Discovery, prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
         guard checkHandle === handle else { return }           // cancelled or superseded
         checkTask = nil
-        checkProgress.stopAnimation(nil)
-        checkRemoteButton.title = "Check Remote Command…"
         guard RemoteCheckFlow.tokenStillValid(prepared, current: checkInputs()) else {
+            checkProgress.stopAnimation(nil)
+            checkRemoteButton.title = "Check Remote Command…"
             TraceLog.shared.write("remote check: discovery completed for a stale configuration; discarded")
             setCheckStatus("Not checked since the last change."); checkDiscovery = nil; return
         }
         checkDiscovery = d
         if d.succeeded {
+            // Keep the spinner and "Cancel Check" running: runCheck chains
+            // straight into verifying the current command, so tearing the
+            // chrome down here and restoring it was the visible flicker.
             setCheckStatus("Verifying the current command on \(prepared.host)…")
         } else {
+            checkProgress.stopAnimation(nil)
+            checkRemoteButton.title = "Check Remote Command…"
             checkChooseButton.isHidden = true
             showCheckReport(headline: d.failureSentences.first ?? RemoteCheckWording.closingAfterFailure,
                             details: Array(d.failureSentences.dropFirst().dropLast()),

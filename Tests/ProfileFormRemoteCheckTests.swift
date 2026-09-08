@@ -156,6 +156,32 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(c.window!.frame.width, before, "a result must not resize the editor")
     }
 
+    func test_editorWindow_widthIsFixed_andHealsAWideFrame() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        XCTAssertEqual(c.window?.contentMinSize.width, 620)
+        XCTAssertEqual(c.window?.contentMaxSize.width, 620)
+        XCTAssertEqual(c.window!.frame.width, 620, accuracy: 1, "opens at the form's width")
+        // A restored autosaved frame is a programmatic setFrame, which min/max
+        // do not constrain; the width must be healed back regardless.
+        c.window?.setFrame(NSRect(x: 400, y: 100, width: 1100, height: 760), display: false)
+        c.enforceFixedWidthForTesting()
+        XCTAssertEqual(c.window!.frame.width, 620, accuracy: 1, "a wide frame is healed to the form width")
+        XCTAssertEqual(c.window!.frame.height, 760, accuracy: 1, "the remembered height is kept")
+        c.close()
+    }
+
+    func test_checkButton_keepsItsWidth_whenItTogglesToCancelCheck() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        c.showSectionForTesting(title: "Roots")
+        let resting = c.widthOfCheckButtonForTesting(withTitle: "Check Remote Command…")
+        let cancelling = c.widthOfCheckButtonForTesting(withTitle: "Cancel Check")
+        XCTAssertEqual(Int(resting.rounded()), Int(cancelling.rounded()), "the button holds its width so the spinner and ? do not shift")
+        XCTAssertGreaterThan(resting, 150)
+        c.close()
+    }
+
     func test_checkRows_keepTheirHeight_beforeAndAfterAResult() async throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
         let remote = Remote(); remote.bareUnisonMissing = true
