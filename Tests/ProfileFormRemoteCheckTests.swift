@@ -70,7 +70,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertTrue(c.checkStatusRowHiddenForTesting)
         _ = await c.runCheck()
         XCTAssertFalse(c.checkStatusRowHiddenForTesting)
-        XCTAssertEqual(c.checkHelpTextForTesting.first, "Why the choice matters")
+        XCTAssertEqual(c.checkHelpTextForTesting.first, "Which command should I use?")
     }
 
     func test_step1Failure_showsUnderField_andRunsNoSession() async throws {
@@ -83,25 +83,21 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(remote.sessions, 0)
     }
 
-    func test_discovery_thenKeepCurrent_reportsNoChange() async throws {
+    func test_check_verifiesTheCurrentCommandFirst_andReportsNoChangeNeeded() async throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
         let remote = Remote()
         let c = make("p", remote: remote)
         let d = await c.runCheck()
         XCTAssertEqual(d?.succeeded, true)
-        XCTAssertEqual(c.checkMenuForTesting, [
-            .candidate(path: "/opt/homebrew/bin/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: nil),
-            .keepCurrent,
-        ])
-        XCTAssertEqual(c.checkStatusForTesting, "Choose the command to verify on demeter.")
-        await c.chooseCandidate(.keepCurrent)
-        XCTAssertEqual(c.checkStatusForTesting, "This check found no change to make.")
-        XCTAssertEqual(c.checkReportForTesting.first, "This check found no change to make.")
+        XCTAssertEqual(remote.sessions, 2, "discovery, then the current command, with no question asked")
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        XCTAssertEqual(c.checkReportForTesting.first, "No change needed.")
         XCTAssertEqual(c.checkReportForTesting.last, "Only a synchronization confirms the server protocol; run the profile to test that.")
         XCTAssertTrue(c.checkReportForTesting.contains("ssh connected to demeter as bruno without prompting."))
         XCTAssertFalse(c.checkReportForTesting.joined().contains("inside a unison-ui-mac.app bundle"))
-        XCTAssertEqual(remote.sessions, 2)
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison", "unchanged")
+        XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent], "the only installation found is the current one")
+        XCTAssertFalse(c.chooseButtonVisibleForTesting, "nothing else to choose")
     }
 
     func test_candidate_fillsField_andSaveWritesIt() async throws {
@@ -110,13 +106,32 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         let remote = Remote()
         let c = make("p", remote: remote)
         _ = await c.runCheck()
-        XCTAssertEqual(c.checkMenuForTesting?.first, .currentEffect("Remote PATH decides which unison runs"))
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.", "the PATH-resolved command answered")
+        XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent, .direct])
+        XCTAssertEqual(c.checkAlternativesForTesting?.first?.subtitle, "Currently configured for this profile; the remote PATH decides which unison runs.")
+        XCTAssertTrue(c.chooseButtonVisibleForTesting)
         await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
         XCTAssertEqual(c.checkStatusForTesting, "The command you selected started over ssh and reported its version. Remote unison is set to it; Save to keep the change.")
         c.invokeSaveForTesting()
         XCTAssertNil(c.lastAlertForTesting)
         XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\nservercmd = /opt/homebrew/bin/unison\n")
+    }
+
+    func test_keepCurrentSetting_afterAProposal_restoresTheFormAndTheCurrentResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"))
+        c.restoreCurrentSetting()
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "")
+        XCTAssertEqual(c.advancedLinesForTesting, ["addversionno = true"])
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting, "the restored form matches the checked configuration")
+        XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\n")
     }
 
     func test_incompatibleRemote_noProposal_boundaryHeadline() async throws {
@@ -138,7 +153,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertNotNil(c.checkResultForTesting)
         c.setRootFieldForTesting(second: "ssh://other//x")
         XCTAssertNil(c.checkResultForTesting)
-        XCTAssertNil(c.checkMenuForTesting)
+        XCTAssertNil(c.checkAlternativesForTesting)
         XCTAssertEqual(c.checkStatusForTesting, "Not checked since the last change.")
     }
 

@@ -842,6 +842,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         clearCompletionEmphasis()
     }
 
+    /// A headline on the summary line with the rest behind Details.
+    private func setSummary(_ headline: String, details: String) {
+        setSummary(headline)
+        lastMultiLineStatus = details
+        summaryLabel.toolTip = details
+        statusDetailsButton.isHidden = false
+    }
+
     /// Reset the summary line to its neutral styling — hides the status
     /// glyph and drops the bold/colored completion treatment. Called from
     /// `setSummary` so any non-completion write (rescan, start-sync,
@@ -923,7 +931,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // setSummary() clears completion emphasis (hides + nils statusIcon), so
         // it MUST run before we install the attention icon — otherwise the icon
         // is set and then immediately cleared.
-        setSummary(SyncStallNotice.message(seconds: Int(syncStallTimeout)))
+        setSummary(SyncStallNotice.headline(seconds: Int(syncStallTimeout)), details: SyncStallNotice.detail)
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
@@ -1107,8 +1115,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         progressBar.isHidden = true
         syncResultsUnavailable = true
         phase = .done(failures: 0)
-        setSummary("Synchronization finished, but its per-file results could not "
-                   + "be displayed. Rescan before synchronizing again.")
+        setSummary("Synchronization finished, but its per-file results could not be displayed.",
+                   details: "Rescan before synchronizing again.")
         applyCompletionEmphasis(failures: 0, stopped: false, resultsUnavailable: true)
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: sync results unavailable — \(reason)")

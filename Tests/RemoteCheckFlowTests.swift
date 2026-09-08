@@ -115,23 +115,32 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertEqual(F.pendingRoots(inputs: i, effective: q), ["/inc", "/n1", "/n2"], "no top-level roots: form roots go where a save would append them")
     }
 
-    func test_candidateSubtitle_saysWhetherItConnects_andWhoKeepsItCurrent() {
-        typealias O = (path: String, storedTarget: String?)
-        let brew = "/opt/homebrew/bin/unison"
-        let cellar = "../Cellar/unison/2.54.0/bin/unison"
-        let others: [O] = [(brew, cellar), ("/usr/local/bin/unison", nil)]
-        XCTAssertEqual(F.candidateSubtitle(path: brew, versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: cellar, localVersion: "2.54.0", others: []),
-                       "Same version as this Mac · Homebrew keeps it current")
-        XCTAssertEqual(F.candidateSubtitle(path: "/usr/local/bin/unison", versionLine: "unison version 2.51.5 (ocaml 4.14.0)", storedTarget: nil, localVersion: "2.54.0", others: others),
-                       "2.51.5 cannot connect to this Mac's 2.54.0 · Not managed by Homebrew or an app")
-        XCTAssertEqual(F.candidateSubtitle(path: "/usr/bin/unison", versionLine: "unison version 2.53.3 (ocaml 5.1.0)", storedTarget: nil, localVersion: "2.54.0", others: others),
-                       "2.53.3 can connect to this Mac's 2.54.0 · Not managed by Homebrew or an app")
-        XCTAssertEqual(F.candidateSubtitle(path: "/usr/local/bin/unison", versionLine: nil, storedTarget: "/opt/homebrew/bin/unison", localVersion: "2.54.0", others: others),
-                       "Did not report a version · Same program as /opt/homebrew/bin/unison")
-        XCTAssertEqual(F.candidateSubtitle(path: "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: "../../MacOS/cltool", localVersion: "2.54.0", others: []),
-                       "Same version as this Mac · Updates with unison-ui-mac on the server")
-        XCTAssertEqual(F.helpText(localVersion: "2.54.0").first, "Why the choice matters")
-        XCTAssertTrue(F.helpText(localVersion: "2.54.0")[1].contains("this Mac's 2.54.0"))
+    func test_alternatives_groupPathsToOneInstallation_andStateConsequences() throws {
+        typealias Cand = RemoteDiscovery.Candidate
+        let cltool = "/Applications/unison-ui-mac.app/Contents/MacOS/cltool"
+        let record = RemoteDiscovery.Record(complete: true, uname: "Darwin", present: [
+            Cand(path: "/opt/homebrew/bin/unison", kind: .symlink(storedTarget: cltool), resolvedPath: cltool, versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+            Cand(path: "/usr/local/bin/unison", kind: .regular, resolvedPath: "/usr/local/bin/unison", versionLine: "unison version 2.51.5 (ocaml 4.14.0)"),
+            Cand(path: cltool, kind: .regular, resolvedPath: cltool, versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+            Cand(path: "/usr/bin/unison", kind: .directory, resolvedPath: nil, versionLine: nil),
+        ], absent: [], commandV: nil)
+        // The current setting is the link: it and the program it reaches form one group, listed first.
+        let p = try prepared(inputs(servercmd: "/opt/homebrew/bin/unison"))
+        XCTAssertEqual(F.alternatives(for: p, record: record), [
+            .init(kind: .header, title: "Two paths to the same installation", path: nil, subtitle: ""),
+            .init(kind: .keepCurrent, title: "Keep current setting", path: "/opt/homebrew/bin/unison", subtitle: "Currently configured for this profile."),
+            .init(kind: .direct, title: "Use this installation directly", path: cltool,
+                  subtitle: "Uses the program at this location, even if the link is redirected. Version 2.54.0."),
+            .init(kind: .direct, title: "Use this installation directly", path: "/usr/local/bin/unison",
+                  subtitle: "Uses the program at this location. Version 2.51.5, cannot connect to this Mac's 2.54.0."),
+        ])
+        // The current setting is elsewhere: Keep current setting first, the group after.
+        let q = try prepared(inputs(servercmd: "/usr/local/bin/unison"))
+        let rows = F.alternatives(for: q, record: record)
+        XCTAssertEqual(rows.map(\.kind), [.keepCurrent, .header, .link, .direct])
+        XCTAssertEqual(rows[2].subtitle, "Uses whichever installation this link points to; now \(cltool). Version 2.54.0.")
+        XCTAssertEqual(F.helpText.first, "Which command should I use?")
+        XCTAssertEqual(F.helpText.count, 4)
     }
 
     func test_pendingAddversionno_followsThePendingDocumentsIncludeOrder() throws {
@@ -204,11 +213,11 @@ final class RemoteCheckFlowTests: XCTestCase {
         let stub = EchoingDiscoveryStub { m in text.replacingOccurrences(of: " BEGIN", with: "\(m) BEGIN").replacingOccurrences(of: " END", with: "\(m) END") }
         let d = await F.discover(p, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertTrue(d.succeeded)
-        XCTAssertEqual(d.menu, [
-            .currentEffect("Remote PATH decides which unison runs"),
-            .candidate(path: "/opt/homebrew/bin/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)",
-                       storedTarget: "/Applications/unison-ui-mac.app/Contents/MacOS/cltool"),
-            .keepCurrent,
+        XCTAssertEqual(d.rows, [
+            .init(kind: .keepCurrent, title: "Keep current setting", path: nil,
+                  subtitle: "Currently configured for this profile; the remote PATH decides which unison runs."),
+            .init(kind: .link, title: "Use the command link", path: "/opt/homebrew/bin/unison",
+                  subtitle: "Uses whichever installation this link points to; now /Applications/unison-ui-mac.app/Contents/MacOS/cltool. Version 2.54.0."),
         ])
         XCTAssertEqual(d.failureSentences, [])
     }
@@ -218,7 +227,7 @@ final class RemoteCheckFlowTests: XCTestCase {
         let stub = Stub([.exited(status: 255, stdout: "", stderr: "bruno@demeter: Permission denied (publickey).\n")])
         let d = await F.discover(p, handle: .init(), makeExecutor: factory(stub))
         XCTAssertFalse(d.succeeded)
-        XCTAssertEqual(d.menu, [])
+        XCTAssertEqual(d.rows, [])
         XCTAssertEqual(d.failureSentences.first, "No start marker was received before ssh exited (status 255, bruno@demeter: Permission denied (publickey).).")
         XCTAssertEqual(d.failureSentences.last, RemoteCheckWording.closingAfterFailure)
         // The discovery argv is the check's vector with the sh script last.
@@ -238,7 +247,7 @@ final class RemoteCheckFlowTests: XCTestCase {
         let stub = verifiedStub()
         let v = await F.verify(p, selection: .keepCurrent, discovery: record, handle: .init(), makeExecutor: { _ in stub })
         XCTAssertEqual(v.verdict, .verified(version: "2.54.0", firstLine: "unison version 2.54.0 (ocaml 5.5.0)"))
-        XCTAssertEqual(v.headline, "This check found no change to make.")
+        XCTAssertEqual(v.headline, "No change needed.")
         XCTAssertEqual(v.closing, "Only a synchronization confirms the server protocol; run the profile to test that.")
         XCTAssertNil(v.proposal); XCTAssertEqual(v.compatible, true)
         XCTAssertEqual(v.details, [

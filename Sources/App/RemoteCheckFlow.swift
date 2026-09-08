@@ -161,64 +161,101 @@ enum RemoteCheckFlow {
 
     // MARK: - Step 2 and 3
 
-    /// Why a user would pick one candidate over another: whether it can
-    /// connect to this Mac's Unison, and who keeps it current. `others` are
-    /// the other candidates' paths and stored targets, so a symlink onto
-    /// another entry is named as the same program.
-    static func candidateSubtitle(path: String, versionLine: String?, storedTarget: String?,
-                                  localVersion: String,
-                                  others: [(path: String, storedTarget: String?)]) -> String {
-        let compat: String
-        if let line = versionLine, let remote = VersionCheck.parseUnisonVersionLine(line) {
-            if remote == localVersion {
-                compat = "Same version as this Mac"
-            } else if case .incompatibleAcrossBoundary = VersionCheck.classify(local: localVersion, remote: remote) {
-                compat = "\(remote) cannot connect to this Mac's \(localVersion)"
-            } else {
-                compat = "\(remote) can connect to this Mac's \(localVersion)"
+    // MARK: - Step 3: the current command first, then alternatives
+
+    /// One line of the Choose Another Command menu. The current setting is
+    /// verified first; these rows are offered only when the user wants a
+    /// different installation, and each states the consequence of choosing
+    /// it, not a maintenance policy the check cannot see.
+    struct AlternativeRow: Equatable {
+        enum Kind: Equatable { case header, keepCurrent, direct, link }
+        let kind: Kind
+        let title: String
+        /// The full path shown under the title; nil for a header and for a
+        /// current setting the remote PATH decides.
+        let path: String?
+        let subtitle: String
+        /// The path Step 4 verifies when this row is chosen; nil for a header
+        /// and for Keep current setting.
+        var selectionPath: String? { (kind == .direct || kind == .link) ? path : nil }
+    }
+
+    static func alternatives(for p: Prepared, record: RemoteDiscovery.Record) -> [AlternativeRow] {
+        let current = p.settings.servercmd
+        let currentWord = p.command.remoteExecutableWords.first ?? ""
+        func versionClause(_ line: String?) -> String {
+            guard let line, let remote = VersionCheck.parseUnisonVersionLine(line) else { return "No version reported." }
+            if case .incompatibleAcrossBoundary = VersionCheck.classify(local: p.localVersion, remote: remote) {
+                return "Version \(remote), cannot connect to this Mac's \(p.localVersion)."
             }
-        } else {
-            compat = "Did not report a version"
+            return "Version \(remote)."
         }
-        let origin: String
-        let target = storedTarget.map { t -> String in
-            t.hasPrefix("/") ? t : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(t)
-        }.map { ($0 as NSString).standardizingPath }
-        if let target, let same = others.first(where: { $0.path == target }) {
-            origin = "Same program as \(same.path)"
-        } else if (target ?? path).contains("/Cellar/") || path.hasPrefix("/opt/homebrew/") {
-            origin = "Homebrew keeps it current"
-        } else if (target ?? path).contains("unison-ui-mac.app/Contents/") {
-            origin = "Updates with unison-ui-mac on the server"
-        } else if (target ?? path).contains(".app/Contents/") {
-            origin = "Belongs to an app on the server"
-        } else {
-            origin = "Not managed by Homebrew or an app"
+        /// The installation a path reaches: the remote's resolution when it
+        /// gave one, else a link's stored target made absolute, else the path.
+        func identity(_ c: RemoteDiscovery.Candidate) -> String {
+            if let real = c.resolvedPath { return real }
+            if case .symlink(let t) = c.kind {
+                let abs = t.hasPrefix("/") ? t : ((c.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(t)
+                return (abs as NSString).standardizingPath
+            }
+            return c.path
         }
-        return compat + " · " + origin
+        let usable = record.present.filter { c in
+            switch c.kind { case .regular, .symlink: return true; case .directory, .other: return false }
+        }
+        let currentCandidate = usable.first { $0.path == currentWord }
+        let others = usable.filter { $0.path != currentWord }
+        var groups: [(key: String, members: [RemoteDiscovery.Candidate])] = []
+        for c in (currentCandidate.map { [$0] } ?? []) + others {
+            let key = identity(c)
+            if let i = groups.firstIndex(where: { $0.key == key }) { groups[i].members.append(c) } else { groups.append((key, [c])) }
+        }
+        func row(_ c: RemoteDiscovery.Candidate, group: [RemoteDiscovery.Candidate]) -> AlternativeRow {
+            switch c.kind {
+            case .symlink(let target):
+                return AlternativeRow(kind: .link, title: "Use the command link", path: c.path,
+                                      subtitle: "Uses whichever installation this link points to; now \(target). " + versionClause(c.versionLine))
+            default:
+                let linked = group.count > 1 && group.contains { if case .symlink = $0.kind { return true }; return false }
+                let effect = linked ? "Uses the program at this location, even if the link is redirected. "
+                                    : "Uses the program at this location. "
+                return AlternativeRow(kind: .direct, title: "Use this installation directly", path: c.path,
+                                      subtitle: effect + versionClause(c.versionLine))
+            }
+        }
+        let keep = AlternativeRow(kind: .keepCurrent, title: "Keep current setting", path: current.isEmpty ? nil : current,
+                                  subtitle: current.isEmpty
+                                      ? "Currently configured for this profile; the remote PATH decides which unison runs."
+                                      : "Currently configured for this profile.")
+        var rows: [AlternativeRow] = []
+        var keepPlaced = false
+        for g in groups {
+            if g.members.count > 1 {
+                rows.append(AlternativeRow(kind: .header, title: g.members.count == 2 ? "Two paths to the same installation"
+                                                                                     : "\(g.members.count) paths to the same installation",
+                                           path: nil, subtitle: ""))
+            }
+            if g.members.contains(where: { $0.path == currentWord }) { rows.append(keep); keepPlaced = true }
+            for c in g.members where c.path != currentWord { rows.append(row(c, group: g.members)) }
+        }
+        if !keepPlaced { rows.insert(keep, at: 0) }
+        return rows
     }
 
-    /// The help shown beside the button: why the choice matters.
-    static func helpText(localVersion: String) -> [String] {
-        [
-            "Why the choice matters",
-            "Unison on this Mac and on the server must speak the same protocol. Versions on the same side of 2.52 connect; anything older cannot talk to this Mac's \(localVersion).",
-            "Prefer the command that is kept current the way the server is maintained: Homebrew's if brew updates the server, the one bundled with unison-ui-mac if that app is installed there.",
-            "Saving writes the chosen path as Remote unison, and Unison runs exactly that command over ssh.",
-        ]
-    }
-
-    enum MenuItem: Equatable {
-        /// Non-selectable first line when the field is empty.
-        case currentEffect(String)
-        case candidate(path: String, versionLine: String?, storedTarget: String?)
-        case keepCurrent
-    }
+    /// The help shown beside the button.
+    static let helpText: [String] = [
+        "Which command should I use?",
+        "If your current command passes the check, you usually do not need to change it.",
+        "Choose another command when you want this profile to use a different installation on the remote server. Some paths are links and may later point to another installation.",
+        "This check reads the command's version. Run a synchronization to confirm that the two installations work together.",
+    ]
 
     struct Discovery: Equatable {
         let record: RemoteDiscovery.Record?
         let observation: RemoteVerification.Observation
-        let menu: [MenuItem]
+        /// The Choose Another Command rows (see `alternatives`); empty when
+        /// discovery failed.
+        let rows: [AlternativeRow]
         /// Failure sentences when the session did not produce a complete record.
         let failureSentences: [String]
         var succeeded: Bool { record?.complete == true }
@@ -242,25 +279,11 @@ enum RemoteCheckFlow {
         if case .exited(0) = observation.termination, case .exited(_, let stdout, _) = raw {
             let record = RemoteDiscovery.parse(stdout: stdout, marker: marker)
             if record.complete {
-                return Discovery(record: record, observation: observation, menu: menu(for: p, record: record), failureSentences: [])
+                return Discovery(record: record, observation: observation, rows: alternatives(for: p, record: record), failureSentences: [])
             }
         }
-        return Discovery(record: nil, observation: observation, menu: [],
+        return Discovery(record: nil, observation: observation, rows: [],
                          failureSentences: RemoteCheckWording.failure(observation, executablePath: nil, discovery: nil))
-    }
-
-    static func menu(for p: Prepared, record: RemoteDiscovery.Record) -> [MenuItem] {
-        var items: [MenuItem] = []
-        if p.settings.servercmd.isEmpty {
-            items.append(.currentEffect("Remote PATH decides which unison runs"))
-        }
-        for c in record.present {
-            var stored: String?
-            if case .symlink(let target) = c.kind { stored = target }
-            items.append(.candidate(path: c.path, versionLine: c.versionLine, storedTarget: stored))
-        }
-        items.append(.keepCurrent)
-        return items
     }
 
     // MARK: - Step 4 and 5
@@ -341,7 +364,7 @@ enum RemoteCheckFlow {
                                     closing: RemoteCheckWording.closingAfterFailure, proposal: nil, proposalRefusal: nil, compatible: false)
             }
             let headline = selection == .keepCurrent
-                ? "This check found no change to make."
+                ? "No change needed."
                 : "The command you selected started over ssh and reported its version."
             return Verification(verdict: verdict, observation: observation, headline: headline, details: details,
                                 closing: "Only a synchronization confirms the server protocol; run the profile to test that.",

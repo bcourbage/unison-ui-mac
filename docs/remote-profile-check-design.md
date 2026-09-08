@@ -139,12 +139,7 @@ that failure under the field and opens no session. The check runs against the
 profile as the form currently has it: the form's Remote unison, SSH command,
 SSH args and roots, composed with the effective settings from the profile's
 includes on disk. No save is required before checking; the user saves after
-seeing the result. Each candidate in the menu carries a subtitle saying why
-one would pick it: whether its version can connect to this Mac's, and who
-keeps it current (Homebrew, the unison-ui-mac bundle on the server, or
-neither); a symlink onto another entry is named as the same program. A help
-button beside Check Remote Command… explains the same in prose. The profile
-picker's context menu (**Run**, **Check Remote
+seeing the result. The profile picker's context menu (**Run**, **Check Remote
 Command…**) offers the same command, which opens the profile in the Profile
 Editor at that section and starts the check; the picker itself stays a pure
 list, so no other management command joins the menu.
@@ -211,16 +206,40 @@ command that prints, between unique markers:
 
 The session ends there. Nothing is written.
 
-### Step 3: selection (no ssh)
+### Step 3: the current command first, then alternatives (no ssh)
 
-After discovery, the button's menu lists what was found on the remote: each
-candidate with its version line and, where it is a symlink, its stored target;
-**Keep current setting**; and, when the field is empty, the current effect as
-the first, non-selectable line ("Remote PATH decides which unison runs"). The
-check never preselects; with one candidate it still waits for the user.
-Choosing a candidate runs Step 4 for that candidate and, on success, fills the
-Remote unison field with the proposed value under the composition rules below.
-Choosing Keep current setting runs Step 4 for the effective command as it is.
+After discovery the check verifies the command the profile runs today (Step 4
+for the effective command as it is) without asking. That result decides what
+the user sees:
+
+- it started and reported a version this Mac can connect to: the status
+  reads **No change needed.**, and a secondary **Choose Another Command…**
+  button appears when discovery found other installations;
+- it reported a version across the 2.52 boundary: the status says so, and
+  the same button lists the alternatives with their reported versions, so
+  the ones that pass the version check can be told apart;
+- it did not start or did not report a version: the failure sentences are
+  shown, and the button offers what discovery found.
+
+Most users get an answer without making a choice. The menu behind the button
+lists **Keep current setting** ("Currently configured for this profile"),
+then one row per other installation found, titled by what choosing it means
+rather than by a maintenance policy the check cannot see: **Use this
+installation directly** ("Uses the program at this location", adding "even if
+the link is redirected" when a link to it is also listed) or **Use the command
+link** ("Uses whichever installation this link points to; now `<target>`").
+Each row shows its full path beneath the title and ends with its reported
+version, "cannot connect to this Mac's `<local>`" across the boundary, or "No
+version reported". Paths the remote resolves to one executable are grouped
+under **Two paths to the same installation**: equivalent today, different
+once a link changes. Nothing infers who maintains an installation from its
+path, and the check never recommends a change; keeping a verified current
+setting is the normal outcome. Choosing a row runs Step 4 for that path and,
+on success, fills the Remote unison field with the proposed value under the
+composition rules below; Keep current setting restores the field and Advanced
+to what they were when the check started. A help button beside Check Remote
+Command… says, in four sentences, when to change the command and what the
+check does and does not prove.
 
 Composition rules for a proposed setting, applied before anything is verified:
 
@@ -310,7 +329,7 @@ not say:
     which is not a Unison version line." What ran remains unverified.
 - Closing, by outcome. After a parsed version whose comparison with this
   Mac's version (`VersionCheck.classify`) is not across the 2.52 boundary:
-  for the current setting, "This check found no change to make."; for a
+  for the current setting, "No change needed."; for a
   selected candidate, "The command you selected started over ssh and reported
   its version."; both followed by "Only a synchronization confirms the server
   protocol; run the profile to test that." After a parsed version across the
