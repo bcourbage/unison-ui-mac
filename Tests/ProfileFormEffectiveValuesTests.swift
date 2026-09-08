@@ -9,7 +9,9 @@ import XCTest
 /// and a remote-scalar save in a shared file is disclosed first.
 @MainActor
 final class ProfileFormEffectiveValuesTests: XCTestCase {
-    private var dir: String!
+    // setUp/tearDown overrides are nonisolated; the directory is set once there
+    // and read from main-actor tests, so it is declared unsafe-nonisolated.
+    nonisolated(unsafe) private var dir: String!
 
     override func setUpWithError() throws {
         dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("pfev-" + UUID().uuidString)
