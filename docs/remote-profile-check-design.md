@@ -193,13 +193,16 @@ One non-interactive session to the remote host runs a single POSIX `sh`
 command that prints, between unique markers:
 
 - `uname -s`;
-- for the effective remote executable and for each well-known candidate
+- for the effective remote executable, for each well-known candidate
   (`/opt/homebrew/bin/unison`, `/usr/local/bin/unison`,
   `/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison`,
-  `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`, `/usr/bin/unison`)
-  that exists: the path, `readlink` of it when it is a symlink (the **stored**
-  target, which may be relative or itself a link; reported as such), and the
-  first line of `<path> -version`;
+  `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`,
+  `/Applications/Unison.app/Contents/MacOS/cltool`, `/usr/bin/unison`), and for
+  a `unison` in any directory of the non-interactive shell's `PATH` — the same
+  environment Unison's own remote `unison` resolves in — that the fixed list
+  missed, each reported once: the path, `readlink` of it when it is a symlink
+  (the **stored** target, which may be relative or itself a link; reported as
+  such), and the first line of `<path> -version`;
 - `command -v unison`, labelled as what the discovery script's `sh`
   resolves; the remote login shell (aliases, functions) and Unison's own ssh
   command may each resolve differently.
