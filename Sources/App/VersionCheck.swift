@@ -448,15 +448,23 @@ enum VersionCheck {
     /// UUM_PROBE_TIMING is set in the environment; otherwise every instance is
     /// nil and every call a no-op, so production behavior is unchanged and no
     /// extra thread or syscall is introduced. It records MONOTONIC elapsed times
-    /// (mach uptime) for the probe's lifecycle events and, when the execution
-    /// returns, writes ONE stderr line for the probe.
+    /// (mach uptime) for the probe's lifecycle events.
     ///
-    /// It records event names, elapsed milliseconds, and the result kind ONLY.
-    /// It deliberately records no command arguments and no captured output, so
-    /// enabling it cannot leak what was run or what came back. Its purpose is to
-    /// separate scheduling delay from delayed exit observation when a probe whose
-    /// output is already complete still reaches its deadline. Because it logs
-    /// successful runs too, a probe that exceeds the former 10s bound stays
+    /// It writes a `phase=return` line when the executor returns. If that line
+    /// went out WITHOUT a `waitUntilExitReturn` (the executor gave up while the
+    /// background wait was still blocked), a second `phase=late-exit` line is
+    /// written when that wait finally completes, correlated by `id=`. A timed-out
+    /// probe with no matching late-exit line therefore means the wait had not
+    /// returned at all: this separates a delayed exit report from one that never
+    /// arrives. The normal path, where the exit is observed before return, stays a
+    /// single line.
+    ///
+    /// It records an id, event names, elapsed milliseconds, and the result kind
+    /// ONLY. It deliberately records no command arguments and no captured output,
+    /// so enabling it cannot leak what was run or what came back. Its purpose is
+    /// to separate scheduling delay from delayed exit observation when a probe
+    /// whose output is already complete still reaches its deadline. It logs
+    /// successful runs too, so a probe exceeding the former 10s bound stays
     /// visible even when a generous deadline lets the test pass.
     final class ProbeTiming: @unchecked Sendable {
         static func fromEnvironment() -> ProbeTiming? {
@@ -464,11 +472,22 @@ enum VersionCheck {
             // snapshot), so a test that sets the variable in-process is seen.
             getenv("UUM_PROBE_TIMING") != nil ? ProbeTiming() : nil
         }
+        // A process-unique id correlating a probe's return line with its
+        // late-exit line.
+        private static let idLock = NSLock()
+        // Guarded by idLock; nonisolated(unsafe) states that the lock, not the
+        // compiler, provides the synchronization.
+        nonisolated(unsafe) private static var idSeq = 0
+        private static func nextID() -> Int { idLock.lock(); defer { idLock.unlock() }; idSeq += 1; return idSeq }
+
+        let id = ProbeTiming.nextID()
         private let start = DispatchTime.now().uptimeNanoseconds
         private let lock = NSLock()
         private var events: [(String, UInt64)] = []
         private var label = ""
         private var resultKind = "unset"
+        private var primaryEmitted = false
+        private var primaryHadExit = false
 
         func begin(executable: String, deadline: TimeInterval) {
             // Basename only, and no host: the remote hostname is potentially
@@ -484,9 +503,34 @@ enum VersionCheck {
             lock.lock(); events.append((event, ns)); lock.unlock()
         }
         func setResult(_ kind: String) { lock.lock(); resultKind = kind; lock.unlock() }
+
+        /// The primary line, written once when the executor returns.
         func emit() {
-            lock.lock(); let evs = events, l = label, r = resultKind; lock.unlock()
-            var line = "UUM-PROBE-TIMING \(l) result=\(r)"
+            lock.lock()
+            if primaryEmitted { lock.unlock(); return }
+            primaryEmitted = true
+            primaryHadExit = events.contains { $0.0 == "waitUntilExitReturn" }
+            let evs = events, l = label, r = resultKind
+            lock.unlock()
+            writeLine(phase: "return", events: evs, label: l, result: r)
+        }
+
+        /// Called at the very end of the background waitUntilExit task. If the
+        /// executor already returned WITHOUT observing the exit, this task's late
+        /// marks (waitUntilExitReturn, exitedSemaphoreSignal) would otherwise be
+        /// lost, so emit a correlated late-exit line preserving them. If the exit
+        /// was observed before return, or the executor has not returned yet, do
+        /// nothing.
+        func noteWaitTaskComplete() {
+            lock.lock()
+            let emitLate = primaryEmitted && !primaryHadExit
+            let evs = events, l = label, r = resultKind
+            lock.unlock()
+            if emitLate { writeLine(phase: "late-exit", events: evs, label: l, result: r) }
+        }
+
+        private func writeLine(phase: String, events evs: [(String, UInt64)], label l: String, result r: String) {
+            var line = "UUM-PROBE-TIMING id=\(id) phase=\(phase) \(l) result=\(r)"
             for (name, ns) in evs { line += String(format: " %@=%.1fms", name, Double(ns) / 1_000_000) }
             let data = Data((line + "\n").utf8)
             FileHandle.standardError.write(data)
@@ -700,6 +744,10 @@ enum VersionCheck {
                 timing?.mark("waitUntilExitReturn")
                 exited.signal()
                 timing?.mark("exitedSemaphoreSignal")
+                // If the executor already returned without observing this exit
+                // (a timeout that outran the wait), emit a correlated late-exit
+                // line so the delayed return is not lost from the record.
+                timing?.noteWaitTaskComplete()
             }
 
             func reapExactChild() {
@@ -730,7 +778,10 @@ enum VersionCheck {
             // (including on the main thread from applicationWillTerminate), the
             // child is SIGTERM'd synchronously — not on a later poll tick. If a
             // cancel raced Process.run(), registerTeardown fires it right now.
-            canceller.registerTeardown { process.terminate() }
+            // Mark this cancellation-triggered SIGTERM separately from the reap's
+            // own, so an EOF that a cancel caused is not read as natural
+            // completion that preceded any intervention.
+            canceller.registerTeardown { timing?.mark("cancelSIGTERM"); process.terminate() }
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {

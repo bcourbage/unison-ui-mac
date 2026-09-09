@@ -310,20 +310,24 @@ jobs:
 
       - name: Probe lifecycle timing (timeout-cause investigation)
         # The probe test classes opt the executor's timing in for the test bundle
-        # (production stays off) and write one "UUM-PROBE-TIMING ..." line per
-        # probe — lifecycle offsets only, no command or output — to a fixed file,
-        # on success too, so a probe whose exit is observed slowly stays visible
-        # even though the generous test deadline lets it pass. Surface it here,
-        # highlighting any probe whose exit landed more than 10s (the former
-        # deadline) after launch. `if: always()` so it runs even when tests fail.
+        # (production stays off) and write "UUM-PROBE-TIMING ..." lines — lifecycle
+        # offsets only, no command or output — to a fixed file, on success too, so
+        # a probe whose exit is observed slowly stays visible even though the
+        # generous test deadline lets it pass. Each probe writes a phase=return
+        # line; a phase=late-exit line (same id=) means the exit was reported only
+        # AFTER the executor returned. Surface both, and flag any exit observed
+        # more than 10s (the former deadline) after launch. `if: always()` so it
+        # runs even when tests fail.
         if: always()
         env:
           UUM_PROBE_TIMING_FILE: /tmp/uum-probe-timing.log
         run: |
           if [ -s "$UUM_PROBE_TIMING_FILE" ]; then
-            echo "Probes whose exit was observed more than 10s after launch (the former deadline):"
-            awk '/waitUntilExitReturn=/ { for (i=1;i<=NF;i++) if ($i ~ /^waitUntilExitReturn=/) { split($i,a,"="); v=a[2]+0; if (v>10000) print } }' "$UUM_PROBE_TIMING_FILE" || true
-            echo "---- full probe timeline ($(grep -c UUM-PROBE-TIMING "$UUM_PROBE_TIMING_FILE") probes) ----"
+            echo "Exit observed more than 10s after launch (the former deadline):"
+            awk '{for(i=1;i<=NF;i++) if($i ~ /^waitUntilExitReturn=/){split($i,a,"="); if(a[2]+0>10000) print}}' "$UUM_PROBE_TIMING_FILE" || true
+            echo "Late-exit lines (exit reported only after the executor returned):"
+            grep -a "phase=late-exit" "$UUM_PROBE_TIMING_FILE" || echo "  (none)"
+            echo "---- full probe timeline ($(grep -c UUM-PROBE-TIMING "$UUM_PROBE_TIMING_FILE") lines) ----"
             sort "$UUM_PROBE_TIMING_FILE"
           else
             echo "no probe-timing lines captured"
