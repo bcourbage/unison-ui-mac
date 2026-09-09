@@ -95,10 +95,30 @@ final class CommandLineSetupStateTests: XCTestCase {
     }
 
     func test_stockZprofile_matchesMeasuredBytes() {
-        // The measured macOS 26.6.2 /etc/zprofile is 304 bytes.
+        // The measured macOS 26.6.2 /etc/zprofile is 304 bytes; macOS 15.7.9's is
+        // 255 (no LANG=C.UTF-8 block).
         XCTAssertEqual(CommandLineSetupFileSelection.stockZprofileMacOS26.utf8.count, 304)
         XCTAssertTrue(CommandLineSetupFileSelection.stockZprofileMacOS26.contains("export LANG=C.UTF-8"))
-        XCTAssertTrue(CommandLineSetupFileSelection.stockZprofileMacOS26.contains("/usr/libexec/path_helper -s"))
+        XCTAssertEqual(CommandLineSetupFileSelection.stockZprofileMacOS15.utf8.count, 255)
+        XCTAssertFalse(CommandLineSetupFileSelection.stockZprofileMacOS15.contains("LANG"))
+        for text in [CommandLineSetupFileSelection.stockZprofileMacOS26, CommandLineSetupFileSelection.stockZprofileMacOS15] {
+            XCTAssertTrue(text.contains("/usr/libexec/path_helper -s"))
+            XCTAssertTrue(CommandLineSetupFileSelection.knownStockZprofileTexts.contains(text))
+        }
+    }
+
+    // The embedded stock constants must stay byte-for-byte identical to the
+    // fixtures the CI gate compares the runner's /etc/zprofile against, so the two
+    // sources of truth cannot drift.
+    func test_stockZprofileConstants_matchFixtureFiles() throws {
+        let repo = URL(fileURLWithPath: #filePath)   // Tests/CommandLineSetupStateTests.swift
+            .deletingLastPathComponent()             // Tests/
+            .deletingLastPathComponent()             // repo root
+        let fixtures = repo.appendingPathComponent("scripts/fixtures")
+        let f15 = try String(contentsOf: fixtures.appendingPathComponent("stock-zprofile-macos15.txt"), encoding: .utf8)
+        let f26 = try String(contentsOf: fixtures.appendingPathComponent("stock-zprofile-macos26.txt"), encoding: .utf8)
+        XCTAssertEqual(CommandLineSetupFileSelection.stockZprofileMacOS15, f15, "macOS 15 constant must match its fixture")
+        XCTAssertEqual(CommandLineSetupFileSelection.stockZprofileMacOS26, f26, "macOS 26 constant must match its fixture")
     }
 
     // MARK: File selection — bash / fish / other

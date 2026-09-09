@@ -52,11 +52,12 @@ enum CommandLineSetupFileSelection {
 
     // MARK: Known stock /etc/zprofile texts
 
-    /// The stock `/etc/zprofile` measured on macOS 26.6.2 (build 25G83): a
-    /// `LANG=C.UTF-8` default and the `path_helper` eval, nothing else. The
-    /// macOS 15 text is captured and added by the release pipeline's macOS 15 job.
-    /// A macOS revision that changes the file moves accounts to Manual setup until
-    /// its text is measured and added; that refusal is intended, not a defect.
+    /// The stock `/etc/zprofile` on macOS 26.6.2 (build 25G83): a `LANG=C.UTF-8`
+    /// default and the `path_helper` eval. Byte-for-byte in
+    /// scripts/fixtures/stock-zprofile-macos26.txt (a test asserts they match, and
+    /// the CI gate asserts the runner's file matches). A macOS revision that
+    /// changes the file moves those accounts to Manual setup until its text is
+    /// measured and added; that refusal is intended, not a defect.
     static let stockZprofileMacOS26 = [
         "# System-wide profile for interactive zsh(1) login shells.",
         "",
@@ -73,7 +74,22 @@ enum CommandLineSetupFileSelection {
         "",
     ].joined(separator: "\n")
 
-    static let knownStockZprofileTexts: [String] = [stockZprofileMacOS26]
+    /// The stock `/etc/zprofile` on macOS 15.7.9 (the CI runner image): the
+    /// `path_helper` eval only, WITHOUT the `LANG=C.UTF-8` block Apple added in a
+    /// later release. Byte-for-byte in scripts/fixtures/stock-zprofile-macos15.txt.
+    static let stockZprofileMacOS15 = [
+        "# System-wide profile for interactive zsh(1) login shells.",
+        "",
+        "# Setup user specific overrides for this in ~/.zprofile. See zshbuiltins(1)",
+        "# and zshoptions(1) for more details.",
+        "",
+        "if [ -x /usr/libexec/path_helper ]; then",
+        "\teval `/usr/libexec/path_helper -s`",
+        "fi",
+        "",
+    ].joined(separator: "\n")
+
+    static let knownStockZprofileTexts: [String] = [stockZprofileMacOS26, stockZprofileMacOS15]
 
     // MARK: zsh bound
 
