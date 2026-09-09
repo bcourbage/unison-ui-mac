@@ -234,35 +234,57 @@ enum CommandLineSetupCoordinator {
     }
 
     /// Whether the write appends a new block or rewrites an existing owned one.
-    private enum WriteIntent { case append, rewrite }
+    enum WriteIntent { case append, rewrite }
 
-    /// Whether `contents` (the guarding read) is still this app's OWNED entry for
-    /// `resolvedPath`, validated on the SAME bytes that will guard the mutation, so
-    /// ownership and the seam guard never describe different reads. zsh/bash require
-    /// a single block matching the template and the ownership record; fish requires
-    /// the whole file to match.
-    private static func isOwnedEntry(shell: CommandLineSetupShellKind, resolvedPath: String,
-                                     contents: String, defaults: UserDefaults) -> Bool {
+    /// Whether `contents` (the guarding read) permits the mutation, evaluating the
+    /// COMPLETE editable bound on those same bytes — heredoc, whole-file and prefix
+    /// parse, metadata and ownership for zsh/bash; whole-file template, ownership
+    /// and metadata for fish — so the entire bound decision, not just ownership,
+    /// describes the read whose identity guards the write. `.append` requires an
+    /// editable file with no block; `.rewrite` (and removal) requires an owned
+    /// block still inside the bound.
+    static func permitsMutation(shell: CommandLineSetupShellKind, resolvedPath: String,
+                                        contents: String, intent: WriteIntent, shellPath: String,
+                                        env: CommandLineSetupEnvironment, defaults: UserDefaults) -> Bool {
         if shell == .fish {
-            guard CommandLineSetupBlock.fishTemplateDirectory(ofFileContents: contents) != nil else { return false }
+            guard env.metadataOK(resolvedPath),
+                  CommandLineSetupBlock.fishTemplateDirectory(ofFileContents: contents) != nil else { return false }
             return CommandLineSetupRecordStore.isOwned(
                 path: resolvedPath, blockHash: CommandLineSetupBlock.hash(ofBlockText: contents), defaults: defaults)
         }
-        guard case .single(let b, let e) = CommandLineSetupBlock.markerArrangement(inContents: contents) else { return false }
-        let block = CommandLineSetupBlock.blockText(inContents: contents, beginLine: b, endLine: e)
-        guard CommandLineSetupBlock.templateDirectory(ofBlockText: block) != nil else { return false }
-        return CommandLineSetupRecordStore.isOwned(
-            path: resolvedPath, blockHash: CommandLineSetupBlock.hash(ofBlockText: block), defaults: defaults)
+        let wholeParses = env.parses(contents, shellPath)
+        let prefixText: String
+        if case .single(let b, _) = CommandLineSetupBlock.markerArrangement(inContents: contents) {
+            prefixText = contents.components(separatedBy: "\n")[0..<b].joined(separator: "\n")
+        } else {
+            prefixText = ""
+        }
+        let prefixParses = prefixText.isEmpty ? true : env.parses(prefixText, shellPath)
+        let evaluation = CommandLineSetupBound.evaluateExistingFile(
+            contents: contents, wholeFileParses: wholeParses, prefixParses: prefixParses,
+            metadataOK: env.metadataOK(resolvedPath),
+            ownershipMatches: { block in
+                CommandLineSetupRecordStore.isOwned(path: resolvedPath,
+                                                    blockHash: CommandLineSetupBlock.hash(ofBlockText: block),
+                                                    defaults: defaults)
+            })
+        switch (intent, evaluation) {
+        case (.append, .appendable): return true
+        case (.rewrite, .rewritable): return true
+        default: return false
+        }
     }
 
     /// Write this app's entry into `file`, reading the content and the snapshot that
-    /// guards it in ONE read, and validating ownership on THAT content: an append
-    /// refuses if a block has appeared, a rewrite refuses if the block is no longer
-    /// this app's owned block. Shared by Add, Use This Copy and the startup rewrite.
+    /// guards it in ONE read, and re-evaluating the COMPLETE editable bound on that
+    /// content (permitsMutation): an append refuses if the file is outside the
+    /// bound or a block has appeared; a rewrite refuses if the block is no longer an
+    /// owned block inside the bound. Shared by Add, Use This Copy and the startup
+    /// rewrite. `shellPath` is the account's login shell, used for the `-n` parse.
     private static func writeEntry(shell: CommandLineSetupShellKind, file: String,
-                                   binDirectory: String, intent: WriteIntent,
-                                   fs: CommandLineToolFileSystem, now: Date,
-                                   defaults: UserDefaults) -> CommandLineSetupWriteOutcome {
+                                   binDirectory: String, intent: WriteIntent, shellPath: String,
+                                   env: CommandLineSetupEnvironment, fs: CommandLineToolFileSystem,
+                                   now: Date, defaults: UserDefaults) -> CommandLineSetupWriteOutcome {
         let resolved = fs.realPath(ofPath: file) ?? file
         if shell == .fish {
             let text = CommandLineSetupBlock.fishFileText(directory: binDirectory) ?? ""
@@ -272,7 +294,8 @@ enum CommandLineSetupCoordinator {
                     return .notMutated(reason: "the file could not be read before writing")
                 }
                 guard intent == .rewrite,
-                      isOwnedEntry(shell: .fish, resolvedPath: resolved, contents: snap.contents, defaults: defaults) else {
+                      permitsMutation(shell: .fish, resolvedPath: resolved, contents: snap.contents,
+                                      intent: .rewrite, shellPath: shellPath, env: env, defaults: defaults) else {
                     return .notMutated(reason: situationChanged)
                 }
                 return writeReplace(resolvedPath: resolved, newContents: text, blockHash: hash,
@@ -288,6 +311,10 @@ enum CommandLineSetupCoordinator {
             guard let snap = CommandLineSetupWriter.snapshotWithContents(atPath: resolved) else {
                 return .notMutated(reason: "the file could not be read before writing")
             }
+            guard permitsMutation(shell: shell, resolvedPath: resolved, contents: snap.contents,
+                                  intent: intent, shellPath: shellPath, env: env, defaults: defaults) else {
+                return .notMutated(reason: situationChanged)
+            }
             switch (intent, CommandLineSetupBlock.markerArrangement(inContents: snap.contents)) {
             case (.append, .none):
                 return writeReplace(resolvedPath: resolved,
@@ -295,17 +322,12 @@ enum CommandLineSetupCoordinator {
                                     blockHash: hash, binDirectory: binDirectory, expected: snap.identity,
                                     now: now, defaults: defaults)
             case (.rewrite, .single(let b, let e)):
-                guard isOwnedEntry(shell: shell, resolvedPath: resolved, contents: snap.contents, defaults: defaults) else {
-                    return .notMutated(reason: situationChanged)
-                }
                 return writeReplace(resolvedPath: resolved,
                                     newContents: CommandLineSetupEdit.rewritten(snap.contents, beginLine: b, endLine: e,
                                                                                 newBlockText: blockText),
                                     blockHash: hash, binDirectory: binDirectory, expected: snap.identity,
                                     now: now, defaults: defaults)
             default:
-                // A block appeared where an append was approved, or the block is
-                // gone/malformed where a rewrite was approved: refuse.
                 return .notMutated(reason: situationChanged)
             }
         }
@@ -348,8 +370,9 @@ enum CommandLineSetupCoordinator {
             return ActionResult(statusLine: situationChanged, secondLine: nil, refreshed: fresh)
         }
         let intent: WriteIntent = fresh.state.action == .useThisCopy ? .rewrite : .append
+        let shellPath = env.accountRecord()?.loginShellPath ?? ""
         let outcome = writeEntry(shell: fresh.fileChoice.shell, file: file, binDirectory: fresh.thisBinDirectory,
-                                 intent: intent, fs: fs, now: now, defaults: defaults)
+                                 intent: intent, shellPath: shellPath, env: env, fs: fs, now: now, defaults: defaults)
         CommandLineSetupPreference.setKeepInTerminal(true, defaults: defaults)
         let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
         return ActionResult(statusLine: CommandLineSetupStatusLine.afterWrite(outcome, postResolution: refreshed.resolution),
@@ -370,8 +393,9 @@ enum CommandLineSetupCoordinator {
               fresh.fileChoice.automatic, let file = fresh.fileChoice.file else {
             return ActionResult(statusLine: "", secondLine: nil, refreshed: fresh)
         }
+        let shellPath = env.accountRecord()?.loginShellPath ?? ""
         let outcome = writeEntry(shell: fresh.fileChoice.shell, file: file, binDirectory: fresh.thisBinDirectory,
-                                 intent: .rewrite, fs: fs, now: now, defaults: defaults)
+                                 intent: .rewrite, shellPath: shellPath, env: env, fs: fs, now: now, defaults: defaults)
         let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
         return ActionResult(statusLine: CommandLineSetupStatusLine.afterRewrite(outcome),
                             secondLine: nil, refreshed: refreshed)
@@ -379,8 +403,9 @@ enum CommandLineSetupCoordinator {
 
     /// Remove this app's entry, then re-probe. Turns the preference off. Requires
     /// the fresh state to still be Remove on the APPROVED file, reads content and
-    /// snapshot together, and validates ownership on that same read, so a file that
-    /// became foreign or changed since the confirmation is not deleted.
+    /// snapshot together, and re-evaluates the complete editable bound on that same
+    /// read, so a file that became foreign, was wrapped in a heredoc, or stopped
+    /// parsing since the confirmation is not deleted.
     static func performRemove(approved: CommandLineSetupStatusReport,
                               bundleURL: URL,
                               environment env: CommandLineSetupEnvironment = .real,
@@ -398,8 +423,12 @@ enum CommandLineSetupCoordinator {
             let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
             return ActionResult(statusLine: "the file could not be read before writing", secondLine: nil, refreshed: refreshed)
         }
-        guard isOwnedEntry(shell: fresh.fileChoice.shell, resolvedPath: resolved,
-                           contents: snap.contents, defaults: defaults) else {
+        // Re-evaluate the COMPLETE editable bound on the guarding read: a block
+        // wrapped in a heredoc, or a file that stopped parsing, since status() is
+        // refused here even though its hash still matches the ownership record.
+        let shellPath = env.accountRecord()?.loginShellPath ?? ""
+        guard permitsMutation(shell: fresh.fileChoice.shell, resolvedPath: resolved, contents: snap.contents,
+                              intent: .rewrite, shellPath: shellPath, env: env, defaults: defaults) else {
             let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
             return ActionResult(statusLine: situationChanged, secondLine: nil, refreshed: refreshed)
         }

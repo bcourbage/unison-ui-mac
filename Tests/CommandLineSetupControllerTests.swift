@@ -244,6 +244,39 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), "export FOO=1\n", "nothing written")
     }
 
+    // Regression (P2): the COMPLETE editable bound is applied to the guarding
+    // read, so a block wrapped in a heredoc, or a file that stopped parsing, is
+    // refused even though its ownership hash still matches the record. (The
+    // intervening-read window itself cannot be injected with real files; this
+    // exercises the gate directly on the contents that guard the write.)
+    func test_permitsMutation_appliesFullBoundToGuardingContents() {
+        let d = freshDefaults()
+        let path = "/h/.zprofile"
+        let dir = "/App.app/Contents/SharedSupport/bin"
+        let block = CommandLineSetupBlock.blockText(directory: dir)!
+        let rec = CommandLineSetupOwnership(path: path, hash: CommandLineSetupBlock.hash(ofBlockText: block),
+                                            bundlePath: dir, date: Date())
+        CommandLineSetupRecordStore.writePending(rec, defaults: d)
+        CommandLineSetupRecordStore.promote(defaults: d)
+        let ok = zshEnv(homePath: "/h")  // parses true, metadataOK true
+
+        XCTAssertTrue(CommandLineSetupCoordinator.permitsMutation(
+            shell: .zsh, resolvedPath: path, contents: "export A=1\n\(block)\n",
+            intent: .rewrite, shellPath: "/bin/zsh", env: ok, defaults: d), "clean owned block permitted")
+
+        // The same owned block, but a heredoc now wraps user data: hash still
+        // matches, yet rule 1 refuses.
+        XCTAssertFalse(CommandLineSetupCoordinator.permitsMutation(
+            shell: .zsh, resolvedPath: path, contents: "cat <<EOF\nuser data\nEOF\n\(block)\n",
+            intent: .rewrite, shellPath: "/bin/zsh", env: ok, defaults: d), "heredoc refuses")
+
+        // Whole-file parse failure refuses even with the owned block.
+        var failing = ok; failing.parses = { _, _ in false }
+        XCTAssertFalse(CommandLineSetupCoordinator.permitsMutation(
+            shell: .zsh, resolvedPath: path, contents: "export A=1\n\(block)\n",
+            intent: .rewrite, shellPath: "/bin/zsh", env: failing, defaults: d), "parse failure refuses")
+    }
+
     // Regression (P2 #3): a moved app repairs its owned block at startup (row 6).
     func test_performStartupRewrite_repairsMovedApp() throws {
         let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
