@@ -308,6 +308,27 @@ jobs:
         # (~10–20 s) plus the test execution.
         run: make test
 
+      - name: Probe lifecycle timing (timeout-cause investigation)
+        # The probe test classes opt the executor's timing in for the test bundle
+        # (production stays off) and write one "UUM-PROBE-TIMING ..." line per
+        # probe — lifecycle offsets only, no command or output — to a fixed file,
+        # on success too, so a probe whose exit is observed slowly stays visible
+        # even though the generous test deadline lets it pass. Surface it here,
+        # highlighting any probe whose exit landed more than 10s (the former
+        # deadline) after launch. `if: always()` so it runs even when tests fail.
+        if: always()
+        env:
+          UUM_PROBE_TIMING_FILE: /tmp/uum-probe-timing.log
+        run: |
+          if [ -s "$UUM_PROBE_TIMING_FILE" ]; then
+            echo "Probes whose exit was observed more than 10s after launch (the former deadline):"
+            awk '/waitUntilExitReturn=/ { for (i=1;i<=NF;i++) if ($i ~ /^waitUntilExitReturn=/) { split($i,a,"="); v=a[2]+0; if (v>10000) print } }' "$UUM_PROBE_TIMING_FILE" || true
+            echo "---- full probe timeline ($(grep -c UUM-PROBE-TIMING "$UUM_PROBE_TIMING_FILE") probes) ----"
+            sort "$UUM_PROBE_TIMING_FILE"
+          else
+            echo "no probe-timing lines captured"
+          fi
+
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -7,6 +7,8 @@ import XCTest
 final class RemoteCheckSessionTests: XCTestCase {
     private typealias S = RemoteCheckSession
 
+    override class func setUp() { super.setUp(); ProbeTimingBootstrap.activate() }
+
     private func sh(_ script: String) -> VersionCheck.ProbeConfig {
         VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", script], host: "local")
     }

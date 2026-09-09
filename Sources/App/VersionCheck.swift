@@ -444,6 +444,64 @@ enum VersionCheck {
         }
     }
 
+    /// Opt-in lifecycle timing for one probe execution. Enabled only when
+    /// UUM_PROBE_TIMING is set in the environment; otherwise every instance is
+    /// nil and every call a no-op, so production behavior is unchanged and no
+    /// extra thread or syscall is introduced. It records MONOTONIC elapsed times
+    /// (mach uptime) for the probe's lifecycle events and, when the execution
+    /// returns, writes ONE stderr line for the probe.
+    ///
+    /// It records event names, elapsed milliseconds, and the result kind ONLY.
+    /// It deliberately records no command arguments and no captured output, so
+    /// enabling it cannot leak what was run or what came back. Its purpose is to
+    /// separate scheduling delay from delayed exit observation when a probe whose
+    /// output is already complete still reaches its deadline. Because it logs
+    /// successful runs too, a probe that exceeds the former 10s bound stays
+    /// visible even when a generous deadline lets the test pass.
+    final class ProbeTiming: @unchecked Sendable {
+        static func fromEnvironment() -> ProbeTiming? {
+            // getenv (live) rather than ProcessInfo.environment (a cached
+            // snapshot), so a test that sets the variable in-process is seen.
+            getenv("UUM_PROBE_TIMING") != nil ? ProbeTiming() : nil
+        }
+        private let start = DispatchTime.now().uptimeNanoseconds
+        private let lock = NSLock()
+        private var events: [(String, UInt64)] = []
+        private var label = ""
+        private var resultKind = "unset"
+
+        func begin(executable: String, deadline: TimeInterval) {
+            // Basename only, and no host: the remote hostname is potentially
+            // sensitive, and the arguments (the -c script) and output are never
+            // recorded. In production the basename is just `ssh`.
+            let name = (executable as NSString).lastPathComponent
+            lock.lock(); label = "\(name) deadline=\(deadline)s"; lock.unlock()
+        }
+        /// Records the monotonic offset of one event. Safe to call from any
+        /// thread (the wait task, a collector's read queue, the executor loop).
+        func mark(_ event: String) {
+            let ns = DispatchTime.now().uptimeNanoseconds &- start
+            lock.lock(); events.append((event, ns)); lock.unlock()
+        }
+        func setResult(_ kind: String) { lock.lock(); resultKind = kind; lock.unlock() }
+        func emit() {
+            lock.lock(); let evs = events, l = label, r = resultKind; lock.unlock()
+            var line = "UUM-PROBE-TIMING \(l) result=\(r)"
+            for (name, ns) in evs { line += String(format: " %@=%.1fms", name, Double(ns) / 1_000_000) }
+            let data = Data((line + "\n").utf8)
+            FileHandle.standardError.write(data)
+            // A test host's stderr is buffered into the .xcresult, not echoed on
+            // the console, so also append to UUM_PROBE_TIMING_FILE when set: a
+            // small O_APPEND write is atomic, so concurrent probes interleave
+            // whole lines. A CI step reads this file to surface the timeline.
+            if let c = getenv("UUM_PROBE_TIMING_FILE") {
+                let path = String(cString: c)
+                let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+                if fd >= 0 { _ = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }; close(fd) }
+            }
+        }
+    }
+
     /// The real executor: a `Process` with a TRUE wall-clock deadline and a
     /// terminate-then-kill teardown that reaps the exact child so a wedged
     /// probe can't leave a lingering `ssh`/ProxyCommand behind.
@@ -508,10 +566,17 @@ enum VersionCheck {
             private let fd: Int32
             /// The read call; injectable so a read failure can be exercised.
             private let readCall: (Int32, UnsafeMutableRawPointer, Int) -> Int
+            /// Fired once, at the moment collection ends on its own: EOF (a
+            /// zero-byte read, `atEOF` true) or a read error (`atEOF` false,
+            /// errno given). Not fired by `stop()`. Used only by opt-in timing;
+            /// nil in production, so there is no per-byte or per-event overhead.
+            private let onFinish: (@Sendable (_ atEOF: Bool, _ error: Int32?) -> Void)?
 
             init(_ handle: FileHandle,
-                 read readCall: @escaping (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }) {
+                 read readCall: @escaping (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) },
+                 onFinish: (@Sendable (_ atEOF: Bool, _ error: Int32?) -> Void)? = nil) {
                 self.readCall = readCall
+                self.onFinish = onFinish
                 fd = handle.fileDescriptor
                 _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
                 source = DispatchSource.makeReadSource(fileDescriptor: fd,
@@ -553,7 +618,7 @@ enum VersionCheck {
                 // Cancel before waking a waiting snapshot, so a caller that
                 // wakes on the semaphore already observes the source stopped.
                 source.cancel()
-                if first { eof.signal() }
+                if first { onFinish?(atEOF, error); eof.signal() }
             }
 
             /// Waits up to `settle` for EOF, then returns everything kept,
@@ -595,9 +660,16 @@ enum VersionCheck {
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
                      canceller: ProbeCanceller) -> RawExecResult {
+            // Opt-in lifecycle timing (nil unless UUM_PROBE_TIMING is set), so
+            // every mark below is a no-op in production. One line is emitted on
+            // return, on every path.
+            let timing = ProbeTiming.fromEnvironment()
+            timing?.begin(executable: config.executable, deadline: deadline)
+            defer { timing?.emit() }
+
             // Cancellation BEFORE launch: never spawn a child we've already
             // been told to abandon.
-            if canceller.isCancelled { return .cancelled }
+            if canceller.isCancelled { timing?.setResult("cancelledBeforeLaunch"); return .cancelled }
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: config.executable)
@@ -607,21 +679,31 @@ enum VersionCheck {
             process.standardError = errPipe
 
             do { try process.run() } catch {
+                timing?.setResult("launchFailed")
                 return .launchFailed(error.localizedDescription)
             }
+            timing?.mark("launch")
             onLaunch?(process.processIdentifier)
-            let out = PipeCollector(outPipe.fileHandleForReading)
-            let err = PipeCollector(errPipe.fileHandleForReading)
+            let out = PipeCollector(outPipe.fileHandleForReading,
+                                    onFinish: timing.map { t -> @Sendable (Bool, Int32?) -> Void in
+                                        { atEOF, _ in t.mark(atEOF ? "stdoutEOF" : "stdoutReadError") } })
+            let err = PipeCollector(errPipe.fileHandleForReading,
+                                    onFinish: timing.map { t -> @Sendable (Bool, Int32?) -> Void in
+                                        { atEOF, _ in t.mark(atEOF ? "stderrEOF" : "stderrReadError") } })
 
             // Wait for natural exit on a background thread; the main flow waits
             // for exit / cancellation / deadline so it can never block forever.
             let exited = DispatchSemaphore(value: 0)
             DispatchQueue.global(qos: .userInitiated).async {
+                timing?.mark("waitTaskEntry")
                 process.waitUntilExit()
+                timing?.mark("waitUntilExitReturn")
                 exited.signal()
+                timing?.mark("exitedSemaphoreSignal")
             }
 
             func reapExactChild() {
+                timing?.mark("teardownSIGTERM")
                 // SIGTERM, then SIGKILL after a grace period. We wait so the
                 // ssh child itself is best-effort reaped (no zombie). NOTE: this
                 // reaps ONLY the direct ssh child; a ProxyCommand or the remote
@@ -632,6 +714,7 @@ enum VersionCheck {
                 // rather than block forever.
                 process.terminate()
                 if exited.wait(timeout: .now() + grace) == .timedOut {
+                    timing?.mark("teardownSIGKILL")
                     kill(process.processIdentifier, SIGKILL)
                     _ = exited.wait(timeout: .now() + grace)
                 }
@@ -639,6 +722,7 @@ enum VersionCheck {
             func collected() -> (String, String) {
                 let result = (out.snapshot(settle: outputSettle), err.snapshot(settle: outputSettle))
                 out.stop(); err.stop()
+                timing?.mark("collectDone")
                 return result
             }
 
@@ -650,7 +734,8 @@ enum VersionCheck {
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
-                reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
+                reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop()
+                timing?.setResult("cancelled"); return .cancelled
             }
 
             // Deadline is measured from HERE — just after the local spawn
@@ -662,22 +747,27 @@ enum VersionCheck {
                 // `exited`, and we must report .cancelled (not .exited with a
                 // signal status) when the reason we stopped was a cancel.
                 if canceller.isCancelled {
-                    reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop(); return .cancelled
+                    reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop()
+                    timing?.setResult("cancelled"); return .cancelled
                 }
                 if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
+                    timing?.mark("exitObservedInLoop")
                     canceller.clearTeardown()
                     // The exit may be the result of a cancel that fired during
                     // this wait (its teardown SIGTERMs the child). Report that
                     // as .cancelled, not as an exit with a signal status.
                     if canceller.isCancelled {
-                        out.stop(); err.stop(); return .cancelled
+                        out.stop(); err.stop(); timing?.setResult("cancelled"); return .cancelled
                     }
                     let (stdout, stderr) = collected()
+                    timing?.setResult("exited(\(process.terminationStatus))")
                     return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
                 }
                 if DispatchTime.now() >= deadlineAt {
+                    timing?.mark("deadlineDetected")
                     reapExactChild(); canceller.clearTeardown()
                     let (stdout, stderr) = collected()
+                    timing?.setResult("timedOut")
                     return .timedOut(stdout: stdout, stderr: stderr)
                 }
             }

@@ -4,6 +4,8 @@ import XCTest
 final class RemoteDiscoveryTests: XCTestCase {
     private typealias D = RemoteDiscovery
 
+    override class func setUp() { super.setUp(); ProbeTimingBootstrap.activate() }
+
     // Recorded from Demeter on 2026-09-07 with the discovery script.
     private static let demeterStdout = """
     UUM BEGIN
