@@ -453,11 +453,13 @@ enum VersionCheck {
     /// It writes a `phase=return` line when the executor returns. If that line
     /// went out WITHOUT a `waitUntilExitReturn` (the executor gave up while the
     /// background wait was still blocked), a second `phase=late-exit` line is
-    /// written when that wait finally completes, correlated by `id=`. A timed-out
-    /// probe with no matching late-exit line therefore means the wait had not
-    /// returned at all: this separates a delayed exit report from one that never
-    /// arrives. The normal path, where the exit is observed before return, stays a
-    /// single line.
+    /// written when that wait finally completes, correlated by `id=`, so a
+    /// delayed exit report is preserved rather than lost. A `phase=return` line
+    /// with no matching `late-exit` line means only that NO LATE EXIT WAS
+    /// RECORDED BEFORE OBSERVATION ENDED; it does not prove the wait never
+    /// returned, since it may return after the process stops recording (for
+    /// example after the test bundle finishes). The normal path, where the exit
+    /// is observed before return, stays a single line.
     ///
     /// It records an id, event names, elapsed milliseconds, and the result kind
     /// ONLY. It deliberately records no command arguments and no captured output,
@@ -564,6 +566,16 @@ enum VersionCheck {
         /// Called once with the child's pid right after a successful launch,
         /// so a caller can record which process the session owns.
         var onLaunch: (@Sendable (pid_t) -> Void)? = nil
+        /// Test-only seams, nil in production (no init parameter, so a normal
+        /// construction leaves them unset). `waitTaskEntryHook` runs at the very
+        /// start of the background wait task, before the `waitTaskEntry` mark;
+        /// `exitObservationHook` runs after `process.waitUntilExit()` returns,
+        /// before the `waitUntilExitReturn` mark. A test assigns one a small
+        /// sleep to delay wait-task entry or exit observation independently, so
+        /// the diagnostics can be checked against a known cause — without adding a
+        /// waitpid caller or changing any deadline or verdict.
+        var waitTaskEntryHook: (@Sendable () -> Void)? = nil
+        var exitObservationHook: (@Sendable () -> Void)? = nil
 
         init(deadlinePollInterval: TimeInterval = 0.05,
              grace: TimeInterval = VersionCheck.terminateGrace,
@@ -737,10 +749,15 @@ enum VersionCheck {
 
             // Wait for natural exit on a background thread; the main flow waits
             // for exit / cancellation / deadline so it can never block forever.
+            // The two hooks are nil in production (a local copy so the @Sendable
+            // closure need not capture self).
             let exited = DispatchSemaphore(value: 0)
+            let entryHook = waitTaskEntryHook, exitHook = exitObservationHook
             DispatchQueue.global(qos: .userInitiated).async {
+                entryHook?()
                 timing?.mark("waitTaskEntry")
                 process.waitUntilExit()
+                exitHook?()
                 timing?.mark("waitUntilExitReturn")
                 exited.signal()
                 timing?.mark("exitedSemaphoreSignal")
