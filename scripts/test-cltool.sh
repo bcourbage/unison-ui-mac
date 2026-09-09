@@ -83,6 +83,19 @@ out=$("$macos/cltool" 2>"$tmp/err"); rc=$?
 [ "$rc" -eq 7 ] && [ "$out" = "argv0=$expected_exe
 marker=1" ]; check "direct: no arguments" $?
 
+# --- Reached through the in-bundle SharedSupport/bin/unison symlink -----------
+# The shipped bundle exposes the launcher at Contents/SharedSupport/bin/unison, a
+# RELATIVE symlink to ../../MacOS/cltool. realpath resolves it back to the
+# launcher (whose /Contents/MacOS/cltool suffix the tool requires), reaching the
+# same app executable as the direct path.
+mkdir -p "$app/Contents/SharedSupport/bin"
+ln -s ../../MacOS/cltool "$app/Contents/SharedSupport/bin/unison"
+out=$("$app/Contents/SharedSupport/bin/unison" -version 2>"$tmp/err"); rc=$?
+[ "$rc" -eq 7 ] && [ "$out" = "argv0=$expected_exe
+marker=1
+arg=[-version]" ]; check "SharedSupport/bin/unison: resolves via ../../MacOS/cltool" $?
+[ ! -s "$tmp/err" ]; check "SharedSupport/bin/unison: stderr silent on success" $?
+
 # --- Copied out of the bundle: Launch Services finds no app, fails closed -----
 cp "$tool" "$tmp/unison-copy"
 out=$("$tmp/unison-copy" -version 2>"$tmp/err"); rc=$?
