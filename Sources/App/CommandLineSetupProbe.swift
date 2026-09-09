@@ -52,9 +52,11 @@ enum CommandLineSetupProbe {
     /// Run a local command through the hardened subprocess executor and return its
     /// stdout on a clean exit, or nil on a timeout, a launch failure, or (when
     /// `requireZeroExit`) a non-zero exit. The executor applies a true wall-clock
-    /// deadline, escalates SIGTERM to SIGKILL, reaps the child, and stops its
-    /// output collector, so a shell that ignores SIGTERM or a descendant that holds
-    /// stdout open cannot leave work running after the probe returns.
+    /// deadline and signals the DIRECT child SIGTERM then SIGKILL, best-effort
+    /// reaping it, so the probe returns within a bounded time even when a shell
+    /// ignores SIGTERM. It does NOT guarantee termination or reaping of every
+    /// descendant: a process that inherited stdout can outlive the probe. The
+    /// guarantee is bounded return, not a fully drained process tree.
     private static func runLocal(_ executable: String, _ arguments: [String],
                                  timeout: TimeInterval, requireZeroExit: Bool) -> String? {
         let result = VersionCheck.SubprocessProbeExecutor().execute(
@@ -142,9 +144,17 @@ enum CommandLineSetupProbe {
         let start = CommandLineToolStatus.pathMarkerStart
         let end = CommandLineToolStatus.pathMarkerEnd
         let script = "printf '%s%s%s' '\(start)' $__fish_config_dir '\(end)'"
-        guard let stdout = runLocal(fishPath, ["-c", script], timeout: timeout, requireZeroExit: true),
-              let marked = CommandLineToolStatus.extractMarkedPath(from: stdout) else { return nil }
-        let trimmed = marked.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        return fishConfigDirectory(fromProbeStdout: runLocal(fishPath, ["-c", script],
+                                                             timeout: timeout, requireZeroExit: true))
+    }
+
+    /// The directory between the markers in a fish probe's stdout, PRESERVED
+    /// EXACTLY. `printf '%s%s%s'` adds no whitespace, so any leading or trailing
+    /// space is part of the directory fish reported; trimming it could point setup
+    /// at a different, existing directory. nil when the probe failed, the markers
+    /// are absent, or the reported directory is empty.
+    static func fishConfigDirectory(fromProbeStdout stdout: String?) -> String? {
+        guard let stdout, let marked = CommandLineToolStatus.extractMarkedPath(from: stdout) else { return nil }
+        return marked.isEmpty ? nil : marked
     }
 }

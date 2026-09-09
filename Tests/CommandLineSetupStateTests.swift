@@ -140,6 +140,20 @@ final class CommandLineSetupStateTests: XCTestCase {
         XCTAssertFalse(CommandLineSetupFileSelection.otherChoice().automatic)
     }
 
+    // Regression: the fish probe preserves the reported directory exactly. A
+    // legitimate trailing space must not be trimmed to a different, existing dir.
+    func test_fishConfigDirectory_preservesReportedPathExactly() {
+        let s = CommandLineToolStatus.pathMarkerStart
+        let e = CommandLineToolStatus.pathMarkerEnd
+        XCTAssertEqual(CommandLineSetupProbe.fishConfigDirectory(fromProbeStdout: "\(s)/Users/x/config/fish \(e)"),
+                       "/Users/x/config/fish ")
+        XCTAssertEqual(CommandLineSetupProbe.fishConfigDirectory(fromProbeStdout: "\(s)/Users/x/.config/fish\(e)"),
+                       "/Users/x/.config/fish")
+        XCTAssertNil(CommandLineSetupProbe.fishConfigDirectory(fromProbeStdout: "\(s)\(e)"))       // empty
+        XCTAssertNil(CommandLineSetupProbe.fishConfigDirectory(fromProbeStdout: "no markers"))     // absent
+        XCTAssertNil(CommandLineSetupProbe.fishConfigDirectory(fromProbeStdout: nil))              // probe failed
+    }
+
     func test_shellKind() {
         XCTAssertEqual(CommandLineSetupShellKind.of(loginShellPath: "/bin/zsh"), .zsh)
         XCTAssertEqual(CommandLineSetupShellKind.of(loginShellPath: "/opt/homebrew/bin/fish"), .fish)
