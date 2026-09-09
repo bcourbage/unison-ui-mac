@@ -1080,7 +1080,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         checkTask = task
         await task.value
-        if checkDiscovery?.succeeded == true {
+        // Verify the current command whether or not discovery enumerated the
+        // alternatives: one alternative that hangs on -version must not withhold
+        // the current command's answer. checkDiscovery is nil only when the
+        // discovery completion was discarded as stale.
+        if checkDiscovery != nil {
             await chooseCandidate(.keepCurrent)
         }
         return checkDiscovery
@@ -1096,20 +1100,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             setCheckStatus("Not checked since the last change."); checkDiscovery = nil; return
         }
         checkDiscovery = d
-        if d.succeeded {
-            // Keep the spinner and "Cancel Check" running: runCheck chains
-            // straight into verifying the current command, so tearing the
-            // chrome down here and restoring it was the visible flicker.
-            setCheckStatus("Verifying the current command on \(prepared.host)…")
-        } else {
-            checkProgress.stopAnimation(nil)
-            checkRemoteButton.title = "Check Remote Command…"
-            checkChooseButton.isHidden = true
-            showCheckReport(headline: d.failureSentences.first ?? RemoteCheckWording.closingAfterFailure,
-                            details: Array(d.failureSentences.dropFirst().dropLast()),
-                            closing: d.failureSentences.last ?? RemoteCheckWording.closingAfterFailure,
-                            openDetails: true)
-        }
+        // Keep the spinner and "Cancel Check" running: runCheck chains straight
+        // into verifying the current command, whether or not discovery
+        // enumerated the alternatives. When discovery did not complete (e.g. an
+        // alternative hung), the current command still gets its own session and
+        // its answer; the alternatives are simply unavailable this time.
+        setCheckStatus("Verifying the current command on \(prepared.host)…")
     }
 
     @objc private func checkChooseTapped(_ sender: NSButton) {
@@ -1158,10 +1154,21 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             advancedView.values = checkAdvancedAtStart
             proposalChangedAdvanced = false
         }
+        // The form is back to what it was when the check started; re-baseline so
+        // Save compares the token against the restored configuration.
+        rebaselineCheckPrepared()
         if let v = checkCurrentResult {
             checkResult = v
             showCheckReport(headline: v.headline, details: v.details, closing: v.closing, openDetails: false)
         }
+    }
+
+    /// After a check-driven change to the form (an applied proposal, or a
+    /// restore), move the check's baseline to the current form so a later
+    /// choice or Save is compared against what the form now holds.
+    private func rebaselineCheckPrepared() {
+        guard let i = checkInputs(), case .success(let p) = RemoteCheckFlow.prepare(i) else { return }
+        checkPrepared = p
     }
 
     /// Step 4 and 5 for one selection. Public for tests.
@@ -1204,6 +1211,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 advancedView.values = lines
                 proposalChangedAdvanced = true
             }
+            // The applied proposal IS the pending configuration now, so a later
+            // choice or Save must compare against it, not the pre-proposal form
+            // whose token this verification carried.
+            rebaselineCheckPrepared()
         }
         // Alternatives are a secondary action once the current command has
         // an answer, whatever that answer is.
@@ -1211,6 +1222,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         var headline = v.headline
         if selection == .keepCurrent, v.compatible != true, v.verdict != .cancelled, let more = alternativesSentence(host: prepared.host) {
             headline += " " + more
+        }
+        if selection == .keepCurrent, v.compatible == true, checkDiscovery?.succeeded == false {
+            headline += " Other commands on \(prepared.host) could not be listed."
         }
         if selection == .keepCurrent {
             checkCurrentResult = RemoteCheckFlow.Verification(

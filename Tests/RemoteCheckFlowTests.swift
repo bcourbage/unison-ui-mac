@@ -115,6 +115,26 @@ final class RemoteCheckFlowTests: XCTestCase {
         XCTAssertEqual(F.pendingRoots(inputs: i, effective: q), ["/inc", "/n1", "/n2"], "no top-level roots: form roots go where a save would append them")
     }
 
+    func test_alternatives_doNotGroupOnALexicalGuess_whenTheRemoteDidNotResolve() throws {
+        typealias Cand = RemoteDiscovery.Candidate
+        // /d/link stores parent/../target, which standardizingPath would fold to
+        // /d/target; but /d/parent could itself be a link elsewhere, so without a
+        // remote realpath the two must not be grouped as one installation.
+        let record = RemoteDiscovery.Record(complete: true, uname: "Darwin", present: [
+            Cand(path: "/d/target", kind: .regular, resolvedPath: nil, versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+            Cand(path: "/d/link", kind: .symlink(storedTarget: "parent/../target"), resolvedPath: nil, versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+        ], absent: [], commandV: nil)
+        let p = try prepared(inputs(servercmd: "/d/target"))
+        let rows = F.alternatives(for: p, record: record)
+        XCTAssertFalse(rows.contains { $0.kind == .header }, "no false same-installation grouping without a remote resolution: \(rows.map(\.title))")
+        // With a matching remote resolution, they DO group.
+        let resolved = RemoteDiscovery.Record(complete: true, uname: "Darwin", present: [
+            Cand(path: "/d/target", kind: .regular, resolvedPath: "/real/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+            Cand(path: "/d/link", kind: .symlink(storedTarget: "x"), resolvedPath: "/real/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)"),
+        ], absent: [], commandV: nil)
+        XCTAssertTrue(F.alternatives(for: p, record: resolved).contains { $0.kind == .header }, "a shared remote resolution groups them")
+    }
+
     func test_alternatives_groupPathsToOneInstallation_andStateConsequences() throws {
         typealias Cand = RemoteDiscovery.Candidate
         let cltool = "/Applications/unison-ui-mac.app/Contents/MacOS/cltool"

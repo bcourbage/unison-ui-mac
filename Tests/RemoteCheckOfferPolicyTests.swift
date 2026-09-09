@@ -16,6 +16,7 @@ final class RemoteCheckOfferPolicyTests: XCTestCase {
         XCTAssertFalse(RemoteCheckOfferPolicy.offers(failedWhileConnecting: true, roots: ["/a", "/b"]), "a local-only profile has no remote command")
         XCTAssertFalse(RemoteCheckOfferPolicy.offers(failedWhileConnecting: true, roots: []))
         XCTAssertFalse(RemoteCheckOfferPolicy.offers(failedWhileConnecting: true, roots: ["ssh:/broken"]), "an unparsable root is not an ssh root")
+        XCTAssertFalse(RemoteCheckOfferPolicy.offers(failedWhileConnecting: true, roots: ["/a", "socket://h:9999//b"]), "a socket root runs no ssh command")
     }
 
     func test_roots_comeFromTheEffectiveProfile_includesIncluded() throws {
@@ -27,9 +28,10 @@ final class RemoteCheckOfferPolicyTests: XCTestCase {
         XCTAssertEqual(RemoteCheckOfferPolicy.roots(profile: "missing", unisonDirectory: dir), [])
     }
 
-    func test_route_reusesSameProfile_blocksOther_opensWhenNone() {
-        XCTAssertEqual(RemoteCheckOfferPolicy.route(openEditorProfile: nil, target: "p"), .openNew)
-        XCTAssertEqual(RemoteCheckOfferPolicy.route(openEditorProfile: "p", target: "p"), .reuseOpen)
-        XCTAssertEqual(RemoteCheckOfferPolicy.route(openEditorProfile: "other", target: "p"), .blockedBy("other"))
+    func test_route_reusesSameProfile_blocksOther_blocksAnUnsavedNewProfile_opensWhenNone() {
+        XCTAssertEqual(RemoteCheckOfferPolicy.route(open: .none, target: "p"), .openNew)
+        XCTAssertEqual(RemoteCheckOfferPolicy.route(open: .named("p"), target: "p"), .reuseOpen)
+        XCTAssertEqual(RemoteCheckOfferPolicy.route(open: .named("other"), target: "p"), .blockedBy("other"))
+        XCTAssertEqual(RemoteCheckOfferPolicy.route(open: .unsavedNewProfile, target: "p"), .blockedByNewProfile)
     }
 }

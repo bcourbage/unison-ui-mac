@@ -153,7 +153,8 @@ Both are worded as a diagnostic ("You can check the remote command for this
 profile first") without claiming the remote command caused the failure. The offer appears only when the failure happened while connecting
 (the coordinator records that the restart was entered from its opening phase)
 and the profile's effective roots include an `ssh://` root; a scan or sync
-failure makes no offer. It opens the exact profile that failed; if an editor
+failure, a local-only profile, or a `socket://` root (which runs no ssh
+command) makes no offer. It opens the exact profile that failed; if an editor
 for it is already open, that window is brought forward and the check runs
 against the form as it stands, so unsaved edits survive. An editor open on a
 different profile is brought forward and named instead of being replaced.
@@ -212,8 +213,11 @@ The session ends there. Nothing is written.
 ### Step 3: the current command first, then alternatives (no ssh)
 
 After discovery the check verifies the command the profile runs today (Step 4
-for the effective command as it is) without asking. That result decides what
-the user sees:
+for the effective command as it is) without asking, in its own ssh session.
+That verification runs whether or not discovery enumerated the alternatives, so
+one discovered command that hangs on `-version` cannot withhold the current
+command's answer; when discovery did not complete, the alternatives are simply
+unavailable and the status says so. That result decides what the user sees:
 
 - it started and reported a version this Mac can connect to: the status
   reads **No change needed.**, and a secondary **Choose Another Command…**
@@ -245,7 +249,9 @@ once a link changes. Nothing infers who maintains an installation from its
 path, and the check never recommends a change; keeping a verified current
 setting is the normal outcome. Choosing a row runs Step 4 for that path and,
 on success, fills the Remote unison field with the proposed value under the
-composition rules below; Keep current setting restores the field and Advanced
+composition rules below; applying a proposal moves the check's baseline to the
+applied configuration, so a further choice or Save is compared against it rather
+than the pre-proposal form. Keep current setting restores the field and Advanced
 to what they were when the check started. A help button beside Check Remote
 Command… says, in four sentences, when to change the command and what the
 check does and does not prove.

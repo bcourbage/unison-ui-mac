@@ -79,9 +79,12 @@ enum RemoteDiscovery {
         // runtime value, always quoted, so a PATH directory with a space is safe.
         let pathScan = [
             "seen=\" \(list) \"",
-            "oldIFS=$IFS; IFS=:",
-            "for d in $PATH; do q=\"$d/unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac; done",
-            "IFS=$oldIFS",
+            // `set -f` keeps a PATH directory spelled with glob characters (e.g.
+            // `[ab]`) literal instead of expanding it to sibling names; an empty
+            // PATH component means the current directory, as `command -v` reads it.
+            "oldIFS=$IFS; IFS=:; set -f",
+            "for d in $PATH; do case \"$d\" in \"\") dd=. ;; *) dd=\"$d\" ;; esac; q=\"$dd/unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac; done",
+            "IFS=$oldIFS; set +f",
         ].joined(separator: "; ")
         let script = [
             "M=\(marker)",

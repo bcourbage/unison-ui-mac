@@ -84,6 +84,21 @@ final class RemoteCheckEntryPointsTests: XCTestCase {
         form.close()
     }
 
+    func test_openFormForRemoteCheck_doesNotDiscardAnUnsavedNewProfile() async throws {
+        try write("p.prf", "root = /a\nroot = /b\n")
+        let editor = ProfileEditorWindowController(unisonDirectory: dir) {}
+        editor.suppressAlertsForTesting = true
+        editor.openNewFormForTesting()
+        guard let newForm = editor.formControllerForTesting else { return XCTFail("no new form") }
+        XCTAssertNil(newForm.editingProfileName, "a new profile has no name yet")
+        newForm.setRemoteFieldForTesting("sshargs", "-i /unsaved")
+        editor.openFormForRemoteCheck(profile: "p")
+        XCTAssertTrue(editor.formControllerForTesting === newForm, "the unsaved new profile is not replaced")
+        XCTAssertEqual(newForm.remoteFieldForTesting("sshargs"), "-i /unsaved", "its edits survive")
+        XCTAssertEqual(editor.lastEntryAlertForTesting, "Finish the new profile first")
+        newForm.close()
+    }
+
     func test_openFormForRemoteCheck_reusesAnEditorOnTheSameProfile_andBlocksOnAnother() async throws {
         try write("p.prf", "root = /a\nroot = /b\n")
         try write("q.prf", "root = /a\nroot = /b\n")

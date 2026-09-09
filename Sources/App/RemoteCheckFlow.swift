@@ -190,15 +190,13 @@ enum RemoteCheckFlow {
             }
             return "Version \(remote)."
         }
-        /// The installation a path reaches: the remote's resolution when it
-        /// gave one, else a link's stored target made absolute, else the path.
+        /// The installation a path reaches, for grouping. Only the remote's own
+        /// resolution (realpath / readlink -f) is trusted: resolving a stored
+        /// symlink target lexically here can cross an intermediate symlink and
+        /// assert a false equivalence, so without a remote resolution a path is
+        /// its own identity and is not grouped.
         func identity(_ c: RemoteDiscovery.Candidate) -> String {
-            if let real = c.resolvedPath { return real }
-            if case .symlink(let t) = c.kind {
-                let abs = t.hasPrefix("/") ? t : ((c.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(t)
-                return (abs as NSString).standardizingPath
-            }
-            return c.path
+            c.resolvedPath ?? c.path
         }
         let usable = record.present.filter { c in
             switch c.kind { case .regular, .symlink: return true; case .directory, .other: return false }
