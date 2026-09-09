@@ -146,7 +146,7 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertEqual(report.state.row, 12)  // no block, resolution none
         XCTAssertEqual(report.state.action, .add)
 
-        let added = CommandLineSetupCoordinator.performAdd(bundleURL: app, rewrite: false,
+        let added = CommandLineSetupCoordinator.performAdd(approved: report, bundleURL: app,
                                                            environment: env, fs: fs, defaults: defaults)
         let afterAdd = try String(contentsOf: zprofile, encoding: .utf8)
         XCTAssertTrue(afterAdd.hasPrefix("export FOO=1\n"), "original text preserved")
@@ -154,7 +154,7 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertTrue(CommandLineSetupPreference.keepInTerminal(defaults: defaults), "preference turned on")
         XCTAssertEqual(added.refreshed.state.action, .remove)  // owned block now present
 
-        let removed = CommandLineSetupCoordinator.performRemove(bundleURL: app,
+        let removed = CommandLineSetupCoordinator.performRemove(approved: added.refreshed, bundleURL: app,
                                                                 environment: env, fs: fs, defaults: defaults)
         XCTAssertEqual(removed.statusLine, "PATH entry removed.")
         XCTAssertEqual(try String(contentsOf: zprofile, encoding: .utf8), "export FOO=1\n", "block removed, original byte-identical")
@@ -194,30 +194,54 @@ final class CommandLineSetupControllerTests: XCTestCase {
     // state is no longer Remove, and nothing is deleted.
     func test_performRemove_revalidates_refusesWhenBlockBecameForeign() throws {
         let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
-        _ = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+        let addReport = CommandLineSetupCoordinator.status(bundleURL: t.app, environment: t.env, fs: t.fs, defaults: t.defaults)
+        _ = CommandLineSetupCoordinator.performAdd(approved: addReport, bundleURL: t.app,
                                                    environment: t.env, fs: t.fs, defaults: t.defaults)
+        // The report the Remove confirmation was shown for (owned block present).
+        let removeReport = CommandLineSetupCoordinator.status(bundleURL: t.app, environment: t.env, fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(removeReport.state.action, .remove)
         // Tamper: change a line inside the block so it no longer matches the template.
         let tampered = try String(contentsOf: t.zprofile, encoding: .utf8)
             .replacingOccurrences(of: CommandLineSetupBlock.comment, with: "# edited by the user")
         try tampered.write(to: t.zprofile, atomically: true, encoding: .utf8)
 
-        let removed = CommandLineSetupCoordinator.performRemove(bundleURL: t.app,
+        let removed = CommandLineSetupCoordinator.performRemove(approved: removeReport, bundleURL: t.app,
                                                                 environment: t.env, fs: t.fs, defaults: t.defaults)
         XCTAssertEqual(removed.statusLine, CommandLineSetupCoordinator.situationChanged)
         XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), tampered, "the foreign file is untouched")
     }
 
-    // Regression (P1 #1): Add revalidates. Once the block is present (owned), a
-    // repeat Add sees the fresh Remove state and refuses rather than double-write.
+    // Regression (P1 #1 / P2 #2): Add revalidates and must still match the approved
+    // proposal. Once the block is present (owned), the fresh state is Remove, which
+    // differs from the approved Add, so it refuses rather than double-write.
     func test_performAdd_revalidates_refusesWhenAlreadyOwned() throws {
         let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
-        _ = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+        let addReport = CommandLineSetupCoordinator.status(bundleURL: t.app, environment: t.env, fs: t.fs, defaults: t.defaults)
+        _ = CommandLineSetupCoordinator.performAdd(approved: addReport, bundleURL: t.app,
                                                    environment: t.env, fs: t.fs, defaults: t.defaults)
         let once = try String(contentsOf: t.zprofile, encoding: .utf8)
-        let again = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+        let again = CommandLineSetupCoordinator.performAdd(approved: addReport, bundleURL: t.app,
                                                            environment: t.env, fs: t.fs, defaults: t.defaults)
         XCTAssertEqual(again.statusLine, CommandLineSetupCoordinator.situationChanged)
         XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), once, "no second block appended")
+    }
+
+    // Regression (P2 #2): an approved proposal for a different file is not silently
+    // written to the file fresh status selects.
+    func test_performAdd_refusesWhenApprovedFileDiffers() throws {
+        let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
+        let real = CommandLineSetupCoordinator.status(bundleURL: t.app, environment: t.env, fs: t.fs, defaults: t.defaults)
+        // An approved report naming a different file than fresh status will select.
+        let bogusChoice = CommandLineSetupFileChoice(shell: .zsh, file: "/somewhere/else/.profile",
+                                                     automatic: true, destinationEstablished: true,
+                                                     manualReason: nil, createIfAbsent: false)
+        let bogus = CommandLineSetupStatusReport(state: real.state, resolution: real.resolution,
+                                                 fileChoice: bogusChoice, thisBinDirectory: real.thisBinDirectory,
+                                                 thisCommandPath: real.thisCommandPath, viewModel: real.viewModel)
+        let result = CommandLineSetupCoordinator.performAdd(approved: bogus, bundleURL: t.app,
+                                                            environment: t.env, fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(result.statusLine, CommandLineSetupCoordinator.situationChanged)
+        XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), "export FOO=1\n", "nothing written")
     }
 
     // Regression (P2 #3): a moved app repairs its owned block at startup (row 6).

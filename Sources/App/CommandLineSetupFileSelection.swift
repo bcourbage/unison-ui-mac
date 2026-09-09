@@ -124,12 +124,12 @@ enum CommandLineSetupFileSelection {
         let automatic = zshAutomatic(etcZshenvExists: etcZshenvExists, homeZshenvExists: homeZshenvExists,
                                      etcZprofileContents: etcZprofileContents, zdotdir: zdotdir,
                                      zdotdirInAppEnvironment: zdotdirInAppEnvironment)
-        // ~/.zprofile is the established destination only when nothing redirects
-        // where the login shell reads: no .zshenv, and ZDOTDIR positively absent.
-        // (A non-stock /etc/zprofile blocks automatic editing but does not move
-        // the file, so it does not make the destination uncertain.)
-        let destinationEstablished = !etcZshenvExists && !homeZshenvExists
-            && zdotdir == .absent && !zdotdirInAppEnvironment
+        // ~/.zprofile is the established destination only under the full stock
+        // bound. A non-stock or unreadable /etc/zprofile can itself set ZDOTDIR
+        // before zsh reads the user file, so it too leaves the destination
+        // uncertain; only the complete bound (which `automatic` already checks)
+        // establishes that zsh reads ~/.zprofile.
+        let destinationEstablished = automatic
         return CommandLineSetupFileChoice(
             shell: .zsh, file: file, automatic: automatic, destinationEstablished: destinationEstablished,
             manualReason: automatic ? nil : zshManualReason(

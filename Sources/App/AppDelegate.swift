@@ -2643,7 +2643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .alertFirstButtonReturn:
             let url = Bundle.main.bundleURL
             Task { [weak self] in
-                let result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: false)
+                let result = await CommandLineSetupCoordinator.performAddAsync(approved: report, bundleURL: url)
                 guard let self else { return }
                 if result.statusLine != "Entry written and selected." {
                     self.log.write("command-line setup offer: \(result.statusLine)")

@@ -758,12 +758,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             Task { [weak self] in
                 let result: CommandLineSetupCoordinator.ActionResult
                 switch action {
-                case .add:
-                    result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: false)
-                case .useThisCopy:
-                    result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: true)
+                case .add, .useThisCopy:
+                    // The approved report carries the proposal (action, file, app
+                    // location); the coordinator revalidates and refuses if it no
+                    // longer matches.
+                    result = await CommandLineSetupCoordinator.performAddAsync(approved: report, bundleURL: url)
                 case .remove:
-                    result = await CommandLineSetupCoordinator.performRemoveAsync(bundleURL: url)
+                    result = await CommandLineSetupCoordinator.performRemoveAsync(approved: report, bundleURL: url)
                 case .none:
                     return
                 }

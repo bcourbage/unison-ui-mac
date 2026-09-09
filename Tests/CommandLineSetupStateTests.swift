@@ -265,11 +265,17 @@ final class CommandLineSetupStateTests: XCTestCase {
         XCTAssertFalse(choice(false, false, .uncertain, false).destinationEstablished) // uncertain is not absent
         XCTAssertFalse(choice(false, false, .absent, true).destinationEstablished)      // ZDOTDIR in app env
         XCTAssertFalse(choice(true, false, .absent, false).destinationEstablished)      // .zshenv redirect
-        // A non-stock /etc/zprofile blocks automatic editing but does not move the file.
+        // A non-stock /etc/zprofile can itself set ZDOTDIR, so it leaves the
+        // destination uncertain: not established.
         let nonStock = CommandLineSetupFileSelection.zshChoice(
             homeDirectory: "/h", etcZshenvExists: false, homeZshenvExists: false,
             etcZprofileContents: "not stock\n", zdotdir: .absent, zdotdirInAppEnvironment: false)
         XCTAssertFalse(nonStock.automatic)
-        XCTAssertTrue(nonStock.destinationEstablished, "the file is still established even when not auto-editable")
+        XCTAssertFalse(nonStock.destinationEstablished, "a non-stock /etc/zprofile leaves the destination uncertain")
+        // Unreadable /etc/zprofile: also uncertain.
+        let unreadable = CommandLineSetupFileSelection.zshChoice(
+            homeDirectory: "/h", etcZshenvExists: false, homeZshenvExists: false,
+            etcZprofileContents: nil, zdotdir: .absent, zdotdirInAppEnvironment: false)
+        XCTAssertFalse(unreadable.destinationEstablished)
     }
 }
