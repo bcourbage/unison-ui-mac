@@ -40,6 +40,23 @@ final class ProfileFormKeyboardNavTests: XCTestCase {
         c.close()
     }
 
+    func test_includesFocusables_coverEveryRowAndTheAddButton() throws {
+        try write("common.prf", "sshargs = -i /k\n")
+        try write("other.prf", "sshargs = -i /j\n")
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\ninclude other\n")
+        let c = ProfileFormWindowController(unisonDirectory: dir, profileName: "p", onSaved: { _ in })
+        c.showSectionForTesting(title: "Includes")
+        let f = c.keyNavFocusablesForTesting
+        let combos = f.filter { $0 is NSComboBox }.count
+        let popups = f.filter { $0 is NSPopUpButton }.count
+        let buttons = f.compactMap { $0 as? NSButton }
+        XCTAssertEqual(combos, 2, "both include rows' name fields are reachable")
+        XCTAssertEqual(popups, 2, "both include rows' position popups are reachable")
+        XCTAssertTrue(buttons.contains { $0.title == "Add Include" }, "the Add Include button is reachable")
+        XCTAssertGreaterThanOrEqual(buttons.count, 3, "two remove buttons plus Add Include: \(buttons.map(\.title))")
+        c.close()
+    }
+
     func test_fileAttributesFocusables_reachTheTriStatePopups() throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
         let c = ProfileFormWindowController(unisonDirectory: dir, profileName: "p", onSaved: { _ in })

@@ -45,6 +45,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// exclusion); the key monitor leaves them alone.
     private static let keyNavExcludedSections: Set<String> = ["Paths", "Ignore", "Advanced"]
     private var keyNavMonitor: Any?
+    /// The control the keyboard nav last moved focus to. An editable combo box
+    /// hands the window its field editor, whose owner cannot be mapped back
+    /// reliably, so the next Tab uses this remembered control instead.
+    private weak var lastKeyNavFocus: NSView?
     var keyNavFocusablesForTesting: [NSView] {
         guard let i = shownSectionIndex else { return [] }
         return KeyboardFocus.focusables(in: sectionViews[i].view)
@@ -874,14 +878,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
         guard !controls.isEmpty else { return event }
         let current = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
+            ?? lastKeyNavFocus.flatMap { last in controls.firstIndex { $0 === last } }
         switch event.keyCode {
         case 48: // Tab
-            let backward = event.modifierFlags.contains(.shift)
-            var target = KeyboardFocus.nextIndex(from: current, count: controls.count, backward: backward)
-            var tries = 0
-            while let t = target, !window.makeFirstResponder(controls[t]), tries < controls.count {
-                target = KeyboardFocus.nextIndex(from: t, count: controls.count, backward: backward); tries += 1
-            }
+            moveKeyNavFocus(controls: controls, from: current, backward: event.modifierFlags.contains(.shift))
             return nil
         case 36, 76: // Return / Enter opens a focused drop-down; everything else falls through (Save)
             guard let cur = current, let popup = controls[cur] as? NSPopUpButton else { return event }
@@ -892,9 +892,30 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Move first responder to the next focusable control, skipping any that
+    /// refuses (defensive) and wrapping. Shared by the key monitor and tests.
+    private func moveKeyNavFocus(controls: [NSView], from current: Int?, backward: Bool) {
+        guard let window, !controls.isEmpty else { return }
+        var target = KeyboardFocus.nextIndex(from: current, count: controls.count, backward: backward)
+        var tries = 0
+        while let t = target {
+            if window.makeFirstResponder(controls[t]) { lastKeyNavFocus = controls[t]; return }
+            if tries >= controls.count { break }
+            target = KeyboardFocus.nextIndex(from: t, count: controls.count, backward: backward); tries += 1
+        }
+    }
+
+    func keyNavAdvanceForTesting(backward: Bool = false) {
+        guard let idx = shownSectionIndex, let window else { return }
+        let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
+        let current = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
+        moveKeyNavFocus(controls: controls, from: current, backward: backward)
+    }
+
     private func showSection(_ index: Int) {
         guard sectionViews.indices.contains(index) else { return }
         shownSectionIndex = index
+        lastKeyNavFocus = nil
         refreshIncludesBanner()
         sectionContainer.subviews.forEach { $0.removeFromSuperview() }
         let v = sectionViews[index].view

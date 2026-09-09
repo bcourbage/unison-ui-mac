@@ -30,7 +30,7 @@ enum KeyboardFocus {
         var out: [NSView] = []
         func walk(_ v: NSView) {
             if v.isHidden { return }
-            if let c = v as? NSControl, c.isEnabled, c.acceptsFirstResponder {
+            if let c = v as? NSControl, c.isEnabled, isNavigable(c) {
                 out.append(c)
             }
             for sub in v.subviews { walk(sub) }
@@ -39,16 +39,41 @@ enum KeyboardFocus {
         return out
     }
 
-    /// The index in `controls` of the one holding `responder`. A text field or
-    /// combo box is edited through the window's field editor, whose delegate is
-    /// the control, so map that back.
+    /// Whether a control participates in keyboard navigation, by type rather
+    /// than by `acceptsFirstResponder`: a combo box reports the latter false
+    /// while it is being edited (its field editor is the responder), which
+    /// would drop it from the list mid-edit and strand Tab on the first row.
+    /// Labels are non-editable text fields and are excluded.
+    private static func isNavigable(_ c: NSControl) -> Bool {
+        if c is NSComboBox || c is NSPopUpButton || c is NSButton { return true }
+        if let field = c as? NSTextField { return field.isEditable }
+        return false
+    }
+
+    /// The index in `controls` of the one holding `responder`. A text field is
+    /// edited through the window's field editor, whose delegate is the field; a
+    /// combo box's field editor delegate is not the combo, so walk the responder
+    /// chain up to the owning control instead of relying on the delegate alone.
     @MainActor
     static func indexOfResponder(_ responder: NSResponder?, in controls: [NSView]) -> Int? {
-        guard let responder else { return nil }
-        var view = responder as? NSView
-        if let text = responder as? NSText, let owner = text.delegate as? NSView { view = owner }
-        guard let v = view else { return nil }
-        return controls.firstIndex { $0 === v || v.isDescendant(of: $0) }
+        // A non-text control is first responder itself.
+        if let v = responder as? NSView, let i = controls.firstIndex(where: { $0 === v }) { return i }
+        // A text field or combo box being edited holds the window's field editor;
+        // currentEditor() names the control whose editor it is (the combo's
+        // field-editor delegate is not the combo, so this is the reliable map).
+        if let text = responder as? NSText {
+            for (i, c) in controls.enumerated() where (c as? NSControl)?.currentEditor() === text { return i }
+        }
+        // Fallback: walk the responder/view ancestry.
+        var r = responder
+        while let cur = r {
+            if let v = cur as? NSView,
+               let i = controls.firstIndex(where: { $0 === v || v.isDescendant(of: $0) }) {
+                return i
+            }
+            r = cur.nextResponder
+        }
+        return nil
     }
 
     /// The next control to focus from `current` (nil = focus is outside the
