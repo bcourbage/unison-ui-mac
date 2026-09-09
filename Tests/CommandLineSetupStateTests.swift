@@ -122,9 +122,20 @@ final class CommandLineSetupStateTests: XCTestCase {
     }
 
     func test_fishChoice_andOther() {
-        let ok = CommandLineSetupFileSelection.fishChoice(configDirectory: "/Users/x/.config/fish")
+        // Automatic only when the directory is absolute AND exists.
+        let ok = CommandLineSetupFileSelection.fishChoice(configDirectory: "/Users/x/.config/fish",
+                                                          directoryExists: { _ in true })
         XCTAssertEqual(ok.file, "/Users/x/.config/fish/conf.d/unison-ui-mac.fish"); XCTAssertTrue(ok.automatic)
-        let bad = CommandLineSetupFileSelection.fishChoice(configDirectory: nil)
+        // Absolute but not existing: Manual setup (the design's requirement).
+        let missing = CommandLineSetupFileSelection.fishChoice(configDirectory: "/Users/x/.config/fish",
+                                                               directoryExists: { _ in false })
+        XCTAssertFalse(missing.automatic); XCTAssertNotNil(missing.manualReason)
+        // A relative path is never accepted, even if it "exists".
+        let relative = CommandLineSetupFileSelection.fishChoice(configDirectory: "relative/dir",
+                                                                directoryExists: { _ in true })
+        XCTAssertFalse(relative.automatic)
+        // No directory reported at all.
+        let bad = CommandLineSetupFileSelection.fishChoice(configDirectory: nil, directoryExists: { _ in true })
         XCTAssertFalse(bad.automatic)
         XCTAssertFalse(CommandLineSetupFileSelection.otherChoice().automatic)
     }
@@ -146,6 +157,28 @@ final class CommandLineSetupStateTests: XCTestCase {
         XCTAssertEqual(CommandLineSetupProbe.classify(.path(cltool), thisLauncherPath: cltool, realPathOf: realPathOf), .thisApp)
         XCTAssertEqual(CommandLineSetupProbe.classify(.path("/usr/local/bin/unison"), thisLauncherPath: cltool, realPathOf: realPathOf),
                        .anotherUnison(path: "/usr/local/bin/unison"))
+    }
+
+    // Regression (finding 1): a shell that ignores SIGTERM and blocks must not
+    // leave the probe running past its deadline. Routing through the hardened
+    // executor escalates to SIGKILL, so the probe returns within deadline+grace
+    // rather than after the shell's own sleep.
+    func test_resolvedUnison_stallingSigtermIgnoringShell_returnsWithinDeadline() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("clprobe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let shell = dir.appendingPathComponent("stall.sh")
+        try "#!/bin/sh\ntrap '' TERM\nsleep 120\n".write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shell.path)
+
+        // Teardown is bounded by the executor's constants (deadline 1s + a 2s
+        // SIGTERM grace + a 2s SIGKILL grace + a 5s output settle ≈ 10s), well
+        // under the shell's 120s sleep.
+        let start = Date()
+        let out = CommandLineSetupProbe.resolvedUnison(shellPath: shell.path, kind: .zsh, timeout: 1)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(out, .failed)
+        XCTAssertLessThan(elapsed, 20, "the probe returns within the deadline plus teardown grace, not after the sleep")
     }
 
     func test_parseLaunchctlZDOTDIR() {
@@ -179,6 +212,8 @@ final class CommandLineSetupStateTests: XCTestCase {
     func test_viewModel_pathLine_andRow() {
         let thisCmd = "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison"
         XCTAssertEqual(CommandLineSetupViewModel.pathLine(resolution: .none, thisCommandPath: thisCmd), "No unison command")
+        // A check that did not complete has no path line and does not state absence.
+        XCTAssertEqual(CommandLineSetupViewModel.pathLine(resolution: .couldNotCheck, thisCommandPath: thisCmd), "")
         XCTAssertEqual(CommandLineSetupViewModel.pathLine(resolution: .thisApp, thisCommandPath: thisCmd),
                        "unison-ui-mac.app › SharedSupport/bin/unison")
         let state = CommandLineSetupStateTable.evaluate(facts(resolution: .thisApp, block: .ownedCurrent))

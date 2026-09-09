@@ -62,7 +62,12 @@ enum CommandLineSetupViewModel {
         switch resolution {
         case .thisApp: return abbreviatedPath(thisCommandPath)
         case .anotherUnison(let path): return abbreviatedPath(path)
-        case .none, .couldNotCheck: return "No unison command"
+        // Only a completed check that found nothing states absence. A check that
+        // did not complete has no path evidence and must not imply absence; the
+        // verdict line ("Could not be checked") carries the meaning, and the pane
+        // shows no path line.
+        case .none: return "No unison command"
+        case .couldNotCheck: return ""
         }
     }
 

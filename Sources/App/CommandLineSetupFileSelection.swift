@@ -152,13 +152,22 @@ enum CommandLineSetupFileSelection {
                                           manualReason: nil, createIfAbsent: true)
     }
 
-    /// fish edits `<config dir>/conf.d/unison-ui-mac.fish` when a non-login
-    /// `fish -c` probe prints an absolute existing directory for it.
-    static func fishChoice(configDirectory: String?) -> CommandLineSetupFileChoice {
-        guard let dir = configDirectory, dir.hasPrefix("/") else {
+    /// fish edits `<config dir>/conf.d/unison-ui-mac.fish` only when the probe
+    /// reported an ABSOLUTE, EXISTING directory (the design's requirement).
+    /// `directoryExists` is injected so the existence check is established here, at
+    /// the selection layer, rather than assumed from the string alone.
+    static func fishChoice(configDirectory: String?,
+                           directoryExists: (String) -> Bool) -> CommandLineSetupFileChoice {
+        guard let dir = configDirectory else {
             return CommandLineSetupFileChoice(
                 shell: .fish, file: nil, automatic: false,
                 manualReason: "the fish configuration directory could not be determined, so setup is manual",
+                createIfAbsent: true)
+        }
+        guard dir.hasPrefix("/"), directoryExists(dir) else {
+            return CommandLineSetupFileChoice(
+                shell: .fish, file: nil, automatic: false,
+                manualReason: "the fish configuration directory is not an absolute existing directory, so setup is manual",
                 createIfAbsent: true)
         }
         let file = (dir as NSString).appendingPathComponent("conf.d/unison-ui-mac.fish")
