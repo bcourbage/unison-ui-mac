@@ -9,7 +9,7 @@ import Foundation
 // account record, the /etc reads, the launchd ZDOTDIR query and the fish probe
 // are supplied by CommandLineSetupProbe.
 
-enum CommandLineSetupShellKind: Equatable {
+enum CommandLineSetupShellKind: Equatable, Sendable {
     case zsh, bash, fish, other
 
     /// The kind of a login shell from its path's last component.
@@ -30,7 +30,7 @@ enum CommandLineSetupZDOTDIRState: Equatable {
 }
 
 /// The file the app would edit, and whether it may do so automatically.
-struct CommandLineSetupFileChoice: Equatable {
+struct CommandLineSetupFileChoice: Equatable, Sendable {
     let shell: CommandLineSetupShellKind
     /// The file the app would write, or nil for an unsupported shell.
     let file: String?

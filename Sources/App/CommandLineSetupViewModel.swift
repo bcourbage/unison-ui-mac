@@ -5,7 +5,7 @@ import Foundation
 // single action's title. See docs/command-line-setup-design.md, "Three facts,
 // kept separate" and "Settings > Command Line". Pure; the pane renders these.
 
-struct CommandLineSetupRowViewModel: Equatable {
+struct CommandLineSetupRowViewModel: Equatable, Sendable {
     let verdict: String
     let badgeText: String
     /// The abbreviated resolved path, or "No unison command".

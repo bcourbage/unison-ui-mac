@@ -115,18 +115,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "Include an anonymous system profile with update checks",
         target: nil, action: nil)
 
-    // MARK: - Section 9: Command line tool
+    // MARK: - Section 9: unison in Terminal (command-line setup)
 
-    /// What `unison` resolves to in two PATH contexts, recomputed from the
-    /// filesystem on every reload (see CommandLineToolStatus). The login shell
-    /// is spawned off the main thread; the labels show "Checking…" meanwhile.
-    private let cliTerminalLabel = NSTextField(wrappingLabelWithString: "Checking…")
-    private let cliRemoteLabel = NSTextField(wrappingLabelWithString: "Checking…")
-    private let cliActionButton = NSButton(title: "Install", target: nil, action: nil)
-    private let cliRefreshButton = NSButton(title: "Refresh", target: nil, action: nil)
-    private var cliContexts: [CommandLineToolContextStatus] = []
-    private var cliAction: CommandLineToolAction?
-    private var cliRefreshGeneration = 0
+    /// The command-line-setup pane (docs/command-line-setup-design.md). The state
+    /// is recomputed from the filesystem and the login shell on every reload, off
+    /// the main thread; only the "keep pointing at this app" preference persists.
+    private let clVerdictLabel = NSTextField(labelWithString: "Checking…")
+    private let clBadgeLabel = NSTextField(labelWithString: "")
+    private let clPathLabel = NSTextField(labelWithString: "")
+    private let clNoteLabel = NSTextField(wrappingLabelWithString: "")
+    private let clStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let clCheckedLabel = NSTextField(labelWithString: "Not checked yet")
+    private let clActionButton = NSButton(title: "Add Terminal Setup…", target: nil, action: nil)
+    private let clRefreshButton = NSButton(title: "Refresh", target: nil, action: nil)
+    private let clKeepCheckbox = NSButton(checkboxWithTitle: CommandLineSetupPreference.checkboxTitle,
+                                          target: nil, action: nil)
+    private let clCopyPathButton = NSButton(title: "Copy This App's Command Path", target: nil, action: nil)
+    private let clManualHeading = NSTextField(wrappingLabelWithString: "")
+    private let clManualDirField = NSTextField(labelWithString: "")
+    private let clManualFileField = NSTextField(labelWithString: "")
+    private let clCopySetupButton = NSButton(title: "Copy Setup Text", target: nil, action: nil)
+    private var clReport: CommandLineSetupStatusReport?
+    private var clLastChecked: Date?
+    private var clRefreshGeneration = 0
 
     // MARK: - Init
 
@@ -342,37 +353,56 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         // Section 9: Command line tool. Status is read from the filesystem on
         // every reload; nothing here is a stored preference.
-        let section9Title = sectionHeader("The unison Command")
+        let section9Title = sectionHeader("unison in Terminal")
         let section9Desc = sectionDescription(
-            "The app bundle carries a command-line launcher. Linked onto PATH as " +
-            "`unison`, it makes `unison -ui graphic` open this app and lets " +
-            "`unison -server`, run by a remote machine over ssh, use this app's " +
-            "Unison. Below is what `unison` resolves to right now, for two PATHs.")
-        for label in [cliTerminalLabel, cliRemoteLabel] {
-            label.font = .systemFont(ofSize: NSFont.systemFontSize)
-            label.textColor = .labelColor
-            label.isSelectable = true
+            "Whether typing unison in Terminal runs this app, and setting it up by " +
+            "adding this app's command to your login shell's startup file. No system " +
+            "directory is changed and no administrator password is asked.")
+        clVerdictLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        clVerdictLabel.textColor = .labelColor
+        clBadgeLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        clBadgeLabel.textColor = .secondaryLabelColor
+        clPathLabel.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        clPathLabel.textColor = .secondaryLabelColor
+        clPathLabel.isSelectable = true
+        clNoteLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        clNoteLabel.textColor = .secondaryLabelColor
+        clStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        clStatusLabel.textColor = .secondaryLabelColor
+        clCheckedLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        clCheckedLabel.textColor = .tertiaryLabelColor
+        clActionButton.bezelStyle = .rounded
+        clActionButton.target = self
+        clActionButton.action = #selector(commandLineSetupAction(_:))
+        clActionButton.isEnabled = false
+        clRefreshButton.bezelStyle = .rounded
+        clRefreshButton.target = self
+        clRefreshButton.action = #selector(refreshCommandLineSetupAction(_:))
+        clKeepCheckbox.target = self
+        clKeepCheckbox.action = #selector(commandLineSetupKeepToggled(_:))
+        clCopyPathButton.bezelStyle = .rounded
+        clCopyPathButton.target = self
+        clCopyPathButton.action = #selector(commandLineSetupCopyPath(_:))
+        clCopySetupButton.bezelStyle = .rounded
+        clCopySetupButton.target = self
+        clCopySetupButton.action = #selector(commandLineSetupCopySetup(_:))
+        clManualHeading.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+        clManualHeading.textColor = .secondaryLabelColor
+        for f in [clManualDirField, clManualFileField] {
+            f.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+            f.textColor = .secondaryLabelColor
+            f.isSelectable = true
         }
-        let terminalHeading = sectionDescription("Terminal (PATH obtained from a login-shell probe):")
-        let remoteHeading = sectionDescription("Remote SSH command:")
-        cliActionButton.bezelStyle = .rounded
-        cliActionButton.target = self
-        cliActionButton.action = #selector(commandLineToolAction(_:))
-        cliActionButton.isEnabled = false
-        cliRefreshButton.bezelStyle = .rounded
-        cliRefreshButton.target = self
-        cliRefreshButton.action = #selector(refreshCommandLineToolAction(_:))
-        let section9Row = NSStackView(views: [cliActionButton, NSView(), cliRefreshButton])
-        section9Row.orientation = .horizontal
-        section9Row.spacing = 8
-        let section9Note = sectionDescription(
-            "Install creates /usr/local/bin/unison and asks for an administrator " +
-            "password. Whether a given shell finds it depends on that shell's PATH. " +
-            "The Terminal line comes from running the login shell non-interactively, " +
-            "so an interactive Terminal's .zshrc can change the result. The PATH an " +
-            "incoming ssh command receives is not determined here; machines that " +
-            "sync to this Mac should set servercmd in their profile to the link's " +
-            "full path, which does not depend on PATH at all.")
+        let section9ActionRow = NSStackView(views: [clActionButton, NSView(), clCheckedLabel, clRefreshButton])
+        section9ActionRow.orientation = .horizontal
+        section9ActionRow.spacing = 8
+        let section9CopyRow = NSStackView(views: [clCopyPathButton, NSView()])
+        section9CopyRow.orientation = .horizontal
+        let section9CopyNote = sectionDescription(CommandLineSetupViewModel.commandPathFootnote)
+        let section9KeepNote = sectionDescription(CommandLineSetupPreference.checkboxExplanation)
+        let section9Limits = sectionDescription(
+            "Applies to new Terminal windows for this account. A shell set up " +
+            "differently can still choose another unison.")
 
         // ----- Group sections into Safari-style toolbar tabs -----
         // NSTabViewController(.toolbar) builds the toolbar, swaps the pane
@@ -410,9 +440,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabVC.addTabViewItem(makePane(
             symbol: "terminal", label: "Command Line",
             views: [section9Title, section9Desc,
-                    terminalHeading, cliTerminalLabel,
-                    remoteHeading, cliRemoteLabel,
-                    section9Row, section9Note]))
+                    clVerdictLabel, clBadgeLabel, clPathLabel, clNoteLabel,
+                    section9ActionRow, clStatusLabel,
+                    clManualHeading, clManualDirField, clManualFileField, clCopySetupButton,
+                    divider(),
+                    section9CopyRow, section9CopyNote,
+                    clKeepCheckbox, section9KeepNote,
+                    section9Limits]))
 
         window?.contentViewController = tabVC
         window?.toolbarStyle = .preference
@@ -562,120 +596,175 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             systemProfileCheckbox.state = prefs.sendsSystemProfile ? .on : .off
         }
 
-        refreshCommandLineToolStatus()
+        refreshCommandLineSetup()
     }
 
-    // MARK: - Command line tool
+    // MARK: - unison in Terminal (command-line setup)
 
-    /// Recompute both PATH contexts off the main thread (the login shell is
-    /// spawned) and show the result. A stale answer from an earlier refresh is
-    /// discarded by generation.
-    private func refreshCommandLineToolStatus() {
-        cliRefreshGeneration += 1
-        let generation = cliRefreshGeneration
-        cliTerminalLabel.stringValue = "Checking…"
-        cliRemoteLabel.stringValue = "Checking…"
-        cliActionButton.isEnabled = false
-        cliRefreshButton.isEnabled = false
+    /// Recompute the command-line-setup state off the main thread (the login shell
+    /// is spawned) and show it. A stale answer from an earlier refresh is discarded
+    /// by generation.
+    private func refreshCommandLineSetup() {
+        clRefreshGeneration += 1
+        let generation = clRefreshGeneration
+        clVerdictLabel.stringValue = "Checking…"
+        clBadgeLabel.stringValue = ""
+        clPathLabel.stringValue = ""
+        clNoteLabel.stringValue = ""
+        clNoteLabel.isHidden = true
+        clActionButton.isEnabled = false
+        clRefreshButton.isEnabled = false
+        let url = Bundle.main.bundleURL
         Task { [weak self] in
-            // Blocking work runs on GCD inside currentStatusAsync, never on the
-            // cooperative pool (see CommandLineToolStatus.currentStatusAsync).
-            let contexts = await CommandLineToolStatus.currentStatusAsync()
-            guard let self, self.cliRefreshGeneration == generation else { return }
-            self.showCommandLineToolStatus(contexts)
+            // Blocking work runs on GCD inside statusAsync, never on the
+            // cooperative pool (see CommandLineSetupCoordinator.statusAsync).
+            let report = await CommandLineSetupCoordinator.statusAsync(bundleURL: url)
+            guard let self, self.clRefreshGeneration == generation else { return }
+            self.clLastChecked = Date()
+            self.showCommandLineSetup(report)
         }
     }
 
-    private func showCommandLineToolStatus(_ contexts: [CommandLineToolContextStatus]) {
-        cliContexts = contexts
-        let terminal = contexts.first
-        let remote = contexts.dropFirst().first
-        cliTerminalLabel.stringValue = CommandLineToolWording.describe(terminal)
-        cliRemoteLabel.stringValue = CommandLineToolWording.describe(remote)
-        cliAction = CommandLineToolActionPolicy.availableAction(contexts: contexts)
-        switch cliAction {
-        case .install:
-            cliActionButton.title = "Install…"
-            cliActionButton.isEnabled = true
-        case .repair:
-            cliActionButton.title = "Repair…"
-            cliActionButton.isEnabled = true
-        case .remove:
-            cliActionButton.title = "Remove…"
-            cliActionButton.isEnabled = true
-        case nil:
-            cliActionButton.title = "Install…"
-            cliActionButton.isEnabled = false
+    private func showCommandLineSetup(_ report: CommandLineSetupStatusReport) {
+        clReport = report
+        let vm = report.viewModel
+        clVerdictLabel.stringValue = vm.verdict
+        clBadgeLabel.stringValue = vm.badgeText
+        clPathLabel.stringValue = vm.pathLine
+        clPathLabel.isHidden = vm.pathLine.isEmpty  // no path line when the check did not complete
+        clNoteLabel.stringValue = vm.note ?? ""
+        clNoteLabel.isHidden = (vm.note == nil)
+        if let title = vm.actionTitle {
+            clActionButton.title = title
+            clActionButton.isEnabled = true
+        } else {
+            clActionButton.isEnabled = false
         }
-        cliRefreshButton.isEnabled = true
+        clCheckedLabel.stringValue = CommandLineSetupAging.checkedText(lastChecked: clLastChecked, now: Date())
+        clRefreshButton.isEnabled = true
+        // The preference is hidden in rows 1-3 (design). Reflect its stored value.
+        clKeepCheckbox.isHidden = report.state.row <= 3
+        clKeepCheckbox.state = CommandLineSetupPreference.keepInTerminal() ? .on : .off
+        // A stable status line: "Set up in Terminal." only when the block is
+        // current and this app is selected (row 7). A write replaces it after.
+        clStatusLabel.stringValue = report.state.row == 7 ? "Set up in Terminal." : ""
+        clStatusLabel.isHidden = clStatusLabel.stringValue.isEmpty
+        // Manual setup: show the directory to add and, when the destination is
+        // established, the file and Copy Setup Text.
+        let manual = (report.state.badge == .manualSetup)
+        clManualHeading.stringValue = manual ? "Manual setup" : ""
+        clManualHeading.isHidden = !manual
+        clManualDirField.stringValue = manual ? "Directory to add to PATH: \(report.thisBinDirectory)" : ""
+        clManualDirField.isHidden = !manual
+        let destinationEstablished = manual && report.fileChoice.file != nil && report.fileChoice.shell != .other
+        clManualFileField.stringValue = destinationEstablished ? "File to edit: \(report.fileChoice.file ?? "")" : ""
+        clManualFileField.isHidden = !destinationEstablished
+        clCopySetupButton.isHidden = !destinationEstablished
+        // Copy This App's Command Path is available in every row.
+        clCopyPathButton.isEnabled = true
     }
 
-    @objc private func refreshCommandLineToolAction(_ sender: Any?) {
-        refreshCommandLineToolStatus()
+    @objc private func refreshCommandLineSetupAction(_ sender: Any?) {
+        refreshCommandLineSetup()
     }
 
-    @objc private func commandLineToolAction(_ sender: Any?) {
-        guard let action = cliAction, let window else { return }
-        let launcher = (Bundle.main.bundlePath as NSString)
-            .appendingPathComponent("Contents/MacOS/cltool")
+    @objc private func commandLineSetupAction(_ sender: Any?) {
+        guard let report = clReport, report.state.action != .none else { return }
+        presentCommandLineSetupConfirmation(for: report, revertKeepOnCancel: false)
+    }
+
+    /// Show the block and file, and on consent run the action off the main thread,
+    /// then redraw. `revertKeepOnCancel` turns the preference back off when the
+    /// confirmation was reached by ticking the checkbox and the user cancels.
+    private func presentCommandLineSetupConfirmation(for report: CommandLineSetupStatusReport,
+                                                     revertKeepOnCancel: Bool) {
+        guard let window else { return }
+        let action = report.state.action
+        let file = report.fileChoice.file ?? "your login shell's startup file"
+        let block = report.fileChoice.shell == .fish
+            ? (CommandLineSetupBlock.fishFileText(directory: report.thisBinDirectory) ?? "")
+            : (CommandLineSetupBlock.blockText(directory: report.thisBinDirectory) ?? "")
         let alert = NSAlert()
         alert.alertStyle = .informational
         switch action {
-        case .install:
-            alert.messageText = "Install the unison command?"
-            alert.informativeText =
-                "Creates \(CommandLineToolStatus.installLinkPath) as a link to this app's " +
-                "command-line launcher. Requires an administrator password."
-            alert.addButton(withTitle: "Install")
-        case .repair(let linkPath, let oldTarget, let displacing):
-            alert.messageText = "Repair the unison command?"
-            alert.informativeText = CommandLineToolWording.repairDetails(
-                linkPath: linkPath, oldTarget: oldTarget, displacing: displacing)
-                + " Requires an administrator password."
-            alert.addButton(withTitle: "Repair")
-        case .remove(let linkPath, _):
-            alert.messageText = "Remove the unison command?"
-            alert.informativeText =
-                "Deletes the link at \(linkPath). The app keeps working from the profile " +
-                "picker. Requires an administrator password."
+        case .add:
+            alert.messageText = "Add unison to your Terminal?"
+            alert.informativeText = "Writes this block to \(file). New Terminal windows will " +
+                "then use this app when you run unison:\n\n\(block)"
+            alert.addButton(withTitle: "Add")
+        case .useThisCopy:
+            alert.messageText = "Point unison at this app?"
+            alert.informativeText = "Rewrites this app's block in \(file):\n\n\(block)"
+            alert.addButton(withTitle: "Use This Copy")
+        case .remove:
+            alert.messageText = "Remove unison from your Terminal?"
+            alert.informativeText = "Removes this app's block from \(file). Another link may still select this app."
             alert.addButton(withTitle: "Remove")
+        case .none:
+            return
         }
         alert.addButton(withTitle: "Cancel")
+        let url = Bundle.main.bundleURL
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            Self.performAdmin(action: action, launcherPath: launcher) { [weak self] error in
-                if let error {
-                    TraceLog.shared.write("command-line tool action failed: \(error)")
-                    let failure = NSAlert()
-                    failure.alertStyle = .warning
-                    failure.messageText = "The unison command was not changed"
-                    failure.informativeText = error
-                    failure.addButton(withTitle: "OK")
-                    if let window = self?.window { failure.beginSheetModal(for: window) } else { failure.runModal() }
+            guard let self else { return }
+            guard response == .alertFirstButtonReturn else {
+                if revertKeepOnCancel {
+                    CommandLineSetupPreference.setKeepInTerminal(false)
+                    self.clKeepCheckbox.state = .off
                 }
-                self?.refreshCommandLineToolStatus()
+                return
+            }
+            self.clActionButton.isEnabled = false
+            self.clRefreshButton.isEnabled = false
+            Task { [weak self] in
+                let result: CommandLineSetupCoordinator.ActionResult
+                switch action {
+                case .add:
+                    result = await CommandLineSetupCoordinator.performAddAsync(report: report, bundleURL: url, rewrite: false)
+                case .useThisCopy:
+                    result = await CommandLineSetupCoordinator.performAddAsync(report: report, bundleURL: url, rewrite: true)
+                case .remove:
+                    result = await CommandLineSetupCoordinator.performRemoveAsync(report: report, bundleURL: url)
+                case .none:
+                    return
+                }
+                guard let self else { return }
+                self.clLastChecked = Date()
+                self.showCommandLineSetup(result.refreshed)
+                var line = result.statusLine
+                if let second = result.secondLine { line += " " + second }
+                self.clStatusLabel.stringValue = line
+                self.clStatusLabel.isHidden = line.isEmpty
             }
         }
     }
 
-    /// Run the action's shell command with administrator privileges through
-    /// AppleScript's `do shell script … with administrator privileges`, which
-    /// shows the system authentication dialog. NSAppleScript is main-thread
-    /// only, and the authentication dialog is modal anyway, so this runs
-    /// synchronously on the main thread and calls `completion` with nil on
-    /// success or a message on failure (a cancelled dialog included).
-    @MainActor
-    static func performAdmin(action: CommandLineToolAction, launcherPath: String,
-                             completion: (String?) -> Void) {
-        let command = CommandLineToolActionPolicy.adminShellCommand(for: action, launcherPath: launcherPath)
-        let source = CommandLineToolActionPolicy.appleScript(runningAsAdmin: command)
-        var errorInfo: NSDictionary?
-        let script = NSAppleScript(source: source)
-        _ = script?.executeAndReturnError(&errorInfo)
-        let message: String? = errorInfo.map { info in
-            (info[NSAppleScript.errorMessage] as? String) ?? "The command could not be run."
+    @objc private func commandLineSetupKeepToggled(_ sender: Any?) {
+        let on = clKeepCheckbox.state == .on
+        CommandLineSetupPreference.setKeepInTerminal(on)
+        // Turning it on offers the setup for a row that has one (design).
+        guard on, let report = clReport else { return }
+        switch report.state.row {
+        case 4, 5, 10, 11, 12:
+            presentCommandLineSetupConfirmation(for: report, revertKeepOnCancel: true)
+        default:
+            break
         }
-        completion(message)
+    }
+
+    @objc private func commandLineSetupCopyPath(_ sender: Any?) {
+        guard let report = clReport else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report.thisCommandPath, forType: .string)
+    }
+
+    @objc private func commandLineSetupCopySetup(_ sender: Any?) {
+        guard let report = clReport else { return }
+        let text = report.fileChoice.shell == .fish
+            ? (CommandLineSetupBlock.fishFileText(directory: report.thisBinDirectory) ?? "")
+            : (CommandLineSetupBlock.blockText(directory: report.thisBinDirectory) ?? "")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     /// Update the path label, value, and placeholder to match the selected
