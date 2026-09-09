@@ -48,5 +48,14 @@ check "ignores non-source files" $?
 [ "$?" -ne 0 ]
 check "missing directory fails" $?
 
+# A FAILED scan must fail the gate, not pass as "no matches": shadow grep with a
+# stub that exits 2 (an error) and produces no stdout.
+mkdir -p "$tmp/stub_grep"
+printf '#!/bin/sh\nexit 2\n' > "$tmp/stub_grep/grep"
+chmod +x "$tmp/stub_grep/grep"
+PATH="$tmp/stub_grep:$PATH" "$gate" "$tmp/clean" >/dev/null 2>&1
+[ "$?" -ne 0 ]
+check "failed scan (grep exit 2) fails closed" $?
+
 if [ "$fail" -ne 0 ]; then echo "TEST-CHECK-NO-ELEVATION FAILED" >&2; exit 1; fi
 echo "all check-no-elevation tests passed"

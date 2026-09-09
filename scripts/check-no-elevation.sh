@@ -18,6 +18,11 @@ if [ ! -d "$dir" ]; then
 fi
 
 # Fixed strings (grep -F), matched across Swift, C, Objective-C and headers.
+# grep's exit status decides, and the gate fails CLOSED: 0 = a match was found
+# (identifiers present), 1 = no match (absence established), >=1 other = the scan
+# itself failed (a file could not be read, a bad option), which must NOT be read
+# as absence. stderr is captured so a scan failure is reported, not swallowed.
+errfile=$(mktemp)
 match=$(grep -RInF \
 	-e 'with administrator privileges' \
 	-e 'AuthorizationExecuteWithPrivileges' \
@@ -26,12 +31,20 @@ match=$(grep -RInF \
 	-e 'SMJobBless' \
 	-e 'requestAuthorization(to:' \
 	--include='*.swift' --include='*.c' --include='*.h' --include='*.m' \
-	"$dir" 2>/dev/null) || true
+	"$dir" 2>"$errfile")
+status=$?
 
-if [ -n "$match" ]; then
+if [ "$status" -eq 0 ]; then
 	echo "check-no-elevation: FAIL — forbidden elevation identifiers in $dir:" >&2
 	printf '%s\n' "$match" | sed 's/^/  /' >&2
+	rm -f "$errfile"
+	exit 1
+elif [ "$status" -ne 1 ]; then
+	echo "check-no-elevation: FAIL — the scan did not complete (grep exit $status); absence not established" >&2
+	sed 's/^/  /' "$errfile" >&2
+	rm -f "$errfile"
 	exit 1
 fi
 
+rm -f "$errfile"
 echo "check-no-elevation: OK — no known elevation identifiers in $dir"
