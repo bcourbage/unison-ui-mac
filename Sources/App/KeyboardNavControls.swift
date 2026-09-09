@@ -41,6 +41,7 @@ enum KeyboardFocus {
     /// The index in `controls` of the one holding `responder`. A text field or
     /// combo box is edited through the window's field editor, whose delegate is
     /// the control, so map that back.
+    @MainActor
     static func indexOfResponder(_ responder: NSResponder?, in controls: [NSView]) -> Int? {
         guard let responder else { return nil }
         var view = responder as? NSView
