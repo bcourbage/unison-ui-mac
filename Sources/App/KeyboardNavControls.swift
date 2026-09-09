@@ -59,11 +59,12 @@ enum KeyboardFocus {
     static func indexOfResponder(_ responder: NSResponder?, in controls: [NSView]) -> Int? {
         // A non-text control is first responder itself.
         if let v = responder as? NSView, let i = controls.firstIndex(where: { $0 === v }) { return i }
-        // A text field or combo box being edited holds the window's field editor;
-        // currentEditor() names the control whose editor it is (the combo's
-        // field-editor delegate is not the combo, so this is the reliable map).
-        if let text = responder as? NSText {
-            for (i, c) in controls.enumerated() where (c as? NSControl)?.currentEditor() === text { return i }
+        // A control being edited holds the window's field editor. Only one
+        // control edits at a time, so the section control with a live field
+        // editor is the focused one. This maps an editable combo box, whose
+        // field editor cannot be traced back through its delegate.
+        if responder is NSText {
+            for (i, c) in controls.enumerated() where (c as? NSControl)?.currentEditor() != nil { return i }
         }
         // Fallback: walk the responder/view ancestry.
         var r = responder

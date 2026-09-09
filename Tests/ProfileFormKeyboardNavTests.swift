@@ -57,6 +57,21 @@ final class ProfileFormKeyboardNavTests: XCTestCase {
         c.close()
     }
 
+    func test_keyNav_consumesTabInControlSections_passesItInEditorSections() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\n")
+        try write("common.prf", "sshargs = -i /k\n")
+        let c = ProfileFormWindowController(unisonDirectory: dir, profileName: "p", onSaved: { _ in })
+        c.showSectionForTesting(title: "Options")
+        XCTAssertTrue(c.keyNavConsumesForTesting(keyCode: 48), "Tab is handled (consumed) in a control section, so it is not dispatched again")
+        // Return is consumed only when the actual focus is a drop-down; with no
+        // control focused it passes through to the default button (Save).
+        c.window?.makeFirstResponder(nil)
+        XCTAssertFalse(c.keyNavConsumesForTesting(keyCode: 36), "Return with no focused drop-down passes through")
+        c.showSectionForTesting(title: "Ignore")
+        XCTAssertFalse(c.keyNavConsumesForTesting(keyCode: 48), "Tab stays a literal tab in the text-editor sections")
+        c.close()
+    }
+
     func test_fileAttributesFocusables_reachTheTriStatePopups() throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
         let c = ProfileFormWindowController(unisonDirectory: dir, profileName: "p", onSaved: { _ in })

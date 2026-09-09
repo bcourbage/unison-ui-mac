@@ -859,7 +859,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     private func installKeyNavMonitor() {
         keyNavMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleKeyNav(event) ?? event
+            // Return the handler's result verbatim: nil means it handled the
+            // event and dispatch must stop. A `?? event` would resurrect a
+            // consumed event and let AppKit act on it again.
+            guard let self else { return event }
+            return self.handleKeyNav(event)
         }
     }
 
@@ -873,23 +877,39 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// or not Full Keyboard Access is on, because the controls are focusable
     /// subclasses.
     private func handleKeyNav(_ event: NSEvent) -> NSEvent? {
-        guard let window, window.isKeyWindow, let idx = shownSectionIndex,
-              !Self.keyNavExcludedSections.contains(sectionViews[idx].title) else { return event }
+        guard let window, window.isKeyWindow else { return event }
+        return keyNavResult(keyCode: event.keyCode, shift: event.modifierFlags.contains(.shift)) ? nil : event
+    }
+
+    /// Whether the key is consumed (moved focus or opened a drop-down). Returns
+    /// false for keys or contexts the nav does not handle, so the caller passes
+    /// the event on. Split out for testing the consume/pass contract.
+    private func keyNavResult(keyCode: UInt16, shift: Bool) -> Bool {
+        guard let window, let idx = shownSectionIndex,
+              !Self.keyNavExcludedSections.contains(sectionViews[idx].title) else { return false }
         let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
-        guard !controls.isEmpty else { return event }
-        let current = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
-            ?? lastKeyNavFocus.flatMap { last in controls.firstIndex { $0 === last } }
-        switch event.keyCode {
-        case 48: // Tab
-            moveKeyNavFocus(controls: controls, from: current, backward: event.modifierFlags.contains(.shift))
-            return nil
-        case 36, 76: // Return / Enter opens a focused drop-down; everything else falls through (Save)
-            guard let cur = current, let popup = controls[cur] as? NSPopUpButton else { return event }
+        guard !controls.isEmpty else { return false }
+        // The control the responder actually maps to (nil when focus is outside
+        // the section, e.g. the sidebar search).
+        let mapped = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
+        switch keyCode {
+        case 48: // Tab: cycle. An editing combo box can't be mapped back, so fall
+                 // back to the control the nav last moved focus to.
+            let from = mapped ?? lastKeyNavFocus.flatMap { last in controls.firstIndex { $0 === last } }
+            moveKeyNavFocus(controls: controls, from: from, backward: shift)
+            return true
+        case 36, 76: // Return / Enter opens the drop-down that ACTUALLY has focus
+                     // (never the remembered one); anything else falls through (Save).
+            guard let cur = mapped, let popup = controls[cur] as? NSPopUpButton else { return false }
             popup.performClick(nil)
-            return nil
+            return true
         default:
-            return event
+            return false
         }
+    }
+
+    func keyNavConsumesForTesting(keyCode: UInt16, shift: Bool = false) -> Bool {
+        keyNavResult(keyCode: keyCode, shift: shift)
     }
 
     /// Move first responder to the next focusable control, skipping any that
