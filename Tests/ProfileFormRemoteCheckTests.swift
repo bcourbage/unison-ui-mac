@@ -95,6 +95,22 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         }
     }
 
+    private final class CancelDuringDiscoveryStub: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
+        let version = "unison version 2.54.0 (ocaml 5.5.0)"
+        var sessions = 0
+        var onDiscovery: (@Sendable () -> Void)?
+        func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
+            sessions += 1
+            let remote = config.arguments.last ?? ""
+            if let r = remote.range(of: "M=") {
+                let m = String(remote[r.upperBound...].prefix { $0 != ";" })
+                onDiscovery?()
+                return .exited(status: 0, stdout: "\(m) BEGIN\nuname: Darwin\npath: /opt/homebrew/bin/unison\nkind: regular\nversion: \(version)\ncommandv: \n\(m) END\n", stderr: "")
+            }
+            return .exited(status: 0, stdout: "verify\n\(version)\n", stderr: "")
+        }
+    }
+
     func test_choosingASecondAlternative_isNotDiscardedAsStale_andSaveKeepsIt() async throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
         let c = make("p", executor: { ThreeRemote() })
@@ -108,6 +124,43 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         c.invokeSaveForTesting()
         XCTAssertNil(c.lastAlertForTesting, "the re-baselined token matches the applied field")
         XCTAssertTrue(try read("p.prf").contains("servercmd = /usr/bin/unison"), "Save wrote the chosen command")
+    }
+
+    func test_keepCurrentSetting_afterAnIncludeChanged_doesNotShowTheStaleResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\ninclude common\n")
+        try write("common.prf", "sshargs = -i /k\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        try write("common.prf", "sshargs = -i /other\n")
+        c.restoreCurrentSetting()
+        XCTAssertNil(c.checkResultForTesting)
+        XCTAssertEqual(c.checkStatusForTesting, "Not checked since the last change.")
+    }
+
+    func test_keepCurrentSetting_whenNothingChanged_showsTheVerifiedResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        c.restoreCurrentSetting()
+        XCTAssertNotNil(c.checkResultForTesting)
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+    }
+
+    func test_cancellingDuringDiscovery_doesNotStartVerification() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let stub = CancelDuringDiscoveryStub()
+        let c = make("p", executor: { stub })
+        nonisolated(unsafe) let unsafeC = c
+        stub.onDiscovery = {
+            let sem = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { unsafeC.cancelCheckForTesting(); sem.signal() }
+            sem.wait()
+        }
+        _ = await c.runCheck()
+        XCTAssertEqual(stub.sessions, 1, "only the discovery session ran; the cancel stopped the current-command verification")
+        XCTAssertNil(c.checkResultForTesting)
     }
 
     func test_currentCommandIsAnswered_evenWhenDiscoveryTimesOut() async throws {

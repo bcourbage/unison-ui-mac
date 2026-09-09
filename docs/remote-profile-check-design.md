@@ -201,9 +201,12 @@ command that prints, between unique markers:
   `/Applications/Unison.app/Contents/MacOS/cltool`, `/usr/bin/unison`), and for
   a `unison` in any directory of the non-interactive shell's `PATH` — the same
   environment Unison's own remote `unison` resolves in — that the fixed list
-  missed, each reported once: the path, `readlink` of it when it is a symlink
-  (the **stored** target, which may be relative or itself a link; reported as
-  such), and the first line of `<path> -version`;
+  missed, each reported once (globbing disabled so a directory spelled with glob
+  characters stays literal; an empty component, including a trailing one that
+  field splitting would otherwise drop, is the current directory as `command -v`
+  reads it): the path, `readlink` of it when it is a symlink (the **stored**
+  target, which may be relative or itself a link; reported as such), and the
+  first line of `<path> -version`;
 - `command -v unison`, labelled as what the discovery script's `sh`
   resolves; the remote login shell (aliases, functions) and Unison's own ssh
   command may each resolve differently.

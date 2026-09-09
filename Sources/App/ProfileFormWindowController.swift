@@ -234,6 +234,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private var checkHandle: RemoteCheckSession.Handle?
     private var checkTask: Task<Void, Never>?
     private var checkPrepared: RemoteCheckFlow.Prepared?
+    /// The prepared configuration the current-command result was verified under,
+    /// kept so Keep current setting can confirm that result still describes the
+    /// restored form before showing it.
+    private var checkOriginalPrepared: RemoteCheckFlow.Prepared?
     private var checkDiscovery: RemoteCheckFlow.Discovery?
     private var checkResult: RemoteCheckFlow.Verification?
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
@@ -1055,6 +1059,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkChooseButton.isEnabled = false
         checkMenuAutoPresentedForTesting = false
         checkCurrentResult = nil
+        // Drop any previous check's discovery so it can't leak into this run's
+        // continuation after a cancel.
+        checkDiscovery = nil
         checkFieldAtStart = servercmdField.stringValue
         checkAdvancedAtStart = advancedView.values
         proposalChangedAdvanced = false
@@ -1068,6 +1075,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             setCheckStatus(Self.startFailureText(why)); return nil
         }
         checkPrepared = prepared
+        checkOriginalPrepared = prepared
         let handle = RemoteCheckSession.Handle()
         checkHandle = handle
         checkRemoteButton.title = "Cancel Check"
@@ -1081,10 +1089,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkTask = task
         await task.value
         // Verify the current command whether or not discovery enumerated the
-        // alternatives: one alternative that hangs on -version must not withhold
-        // the current command's answer. checkDiscovery is nil only when the
-        // discovery completion was discarded as stale.
-        if checkDiscovery != nil {
+        // alternatives (one that hangs on -version must not withhold the current
+        // command's answer) — but only while this run still owns the check: a
+        // cancel clears the handle, and must not be followed by a fresh session.
+        if checkHandle === handle, checkDiscovery != nil {
             await chooseCandidate(.keepCurrent)
         }
         return checkDiscovery
@@ -1154,13 +1162,20 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             advancedView.values = checkAdvancedAtStart
             proposalChangedAdvanced = false
         }
-        // The form is back to what it was when the check started; re-baseline so
-        // Save compares the token against the restored configuration.
-        rebaselineCheckPrepared()
-        if let v = checkCurrentResult {
-            checkResult = v
-            showCheckReport(headline: v.headline, details: v.details, closing: v.closing, openDetails: false)
+        // The current-command result was verified under the original token. Show
+        // it again only if that token still holds for the restored form: if an
+        // include changed since (so the restored form would run a different
+        // command), the cached result no longer describes it.
+        guard let original = checkOriginalPrepared, let v = checkCurrentResult,
+              RemoteCheckFlow.tokenStillValid(original, current: checkInputs()) else {
+            checkResult = nil
+            setCheckStatus("Not checked since the last change.")
+            return
         }
+        // Save compares against the token the result was verified under.
+        checkPrepared = original
+        checkResult = v
+        showCheckReport(headline: v.headline, details: v.details, closing: v.closing, openDetails: false)
     }
 
     /// After a check-driven change to the form (an applied proposal, or a
@@ -1271,6 +1286,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(checkReport.joined(separator: "\n"), forType: .string)
     }
+
+    func cancelCheckForTesting() { cancelCheck() }
 
     private func cancelCheck() {
         checkHandle?.cancel()

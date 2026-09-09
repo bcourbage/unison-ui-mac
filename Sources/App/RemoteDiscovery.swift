@@ -84,6 +84,10 @@ enum RemoteDiscovery {
             // PATH component means the current directory, as `command -v` reads it.
             "oldIFS=$IFS; IFS=:; set -f",
             "for d in $PATH; do case \"$d\" in \"\") dd=. ;; *) dd=\"$d\" ;; esac; q=\"$dd/unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac; done",
+            // Word splitting drops a trailing empty field, so a PATH ending in
+            // `:` (a trailing current-directory component, which command -v honors)
+            // is never seen by the loop; probe the current directory for it.
+            "case \"$PATH\" in *:) q=\"./unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac ;; esac",
             "IFS=$oldIFS; set +f",
         ].joined(separator: "; ")
         let script = [
