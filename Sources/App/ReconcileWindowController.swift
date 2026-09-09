@@ -141,6 +141,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// summary label also picks up the full text as a `toolTip` so the
     /// detail is one hover away.
     private let statusDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    /// Set by `showRestartRequired` when the connection never completed and
+    /// the profile has an ssh root: the status Details then offer Check Remote
+    /// Command for this window's exact profile.
+    private var remoteCheckOffered = false
+    private var statusPopover: NSPopover?
+    /// Set by the owner; receives this window's profile name.
+    var onRemoteCheckRequested: ((String) -> Void)?
+    var remoteCheckOfferedForTesting: Bool { remoteCheckOffered }
+    var summaryTextForTesting: String { summaryLabel.stringValue }
+    var statusDetailsTextForTesting: String? { lastMultiLineStatus }
+    func requestRemoteCheckForTesting() { checkRemoteTapped(nil) }
     /// Cached full text for the Details button. Reset on every status
     /// update so we never show stale messages.
     private var lastMultiLineStatus: String?
@@ -831,6 +842,14 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         clearCompletionEmphasis()
     }
 
+    /// A headline on the summary line with the rest behind Details.
+    private func setSummary(_ headline: String, details: String) {
+        setSummary(headline)
+        lastMultiLineStatus = details
+        summaryLabel.toolTip = details
+        statusDetailsButton.isHidden = false
+    }
+
     /// Reset the summary line to its neutral styling — hides the status
     /// glyph and drops the bold/colored completion treatment. Called from
     /// `setSummary` so any non-completion write (rescan, start-sync,
@@ -866,25 +885,17 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
 
     @objc private func showStatusDetails(_ sender: Any?) {
         guard let text = lastMultiLineStatus, !text.isEmpty else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Status details"
-        // NSAlert truncates `informativeText` aggressively for long
-        // strings — use an accessoryView with a scrolling text view so
-        // multi-screen SSH error dumps stay readable + selectable. Wrap
-        // mode (vertical scroll) via the canonical geometry — without it
-        // a long dump clips with a dead scroller. See ScrollableTextView.
-        let (scroll, textView) = ScrollableTextView.make(
-            mode: .wrap, initialSize: NSSize(width: 520, height: 240))
-        scroll.borderType = .lineBorder
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.string = text
-        alert.accessoryView = scroll
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        // A popover anchored to the button, not an alert: wrapping, selectable
+        // text at a readable width, and the failed-connection offer when there
+        // is one.
+        var buttons: [NSButton] = []
+        if remoteCheckOffered {
+            buttons.append(NSButton(title: "Check Remote Command…", target: self, action: #selector(checkRemoteTapped(_:))))
+        }
+        let lines = text.components(separatedBy: "\n\n")
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(lines), buttons: buttons)
+        statusPopover = popover
+        popover.show(relativeTo: statusDetailsButton.bounds, of: statusDetailsButton, preferredEdge: .maxY)
     }
 
     /// Forwarded by AppDelegate's permanent progress handler for the live
@@ -920,7 +931,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         // setSummary() clears completion emphasis (hides + nils statusIcon), so
         // it MUST run before we install the attention icon — otherwise the icon
         // is set and then immediately cleared.
-        setSummary(SyncStallNotice.message(seconds: Int(syncStallTimeout)))
+        setSummary(SyncStallNotice.headline(seconds: Int(syncStallTimeout)), details: SyncStallNotice.detail)
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
@@ -1104,8 +1115,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         progressBar.isHidden = true
         syncResultsUnavailable = true
         phase = .done(failures: 0)
-        setSummary("Synchronization finished, but its per-file results could not "
-                   + "be displayed. Rescan before synchronizing again.")
+        setSummary("Synchronization finished, but its per-file results could not be displayed.",
+                   details: "Rescan before synchronizing again.")
         applyCompletionEmphasis(failures: 0, stopped: false, resultsUnavailable: true)
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: sync results unavailable — \(reason)")
@@ -1162,16 +1173,26 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// row/sync/rescan actions are disabled (`restartRequired` latch), and
     /// the summary tells the user the one recovery — quit and reopen. Only
     /// navigation (Profiles / Quit) stays live.
-    func showRestartRequired(reason: String) {
+    /// The summary keeps to a short headline; the full reason and the next
+    /// step live behind Details. `connectFailure`: the restart was entered
+    /// while connecting, so the headline says the remote was not reached.
+    /// `offerRemoteCheck`: that failure concerns a profile with an ssh root
+    /// (see `RemoteCheckOfferPolicy`); Details then offer Check Remote
+    /// Command for this window's profile.
+    func showRestartRequired(reason: String, connectFailure: Bool = false, offerRemoteCheck: Bool = false) {
         restartRequired = true
+        remoteCheckOffered = offerRemoteCheck
         isSyncing = false
         isScanning = false
         cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
         progressBar.isHidden = true
-        setSummary("Unison must be restarted to continue. Quit Unison and "
-                   + "reopen the profile. (\(reason))")
+        setSummary(connectFailure
+                   ? "Could not connect to the remote. Unison must be restarted to continue."
+                   : "Unison must be restarted to continue.")
+        lastMultiLineStatus = (reason.isEmpty ? "" : reason + "\n\n") + "Quit Unison and open the profile again."
+        statusDetailsButton.isHidden = false
         let config = NSImage.SymbolConfiguration(
             pointSize: NSFont.smallSystemFontSize + 1, weight: .semibold)
             .applying(.init(paletteColors: [.systemOrange]))
@@ -1181,6 +1202,11 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         statusIcon.isHidden = false
         refreshToolbarEnabled()
         TraceLog.shared.write("ReconcileWindow: restart required (\(reason))")
+    }
+
+    @objc private func checkRemoteTapped(_ sender: Any?) {
+        statusPopover?.close()
+        onRemoteCheckRequested?(profile)
     }
 
     /// Diff-result presentation. AppDelegate calls this ONLY after the

@@ -420,6 +420,60 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         formController = form
     }
 
+    /// Check Remote Command for `profile` from outside this window. An editor
+    /// already open on that profile is reused as it stands; one open on another
+    /// profile is brought forward and named instead of being replaced, since
+    /// replacing it would discard its edits.
+    func openFormForRemoteCheck(profile: String) {
+        let open: RemoteCheckOfferPolicy.OpenEditor
+        if let form = formController, form.window?.isVisible == true {
+            // A new-profile form has no name yet but still holds unsaved work;
+            // it must not be treated as "no editor" and silently replaced.
+            open = form.editingProfileName.map { .named($0) } ?? .unsavedNewProfile
+        } else {
+            open = .none
+        }
+        switch RemoteCheckOfferPolicy.route(open: open, target: profile) {
+        case .reuseOpen:
+            formController?.window?.makeKeyAndOrderFront(nil)
+            formController?.beginRemoteCheck()
+        case .blockedBy(let other):
+            formController?.window?.makeKeyAndOrderFront(nil)
+            presentEntryBlockedAlert(messageText: "Finish editing “\(other)” first",
+                                     informativeText: "The profile editor is open on “\(other)”. Save or close it, then check the remote command for “\(profile)”.")
+        case .blockedByNewProfile:
+            formController?.window?.makeKeyAndOrderFront(nil)
+            presentEntryBlockedAlert(messageText: "Finish the new profile first",
+                                     informativeText: "A profile you’re creating isn’t saved yet. Save or close it, then check the remote command for “\(profile)”.")
+        case .openNew:
+            if let idx = profiles.firstIndex(of: profile) {
+                tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                tableView.scrollRowToVisible(idx)
+            }
+            openForm(for: profile)
+            // openForm declines while Settings is open; only a form on this
+            // profile starts the check.
+            guard let form = formController, form.editingProfileName == profile else { return }
+            form.beginRemoteCheck()
+        }
+    }
+
+    private func presentEntryBlockedAlert(messageText: String, informativeText: String) {
+        let alert = NSAlert()
+        alert.messageText = messageText
+        alert.informativeText = informativeText
+        alert.addButton(withTitle: "OK")
+        if let w = formController?.window, !suppressAlertsForTesting {
+            alert.beginSheetModal(for: w) { _ in }
+        }
+        lastEntryAlertForTesting = alert.messageText
+    }
+
+    var suppressAlertsForTesting = false
+    private(set) var lastEntryAlertForTesting: String?
+    var formControllerForTesting: ProfileFormWindowController? { formController }
+    func openNewFormForTesting() { openForm(for: nil) }
+
     private func handleFormSaved(savedName: String, wasNew: Bool) {
         TraceLog.shared.write("ProfileEditor: form saved '\(savedName)' (new=\(wasNew))")
         // Re-read prefs from disk first — the form may have mutated

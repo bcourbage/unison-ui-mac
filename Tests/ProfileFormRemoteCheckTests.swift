@@ -20,6 +20,8 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
     /// Answers discovery with a record and verification with a version line, echoing the marker from argv.
     private final class Remote: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
         var version = "unison version 2.54.0 (ocaml 5.5.0)"
+        /// The login shell has no `unison` in PATH: a bare-name command fails 127.
+        var bareUnisonMissing = false
         var sessions = 0
         var remoteCommands: [String] = []
         func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
@@ -32,6 +34,9 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
             }
             if let r = remote.range(of: "printf '") {
                 let m = String(remote[r.upperBound...].prefix { $0 != "'" })
+                if bareUnisonMissing, remote.contains("; unison -version") {
+                    return .exited(status: 127, stdout: m, stderr: "zsh:1: command not found: unison\n")
+                }
                 return .exited(status: 0, stdout: "\(m)\(version)\n", stderr: "")
             }
             return .launchFailed("unexpected command")
@@ -47,6 +52,153 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         return c
     }
 
+    private func make(_ name: String, executor: @escaping @Sendable () -> VersionCheck.VersionProbeExecutor) -> ProfileFormWindowController {
+        let c = ProfileFormWindowController(unisonDirectory: dir, profileName: name, onSaved: { _ in })
+        c.suppressAlertsForTesting = true
+        c.disclosureDecisionForTesting = true
+        c.engineVersionForTesting = "2.54.0 (ocaml 5.5.0)"
+        c.checkExecutorFactoryForTesting = { _ in executor() }
+        return c
+    }
+
+    /// Discovery lists three usable regular unisons; verification succeeds for any.
+    private final class ThreeRemote: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
+        let version = "unison version 2.54.0 (ocaml 5.5.0)"
+        func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
+            let remote = config.arguments.last ?? ""
+            if let r = remote.range(of: "M=") {
+                let m = String(remote[r.upperBound...].prefix { $0 != ";" })
+                let body = ["/opt/homebrew/bin/unison", "/usr/local/bin/unison", "/usr/bin/unison"]
+                    .map { "path: \($0)\nkind: regular\nversion: \(version)" }.joined(separator: "\n")
+                return .exited(status: 0, stdout: "\(m) BEGIN\nuname: Darwin\n\(body)\ncommandv: \n\(m) END\n", stderr: "")
+            }
+            if let r = remote.range(of: "printf ") {
+                let m = String(remote[remote.index(r.lowerBound, offsetBy: 8)...].prefix { $0 != "\u{27}" })
+                return .exited(status: 0, stdout: "\(m)\(version)\n", stderr: "")
+            }
+            return .launchFailed("x")
+        }
+    }
+
+    /// Discovery times out (an alternative hung); verification of a single
+    /// command still succeeds.
+    private final class HangingDiscoveryRemote: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
+        let version = "unison version 2.54.0 (ocaml 5.5.0)"
+        func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
+            let remote = config.arguments.last ?? ""
+            if remote.contains("M=") { return .timedOut(stdout: "", stderr: "") }
+            if let r = remote.range(of: "printf ") {
+                let m = String(remote[remote.index(r.lowerBound, offsetBy: 8)...].prefix { $0 != "\u{27}" })
+                return .exited(status: 0, stdout: "\(m)\(version)\n", stderr: "")
+            }
+            return .launchFailed("x")
+        }
+    }
+
+    private final class CancelDuringDiscoveryStub: VersionCheck.VersionProbeExecutor, @unchecked Sendable {
+        let version = "unison version 2.54.0 (ocaml 5.5.0)"
+        var sessions = 0
+        var onDiscovery: (@Sendable () -> Void)?
+        func execute(_ config: VersionCheck.ProbeConfig, deadline: TimeInterval, canceller: VersionCheck.ProbeCanceller) -> VersionCheck.RawExecResult {
+            sessions += 1
+            let remote = config.arguments.last ?? ""
+            if let r = remote.range(of: "M=") {
+                let m = String(remote[r.upperBound...].prefix { $0 != ";" })
+                onDiscovery?()
+                return .exited(status: 0, stdout: "\(m) BEGIN\nuname: Darwin\npath: /opt/homebrew/bin/unison\nkind: regular\nversion: \(version)\ncommandv: \n\(m) END\n", stderr: "")
+            }
+            return .exited(status: 0, stdout: "verify\n\(version)\n", stderr: "")
+        }
+    }
+
+    func test_choosingASecondAlternative_isNotDiscardedAsStale_andSaveKeepsIt() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let c = make("p", executor: { ThreeRemote() })
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        await c.chooseCandidate(.candidate("/usr/local/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/usr/local/bin/unison")
+        await c.chooseCandidate(.candidate("/usr/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/usr/bin/unison", "the second choice is applied, not discarded as stale")
+        XCTAssertTrue((c.checkStatusForTesting ?? "").contains("Save to keep the change"))
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting, "the re-baselined token matches the applied field")
+        XCTAssertTrue(try read("p.prf").contains("servercmd = /usr/bin/unison"), "Save wrote the chosen command")
+    }
+
+    func test_keepCurrentSetting_afterAnIncludeChanged_doesNotShowTheStaleResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\ninclude common\n")
+        try write("common.prf", "sshargs = -i /k\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        try write("common.prf", "sshargs = -i /other\n")
+        c.restoreCurrentSetting()
+        XCTAssertNil(c.checkResultForTesting)
+        XCTAssertEqual(c.checkStatusForTesting, "Not checked since the last change.")
+        XCTAssertEqual(c.checkReportForTesting, [], "the stale report is cleared, so Details and Copy Report can't surface it")
+        XCTAssertFalse(c.detailsButtonVisibleForTesting, "Details is hidden for an invalidated result")
+    }
+
+    func test_keepCurrentSetting_whenNothingChanged_showsTheVerifiedResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        c.restoreCurrentSetting()
+        XCTAssertNotNil(c.checkResultForTesting)
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+    }
+
+    func test_cancellingDuringDiscovery_doesNotStartVerification() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let stub = CancelDuringDiscoveryStub()
+        let c = make("p", executor: { stub })
+        nonisolated(unsafe) let unsafeC = c
+        stub.onDiscovery = {
+            let sem = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { unsafeC.cancelCheckForTesting(); sem.signal() }
+            sem.wait()
+        }
+        _ = await c.runCheck()
+        XCTAssertEqual(stub.sessions, 1, "only the discovery session ran; the cancel stopped the current-command verification")
+        XCTAssertNil(c.checkResultForTesting)
+    }
+
+    func test_currentCommandIsAnswered_evenWhenDiscoveryTimesOut() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        let c = make("p", executor: { HangingDiscoveryRemote() })
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed. Other commands on demeter could not be listed.")
+        XCTAssertFalse(c.chooseButtonVisibleForTesting, "no alternatives were enumerated, but the current command still answered")
+    }
+
+    func test_checkRow_sitsRightUnderRemoteUnison_atAnyWindowHeight_everyOpen() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
+        var gaps: [CGFloat] = []
+        for height in [640, 1100, 1500] {
+            let c = make("p", remote: Remote())
+            c.window?.setContentSize(NSSize(width: 900, height: CGFloat(height)))
+            c.showSectionForTesting(title: "Roots")
+            gaps.append(c.checkRowGapForTesting)
+            c.close()
+        }
+        for g in gaps {
+            XCTAssertGreaterThanOrEqual(g, 0, "\(gaps)")
+            XCTAssertLessThanOrEqual(g, 24, "the row must not float away from its field: \(gaps)")
+        }
+        XCTAssertEqual(Set(gaps.map { Int($0.rounded()) }).count, 1, "same gap at every height: \(gaps)")
+    }
+
+    func test_checkStatusRow_takesNoHeightUntilThereIsAStatus() async throws {
+        try write("p.prf", "root = /a\nroot = /b\n")
+        let c = make("p", remote: Remote())
+        XCTAssertTrue(c.checkStatusRowHiddenForTesting)
+        _ = await c.runCheck()
+        XCTAssertFalse(c.checkStatusRowHiddenForTesting)
+        XCTAssertEqual(c.checkHelpTextForTesting.first, "Which command should I use?")
+    }
+
     func test_step1Failure_showsUnderField_andRunsNoSession() async throws {
         try write("p.prf", "root = /a\nroot = /b\n")
         let remote = Remote()
@@ -57,25 +209,22 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertEqual(remote.sessions, 0)
     }
 
-    func test_discovery_thenKeepCurrent_reportsNoChange() async throws {
+    func test_check_verifiesTheCurrentCommandFirst_andReportsNoChangeNeeded() async throws {
         try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\nservercmd = /opt/homebrew/bin/unison\n")
         let remote = Remote()
         let c = make("p", remote: remote)
         let d = await c.runCheck()
         XCTAssertEqual(d?.succeeded, true)
-        XCTAssertEqual(c.checkMenuForTesting, [
-            .candidate(path: "/opt/homebrew/bin/unison", versionLine: "unison version 2.54.0 (ocaml 5.5.0)", storedTarget: nil),
-            .keepCurrent,
-        ])
-        XCTAssertEqual(c.checkStatusForTesting, "Choose the command to verify on demeter.")
-        await c.chooseCandidate(.keepCurrent)
-        XCTAssertEqual(c.checkStatusForTesting, "This check found no change to make.")
-        XCTAssertEqual(c.checkReportForTesting.first, "This check found no change to make.")
+        XCTAssertEqual(remote.sessions, 2, "discovery, then the current command, with no question asked")
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        XCTAssertEqual(c.checkReportForTesting.first, "No change needed.")
         XCTAssertEqual(c.checkReportForTesting.last, "Only a synchronization confirms the server protocol; run the profile to test that.")
         XCTAssertTrue(c.checkReportForTesting.contains("ssh connected to demeter as bruno without prompting."))
         XCTAssertFalse(c.checkReportForTesting.joined().contains("inside a unison-ui-mac.app bundle"))
-        XCTAssertEqual(remote.sessions, 2)
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison", "unchanged")
+        XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent], "the only installation found is the current one")
+        XCTAssertFalse(c.chooseButtonVisibleForTesting, "nothing else to choose")
+        XCTAssertFalse(c.checkMenuAutoPresentedForTesting, "a configured servercmd gets its answer, not a menu")
     }
 
     func test_candidate_fillsField_andSaveWritesIt() async throws {
@@ -84,13 +233,123 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         let remote = Remote()
         let c = make("p", remote: remote)
         _ = await c.runCheck()
-        XCTAssertEqual(c.checkMenuForTesting?.first, .currentEffect("Remote PATH decides which unison runs"))
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.", "the PATH-resolved command answered")
+        XCTAssertEqual(c.checkAlternativesForTesting?.map(\.kind), [.keepCurrent, .direct])
+        XCTAssertEqual(c.checkAlternativesForTesting?.first?.subtitle, "No command is set for this profile; the remote PATH decides which unison runs.")
+        XCTAssertTrue(c.chooseButtonVisibleForTesting)
+        XCTAssertTrue(c.checkMenuAutoPresentedForTesting, "no servercmd: the alternatives open even after a pass")
         await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
         XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
         XCTAssertEqual(c.checkStatusForTesting, "The command you selected started over ssh and reported its version. Remote unison is set to it; Save to keep the change.")
         c.invokeSaveForTesting()
         XCTAssertNil(c.lastAlertForTesting)
         XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\ninclude common\nservercmd = /opt/homebrew/bin/unison\n")
+    }
+
+    func test_currentCommandNotFound_statusPointsAtTheInstallationsFound_detailsOnlyWhenMore() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        _ = await c.runCheck()
+        XCTAssertEqual(c.checkStatusForTesting,
+                       "The remote shell emitted the start marker; the command line then exited with status 127; stderr: zsh:1: command not found: unison. "
+                       + "Choose Another Command lists the installation found on demeter.")
+        XCTAssertTrue(c.chooseButtonVisibleForTesting)
+        XCTAssertTrue(c.checkMenuAutoPresentedForTesting, "no servercmd: the alternatives open without another click")
+        XCTAssertTrue(c.detailsButtonVisibleForTesting, "discovery's command -v observation is one more fact")
+        XCTAssertTrue(c.checkReportForTesting.contains("During discovery, command -v unison printed nothing inside sh either."))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "", "a failed current command proposes nothing by itself")
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
+        XCTAssertTrue(c.detailsButtonVisibleForTesting)
+    }
+
+    func test_checkResult_doesNotWidenTheWindow() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        c.window?.contentView?.layoutSubtreeIfNeeded()
+        let before = c.window!.frame.width
+        _ = await c.runCheck()
+        c.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(c.chooseButtonVisibleForTesting && c.detailsButtonVisibleForTesting, "both secondary buttons are showing")
+        XCTAssertEqual(c.window!.frame.width, before, "a result must not resize the editor")
+    }
+
+    func test_editorWindow_widthIsFixed_andHealsAWideFrame() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        XCTAssertEqual(c.window?.contentMinSize.width, 620)
+        XCTAssertEqual(c.window?.contentMaxSize.width, 620)
+        XCTAssertEqual(c.window!.frame.width, 620, accuracy: 1, "opens at the form's width")
+        // A restored autosaved frame is a programmatic setFrame, which min/max
+        // do not constrain; the width must be healed back regardless.
+        c.window?.setFrame(NSRect(x: 400, y: 100, width: 1100, height: 760), display: false)
+        c.enforceFixedWidthForTesting()
+        XCTAssertEqual(c.window!.frame.width, 620, accuracy: 1, "a wide frame is healed to the form width")
+        XCTAssertEqual(c.window!.frame.height, 760, accuracy: 1, "the remembered height is kept")
+        c.close()
+    }
+
+    func test_checkButton_keepsItsWidth_whenItTogglesToCancelCheck() throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let c = make("p", remote: Remote())
+        c.showSectionForTesting(title: "Roots")
+        let resting = c.widthOfCheckButtonForTesting(withTitle: "Check Remote Command…")
+        let cancelling = c.widthOfCheckButtonForTesting(withTitle: "Cancel Check")
+        XCTAssertEqual(Int(resting.rounded()), Int(cancelling.rounded()), "the button holds its width so the spinner and ? do not shift")
+        XCTAssertGreaterThan(resting, 150)
+        c.close()
+    }
+
+    func test_checkRows_keepTheirHeight_beforeAndAfterAResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        let before = c.checkRowClearancesForTesting
+        XCTAssertGreaterThanOrEqual(before.buttonToSSH, 4, "before a check, the button clears the SSH command field: \(before)")
+        XCTAssertGreaterThanOrEqual(c.checkButtonsMinHeightForTesting, 20, "buttons keep their height; a hugging row must not compress them")
+        _ = await c.runCheck()
+        XCTAssertGreaterThanOrEqual(c.checkButtonsMinHeightForTesting, 18, "small-size secondary buttons keep their height too")
+        let after = c.checkRowClearancesForTesting
+        XCTAssertGreaterThanOrEqual(after.buttonToSSH, 4, "after a result, the button clears the SSH command field: \(after)")
+        XCTAssertGreaterThanOrEqual(after.secondaryToSSH, 4, "the secondary buttons clear the SSH command field: \(after)")
+        XCTAssertGreaterThanOrEqual(after.statusToSecondary, 0, "the status does not overlap the secondary buttons: \(after)")
+    }
+
+    func test_longStatus_wrapsInsideTheColumn() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\n")
+        let remote = Remote(); remote.bareUnisonMissing = true
+        let c = make("p", remote: remote)
+        c.window?.setContentSize(NSSize(width: 620, height: 720))
+        c.showSectionForTesting(title: "Roots")
+        _ = await c.runCheck()
+        let g = c.checkStatusGeometryForTesting
+        XCTAssertTrue(g.fits, "the status wraps to several lines inside its row instead of running past it: \(g.description)")
+        let w = c.checkButtonWidthForTesting
+        XCTAssertTrue(w > 120 && w < 280, "the button keeps its natural width rather than filling the column: \(w)")
+        c.window?.setContentSize(NSSize(width: 1100, height: 720))
+        let wide = c.checkButtonWidthForTesting
+        XCTAssertEqual(Int(wide.rounded()), Int(w.rounded()), "the button does not grow with the window")
+    }
+
+    func test_keepCurrentSetting_afterAProposal_restoresTheFormAndTheCurrentResult() async throws {
+        try write("p.prf", "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\n")
+        let c = make("p", remote: Remote())
+        _ = await c.runCheck()
+        await c.chooseCandidate(.candidate("/opt/homebrew/bin/unison"))
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "/opt/homebrew/bin/unison")
+        XCTAssertTrue(c.advancedLinesForTesting.contains("addversionno = false"))
+        c.restoreCurrentSetting()
+        XCTAssertEqual(c.remoteFieldForTesting("servercmd"), "")
+        XCTAssertEqual(c.advancedLinesForTesting, ["addversionno = true"])
+        XCTAssertEqual(c.checkStatusForTesting, "No change needed.")
+        c.invokeSaveForTesting()
+        XCTAssertNil(c.lastAlertForTesting, "the restored form matches the checked configuration")
+        XCTAssertEqual(try read("p.prf"), "root = /a\nroot = ssh://bruno@demeter//x\naddversionno = true\n")
     }
 
     func test_incompatibleRemote_noProposal_boundaryHeadline() async throws {
@@ -112,7 +371,7 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         XCTAssertNotNil(c.checkResultForTesting)
         c.setRootFieldForTesting(second: "ssh://other//x")
         XCTAssertNil(c.checkResultForTesting)
-        XCTAssertNil(c.checkMenuForTesting)
+        XCTAssertNil(c.checkAlternativesForTesting)
         XCTAssertEqual(c.checkStatusForTesting, "Not checked since the last change.")
     }
 

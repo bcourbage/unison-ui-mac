@@ -139,15 +139,27 @@ that failure under the field and opens no session. The check runs against the
 profile as the form currently has it: the form's Remote unison, SSH command,
 SSH args and roots, composed with the effective settings from the profile's
 includes on disk. No save is required before checking; the user saves after
-seeing the result. The profile picker's context menu offers the same command,
-which opens the editor at that section and starts the check.
+seeing the result. The profile picker's context menu (**Run**, **Check Remote
+Command…**) offers the same command, which opens the profile in the Profile
+Editor at that section and starts the check; the picker itself stays a pure
+list, so no other management command joins the menu.
 
 A second entry point is a failed connection: when a sync cannot connect to an
-ssh root, the reconcile window's error offers **Check Remote Command…**, worded
-as a diagnostic ("Check the remote command for this profile") without claiming
-the remote command caused the failure. It opens the exact profile that failed;
-if an editor for it is already open with unsaved changes, that window is
-brought forward and its state preserved.
+ssh root, the restart notice offers **Check Remote Command…** as a third
+button, and the reconcile window's summary keeps to a short headline ("Could
+not connect to the remote. Unison must be restarted to continue.") whose
+**Details** popover holds the full reason, the next step, and the same button.
+Both are worded as a diagnostic ("You can check the remote command for this
+profile first") without claiming the remote command caused the failure. The offer appears only when the failure happened while connecting
+(the coordinator records that the restart was entered from its opening phase)
+and the profile's effective roots include an `ssh://` root; a scan or sync
+failure, a local-only profile, or a `socket://` root (which runs no ssh
+command) makes no offer. It opens the exact profile that failed; if an editor
+for it is already open, that window is brought forward and the check runs
+against the form as it stands, so unsaved edits survive. An editor open on a
+different profile is brought forward and named instead of being replaced.
+The check runs its own ssh subprocess, so it works while the engine is in its
+restart-required state.
 
 ### Step 1: effective settings
 
@@ -182,11 +194,17 @@ One non-interactive session to the remote host runs a single POSIX `sh`
 command that prints, between unique markers:
 
 - `uname -s`;
-- for the effective remote executable and for each well-known candidate
+- for the effective remote executable, for each well-known candidate
   (`/opt/homebrew/bin/unison`, `/usr/local/bin/unison`,
   `/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison`,
-  `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`, `/usr/bin/unison`)
-  that exists: the path, `readlink` of it when it is a symlink (the **stored**
+  `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`,
+  `/Applications/Unison.app/Contents/MacOS/cltool`, `/usr/bin/unison`), and for
+  a `unison` in any directory of the non-interactive shell's `PATH` — the same
+  environment Unison's own remote `unison` resolves in — that the fixed list
+  missed, each reported once (globbing disabled so a directory spelled with glob
+  characters stays literal; an empty component, including a trailing one that
+  field splitting would otherwise drop, is the current directory as `command -v`
+  reads it): the path, `readlink` of it when it is a symlink (the **stored**
   target, which may be relative or itself a link; reported as such), and the
   first line of `<path> -version`;
 - `command -v unison`, labelled as what the discovery script's `sh`
@@ -195,16 +213,51 @@ command that prints, between unique markers:
 
 The session ends there. Nothing is written.
 
-### Step 3: selection (no ssh)
+### Step 3: the current command first, then alternatives (no ssh)
 
-After discovery, the button's menu lists what was found on the remote: each
-candidate with its version line and, where it is a symlink, its stored target;
-**Keep current setting**; and, when the field is empty, the current effect as
-the first, non-selectable line ("Remote PATH decides which unison runs"). The
-check never preselects; with one candidate it still waits for the user.
-Choosing a candidate runs Step 4 for that candidate and, on success, fills the
-Remote unison field with the proposed value under the composition rules below.
-Choosing Keep current setting runs Step 4 for the effective command as it is.
+After discovery the check verifies the command the profile runs today (Step 4
+for the effective command as it is) without asking, in its own ssh session.
+That verification runs whether or not discovery enumerated the alternatives, so
+one discovered command that hangs on `-version` cannot withhold the current
+command's answer; when discovery did not complete, the alternatives are simply
+unavailable and the status says so. That result decides what the user sees:
+
+- it started and reported a version this Mac can connect to: the status
+  reads **No change needed.**, and a secondary **Choose Another Command…**
+  button appears when discovery found other installations;
+- it reported a version across the 2.52 boundary: the status says so, and
+  the same button lists the alternatives with their reported versions, so
+  the ones that pass the version check can be told apart;
+- it did not start or did not report a version: the failure sentences are
+  shown, and the button offers what discovery found.
+
+When the profile sets no `servercmd`, the remote PATH decides what runs, and
+the menu opens by itself once the current command has its answer, so a user
+with nothing configured picks without another click; a configured command
+gets its answer and the button. Most users get an answer without making a
+choice. The menu behind the button
+lists **Keep current setting** ("Currently configured for this profile", or
+"No command is set for this profile; the remote PATH decides which unison
+runs" when Remote unison is empty),
+then one row per other installation found, titled by what choosing it means
+rather than by a maintenance policy the check cannot see: **Use this
+installation directly** ("Uses the program at this location", adding "even if
+the link is redirected" when a link to it is also listed) or **Use the command
+link** ("Uses whichever installation this link points to; now `<target>`").
+Each row shows its full path beneath the title and ends with its reported
+version, "cannot connect to this Mac's `<local>`" across the boundary, or "No
+version reported". Paths the remote resolves to one executable are grouped
+under **Two paths to the same installation**: equivalent today, different
+once a link changes. Nothing infers who maintains an installation from its
+path, and the check never recommends a change; keeping a verified current
+setting is the normal outcome. Choosing a row runs Step 4 for that path and,
+on success, fills the Remote unison field with the proposed value under the
+composition rules below; applying a proposal moves the check's baseline to the
+applied configuration, so a further choice or Save is compared against it rather
+than the pre-proposal form. Keep current setting restores the field and Advanced
+to what they were when the check started. A help button beside Check Remote
+Command… says, in four sentences, when to change the command and what the
+check does and does not prove.
 
 Composition rules for a proposed setting, applied before anything is verified:
 
@@ -294,7 +347,7 @@ not say:
     which is not a Unison version line." What ran remains unverified.
 - Closing, by outcome. After a parsed version whose comparison with this
   Mac's version (`VersionCheck.classify`) is not across the 2.52 boundary:
-  for the current setting, "This check found no change to make."; for a
+  for the current setting, "No change needed."; for a
   selected candidate, "The command you selected started over ssh and reported
   its version."; both followed by "Only a synchronization confirms the server
   protocol; run the profile to test that." After a parsed version across the
@@ -303,11 +356,20 @@ not say:
   sides of the 2.52 boundary and cannot connect." with no proposal applied.
   After any other failure, the failure sentences with "This check did not
   verify the remote command. What it observed is above."
+- When the current command did not pass and discovery found other
+  installations, the status ends with "Choose Another Command lists the N
+  installations found on `host`." For status 127 on a bare command name, the
+  failure adds what discovery's `sh` saw: "During discovery, command -v unison
+  printed nothing inside sh either." or what it printed, noting that the login
+  shell resolved differently.
 - Where the sentences appear: the result headline and one status line sit
   directly under the Remote unison field. The observation sentences
   (connection, program found, version, PATH) are grouped under three plain
   labels in a **Details…** popover with **Copy Report**; on a failure the
-  popover opens by itself. No result sentence names which implementation the
+  popover opens by itself. Details exist only when there is more than the
+  status line says; a result whose only extra sentence is the closing shows
+  no Details button. Details… and Choose Another Command… sit on their own
+  row under the status, and no row may widen the window. No result sentence names which implementation the
   remote runs beyond what the version line printed; the check does not prefer
   this app.
 
@@ -523,6 +585,5 @@ of the app. The deployment target is unchanged.
 
 ## Open questions
 
-- Offering Check Remote from the reconcile window after a connect failure.
 - Whether the version-mismatch probe on open should reuse this check's
   results; not in the first implementation.

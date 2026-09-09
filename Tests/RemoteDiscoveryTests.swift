@@ -27,11 +27,12 @@ final class RemoteDiscoveryTests: XCTestCase {
         let p = D.plan(effectiveExecutable: "/usr/local/bin/unison")
         XCTAssertEqual(p.candidatePaths, ["/usr/local/bin/unison", "/opt/homebrew/bin/unison",
                                           "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison",
-                                          "/Applications/unison-ui-mac.app/Contents/MacOS/cltool", "/usr/bin/unison"])
+                                          "/Applications/unison-ui-mac.app/Contents/MacOS/cltool",
+                                          "/Applications/Unison.app/Contents/MacOS/cltool", "/usr/bin/unison"])
         XCTAssertNil(p.unprobedExecutable)
         let q = D.plan(effectiveExecutable: "/srv/bin/unison-2.54")
         XCTAssertEqual(q.candidatePaths.first, "/srv/bin/unison-2.54")
-        XCTAssertEqual(q.candidatePaths.count, 6)
+        XCTAssertEqual(q.candidatePaths.count, 7)
     }
 
     func test_plan_bareName_isNotProbed() {
@@ -53,8 +54,12 @@ final class RemoteDiscoveryTests: XCTestCase {
         let inner = cmd.dropFirst("sh -c '".count).dropLast()
         XCTAssertFalse(inner.contains("'"), "the script must not contain a single quote")
         XCTAssertTrue(inner.contains("M=UUM-1"))
-        XCTAssertTrue(inner.contains("for p in /opt/homebrew/bin/unison /usr/local/bin/unison /Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/bin/unison; do"))
+        XCTAssertTrue(inner.contains("for p in /opt/homebrew/bin/unison /usr/local/bin/unison /Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison /Applications/unison-ui-mac.app/Contents/MacOS/cltool /Applications/Unison.app/Contents/MacOS/cltool /usr/bin/unison; do"))
         XCTAssertTrue(inner.contains("command -v unison"))
+        XCTAssertTrue(inner.contains("for d in $PATH"), "the script scans PATH for other unisons")
+        XCTAssertTrue(inner.contains("probe \"$q\""))
+        XCTAssertTrue(inner.contains("set -f"), "globbing is disabled so a glob-spelled PATH directory stays literal")
+        XCTAssertTrue(inner.contains("case \"$PATH\" in *:)"), "a trailing empty PATH component (current directory) is probed")
         // The only redirections are to /dev/null or stderr-to-stdout merges.
         let redirections = inner.replacingOccurrences(of: ">/dev/null", with: "").replacingOccurrences(of: "2>&1", with: "")
         XCTAssertFalse(redirections.contains(">"), "nothing is written on the remote: \(inner)")
@@ -91,6 +96,91 @@ final class RemoteDiscoveryTests: XCTestCase {
         XCTAssertEqual(r.candidate(at: real)?.resolvedPath, expectedReal)
         XCTAssertEqual(r.absent, [dir + "/absent"])
         XCTAssertNotNil(r.commandV)
+    }
+
+    func test_remoteCommand_scansPATH_keepsAGlobCharacterDirectoryLiteral() throws {
+        let dir = NSTemporaryDirectory() + "RemoteDiscoveryGlobTests-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        func plant(_ sub: String, _ ver: String) throws -> String {
+            try FileManager.default.createDirectory(atPath: dir + "/" + sub, withIntermediateDirectories: true)
+            let u = dir + "/" + sub + "/unison"
+            try "#!/bin/sh\necho unison version \(ver) \\(ocaml 5.0.0\\)\n".write(toFile: u, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u)
+            return u
+        }
+        _ = try plant("a", "2.50.0")
+        _ = try plant("b", "2.51.0")
+        let lit = try plant("[ab]", "2.53.0")
+        let plan = D.Plan(candidatePaths: [dir + "/fixed-absent"], unprobedExecutable: .bareName("unison"))
+        let cmd = D.remoteCommand(marker: "UUM-g", plan: plan)
+        let savedPATH = getenv("PATH").map { String(cString: $0) } ?? ""
+        setenv("PATH", dir + "/[ab]:/usr/bin:/bin", 1)
+        defer { setenv("PATH", savedPATH, 1) }
+        let raw = VersionCheck.SubprocessProbeExecutor().execute(
+            VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
+            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 0, stderr)
+        let r = D.parse(stdout: stdout, marker: "UUM-g")
+        XCTAssertEqual(r.candidate(at: lit)?.versionLine, "unison version 2.53.0 (ocaml 5.0.0)",
+                       "the literal [ab] directory is scanned, not expanded to a and b")
+        XCTAssertNil(r.candidate(at: dir + "/a/unison"), "the glob was not expanded to sibling a")
+        XCTAssertNil(r.candidate(at: dir + "/b/unison"), "the glob was not expanded to sibling b")
+    }
+
+    func test_remoteCommand_scansPATH_probesTheCurrentDirectory_forATrailingEmptyComponent() throws {
+        let dir = NSTemporaryDirectory() + "RemoteDiscoveryCwdTests-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let u = dir + "/unison"
+        try "#!/bin/sh\necho unison version 2.49.0 \\(ocaml 5.0.0\\)\n".write(toFile: u, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u)
+        let savedCwd = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(dir))
+        defer { FileManager.default.changeCurrentDirectoryPath(savedCwd) }
+        let plan = D.Plan(candidatePaths: [dir + "/fixed-absent"], unprobedExecutable: .bareName("unison"))
+        let cmd = D.remoteCommand(marker: "UUM-cwd", plan: plan)
+        let savedPATH = getenv("PATH").map { String(cString: $0) } ?? ""
+        setenv("PATH", "/usr/bin:/bin:", 1)   // trailing empty component = current directory
+        defer { setenv("PATH", savedPATH, 1) }
+        let raw = VersionCheck.SubprocessProbeExecutor().execute(
+            VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
+            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 0, stderr)
+        let r = D.parse(stdout: stdout, marker: "UUM-cwd")
+        XCTAssertEqual(r.candidate(at: "./unison")?.versionLine, "unison version 2.49.0 (ocaml 5.0.0)",
+                       "a trailing empty PATH component (current directory) is probed")
+    }
+
+    func test_remoteCommand_scansPATH_forAUnisonOutsideTheFixedList() throws {
+        let dir = NSTemporaryDirectory() + "RemoteDiscoveryPATHTests-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let u = dir + "/unison"
+        try "#!/bin/sh\necho unison version 2.52.1 \\(ocaml 5.0.0\\)\n".write(toFile: u, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u)
+        // A plan with only a harmless temp path: the fixed loop must not run a
+        // real system unison by absolute path (an app-linked one can launch and
+        // hang on -version). The PATH scan is what should find the temp unison.
+        let plan = D.Plan(candidatePaths: [dir + "/fixed-absent"], unprobedExecutable: .bareName("unison"))
+        let cmd = D.remoteCommand(marker: "UUM-p", plan: plan)
+        // dir first, then coreutils dirs only — no /usr/local or /opt/homebrew —
+        // so the scan finds the temp unison and no real one.
+        let savedPATH = getenv("PATH").map { String(cString: $0) } ?? ""
+        setenv("PATH", dir + ":/usr/bin:/bin", 1)
+        defer { setenv("PATH", savedPATH, 1) }
+        let raw = VersionCheck.SubprocessProbeExecutor().execute(
+            VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
+            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 0, stderr)
+        let r = D.parse(stdout: stdout, marker: "UUM-p")
+        XCTAssertEqual(r.candidate(at: u)?.versionLine, "unison version 2.52.1 (ocaml 5.0.0)",
+                       "a unison reachable only through PATH is discovered")
+        XCTAssertEqual(r.present.filter { $0.path == u }.count, 1, "a PATH hit is not reported twice")
+        XCTAssertEqual(r.absent, [dir + "/fixed-absent"], "the fixed loop runs over the given plan only")
     }
 
     func test_parse_demeterRecord() {

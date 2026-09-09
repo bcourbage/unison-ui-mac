@@ -15,8 +15,11 @@ import Foundation
 /// be active, and it clears on the next progress event or on completion. The
 /// stronger liveness redesign is tracked as a post-release follow-up.
 enum SyncStallNotice {
+    static func headline(seconds: Int) -> String {
+        "No sync progress has been observed for \(seconds) seconds."
+    }
+    static let detail = "The transfer may still be running; this will update if it resumes."
     static func message(seconds: Int) -> String {
-        "No sync progress has been observed for \(seconds) seconds. "
-            + "The transfer may still be running; this will update if it resumes."
+        headline(seconds: seconds) + " " + detail
     }
 }

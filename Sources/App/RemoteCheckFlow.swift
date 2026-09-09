@@ -161,17 +161,99 @@ enum RemoteCheckFlow {
 
     // MARK: - Step 2 and 3
 
-    enum MenuItem: Equatable {
-        /// Non-selectable first line when the field is empty.
-        case currentEffect(String)
-        case candidate(path: String, versionLine: String?, storedTarget: String?)
-        case keepCurrent
+    // MARK: - Step 3: the current command first, then alternatives
+
+    /// One line of the Choose Another Command menu. The current setting is
+    /// verified first; these rows are offered only when the user wants a
+    /// different installation, and each states the consequence of choosing
+    /// it, not a maintenance policy the check cannot see.
+    struct AlternativeRow: Equatable {
+        enum Kind: Equatable { case header, keepCurrent, direct, link }
+        let kind: Kind
+        let title: String
+        /// The full path shown under the title; nil for a header and for a
+        /// current setting the remote PATH decides.
+        let path: String?
+        let subtitle: String
+        /// The path Step 4 verifies when this row is chosen; nil for a header
+        /// and for Keep current setting.
+        var selectionPath: String? { (kind == .direct || kind == .link) ? path : nil }
     }
+
+    static func alternatives(for p: Prepared, record: RemoteDiscovery.Record) -> [AlternativeRow] {
+        let current = p.settings.servercmd
+        let currentWord = p.command.remoteExecutableWords.first ?? ""
+        func versionClause(_ line: String?) -> String {
+            guard let line, let remote = VersionCheck.parseUnisonVersionLine(line) else { return "No version reported." }
+            if case .incompatibleAcrossBoundary = VersionCheck.classify(local: p.localVersion, remote: remote) {
+                return "Version \(remote), cannot connect to this Mac's \(p.localVersion)."
+            }
+            return "Version \(remote)."
+        }
+        /// The installation a path reaches, for grouping. Only the remote's own
+        /// resolution (realpath / readlink -f) is trusted: resolving a stored
+        /// symlink target lexically here can cross an intermediate symlink and
+        /// assert a false equivalence, so without a remote resolution a path is
+        /// its own identity and is not grouped.
+        func identity(_ c: RemoteDiscovery.Candidate) -> String {
+            c.resolvedPath ?? c.path
+        }
+        let usable = record.present.filter { c in
+            switch c.kind { case .regular, .symlink: return true; case .directory, .other: return false }
+        }
+        let currentCandidate = usable.first { $0.path == currentWord }
+        let others = usable.filter { $0.path != currentWord }
+        var groups: [(key: String, members: [RemoteDiscovery.Candidate])] = []
+        for c in (currentCandidate.map { [$0] } ?? []) + others {
+            let key = identity(c)
+            if let i = groups.firstIndex(where: { $0.key == key }) { groups[i].members.append(c) } else { groups.append((key, [c])) }
+        }
+        func row(_ c: RemoteDiscovery.Candidate, group: [RemoteDiscovery.Candidate]) -> AlternativeRow {
+            switch c.kind {
+            case .symlink(let target):
+                return AlternativeRow(kind: .link, title: "Use the command link", path: c.path,
+                                      subtitle: "Uses whichever installation this link points to; now \(target). " + versionClause(c.versionLine))
+            default:
+                let linked = group.count > 1 && group.contains { if case .symlink = $0.kind { return true }; return false }
+                let effect = linked ? "Uses the program at this location, even if the link is redirected. "
+                                    : "Uses the program at this location. "
+                return AlternativeRow(kind: .direct, title: "Use this installation directly", path: c.path,
+                                      subtitle: effect + versionClause(c.versionLine))
+            }
+        }
+        let keep = AlternativeRow(kind: .keepCurrent, title: "Keep current setting", path: current.isEmpty ? nil : current,
+                                  subtitle: current.isEmpty
+                                      ? "No command is set for this profile; the remote PATH decides which unison runs."
+                                      : "Currently configured for this profile.")
+        var rows: [AlternativeRow] = []
+        var keepPlaced = false
+        for g in groups {
+            if g.members.count > 1 {
+                rows.append(AlternativeRow(kind: .header, title: g.members.count == 2 ? "Two paths to the same installation"
+                                                                                     : "\(g.members.count) paths to the same installation",
+                                           path: nil, subtitle: ""))
+            }
+            if g.members.contains(where: { $0.path == currentWord }) { rows.append(keep); keepPlaced = true }
+            for c in g.members where c.path != currentWord { rows.append(row(c, group: g.members)) }
+        }
+        if !keepPlaced { rows.insert(keep, at: 0) }
+        return rows
+    }
+
+    /// The help shown beside the button.
+    static let helpText: [String] = [
+        "Which command should I use?",
+        "If your current command passes the check, you usually do not need to change it.",
+        "Choose another command when you want this profile to use a different installation on the remote server. Some paths are links and may later point to another installation.",
+        "This check reads the command's version. Run a synchronization to confirm that the two installations work together.",
+    ]
 
     struct Discovery: Equatable {
         let record: RemoteDiscovery.Record?
         let observation: RemoteVerification.Observation
-        let menu: [MenuItem]
+        /// The Choose Another Command rows (see `alternatives`); empty when
+        /// discovery failed.
+        let rows: [AlternativeRow]
         /// Failure sentences when the session did not produce a complete record.
         let failureSentences: [String]
         var succeeded: Bool { record?.complete == true }
@@ -195,25 +277,11 @@ enum RemoteCheckFlow {
         if case .exited(0) = observation.termination, case .exited(_, let stdout, _) = raw {
             let record = RemoteDiscovery.parse(stdout: stdout, marker: marker)
             if record.complete {
-                return Discovery(record: record, observation: observation, menu: menu(for: p, record: record), failureSentences: [])
+                return Discovery(record: record, observation: observation, rows: alternatives(for: p, record: record), failureSentences: [])
             }
         }
-        return Discovery(record: nil, observation: observation, menu: [],
+        return Discovery(record: nil, observation: observation, rows: [],
                          failureSentences: RemoteCheckWording.failure(observation, executablePath: nil, discovery: nil))
-    }
-
-    static func menu(for p: Prepared, record: RemoteDiscovery.Record) -> [MenuItem] {
-        var items: [MenuItem] = []
-        if p.settings.servercmd.isEmpty {
-            items.append(.currentEffect("Remote PATH decides which unison runs"))
-        }
-        for c in record.present {
-            var stored: String?
-            if case .symlink(let target) = c.kind { stored = target }
-            items.append(.candidate(path: c.path, versionLine: c.versionLine, storedTarget: stored))
-        }
-        items.append(.keepCurrent)
-        return items
     }
 
     // MARK: - Step 4 and 5
@@ -294,7 +362,7 @@ enum RemoteCheckFlow {
                                     closing: RemoteCheckWording.closingAfterFailure, proposal: nil, proposalRefusal: nil, compatible: false)
             }
             let headline = selection == .keepCurrent
-                ? "This check found no change to make."
+                ? "No change needed."
                 : "The command you selected started over ssh and reported its version."
             return Verification(verdict: verdict, observation: observation, headline: headline, details: details,
                                 closing: "Only a synchronization confirms the server protocol; run the profile to test that.",

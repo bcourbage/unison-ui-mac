@@ -49,6 +49,22 @@ final class EngineSessionCoordinatorTests: XCTestCase {
         return (s, scanOp)
     }
 
+    // MARK: - Restart entered while connecting (the Check Remote Command offer)
+
+    func test_restartRequiredWhileConnecting_isTrueForAConnectFailure_falseForASyncFailure() {
+        let c = C()
+        let (s, connectOp) = beginConnect(c.requestOpen(profile: "A"))!
+        XCTAssertFalse(c.restartRequiredWhileConnecting)
+        XCTAssertTrue(hasRestart(c.operationFailed(s, connectOp, reason: "no progress", engineIsQuiescent: false)))
+        XCTAssertTrue(c.restartRequiredWhileConnecting)
+
+        let d = C()
+        let (s2, _) = openToReady(d)
+        let (_, syncOp) = beginSync(d.requestSync())!
+        XCTAssertTrue(hasRestart(d.operationFailed(s2, syncOp, reason: "transport", engineIsQuiescent: false)))
+        XCTAssertFalse(d.restartRequiredWhileConnecting)
+    }
+
     // MARK: - Happy paths
 
     func test_open_emitsShowSessionThenConnect() {

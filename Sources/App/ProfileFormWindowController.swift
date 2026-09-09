@@ -37,6 +37,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     // successfully, so a failed save leaves the controller's identity matching
     // the (unchanged) on-disk state and a retry behaves correctly (Finding #11).
     private var initialProfileName: String?   // nil = new profile
+    /// The profile this editor opened on (nil for a new profile).
+    var editingProfileName: String? { initialProfileName }
+    var shownSectionTitleForTesting: String? { shownSectionIndex.map { sectionViews[$0].title } }
+    private var shownSectionIndex: Int?
     private let onSaved: SaveCompletion
     private var prfDocument: ProfileDocument
 
@@ -123,6 +127,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// Tier-1 inheritance banner: shown when the profile `include`s others.
     private let includesBanner = NSTextField(labelWithString: "")
+    private let includesDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    private let includesBannerRow = NSStackView()
+    private var includesDetails: [String] = []
+    private var includesPopover: NSPopover?
 
     // Remote connection (SSH / servercmd). Surfaced inside Roots when a
     // root is remote; previously these lived in the Advanced catch-all.
@@ -215,16 +223,120 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private let checkDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
     private let checkProgress = NSProgressIndicator()
     private let checkStatusLabel = NSTextField(wrappingLabelWithString: "")
+    /// Vertical hugging for the form's stacks: above the section spacer and
+    /// the default 250 so leftover height goes to the spacer, below content
+    /// compression resistance (750) so a stack never shrinks its own views.
+    /// At required, a row with a 1-point spacer hugged down to 3 points and
+    /// its buttons were compressed to that height.
+    private static let stackHug = NSLayoutConstraint.Priority(500)
     /// One per editor window; part of the check's configuration token.
     private let checkSessionID = UUID()
     private var checkHandle: RemoteCheckSession.Handle?
     private var checkTask: Task<Void, Never>?
     private var checkPrepared: RemoteCheckFlow.Prepared?
+    /// The prepared configuration the current-command result was verified under,
+    /// kept so Keep current setting can confirm that result still describes the
+    /// restored form before showing it.
+    private var checkOriginalPrepared: RemoteCheckFlow.Prepared?
     private var checkDiscovery: RemoteCheckFlow.Discovery?
     private var checkResult: RemoteCheckFlow.Verification?
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
     private var checkReport: [String] = []
     private var checkPopover: NSPopover?
+    private let checkHelpButton = NSButton(title: "", target: nil, action: nil)
+    /// Secondary action after the current command was verified: the menu of
+    /// other installations discovery found.
+    private let checkChooseButton = NSButton(title: "Choose Another Command…", target: nil, action: nil)
+    /// Details… and Choose Another Command… share a second row that is hidden
+    /// until a result exists, so the primary row never outgrows the column.
+    private var checkSecondaryRow: NSStackView?
+    var detailsButtonVisibleForTesting: Bool { !checkDetailsButton.isHidden }
+    /// Set when the alternatives menu opened by itself after the current
+    /// command's answer (a profile with no servercmd).
+    private(set) var checkMenuAutoPresentedForTesting = false
+    /// After layout, whether the status label stays inside its row and wraps
+    /// rather than running past the column.
+    var checkStatusFitsForTesting: Bool { checkStatusGeometryForTesting.fits }
+    var checkStatusGeometryForTesting: (fits: Bool, description: String) {
+        // Wrapping labels settle their height on the pass after their width
+        // is known, as they do in the running app.
+        window?.contentView?.layoutSubtreeIfNeeded()
+        checkStatusLabel.invalidateIntrinsicContentSize()
+        window?.contentView?.layoutSubtreeIfNeeded()
+        guard let row = checkStatusRow else { return (false, "no row") }
+        // The alignment rectangle is what Auto Layout positions; the frame
+        // carries the text field's bezel padding outside it.
+        let f = checkStatusLabel.alignmentRect(forFrame: checkStatusLabel.frame)
+        let fits = f.maxX <= row.bounds.maxX + 0.5 && f.height > 20
+        return (fits, "label \(f) in row \(row.bounds), section width \(sectionContainer.bounds.width)")
+    }
+    /// After layout, the vertical clearances around the check rows in points:
+    /// the check button above the SSH command field, and the secondary row
+    /// above that field. Negative means overlap.
+    var checkRowClearancesForTesting: (buttonToSSH: CGFloat, secondaryToSSH: CGFloat, statusToSecondary: CGFloat) {
+        guard let content = window?.contentView else { return (-1, -1, -1) }
+        content.layoutSubtreeIfNeeded()
+        func r(_ v: NSView) -> NSRect { v.convert(v.alignmentRect(forFrame: v.bounds), to: content) }
+        let ssh = r(sshcmdField), button = r(checkRemoteButton)
+        let secondary = checkSecondaryRow.map(r) ?? button
+        let status = r(checkStatusLabel)
+        let secondaryVisible = checkSecondaryRow?.isHidden == false
+        return (button.minY - ssh.maxY,
+                secondaryVisible ? secondary.minY - ssh.maxY : button.minY - ssh.maxY,
+                secondaryVisible ? status.minY - secondary.maxY : 0)
+    }
+    /// After layout, the smallest height among the check row's visible
+    /// buttons; a compressed row shows up here as a few points.
+    var checkButtonsMinHeightForTesting: CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return [checkRemoteButton, checkHelpButton, checkDetailsButton, checkChooseButton]
+            .filter { !$0.isHidden }.map { $0.frame.height }.min() ?? 0
+    }
+    /// After layout, the Check Remote Command button's width when it carries a
+    /// given title, so a title toggle that changed its width would show here.
+    func widthOfCheckButtonForTesting(withTitle t: String) -> CGFloat {
+        let saved = checkRemoteButton.title
+        checkRemoteButton.title = t
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let w = checkRemoteButton.frame.width
+        checkRemoteButton.title = saved
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return w
+    }
+    /// After layout, the Check Remote Command button's width: its natural size,
+    /// not the column's.
+    var checkButtonWidthForTesting: CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return checkRemoteButton.frame.width
+    }
+    func enforceFixedWidthForTesting() { enforceFixedWidth() }
+    /// The verification of the current command, restored by Keep current setting.
+    private var checkCurrentResult: RemoteCheckFlow.Verification?
+    /// The form as it stood when the check started, so Keep current setting
+    /// can undo a proposal exactly.
+    private var checkFieldAtStart = ""
+    private var checkAdvancedAtStart: [String] = []
+    private var proposalChangedAdvanced = false
+    /// The status line's row; hidden with the label so it takes no height.
+    private var checkStatusRow: NSStackView?
+    var checkStatusRowHiddenForTesting: Bool { checkStatusRow?.isHidden ?? true }
+    var checkHelpTextForTesting: [String] { RemoteCheckFlow.helpText }
+    /// Points between the bottom of the Remote unison field and the top of the
+    /// Check Remote Command button, after layout at the window's current size.
+    var checkRowGapForTesting: CGFloat {
+        guard let content = window?.contentView else { return -1 }
+        content.layoutSubtreeIfNeeded()
+        let field = servercmdField.convert(servercmdField.bounds, to: content)
+        let button = checkRemoteButton.convert(checkRemoteButton.bounds, to: content)
+        return field.minY - button.maxY
+    }
+    func showSectionForTesting(title: String) {
+        guard let i = sectionViews.firstIndex(where: { $0.title == title }) else { return }
+        if let row = visibleSectionIndices.firstIndex(of: i) {
+            sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        showSection(i)
+    }
     /// The Advanced `addversionno` values as loaded, so Save can tell a changed
     /// assignment (by the user or by a check's proposal) from an untouched one.
     private var initialAddversionnoAdvanced: [String] = []
@@ -279,11 +391,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         self.prfDocument = ProfileDocument()
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: Self.formWidth, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = profileName.map { "Edit Profile — \($0)" } ?? "New Profile"
+        // The form is a fixed-width column; only its height varies. contentMin/
+        // MaxSize pin the width for interactive resize, and enforceFixedWidth()
+        // heals a stale autosaved frame (an old build saved 1100 before the
+        // width-growth fixes): min/max do not constrain a programmatic setFrame,
+        // so the autosave restore alone would still reopen wide.
+        window.contentMinSize = NSSize(width: Self.formWidth, height: 480)
+        window.contentMaxSize = NSSize(width: Self.formWidth, height: 100_000)
         window.center()
         super.init(window: window)
         // Form (single-profile content editor) has its own autosave key
@@ -297,6 +416,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         configure()
         loadDocumentIntoForm()
+        // The autosave name above just restored the saved frame; force the
+        // width back, keeping the remembered height and origin.
+        enforceFixedWidth()
+    }
+
+    /// The form's fixed content width (== window width; the form has no side
+    /// borders). Only the height varies.
+    static let formWidth: CGFloat = 620
+
+    /// Restore the fixed width after any frame change that could have widened
+    /// the window (an autosaved frame from an older, pollutable build).
+    private func enforceFixedWidth() {
+        guard let win = window, abs(win.frame.width - Self.formWidth) > 0.5 else { return }
+        var f = win.frame
+        f.size.width = Self.formWidth
+        win.setFrame(f, display: false)
     }
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
@@ -415,6 +550,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         remoteGroup.orientation = .vertical
         remoteGroup.alignment = .leading
         remoteGroup.spacing = 8
+        remoteGroup.setHuggingPriority(Self.stackHug, for: .vertical)
         let remoteRows: [NSView] = [
             remoteHeader, remoteHelp,
             labeledRowWithNote(label: "Remote unison", control: servercmdField, key: "servercmd"),
@@ -613,13 +749,25 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         includesBanner.lineBreakMode = .byTruncatingTail
         includesBanner.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         includesBanner.isHidden = true
+        includesDetailsButton.bezelStyle = .inline
+        includesDetailsButton.controlSize = .small
+        includesDetailsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        includesDetailsButton.target = self
+        includesDetailsButton.action = #selector(includesDetailsTapped(_:))
+        includesDetailsButton.setContentHuggingPriority(.required, for: .horizontal)
+        includesBannerRow.orientation = .horizontal
+        includesBannerRow.spacing = 6
+        includesBannerRow.alignment = .firstBaseline
+        includesBannerRow.addArrangedSubview(includesBanner)
+        includesBannerRow.addArrangedSubview(includesDetailsButton)
+        includesBannerRow.isHidden = true
         duplicatesBanner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         duplicatesBanner.textColor = .secondaryLabelColor
         duplicatesBanner.lineBreakMode = .byTruncatingTail
         duplicatesBanner.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         duplicatesBanner.isHidden = true
 
-        let rightSide = NSStackView(views: [popOutBar, includesBanner, duplicatesBanner, sectionContainer, buttonRow])
+        let rightSide = NSStackView(views: [popOutBar, includesBannerRow, duplicatesBanner, sectionContainer, buttonRow])
         rightSide.orientation = .vertical
         rightSide.spacing = 10
         rightSide.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
@@ -642,7 +790,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             sectionContainer.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
             buttonRow.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
             popOutBar.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
-            includesBanner.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
+            includesBannerRow.widthAnchor.constraint(equalTo: rightSide.widthAnchor, constant: -28),
         ])
 
         sidebarTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -664,7 +812,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // let their text view absorb the space instead.
         if !fill {
             let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+            // Strictly the lowest hugging in the section. NSStackView rows hug
+            // at defaultLow (250) as well, so a spacer at defaultLow tied with
+            // them and Auto Layout split the leftover height between the
+            // spacer and a row at random; the Remote unison row then grew by
+            // a different amount on each open.
+            spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
             spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
             s.addArrangedSubview(spacer)
             spacer.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
@@ -674,8 +827,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// Swap the right-side container to show the selected section. Views
     /// are reused (the array retains them), so control state persists.
+    /// Entry point for the picker menu and the failed-connection offer:
+    /// shows the Roots section and starts the check against the form as it
+    /// stands, so an editor that was already open keeps its edits.
+    func beginRemoteCheck() {
+        if let i = sectionViews.firstIndex(where: { $0.title == "Roots" }) {
+            if let row = visibleSectionIndices.firstIndex(of: i) {
+                sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            showSection(i)
+        }
+        Task { await self.runCheck() }
+    }
+
     private func showSection(_ index: Int) {
         guard sectionViews.indices.contains(index) else { return }
+        shownSectionIndex = index
         refreshIncludesBanner()
         sectionContainer.subviews.forEach { $0.removeFromSuperview() }
         let v = sectionViews[index].view
@@ -717,14 +884,18 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// A labeled row whose note sits beneath the control, aligned with it.
     private func labeledRowWithNote(label: String, control: NSView, key: String) -> NSStackView {
         let note = noteLabel(forKey: key)
-        let noteRow = NSStackView(views: [NSView(), note])
+        // Indent with an inset, not a spacer view: a spacer has no height of
+        // its own, so with the note hidden this row could take any height and
+        // the field above it floated away from the controls below.
+        let noteRow = NSStackView(views: [note])
         noteRow.orientation = .horizontal
-        noteRow.spacing = 8
-        noteRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        noteRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        noteRow.setHuggingPriority(Self.stackHug, for: .vertical)
         let v = NSStackView(views: [labeledRow(label: label, control: control), noteRow])
         v.orientation = .vertical
         v.alignment = .leading
         v.spacing = 2
+        v.setHuggingPriority(Self.stackHug, for: .vertical)
         return v
     }
 
@@ -734,6 +905,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkRemoteButton.bezelStyle = .rounded
         checkRemoteButton.target = self
         checkRemoteButton.action = #selector(checkRemoteTapped(_:))
+        // The title toggles to "Cancel Check" while a check runs; pin the width
+        // to the longer resting title so the spinner and ? beside it hold still.
+        checkRemoteButton.widthAnchor.constraint(equalToConstant: max(checkRemoteButton.fittingSize.width, 170)).isActive = true
         checkDetailsButton.bezelStyle = .rounded
         checkDetailsButton.target = self
         checkDetailsButton.action = #selector(checkDetailsTapped(_:))
@@ -746,21 +920,98 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkStatusLabel.maximumNumberOfLines = 0
         checkStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         checkStatusLabel.isHidden = true
-        let controls = hstack([checkRemoteButton, checkProgress, checkDetailsButton, NSView()])
-        let controlsRow = NSStackView(views: [NSView(), controls])
-        controlsRow.orientation = .horizontal; controlsRow.spacing = 8
-        controlsRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        let statusRow = NSStackView(views: [NSView(), checkStatusLabel])
-        statusRow.orientation = .horizontal; statusRow.spacing = 8
-        statusRow.views.first!.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        let v = NSStackView(views: [controlsRow, statusRow])
+        checkHelpButton.bezelStyle = .helpButton
+        checkHelpButton.target = self
+        checkHelpButton.action = #selector(checkHelpTapped(_:))
+        checkHelpButton.toolTip = "Why the choice matters"
+        // Rows are indented to the field column with insets, not spacer
+        // views: a spacer has no height of its own, and with the status
+        // label hidden its row shared the section's leftover height at
+        // random, so the gap under Remote unison varied between opens.
+        checkChooseButton.bezelStyle = .rounded
+        checkChooseButton.target = self
+        checkChooseButton.action = #selector(checkChooseTapped(_:))
+        checkChooseButton.isHidden = true
+        for b in [checkDetailsButton, checkChooseButton] {
+            b.controlSize = .small
+            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        }
+        // Two rows, each allowed to be narrower than its buttons (clipping
+        // resistance below required): a row that insists on its full width
+        // has only the window left to grow, and the editor widened by itself
+        // whenever a result added buttons.
+        // Each button row ends with a flexible spacer that takes the column's
+        // spare width, so the buttons keep their natural size once the row
+        // is pinned to the column.
+        func flexibleSpacer() -> NSView {
+            let v = NSView()
+            v.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            v.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            v.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            return v
+        }
+        let spinnerSlot = NSView()
+        spinnerSlot.translatesAutoresizingMaskIntoConstraints = false
+        spinnerSlot.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        checkProgress.translatesAutoresizingMaskIntoConstraints = false
+        spinnerSlot.addSubview(checkProgress)
+        NSLayoutConstraint.activate([
+            checkProgress.centerXAnchor.constraint(equalTo: spinnerSlot.centerXAnchor),
+            checkProgress.centerYAnchor.constraint(equalTo: spinnerSlot.centerYAnchor),
+        ])
+        let controlsRow = hstack([checkRemoteButton, spinnerSlot, checkHelpButton, flexibleSpacer()])
+        controlsRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        controlsRow.setHuggingPriority(Self.stackHug, for: .vertical)
+        controlsRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        let secondaryRow = hstack([checkDetailsButton, checkChooseButton, flexibleSpacer()])
+        secondaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        secondaryRow.setHuggingPriority(Self.stackHug, for: .vertical)
+        secondaryRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        secondaryRow.isHidden = true
+        checkSecondaryRow = secondaryRow
+        let statusRow = NSStackView(views: [checkStatusLabel])
+        statusRow.orientation = .horizontal
+        statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 138, bottom: 0, right: 0)
+        statusRow.setHuggingPriority(Self.stackHug, for: .vertical)
+        // The status row never clips: the label compresses and wraps instead.
+        // Letting the row clip at the same priority tied with the label's
+        // compression, and the label then wrapped or clipped at random.
+        statusRow.isHidden = true
+        checkStatusRow = statusRow
+        let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
+        v.setHuggingPriority(Self.stackHug, for: .vertical)
+        // A leading-aligned stack gives each row only its content width; the
+        // status label needs the column's width to wrap against.
+        for row in [controlsRow, statusRow, secondaryRow] {
+            row.widthAnchor.constraint(equalTo: v.widthAnchor).isActive = true
+        }
         return v
     }
 
     private func setCheckStatus(_ text: String?) {
         checkStatusLabel.stringValue = text ?? ""
         checkStatusLabel.isHidden = (text == nil)
+        checkStatusRow?.isHidden = (text == nil)
+    }
+
+    private func refreshCheckSecondaryRow() {
+        checkSecondaryRow?.isHidden = checkDetailsButton.isHidden && checkChooseButton.isHidden
+    }
+
+    /// Where to find what discovery turned up, for a current command that did
+    /// not pass.
+    private func alternativesSentence(host: String) -> String? {
+        let n = checkDiscovery?.rows.filter { $0.selectionPath != nil }.count ?? 0
+        guard n > 0 else { return nil }
+        return n == 1 ? "Choose Another Command lists the installation found on \(host)."
+                      : "Choose Another Command lists the \(n) installations found on \(host)."
+    }
+
+    @objc private func checkHelpTapped(_ sender: NSButton) {
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(checkHelpTextForTesting), width: 440)
+        checkPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     /// The form's current values as the check's inputs.
@@ -795,12 +1046,25 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         Task { await self.runCheck() }
     }
 
-    /// Step 1 and 2: prepare from the form, run discovery, then offer the menu.
-    /// Returns the discovery so tests can drive the selection.
+    /// Steps 1 to 4: prepare from the form, run discovery, then verify the
+    /// command the profile runs today. Alternatives wait behind Choose Another
+    /// Command. Returns the discovery so tests can drive a selection.
     @discardableResult
     func runCheck() async -> RemoteCheckFlow.Discovery? {
         cancelCheck()
-        checkResult = nil; checkReport = []; checkDetailsButton.isHidden = true
+        // A previous result's buttons stay in place, disabled, until the new
+        // answer replaces them; hiding and re-showing them made the row jump.
+        checkResult = nil; checkReport = []
+        checkDetailsButton.isEnabled = false
+        checkChooseButton.isEnabled = false
+        checkMenuAutoPresentedForTesting = false
+        checkCurrentResult = nil
+        // Drop any previous check's discovery so it can't leak into this run's
+        // continuation after a cancel.
+        checkDiscovery = nil
+        checkFieldAtStart = servercmdField.stringValue
+        checkAdvancedAtStart = advancedView.values
+        proposalChangedAdvanced = false
         guard let inputs = checkInputs() else {
             setCheckStatus("Save the profile once before checking its remote command."); return nil
         }
@@ -811,6 +1075,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             setCheckStatus(Self.startFailureText(why)); return nil
         }
         checkPrepared = prepared
+        checkOriginalPrepared = prepared
         let handle = RemoteCheckSession.Handle()
         checkHandle = handle
         checkRemoteButton.title = "Cancel Check"
@@ -823,64 +1088,103 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         }
         checkTask = task
         await task.value
+        // Verify the current command whether or not discovery enumerated the
+        // alternatives (one that hangs on -version must not withhold the current
+        // command's answer) — but only while this run still owns the check: a
+        // cancel clears the handle, and must not be followed by a fresh session.
+        if checkHandle === handle, checkDiscovery != nil {
+            await chooseCandidate(.keepCurrent)
+        }
         return checkDiscovery
     }
 
     private func finishDiscovery(_ d: RemoteCheckFlow.Discovery, prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
         guard checkHandle === handle else { return }           // cancelled or superseded
         checkTask = nil
-        checkProgress.stopAnimation(nil)
-        checkRemoteButton.title = "Check Remote Command…"
         guard RemoteCheckFlow.tokenStillValid(prepared, current: checkInputs()) else {
+            checkProgress.stopAnimation(nil)
+            checkRemoteButton.title = "Check Remote Command…"
             TraceLog.shared.write("remote check: discovery completed for a stale configuration; discarded")
             setCheckStatus("Not checked since the last change."); checkDiscovery = nil; return
         }
         checkDiscovery = d
-        if d.succeeded {
-            setCheckStatus("Choose the command to verify on \(prepared.host).")
-            presentCheckMenu(d.menu)
-        } else {
-            showCheckReport(headline: d.failureSentences.first ?? RemoteCheckWording.closingAfterFailure,
-                            details: Array(d.failureSentences.dropFirst().dropLast()),
-                            closing: d.failureSentences.last ?? RemoteCheckWording.closingAfterFailure,
-                            openDetails: true)
-        }
+        // Keep the spinner and "Cancel Check" running: runCheck chains straight
+        // into verifying the current command, whether or not discovery
+        // enumerated the alternatives. When discovery did not complete (e.g. an
+        // alternative hung), the current command still gets its own session and
+        // its answer; the alternatives are simply unavailable this time.
+        setCheckStatus("Verifying the current command on \(prepared.host)…")
     }
 
-    private func presentCheckMenu(_ items: [RemoteCheckFlow.MenuItem]) {
+    @objc private func checkChooseTapped(_ sender: NSButton) {
+        guard let rows = checkDiscovery?.rows, rows.contains(where: { $0.selectionPath != nil }) else { return }
+        presentCheckMenu(rows)
+    }
+
+    private func presentCheckMenu(_ rows: [RemoteCheckFlow.AlternativeRow]) {
         let menu = NSMenu(title: "Remote command")
-        for item in items {
-            switch item {
-            case .currentEffect(let text):
-                let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-                mi.isEnabled = false
-                menu.addItem(mi)
-                menu.addItem(.separator())
-            case .candidate(let path, let version, let stored):
-                var title = path
-                if let version { title += " — " + version }
-                let mi = NSMenuItem(title: title, action: #selector(checkMenuChose(_:)), keyEquivalent: "")
+        menu.autoenablesItems = false
+        for row in rows {
+            switch row.kind {
+            case .header:
+                menu.addItem(.sectionHeader(title: row.title))
+            case .keepCurrent, .direct, .link:
+                let mi = NSMenuItem(title: row.title, action: #selector(checkMenuChose(_:)), keyEquivalent: "")
                 mi.target = self
-                mi.representedObject = path
-                if let stored { mi.toolTip = "Symlink; stored target " + stored }
-                menu.addItem(mi)
-            case .keepCurrent:
-                menu.addItem(.separator())
-                let mi = NSMenuItem(title: "Keep current setting", action: #selector(checkMenuChose(_:)), keyEquivalent: "")
-                mi.target = self
-                mi.representedObject = ""
+                mi.representedObject = row.selectionPath ?? ""
+                if let path = row.path {
+                    let title = NSMutableAttributedString(string: row.title, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+                    title.append(NSAttributedString(string: "\n" + path, attributes: [
+                        .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                        .foregroundColor: NSColor.secondaryLabelColor]))
+                    mi.attributedTitle = title
+                }
+                mi.subtitle = row.subtitle
                 menu.addItem(mi)
             }
         }
-        menu.autoenablesItems = false
         if window?.isVisible == true {
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: checkRemoteButton.bounds.height), in: checkRemoteButton)
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: checkChooseButton.bounds.height), in: checkChooseButton)
         }
     }
 
     @objc private func checkMenuChose(_ sender: NSMenuItem) {
         let path = sender.representedObject as? String ?? ""
-        Task { await self.chooseCandidate(path.isEmpty ? .keepCurrent : .candidate(path)) }
+        if path.isEmpty { restoreCurrentSetting() } else { Task { await self.chooseCandidate(.candidate(path)) } }
+    }
+
+    /// Keep current setting after a proposal was applied: the field and
+    /// Advanced return to what they were when the check started, and the
+    /// current command's verification is shown again.
+    func restoreCurrentSetting() {
+        servercmdField.stringValue = checkFieldAtStart
+        if proposalChangedAdvanced {
+            advancedView.values = checkAdvancedAtStart
+            proposalChangedAdvanced = false
+        }
+        // The current-command result was verified under the original token. Show
+        // it again only if that token still holds for the restored form: if an
+        // include changed since (so the restored form would run a different
+        // command), the cached result no longer describes it.
+        guard let original = checkOriginalPrepared, let v = checkCurrentResult,
+              RemoteCheckFlow.tokenStillValid(original, current: checkInputs()) else {
+            // Fail closed: clear the whole result, not just the status, so the
+            // Details popover and Copy Report cannot surface the stale report.
+            invalidateCheckResult()
+            return
+        }
+        // Save compares against the token the result was verified under.
+        checkPrepared = original
+        checkResult = v
+        showCheckReport(headline: v.headline, details: v.details, closing: v.closing, openDetails: false)
+    }
+
+    /// After a check-driven change to the form (an applied proposal, or a
+    /// restore), move the check's baseline to the current form so a later
+    /// choice or Save is compared against what the form now holds.
+    private func rebaselineCheckPrepared() {
+        guard let i = checkInputs(), case .success(let p) = RemoteCheckFlow.prepare(i) else { return }
+        checkPrepared = p
     }
 
     /// Step 4 and 5 for one selection. Public for tests.
@@ -895,13 +1199,14 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let record = checkDiscovery?.record
         let task = Task { [weak self] in
             let v = await RemoteCheckFlow.verify(prepared, selection: selection, discovery: record, handle: handle, makeExecutor: factory)
-            await MainActor.run { self?.finishVerification(v, prepared: prepared, handle: handle) }
+            await MainActor.run { self?.finishVerification(v, selection: selection, prepared: prepared, handle: handle) }
         }
         checkTask = task
         await task.value
     }
 
-    private func finishVerification(_ v: RemoteCheckFlow.Verification, prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
+    private func finishVerification(_ v: RemoteCheckFlow.Verification, selection: RemoteCheckFlow.Selection,
+                                    prepared: RemoteCheckFlow.Prepared, handle: RemoteCheckSession.Handle) {
         guard checkHandle === handle else { return }
         checkTask = nil
         checkProgress.stopAnimation(nil)
@@ -920,38 +1225,60 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
                 var lines = advancedView.values.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("addversionno") }
                 lines.append("addversionno = false")
                 advancedView.values = lines
+                proposalChangedAdvanced = true
             }
+            // The applied proposal IS the pending configuration now, so a later
+            // choice or Save must compare against it, not the pre-proposal form
+            // whose token this verification carried.
+            rebaselineCheckPrepared()
         }
+        // Alternatives are a secondary action once the current command has
+        // an answer, whatever that answer is.
+        checkChooseButton.isHidden = !(checkDiscovery?.rows.contains { $0.selectionPath != nil } ?? false)
         var headline = v.headline
+        if selection == .keepCurrent, v.compatible != true, v.verdict != .cancelled, let more = alternativesSentence(host: prepared.host) {
+            headline += " " + more
+        }
+        if selection == .keepCurrent, v.compatible == true, checkDiscovery?.succeeded == false {
+            headline += " Other commands on \(prepared.host) could not be listed."
+        }
+        if selection == .keepCurrent {
+            checkCurrentResult = RemoteCheckFlow.Verification(
+                verdict: v.verdict, observation: v.observation, headline: headline, details: v.details, closing: v.closing,
+                proposal: v.proposal, proposalRefusal: v.proposalRefusal, compatible: v.compatible)
+        }
         if v.proposal != nil {
             headline += v.proposal?.setsAddversionnoFalse == true
                 ? " Remote unison is set to it and addversionno to false; Save to keep the change."
                 : " Remote unison is set to it; Save to keep the change."
         }
+        // A profile with no servercmd relies on the remote PATH; once the
+        // current command has its answer, the alternatives open by themselves
+        // so the user picks without another click.
+        let autoPresent = selection == .keepCurrent && prepared.settings.servercmd.isEmpty && !checkChooseButton.isHidden
         showCheckReport(headline: headline, details: v.details, closing: v.closing,
-                        openDetails: v.verdict == .notVerified)
+                        openDetails: v.verdict == .notVerified && !autoPresent)
+        if autoPresent, let rows = checkDiscovery?.rows {
+            checkMenuAutoPresentedForTesting = true
+            if window?.isVisible == true { presentCheckMenu(rows) }
+        }
     }
 
     private func showCheckReport(headline: String, details: [String], closing: String, openDetails: Bool) {
         setCheckStatus(headline)
-        checkReport = [headline] + details + (closing.isEmpty ? [] : [closing])
-        checkDetailsButton.isHidden = details.isEmpty && closing.isEmpty
+        // Details exist only when there is more than the status line says; a
+        // popover repeating the headline with a closing sentence adds nothing.
+        checkReport = details.isEmpty ? [headline] : [headline] + details + (closing.isEmpty ? [] : [closing])
+        checkDetailsButton.isHidden = details.isEmpty
+        checkDetailsButton.isEnabled = true
+        checkChooseButton.isEnabled = true
+        refreshCheckSecondaryRow()
         if openDetails, !checkDetailsButton.isHidden, window?.isVisible == true { checkDetailsTapped(checkDetailsButton) }
     }
 
     @objc private func checkDetailsTapped(_ sender: NSButton) {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        let text = NSTextField(wrappingLabelWithString: checkReport.joined(separator: "\n\n"))
-        text.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        text.preferredMaxLayoutWidth = 420
         let copy = NSButton(title: "Copy Report", target: self, action: #selector(copyCheckReport(_:)))
-        copy.bezelStyle = .rounded
-        let stack = NSStackView(views: [text, copy])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        let vc = NSViewController(); vc.view = stack
-        popover.contentViewController = vc
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(checkReport), buttons: [copy])
         checkPopover = popover
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
@@ -960,6 +1287,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(checkReport.joined(separator: "\n"), forType: .string)
     }
+
+    func cancelCheckForTesting() { cancelCheck() }
 
     private func cancelCheck() {
         checkHandle?.cancel()
@@ -975,8 +1304,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private func invalidateCheckResult() {
         guard checkResult != nil || checkDiscovery != nil || checkTask != nil else { return }
         cancelCheck()
-        checkResult = nil; checkDiscovery = nil; checkReport = []
+        checkResult = nil; checkDiscovery = nil; checkReport = []; checkCurrentResult = nil
         checkDetailsButton.isHidden = true
+        checkChooseButton.isHidden = true
+        checkDetailsButton.isEnabled = true
+        checkChooseButton.isEnabled = true
+        refreshCheckSecondaryRow()
         setCheckStatus("Not checked since the last change.")
     }
 
@@ -1024,12 +1357,31 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// Show/hide the Tier-1 inheritance banner from the current includes.
     private func refreshIncludesBanner() {
+        // A read-only notice owns the banner while the profile cannot be edited.
+        guard notEditableReason == nil else { return }
         let names = includesView.entries.map { $0.name }
-        includesBanner.isHidden = names.isEmpty
-        if !names.isEmpty {
-            includesBanner.stringValue = "Includes " + names.joined(separator: ", ")
-                + ". Settings from those files also apply at sync time."
+        if names.isEmpty {
+            setIncludesBanner(headline: nil, details: [])
+        } else {
+            setIncludesBanner(headline: "Includes " + names.joined(separator: ", ") + ".",
+                              details: ["Settings from those files also apply at sync time."])
         }
+    }
+
+    /// The banner keeps to one line; anything longer sits behind Details.
+    private func setIncludesBanner(headline: String?, details: [String]) {
+        includesBannerRow.isHidden = (headline == nil)
+        includesBanner.isHidden = (headline == nil)
+        includesBanner.stringValue = headline ?? ""
+        includesBanner.toolTip = details.isEmpty ? nil : details.joined(separator: "\n")
+        includesDetails = headline.map { [$0] + details } ?? []
+        includesDetailsButton.isHidden = details.isEmpty
+    }
+
+    @objc private func includesDetailsTapped(_ sender: NSButton) {
+        let popover = DetailsPopover.make(text: DetailsPopover.attributed(includesDetails))
+        includesPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     /// Other `.prf` basenames in the Unison directory (excluding this one),
@@ -1270,8 +1622,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         let editable = (notEditableReason == nil)
         saveButton.isEnabled = editable
         if let reason = notEditableReason {
-            includesBanner.isHidden = false
-            includesBanner.stringValue = "Read-only: " + reason.split(separator: "\n").first.map(String.init)!
+            let first = reason.split(separator: "\n").first.map(String.init) ?? reason
+            setIncludesBanner(headline: "Read-only: " + first, details: first == reason ? [] : [reason])
         }
     }
 
@@ -2112,7 +2464,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
     var checkStatusForTesting: String? { checkStatusLabel.isHidden ? nil : checkStatusLabel.stringValue }
     var checkReportForTesting: [String] { checkReport }
-    var checkMenuForTesting: [RemoteCheckFlow.MenuItem]? { checkDiscovery?.menu }
+    var checkAlternativesForTesting: [RemoteCheckFlow.AlternativeRow]? { checkDiscovery?.rows }
+    var chooseButtonVisibleForTesting: Bool { !checkChooseButton.isHidden }
+    var includesDetailsForTesting: [String] { includesDetails }
     var checkResultForTesting: RemoteCheckFlow.Verification? { checkResult }
     var checkIsRunningForTesting: Bool { checkTask != nil }
     var advancedLinesForTesting: [String] { advancedView.values }

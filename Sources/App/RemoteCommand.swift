@@ -19,6 +19,13 @@ enum UnisonRoot: Equatable {
         return true
     }
 
+    /// True only for an ssh (`ConnectByShell`) root. A socket root is remote but
+    /// runs no ssh command, so the remote-command check does not apply to it.
+    var isSSH: Bool {
+        if case .shell = self { return true }
+        return false
+    }
+
     /// Upstream raises three exception types here; `uicommon.ml` catches all
     /// three and prefixes "There's a problem with one of the roots:\n".
     enum ParseError: Error, Equatable {

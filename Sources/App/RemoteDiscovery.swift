@@ -16,6 +16,7 @@ enum RemoteDiscovery {
         "/usr/local/bin/unison",
         "/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison",
         "/Applications/unison-ui-mac.app/Contents/MacOS/cltool",
+        "/Applications/Unison.app/Contents/MacOS/cltool",
         "/usr/bin/unison",
     ]
 
@@ -60,18 +61,42 @@ enum RemoteDiscovery {
         precondition(marker.unicodeScalars.allSatisfy(ServercmdProposal.isSafe))
         precondition(plan.candidatePaths.allSatisfy { $0.unicodeScalars.allSatisfy(ServercmdProposal.isSafe) })
         let list = plan.candidatePaths.joined(separator: " ")
-        let perPath = [
+        // The reporting body, as a function so both the fixed-candidate loop and
+        // the PATH scan use it. `$p` present → path/kind/real/version; absent →
+        // one `absent:` line.
+        let probe = [
+            "probe() { p=\"$1\"",
             "if [ -e \"$p\" ] || [ -L \"$p\" ]; then echo \"path: $p\"",
             "if [ -L \"$p\" ]; then echo \"link: $(readlink \"$p\")\"; elif [ -f \"$p\" ]; then echo \"kind: regular\"; elif [ -d \"$p\" ]; then echo \"kind: directory\"; else echo \"kind: other\"; fi",
             "if command -v realpath >/dev/null 2>&1; then echo \"real: $(realpath \"$p\" 2>/dev/null)\"; elif readlink -f \"$p\" >/dev/null 2>&1; then echo \"real: $(readlink -f \"$p\")\"; fi",
             "if [ -x \"$p\" ] && [ ! -d \"$p\" ]; then echo \"version: $(\"$p\" -version 2>&1 | head -n 1)\"; fi",
-            "else echo \"absent: $p\"; fi",
+            "else echo \"absent: $p\"; fi; }",
+        ].joined(separator: "; ")
+        // The PATH scan finds a `unison` in any directory of the non-interactive
+        // shell's PATH — the same environment Unison's own remote `unison`
+        // resolves in — that the fixed list missed. `seen` (the fixed paths,
+        // then each PATH hit) keeps a path from being reported twice. `$q` is a
+        // runtime value, always quoted, so a PATH directory with a space is safe.
+        let pathScan = [
+            "seen=\" \(list) \"",
+            // `set -f` keeps a PATH directory spelled with glob characters (e.g.
+            // `[ab]`) literal instead of expanding it to sibling names; an empty
+            // PATH component means the current directory, as `command -v` reads it.
+            "oldIFS=$IFS; IFS=:; set -f",
+            "for d in $PATH; do case \"$d\" in \"\") dd=. ;; *) dd=\"$d\" ;; esac; q=\"$dd/unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac; done",
+            // Word splitting drops a trailing empty field, so a PATH ending in
+            // `:` (a trailing current-directory component, which command -v honors)
+            // is never seen by the loop; probe the current directory for it.
+            "case \"$PATH\" in *:) q=\"./unison\"; case \"$seen\" in *\" $q \"*) ;; *) if [ -x \"$q\" ] && [ ! -d \"$q\" ]; then probe \"$q\"; seen=\"$seen$q \"; fi ;; esac ;; esac",
+            "IFS=$oldIFS; set +f",
         ].joined(separator: "; ")
         let script = [
             "M=\(marker)",
             "echo \"$M BEGIN\"",
             "echo \"uname: $(uname -s 2>/dev/null)\"",
-            "for p in \(list); do \(perPath); done",
+            probe,
+            "for p in \(list); do probe \"$p\"; done",
+            pathScan,
             "echo \"commandv: $(command -v unison 2>/dev/null)\"",
             "echo \"$M END\"",
         ].joined(separator: "; ")
