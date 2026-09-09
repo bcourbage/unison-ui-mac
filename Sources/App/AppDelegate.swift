@@ -1685,7 +1685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         DispatchQueue.main.async { [weak self] in
             self?.checkForPriorCrashReport()
             self?.checkForAbandonedArchiveStaging()
-            self?.offerCommandLineToolIfAbsent()
+            self?.offerCommandLineSetupIfAbsent()
         }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
@@ -2583,64 +2583,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
-    /// First-launch offer to put the bundled `unison` command on PATH. Shown
-    /// only when nothing owns the name in either PATH context (or a broken link
-    /// to a former copy of this app does), never when another product holds it,
-    /// and never again once "Do not ask again" was checked. Status is computed
-    /// off the main thread; the alert is presented after the picker is up.
-    private func offerCommandLineToolIfAbsent(defaults: UserDefaults = .standard) {
+    /// First-launch offer to set up unison in Terminal: shown once per launch,
+    /// after the profile picker, when the preference is on, no block exists, and
+    /// the state is row 11 or 12 (the offer startup behavior). Writes an
+    /// unprivileged marked block to the login shell's startup file on consent, and
+    /// never asks again once "Don't ask again" turns the preference off. Status is
+    /// computed off the main thread. See docs/command-line-setup-design.md,
+    /// "Startup offer".
+    private func offerCommandLineSetupIfAbsent(defaults: UserDefaults = .standard) {
         let env = ProcessInfo.processInfo.environment
         let isTestHost = env["XCTestConfigurationFilePath"] != nil || env["UNISON_UI_SMOKE"] != nil
-        if isTestHost || CommandLineToolPromptPolicy.isSuppressed(defaults: defaults) { return }
+        if isTestHost || !CommandLineSetupPreference.keepInTerminal(defaults: defaults) { return }
+        let url = Bundle.main.bundleURL
         Task { [weak self] in
-            let contexts = await CommandLineToolStatus.currentStatusAsync()
-            guard let self,
-                  let action = CommandLineToolPromptPolicy.offer(
-                    contexts: contexts, suppressed: false, isTestHost: false)
-            else { return }
-            self.presentCommandLineToolOffer(action, defaults: defaults)
+            let report = await CommandLineSetupCoordinator.statusAsync(bundleURL: url)
+            guard let self else { return }
+            switch report.state.startup {
+            case .offer:
+                // Rows 11/12: no block; offer to add one.
+                self.presentCommandLineSetupOffer(report)
+            case .rewriteToCurrent:
+                // Row 6: the app moved and the recorded path is stale; repair the
+                // owned block to this app's current location silently.
+                let result = await CommandLineSetupCoordinator.performStartupRewriteAsync(bundleURL: url)
+                if !result.statusLine.isEmpty {
+                    self.log.write("command-line setup startup rewrite: \(result.statusLine)")
+                }
+            case .none:
+                break
+            }
         }
     }
 
-    private func presentCommandLineToolOffer(_ action: CommandLineToolAction, defaults: UserDefaults) {
+    private func presentCommandLineSetupOffer(_ report: CommandLineSetupStatusReport) {
+        let file = report.fileChoice.file ?? "your login shell's startup file"
+        let mechanism = report.fileChoice.shell == .fish
+            ? "Adds this app's command to your Terminal by writing a dedicated file in your fish configuration."
+            : "Adds this app's command to your Terminal by writing one marked block to \(file)."
+        // Show the EXACT block the write will make, as Settings does, so the user
+        // sees the concrete change before authorizing it.
+        let block = report.fileChoice.shell == .fish
+            ? (CommandLineSetupBlock.fishFileText(directory: report.thisBinDirectory) ?? "")
+            : (CommandLineSetupBlock.blockText(directory: report.thisBinDirectory) ?? "")
         let alert = NSAlert()
         alert.alertStyle = .informational
-        switch action {
-        case .install:
-            alert.messageText = "Install the unison command?"
-            alert.informativeText =
-                "Adds a unison command in /usr/local/bin that runs this app's copy of Unison, " +
-                "so `unison -ui graphic` opens this app and `unison -server` from a remote machine " +
-                "uses it, wherever /usr/local/bin comes first on the PATH. Requires an administrator password."
-            alert.addButton(withTitle: "Install")
-        case .repair(let linkPath, let oldTarget, let displacing):
-            alert.messageText = "Repair the unison command?"
-            alert.informativeText = CommandLineToolWording.repairDetails(
-                linkPath: linkPath, oldTarget: oldTarget, displacing: displacing)
-                + " Requires an administrator password."
-            alert.addButton(withTitle: "Repair")
-        case .remove:
-            // The offer never proposes Remove; the policy only returns install or repair.
-            return
-        }
+        alert.messageText = "Use this app for unison in Terminal?"
+        alert.informativeText = mechanism +
+            " New Terminal windows will then use this app when you run unison." +
+            " A shell set up differently may still choose another unison." +
+            (block.isEmpty ? "" : "\n\n" + block)
+        alert.addButton(withTitle: "Add Terminal Setup…")
         alert.addButton(withTitle: "Not Now")
-        alert.showsSuppressionButton = true
-        alert.suppressionButton?.title = "Do not ask again"
+        alert.addButton(withTitle: "Don't ask again")
+        // Not Now is the default button.
+        alert.buttons[0].keyEquivalent = ""
+        alert.buttons[1].keyEquivalent = "\r"
         let response = alert.runModal()
-        if alert.suppressionButton?.state == .on {
-            CommandLineToolPromptPolicy.suppress(defaults: defaults)
-        }
-        guard response == .alertFirstButtonReturn else { return }
-        let launcher = (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/MacOS/cltool")
-        SettingsWindowController.performAdmin(action: action, launcherPath: launcher) { [weak self] error in
-            guard let error else { return }
-            self?.log.write("command-line tool offer failed: \(error)")
-            let failure = NSAlert()
-            failure.alertStyle = .warning
-            failure.messageText = "The unison command was not installed"
-            failure.informativeText = error + " The command can be installed later from Settings."
-            failure.addButton(withTitle: "OK")
-            failure.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            let url = Bundle.main.bundleURL
+            Task { [weak self] in
+                let result = await CommandLineSetupCoordinator.performAddAsync(approved: report, bundleURL: url)
+                guard let self else { return }
+                if result.statusLine != "Entry written and selected." {
+                    self.log.write("command-line setup offer: \(result.statusLine)")
+                    let a = NSAlert()
+                    a.alertStyle = .informational
+                    a.messageText = "unison in Terminal"
+                    a.informativeText = result.statusLine + " You can set this up later from Settings."
+                    a.addButton(withTitle: "OK")
+                    a.runModal()
+                }
+            }
+        case .alertThirdButtonReturn:
+            CommandLineSetupPreference.setKeepInTerminal(false)
+        default:
+            break
         }
     }
 

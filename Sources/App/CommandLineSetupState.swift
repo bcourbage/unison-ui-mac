@@ -7,7 +7,7 @@ import Foundation
 // and applies the preference and the once-per-launch rule.
 
 /// What `unison` resolves to in this account's login shell (the probe).
-enum CommandLineSetupResolution: Equatable {
+enum CommandLineSetupResolution: Equatable, Sendable {
     /// Resolves to this running bundle's command (by any route).
     case thisApp
     /// Resolves to some other unison.
@@ -38,18 +38,18 @@ enum CommandLineSetupBlockPresence: Equatable {
     }
 }
 
-enum CommandLineSetupBadge: Equatable {
+enum CommandLineSetupBadge: Equatable, Sendable {
     case thisApp, notThisApp, notInstalled, unknown, manualSetup
 }
 
-enum CommandLineSetupAction: Equatable {
+enum CommandLineSetupAction: Equatable, Sendable {
     case none, add, remove, useThisCopy
 }
 
 /// What a startup check would do in this state when the preference is on. The
 /// controller still gates this on the preference, the once-per-launch rule, and
 /// headless/server/test-host launches.
-enum CommandLineSetupStartupBehavior: Equatable {
+enum CommandLineSetupStartupBehavior: Equatable, Sendable {
     case none
     /// Show the offer; on Add, write and report the outcome (rows 11, 12).
     case offer
@@ -57,7 +57,7 @@ enum CommandLineSetupStartupBehavior: Equatable {
     case rewriteToCurrent
 }
 
-struct CommandLineSetupState: Equatable {
+struct CommandLineSetupState: Equatable, Sendable {
     let row: Int
     let badge: CommandLineSetupBadge
     let note: String?
