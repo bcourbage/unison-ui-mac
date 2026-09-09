@@ -27,6 +27,18 @@ open /Applications/unison-ui-mac.app
 That's it. Launch the app once, and updates after that come through the app
 itself.
 
+### "Conflicts with unison-app"
+
+If `brew install` reports that `unison-ui` conflicts with `unison-app`, the
+older upstream Unison.app cask is installed on your Mac. Homebrew disabled that
+cask, and both casks install a command named `unison`, so they cannot be
+present together. Remove the old cask, then install:
+
+```sh
+brew uninstall --cask unison-app
+brew install --cask bcourbage/tap/unison-ui
+```
+
 To uninstall:
 
 ```sh
