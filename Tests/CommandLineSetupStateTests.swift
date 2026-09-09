@@ -182,12 +182,16 @@ final class CommandLineSetupStateTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let shell = dir.appendingPathComponent("stall.sh")
-        try "#!/bin/sh\ntrap '' TERM\nsleep 120\n".write(to: shell, atomically: true, encoding: .utf8)
+        // Sleeps long enough to outlast the executor's ~10s teardown (so the probe
+        // must return before it) but short enough that the sleep the executor does
+        // NOT reap (it only reaps the direct child) self-terminates soon rather
+        // than lingering for two minutes.
+        try "#!/bin/sh\ntrap '' TERM\nsleep 30\n".write(to: shell, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shell.path)
 
         // Teardown is bounded by the executor's constants (deadline 1s + a 2s
         // SIGTERM grace + a 2s SIGKILL grace + a 5s output settle ≈ 10s), well
-        // under the shell's 120s sleep.
+        // under the shell's 30s sleep.
         let start = Date()
         let out = CommandLineSetupProbe.resolvedUnison(shellPath: shell.path, kind: .zsh, timeout: 1)
         let elapsed = Date().timeIntervalSince(start)

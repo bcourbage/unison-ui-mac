@@ -116,8 +116,13 @@ final class RemoteCheckSessionTests: XCTestCase {
     }
 
     func test_collector_stop_closesDescriptorAndAllowsDeallocation() throws {
+        // Writing to a pipe whose only reader has closed raises SIGPIPE; ignore it
+        // for the duration so the write returns EPIPE instead of killing the test.
+        let previousSIGPIPE = signal(SIGPIPE, SIG_IGN)
+        defer { signal(SIGPIPE, previousSIGPIPE) }
+
         let pipe = Pipe()
-        let fd = pipe.fileHandleForReading.fileDescriptor
+        let writeFD = pipe.fileHandleForWriting.fileDescriptor
         var collector: VersionCheck.SubprocessProbeExecutor.PipeCollector? = .init(pipe.fileHandleForReading)
         weak var weak = collector
         pipe.fileHandleForWriting.write("partial".data(using: .utf8)!)
@@ -126,15 +131,21 @@ final class RemoteCheckSessionTests: XCTestCase {
         collector!.stop()
         XCTAssertTrue(collector!.isStopped)
         collector = nil
-        // The cancel handler runs asynchronously on its queue; wait for both
-        // the closure of the descriptor and the release of the collector.
-        let deadline = Date().addingTimeInterval(2)
-        while (weak != nil || fcntl(fd, F_GETFD) != -1) && Date() < deadline {
+
+        // stop() cancels the DispatchSource, whose cancel handler closes the read
+        // descriptor ASYNCHRONOUSLY on a shared queue, so wait for it. Detect the
+        // close by the pipe's reader count, not the raw fd number: once the reader
+        // is gone, writing to the pipe fails with EPIPE. This is immune to another
+        // thread reusing the fd number, which made the old `fcntl(fd)==-1` check
+        // flake under concurrent subprocess-test load. The deadline is generous so
+        // a busy cancel-handler queue does not fail a correct implementation.
+        func readerClosed() -> Bool { write(writeFD, "x", 1) == -1 && errno == EPIPE }
+        let deadline = Date().addingTimeInterval(15)
+        while (weak != nil || !readerClosed()) && Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         XCTAssertNil(weak, "collector must not be retained after stop()")
-        XCTAssertEqual(fcntl(fd, F_GETFD), -1, "read descriptor must be closed after stop()")
-        XCTAssertEqual(errno, EBADF)
+        XCTAssertTrue(readerClosed(), "read descriptor must be closed after stop()")
         try? pipe.fileHandleForWriting.close()
     }
 
