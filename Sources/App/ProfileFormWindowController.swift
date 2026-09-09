@@ -41,6 +41,22 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     var editingProfileName: String? { initialProfileName }
     var shownSectionTitleForTesting: String? { shownSectionIndex.map { sectionViews[$0].title } }
     private var shownSectionIndex: Int?
+    /// Sections whose Tab is a literal tab in a large text editor (Bruno's
+    /// exclusion); the key monitor leaves them alone.
+    private static let keyNavExcludedSections: Set<String> = ["Paths", "Ignore", "Advanced"]
+    private var keyNavMonitor: Any?
+    /// The control the keyboard nav last moved focus to. An editable combo box
+    /// hands the window its field editor, whose owner cannot be mapped back
+    /// reliably, so the next Tab uses this remembered control instead.
+    private weak var lastKeyNavFocus: NSView?
+    var keyNavFocusablesForTesting: [NSView] {
+        guard let i = shownSectionIndex else { return [] }
+        return KeyboardFocus.focusables(in: sectionViews[i].view)
+    }
+    var keyNavActiveForTesting: Bool {
+        guard let i = shownSectionIndex else { return false }
+        return !Self.keyNavExcludedSections.contains(sectionViews[i].title)
+    }
     private let onSaved: SaveCompletion
     private var prfDocument: ProfileDocument
 
@@ -87,10 +103,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     )
 
     // Logging (Options section)
-    private let logCheckbox = NSButton(
+    private let logCheckbox = KeyNavButton(
         checkboxWithTitle: "Write a log file", target: nil, action: nil)
     private let logFolderField = NSTextField(string: "")
-    private let logFolderBrowse = NSButton(title: "Choose…", target: nil, action: nil)
+    private let logFolderBrowse = KeyNavButton(title: "Choose…", target: nil, action: nil)
     private let logNameField = NSTextField(string: "")
     private var logFolderRow: NSView!
     private var logNameRow: NSView!
@@ -157,33 +173,33 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     // General: mirrors the Profile Editor list's hide/show toggle
     // (UserDefaults `profiles.hidden`). "Show" checked == not hidden.
-    private let visibilityCheckbox = NSButton(
+    private let visibilityCheckbox = KeyNavButton(
         checkboxWithTitle: "Show in the profile picker", target: nil, action: nil)
 
     // File Attributes — which metadata Unison preserves. Tri-state popups
     // (Default / On / Off); Default writes no line.
-    private let timesPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let rsrcPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let ownerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let groupPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let dontchmodPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let timesPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let rsrcPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let ownerPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let groupPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let dontchmodPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
     // perms is a bitmask, not a bool: Default / Ignore differences (= 0) /
     // Custom mask. The mask field sits inline after the popup and is shown
     // only for "Custom mask…" (collapsed otherwise) — so the rows below it
     // never shift.
-    private let permsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let permsPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
     private let permsMaskField = NSTextField(string: "")
 
     // Options — sync *behavior* prefs (how a sync runs), distinct from what
     // is synced. Same tri-state popups (Default / On / Off).
-    private let confirmbigdelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let autoPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let fastcheckPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let confirmbigdelPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let autoPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
+    private let fastcheckPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
 
     // Conflict handling — `prefer`/`force` collapsed into one popup. `force`
     // makes a replica authoritative (overwrites the other); `prefer` only
     // resolves conflicts. Both take a root value or `newer`/`older`.
-    private let conflictPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let conflictPopup = KeyNavPopUpButton(frame: .zero, pullsDown: false)
     /// (title, key, target). target ∈ first|second|newer|older; Default = nils.
     private static let conflictChoices: [(title: String, key: String?, target: String?)] = [
         ("Default (ask on conflict)", nil, nil),
@@ -219,8 +235,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Check Remote Command (guided remote check, docs/remote-profile-check-design.md)
 
-    private let checkRemoteButton = NSButton(title: "Check Remote Command…", target: nil, action: nil)
-    private let checkDetailsButton = NSButton(title: "Details…", target: nil, action: nil)
+    private let checkRemoteButton = KeyNavButton(title: "Check Remote Command…", target: nil, action: nil)
+    private let checkDetailsButton = KeyNavButton(title: "Details…", target: nil, action: nil)
     private let checkProgress = NSProgressIndicator()
     private let checkStatusLabel = NSTextField(wrappingLabelWithString: "")
     /// Vertical hugging for the form's stacks: above the section spacer and
@@ -243,10 +259,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     /// Sentences for the Details popover and Copy Report: headline, details, closing.
     private var checkReport: [String] = []
     private var checkPopover: NSPopover?
-    private let checkHelpButton = NSButton(title: "", target: nil, action: nil)
+    private let checkHelpButton = KeyNavButton(title: "", target: nil, action: nil)
     /// Secondary action after the current command was verified: the menu of
     /// other installations discovery found.
-    private let checkChooseButton = NSButton(title: "Choose Another Command…", target: nil, action: nil)
+    private let checkChooseButton = KeyNavButton(title: "Choose Another Command…", target: nil, action: nil)
     /// Details… and Choose Another Command… share a second row that is hidden
     /// until a result exists, so the primary row never outgrows the column.
     private var checkSecondaryRow: NSStackView?
@@ -416,6 +432,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
         configure()
         loadDocumentIntoForm()
+        installKeyNavMonitor()
         // The autosave name above just restored the saved frame; force the
         // width back, keeping the remembered height and origin.
         enforceFixedWidth()
@@ -840,9 +857,85 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         Task { await self.runCheck() }
     }
 
+    private func installKeyNavMonitor() {
+        keyNavMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Return the handler's result verbatim: nil means it handled the
+            // event and dispatch must stop. A `?? event` would resurrect a
+            // consumed event and let AppKit act on it again.
+            guard let self else { return event }
+            return self.handleKeyNav(event)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let m = keyNavMonitor { NSEvent.removeMonitor(m); keyNavMonitor = nil }
+    }
+
+    /// Tab / Shift-Tab cycle the shown control section's focusable controls, and
+    /// Return opens a focused drop-down. Text-editor sections are left alone so
+    /// Tab still inserts a tab. Cycling with `makeFirstResponder` works whether
+    /// or not Full Keyboard Access is on, because the controls are focusable
+    /// subclasses.
+    private func handleKeyNav(_ event: NSEvent) -> NSEvent? {
+        guard let window, window.isKeyWindow else { return event }
+        return keyNavResult(keyCode: event.keyCode, shift: event.modifierFlags.contains(.shift)) ? nil : event
+    }
+
+    /// Whether the key is consumed (moved focus or opened a drop-down). Returns
+    /// false for keys or contexts the nav does not handle, so the caller passes
+    /// the event on. Split out for testing the consume/pass contract.
+    private func keyNavResult(keyCode: UInt16, shift: Bool) -> Bool {
+        guard let window, let idx = shownSectionIndex,
+              !Self.keyNavExcludedSections.contains(sectionViews[idx].title) else { return false }
+        let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
+        guard !controls.isEmpty else { return false }
+        // The control the responder actually maps to (nil when focus is outside
+        // the section, e.g. the sidebar search).
+        let mapped = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
+        switch keyCode {
+        case 48: // Tab: cycle. An editing combo box can't be mapped back, so fall
+                 // back to the control the nav last moved focus to.
+            let from = mapped ?? lastKeyNavFocus.flatMap { last in controls.firstIndex { $0 === last } }
+            moveKeyNavFocus(controls: controls, from: from, backward: shift)
+            return true
+        case 36, 76: // Return / Enter opens the drop-down that ACTUALLY has focus
+                     // (never the remembered one); anything else falls through (Save).
+            guard let cur = mapped, let popup = controls[cur] as? NSPopUpButton else { return false }
+            popup.performClick(nil)
+            return true
+        default:
+            return false
+        }
+    }
+
+    func keyNavConsumesForTesting(keyCode: UInt16, shift: Bool = false) -> Bool {
+        keyNavResult(keyCode: keyCode, shift: shift)
+    }
+
+    /// Move first responder to the next focusable control, skipping any that
+    /// refuses (defensive) and wrapping. Shared by the key monitor and tests.
+    private func moveKeyNavFocus(controls: [NSView], from current: Int?, backward: Bool) {
+        guard let window, !controls.isEmpty else { return }
+        var target = KeyboardFocus.nextIndex(from: current, count: controls.count, backward: backward)
+        var tries = 0
+        while let t = target {
+            if window.makeFirstResponder(controls[t]) { lastKeyNavFocus = controls[t]; return }
+            if tries >= controls.count { break }
+            target = KeyboardFocus.nextIndex(from: t, count: controls.count, backward: backward); tries += 1
+        }
+    }
+
+    func keyNavAdvanceForTesting(backward: Bool = false) {
+        guard let idx = shownSectionIndex, let window else { return }
+        let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
+        let current = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
+        moveKeyNavFocus(controls: controls, from: current, backward: backward)
+    }
+
     private func showSection(_ index: Int) {
         guard sectionViews.indices.contains(index) else { return }
         shownSectionIndex = index
+        lastKeyNavFocus = nil
         refreshIncludesBanner()
         sectionContainer.subviews.forEach { $0.removeFromSuperview() }
         let v = sectionViews[index].view
@@ -853,6 +946,11 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             v.trailingAnchor.constraint(equalTo: sectionContainer.trailingAnchor),
             v.bottomAnchor.constraint(equalTo: sectionContainer.bottomAnchor),
         ])
+        // The first control of a control section is where keyboard focus starts
+        // when the window becomes key; a text-editor section keeps none so its
+        // Tab stays a literal tab.
+        window?.initialFirstResponder = Self.keyNavExcludedSections.contains(sectionViews[index].title)
+            ? nil : KeyboardFocus.focusables(in: v).first
     }
 
     private func labeledRow(label: String, control: NSView) -> NSStackView {
@@ -1437,7 +1535,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeBrowseButton(target: AnyObject, action: Selector) -> NSButton {
-        let b = NSButton(title: "Browse…", target: target, action: action)
+        let b = KeyNavButton(title: "Browse…", target: target, action: action)
         b.bezelStyle = .rounded
         b.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         return b
@@ -2829,7 +2927,7 @@ final class ListFieldView: NSView {
 final class IncludeListView: NSView {
 
     private let rowsStack = NSStackView()
-    private let addButton = NSButton(title: "Add Include", target: nil, action: nil)
+    private let addButton = KeyNavButton(title: "Add Include", target: nil, action: nil)
     private let existingNames: [String]
     var onChange: (() -> Void)?
 
@@ -2922,7 +3020,7 @@ final class IncludeListView: NSView {
         combo.setContentHuggingPriority(.defaultLow, for: .horizontal)
         combo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let popup = NSPopUpButton()
+        let popup = KeyNavPopUpButton()
         popup.tag = 2
         popup.addItems(withTitles: ["Top", "Bottom"])
         popup.selectItem(at: top ? 0 : 1)
@@ -2931,7 +3029,7 @@ final class IncludeListView: NSView {
         popup.setContentHuggingPriority(.required, for: .horizontal)
 
         let removeCfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        let remove = NSButton(
+        let remove = KeyNavButton(
             image: NSImage(systemSymbolName: "minus.circle",
                            accessibilityDescription: "Remove")?
                 .withSymbolConfiguration(removeCfg) ?? NSImage(),
