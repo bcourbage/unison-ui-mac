@@ -81,7 +81,7 @@ final class RemoteDiscoveryTests: XCTestCase {
         let cmd = D.remoteCommand(marker: "UUM-t", plan: plan)
         let raw = VersionCheck.SubprocessProbeExecutor().execute(
             VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
-            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+            deadline: RemoteProbeTestSupport.functionalDeadline, canceller: VersionCheck.ProbeCanceller())
         guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
         XCTAssertEqual(status, 0, stderr)
         let r = D.parse(stdout: stdout, marker: "UUM-t")
@@ -119,7 +119,7 @@ final class RemoteDiscoveryTests: XCTestCase {
         defer { setenv("PATH", savedPATH, 1) }
         let raw = VersionCheck.SubprocessProbeExecutor().execute(
             VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
-            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+            deadline: RemoteProbeTestSupport.functionalDeadline, canceller: VersionCheck.ProbeCanceller())
         guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
         XCTAssertEqual(status, 0, stderr)
         let r = D.parse(stdout: stdout, marker: "UUM-g")
@@ -146,7 +146,7 @@ final class RemoteDiscoveryTests: XCTestCase {
         defer { setenv("PATH", savedPATH, 1) }
         let raw = VersionCheck.SubprocessProbeExecutor().execute(
             VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
-            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+            deadline: RemoteProbeTestSupport.functionalDeadline, canceller: VersionCheck.ProbeCanceller())
         guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
         XCTAssertEqual(status, 0, stderr)
         let r = D.parse(stdout: stdout, marker: "UUM-cwd")
@@ -173,7 +173,7 @@ final class RemoteDiscoveryTests: XCTestCase {
         defer { setenv("PATH", savedPATH, 1) }
         let raw = VersionCheck.SubprocessProbeExecutor().execute(
             VersionCheck.ProbeConfig(executable: "/bin/sh", arguments: ["-c", cmd], host: "local"),
-            deadline: 10, canceller: VersionCheck.ProbeCanceller())
+            deadline: RemoteProbeTestSupport.functionalDeadline, canceller: VersionCheck.ProbeCanceller())
         guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
         XCTAssertEqual(status, 0, stderr)
         let r = D.parse(stdout: stdout, marker: "UUM-p")
