@@ -182,8 +182,12 @@ enum CommandLineSetupWriter {
     // MARK: Removal
 
     /// Delete the file at `resolvedPath` (the fish case) through the directory
-    /// descriptor. zsh/bash removal is a `replace` with the block-removed contents.
-    static func removeFile(resolvedPath: String) -> CommandLineSetupWriteOutcome {
+    /// descriptor, but only if it still matches `expected` — the identity and
+    /// content snapshotted when it was inspected. A file changed or replaced since
+    /// then is refused, so removal never deletes another writer's content. zsh/bash
+    /// removal is a `replace` with the block-removed contents.
+    static func removeFile(resolvedPath: String,
+                           expected: CommandLineSetupFileIdentity) -> CommandLineSetupWriteOutcome {
         let parent = (resolvedPath as NSString).deletingLastPathComponent
         let name = (resolvedPath as NSString).lastPathComponent
         let dirfd = open(parent, O_RDONLY | O_DIRECTORY)
@@ -191,6 +195,11 @@ enum CommandLineSetupWriter {
             return .notMutated(reason: "the file's directory could not be opened")
         }
         defer { close(dirfd) }
+        // Re-check identity and content through the directory descriptor before
+        // deleting; the design requires this re-check.
+        guard let current = identity(dirfd: dirfd, name: name, fullPath: resolvedPath), current == expected else {
+            return .notMutated(reason: "The file changed while the entry was being prepared. Nothing was written.")
+        }
         if unlinkat(dirfd, name, 0) != 0 {
             let e = errno
             switch CommandLineSetupRecordStore.classify(renameSucceeded: false, errnoValue: e) {
@@ -210,12 +219,16 @@ enum CommandLineSetupWriter {
             contentHash: CommandLineSetupBlock.hash(ofBlockText: String(decoding: data, as: UTF8.self)))
     }
 
-    /// Stat through the directory descriptor (safe against an ancestor rename) and
-    /// read the content by path. A concurrent writer or a vanished file yields nil,
-    /// which the caller treats as a refusal.
+    /// Stat the directory ENTRY through the descriptor (safe against an ancestor
+    /// rename) and read the content by path. `AT_SYMLINK_NOFOLLOW` stats the entry
+    /// itself, and the entry must be a regular file, so a symlink introduced at the
+    /// name since the snapshot — even one that resolves to the same bytes — is
+    /// detected rather than followed. A concurrent writer, a vanished file, or a
+    /// substituted symlink yields nil, which the caller treats as a refusal.
     private static func identity(dirfd: Int32, name: String, fullPath: String) -> CommandLineSetupFileIdentity? {
         var st = stat()
-        guard fstatat(dirfd, name, &st, 0) == 0 else { return nil }
+        guard fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return nil }
+        guard (st.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else { return nil }
         guard let data = FileManager.default.contents(atPath: fullPath) else { return nil }
         return identity(stat: st, content: data)
     }

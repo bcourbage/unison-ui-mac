@@ -301,8 +301,47 @@ final class CommandLineSetupWriterCoreTests: XCTestCase {
         let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("unison-ui-mac.fish")
         try "fish\n".write(to: file, atomically: true, encoding: .utf8)
-        XCTAssertEqual(CommandLineSetupWriter.removeFile(resolvedPath: file.path), .mutated)
+        let snap = CommandLineSetupWriter.snapshot(atPath: file.path)!
+        XCTAssertEqual(CommandLineSetupWriter.removeFile(resolvedPath: file.path, expected: snap), .mutated)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    // Regression (P1): fish removal must re-check identity and refuse to delete a
+    // file whose contents changed since it was inspected.
+    func test_writer_removeFile_refusesWhenContentChangedSinceSnapshot() throws {
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("unison-ui-mac.fish")
+        try "app fish config\n".write(to: file, atomically: true, encoding: .utf8)
+        let snap = CommandLineSetupWriter.snapshot(atPath: file.path)!
+        // Another editor replaces the file's contents after inspection.
+        try "user's own configuration\n".write(to: file, atomically: true, encoding: .utf8)
+        let outcome = CommandLineSetupWriter.removeFile(resolvedPath: file.path, expected: snap)
+        if case .notMutated = outcome {} else { XCTFail("expected notMutated, got \(outcome)") }
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "user's own configuration\n",
+                       "the changed file is not deleted")
+    }
+
+    // Regression (P2): replacement must detect a symlink introduced at the name
+    // since the snapshot, even one that resolves to the same bytes, and refuse
+    // rather than replace it (which would disconnect a dotfile-managed file).
+    func test_writer_replace_refusesWhenNameBecomesSymlinkToSameBytes() throws {
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent(".zprofile")
+        try "export FOO=1\n".write(to: file, atomically: true, encoding: .utf8)
+        let snap = CommandLineSetupWriter.snapshot(atPath: file.path)!
+        // A dotfile manager moves the file into a repo (same inode, same bytes) and
+        // substitutes a symlink at the original name pointing at the moved file.
+        let repo = dir.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let moved = repo.appendingPathComponent(".zprofile")
+        try FileManager.default.moveItem(at: file, to: moved)
+        try FileManager.default.createSymbolicLink(atPath: file.path, withDestinationPath: moved.path)
+
+        let outcome = CommandLineSetupWriter.replace(resolvedPath: file.path, newContents: "changed\n", expected: snap)
+        if case .notMutated = outcome {} else { XCTFail("expected notMutated, got \(outcome)") }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: file.path), moved.path,
+                       "the symlink is preserved")
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), "export FOO=1\n", "the repo file is untouched")
     }
 
     // MARK: Serialization measured against real shells
