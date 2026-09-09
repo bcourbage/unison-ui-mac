@@ -1168,8 +1168,9 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // command), the cached result no longer describes it.
         guard let original = checkOriginalPrepared, let v = checkCurrentResult,
               RemoteCheckFlow.tokenStillValid(original, current: checkInputs()) else {
-            checkResult = nil
-            setCheckStatus("Not checked since the last change.")
+            // Fail closed: clear the whole result, not just the status, so the
+            // Details popover and Copy Report cannot surface the stale report.
+            invalidateCheckResult()
             return
         }
         // Save compares against the token the result was verified under.

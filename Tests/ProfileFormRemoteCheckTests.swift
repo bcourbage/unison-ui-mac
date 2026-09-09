@@ -136,6 +136,8 @@ final class ProfileFormRemoteCheckTests: XCTestCase {
         c.restoreCurrentSetting()
         XCTAssertNil(c.checkResultForTesting)
         XCTAssertEqual(c.checkStatusForTesting, "Not checked since the last change.")
+        XCTAssertEqual(c.checkReportForTesting, [], "the stale report is cleared, so Details and Copy Report can't surface it")
+        XCTAssertFalse(c.detailsButtonVisibleForTesting, "Details is hidden for an invalidated result")
     }
 
     func test_keepCurrentSetting_whenNothingChanged_showsTheVerifiedResult() async throws {
