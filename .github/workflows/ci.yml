@@ -61,6 +61,15 @@ jobs:
         # No submodules / LFS — the vendored blob lives in the tree.
         # SF12: pinned to a SHA (mutable @v5 tag can be re-pointed).
 
+      - name: Check stock /etc/zprofile (recognized on the tested image)
+        # Release gate: the runner's /etc/zprofile matches the embedded stock
+        # fixture for its macOS major, so the app offers automatic zsh setup on
+        # this OS. A mismatch (a runner-image or macOS change to the file) fails
+        # the pipeline; re-measure and update the fixture + the matching
+        # CommandLineSetupFileSelection.stockZprofileMacOS<major> constant. Pure
+        # shell; runs before the OCaml/Xcode setup.
+        run: make check-stock-zprofile
+
       - name: Untap aws/tap (runner-image noise)
         # The GitHub-hosted macOS runner image pre-taps `aws/tap`, which is
         # untrusted under Homebrew's tap-trust gate and warns on EVERY brew

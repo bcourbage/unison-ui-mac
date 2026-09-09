@@ -423,6 +423,15 @@ check-no-elevation:
 	@./scripts/check-no-elevation.sh
 	@./scripts/test-check-no-elevation.sh
 
+# Release gate "recognized stock /etc/zprofile on the tested image": this
+# machine's /etc/zprofile matches the embedded stock fixture for its macOS major
+# (so the app offers automatic zsh setup), plus the gate's own tests. A macOS
+# major with no fixture uses Manual setup and is not a failure. Pure shell.
+.PHONY: check-stock-zprofile
+check-stock-zprofile:
+	@./scripts/check-stock-zprofile.sh
+	@./scripts/test-check-stock-zprofile.sh
+
 # The `unison` launcher (Sources/CLTool/cltool.c): compiled with cc against a
 # throwaway bundle identifier into a fake bundle, then exercised through a PATH
 # symlink, by direct path, copied out of the bundle, and against a bundle with
