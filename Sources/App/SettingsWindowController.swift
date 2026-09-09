@@ -135,9 +135,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let clManualDirField = NSTextField(labelWithString: "")
     private let clManualFileField = NSTextField(labelWithString: "")
     private let clCopySetupButton = NSButton(title: "Copy Setup Text", target: nil, action: nil)
+    private let clActionFootnote = NSTextField(wrappingLabelWithString: "")
     private var clReport: CommandLineSetupStatusReport?
     private var clLastChecked: Date?
     private var clRefreshGeneration = 0
+    /// Re-renders "Checked N minutes ago" while the pane stays open, so the
+    /// relative time ages instead of freezing at the last refresh.
+    private var clAgeTimer: Timer?
 
     // MARK: - Init
 
@@ -393,6 +397,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             f.textColor = .secondaryLabelColor
             f.isSelectable = true
         }
+        clActionFootnote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        clActionFootnote.textColor = .secondaryLabelColor
+        clActionFootnote.maximumNumberOfLines = 0
+        clActionFootnote.preferredMaxLayoutWidth = 540 - 32
         let section9ActionRow = NSStackView(views: [clActionButton, NSView(), clCheckedLabel, clRefreshButton])
         section9ActionRow.orientation = .horizontal
         section9ActionRow.spacing = 8
@@ -441,7 +449,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             symbol: "terminal", label: "Command Line",
             views: [section9Title, section9Desc,
                     clVerdictLabel, clBadgeLabel, clPathLabel, clNoteLabel,
-                    section9ActionRow, clStatusLabel,
+                    section9ActionRow, clActionFootnote, clStatusLabel,
                     clManualHeading, clManualDirField, clManualFileField, clCopySetupButton,
                     divider(),
                     section9CopyRow, section9CopyNote,
@@ -649,23 +657,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // current and this app is selected (row 7). A write replaces it after.
         clStatusLabel.stringValue = report.state.row == 7 ? "Set up in Terminal." : ""
         clStatusLabel.isHidden = clStatusLabel.stringValue.isEmpty
-        // Manual setup: show the directory to add and, when the destination is
-        // established, the file and Copy Setup Text.
+        // Manual setup: show the directory to add and, ONLY when the destination
+        // is established (not merely the usual name), the shell syntax is
+        // supported, and the block serializes, the file and Copy Setup Text.
         let manual = (report.state.badge == .manualSetup)
         clManualHeading.stringValue = manual ? "Manual setup" : ""
         clManualHeading.isHidden = !manual
         clManualDirField.stringValue = manual ? "Directory to add to PATH: \(report.thisBinDirectory)" : ""
         clManualDirField.isHidden = !manual
-        let destinationEstablished = manual && report.fileChoice.file != nil && report.fileChoice.shell != .other
-        clManualFileField.stringValue = destinationEstablished ? "File to edit: \(report.fileChoice.file ?? "")" : ""
-        clManualFileField.isHidden = !destinationEstablished
-        clCopySetupButton.isHidden = !destinationEstablished
+        let showFile = manual
+            && report.fileChoice.destinationEstablished
+            && report.fileChoice.shell != .other
+            && report.fileChoice.file != nil
+            && CommandLineSetupBlock.isRepresentable(directory: report.thisBinDirectory)
+        clManualFileField.stringValue = showFile ? "File to edit: \(report.fileChoice.file ?? "")" : ""
+        clManualFileField.isHidden = !showFile
+        clCopySetupButton.isHidden = !showFile
+        // The action footnote naming the mechanism and the file it edits.
+        let footnote = CommandLineSetupViewModel.actionFootnote(
+            action: report.state.action, shell: report.fileChoice.shell, file: report.fileChoice.file)
+        clActionFootnote.stringValue = footnote ?? ""
+        clActionFootnote.isHidden = (footnote == nil)
         // Copy This App's Command Path is available in every row.
         clCopyPathButton.isEnabled = true
+        startCommandLineAgeTimer()
     }
 
     @objc private func refreshCommandLineSetupAction(_ sender: Any?) {
         refreshCommandLineSetup()
+    }
+
+    /// Keep "Checked N minutes ago" aging while the pane is open. One repeating
+    /// timer for the window's lifetime; it re-renders from `clLastChecked`, which
+    /// each refresh updates. Invalidated in `windowWillClose` (also breaking the
+    /// timer's retain of self).
+    private func startCommandLineAgeTimer() {
+        guard clAgeTimer == nil else { return }
+        clAgeTimer = Timer.scheduledTimer(timeInterval: 20, target: self,
+                                          selector: #selector(commandLineAgeTick(_:)),
+                                          userInfo: nil, repeats: true)
+    }
+
+    @objc private func commandLineAgeTick(_ timer: Timer) {
+        clCheckedLabel.stringValue = CommandLineSetupAging.checkedText(lastChecked: clLastChecked, now: Date())
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        clAgeTimer?.invalidate()
+        clAgeTimer = nil
     }
 
     @objc private func commandLineSetupAction(_ sender: Any?) {
@@ -720,11 +759,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 let result: CommandLineSetupCoordinator.ActionResult
                 switch action {
                 case .add:
-                    result = await CommandLineSetupCoordinator.performAddAsync(report: report, bundleURL: url, rewrite: false)
+                    result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: false)
                 case .useThisCopy:
-                    result = await CommandLineSetupCoordinator.performAddAsync(report: report, bundleURL: url, rewrite: true)
+                    result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: true)
                 case .remove:
-                    result = await CommandLineSetupCoordinator.performRemoveAsync(report: report, bundleURL: url)
+                    result = await CommandLineSetupCoordinator.performRemoveAsync(bundleURL: url)
                 case .none:
                     return
                 }

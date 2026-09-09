@@ -2597,8 +2597,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let url = Bundle.main.bundleURL
         Task { [weak self] in
             let report = await CommandLineSetupCoordinator.statusAsync(bundleURL: url)
-            guard let self, report.state.startup == .offer else { return }
-            self.presentCommandLineSetupOffer(report)
+            guard let self else { return }
+            switch report.state.startup {
+            case .offer:
+                // Rows 11/12: no block; offer to add one.
+                self.presentCommandLineSetupOffer(report)
+            case .rewriteToCurrent:
+                // Row 6: the app moved and the recorded path is stale; repair the
+                // owned block to this app's current location silently.
+                let result = await CommandLineSetupCoordinator.performStartupRewriteAsync(bundleURL: url)
+                if !result.statusLine.isEmpty {
+                    self.log.write("command-line setup startup rewrite: \(result.statusLine)")
+                }
+            case .none:
+                break
+            }
         }
     }
 
@@ -2607,12 +2620,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let mechanism = report.fileChoice.shell == .fish
             ? "Adds this app's command to your Terminal by writing a dedicated file in your fish configuration."
             : "Adds this app's command to your Terminal by writing one marked block to \(file)."
+        // Show the EXACT block the write will make, as Settings does, so the user
+        // sees the concrete change before authorizing it.
+        let block = report.fileChoice.shell == .fish
+            ? (CommandLineSetupBlock.fishFileText(directory: report.thisBinDirectory) ?? "")
+            : (CommandLineSetupBlock.blockText(directory: report.thisBinDirectory) ?? "")
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Use this app for unison in Terminal?"
         alert.informativeText = mechanism +
             " New Terminal windows will then use this app when you run unison." +
-            " A shell set up differently may still choose another unison."
+            " A shell set up differently may still choose another unison." +
+            (block.isEmpty ? "" : "\n\n" + block)
         alert.addButton(withTitle: "Add Terminal Setup…")
         alert.addButton(withTitle: "Not Now")
         alert.addButton(withTitle: "Don't ask again")
@@ -2624,7 +2643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .alertFirstButtonReturn:
             let url = Bundle.main.bundleURL
             Task { [weak self] in
-                let result = await CommandLineSetupCoordinator.performAddAsync(report: report, bundleURL: url, rewrite: false)
+                let result = await CommandLineSetupCoordinator.performAddAsync(bundleURL: url, rewrite: false)
                 guard let self else { return }
                 if result.statusLine != "Entry written and selected." {
                     self.log.write("command-line setup offer: \(result.statusLine)")

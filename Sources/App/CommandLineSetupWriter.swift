@@ -57,6 +57,19 @@ enum CommandLineSetupWriter {
         return identity(stat: st, content: data)
     }
 
+    /// The snapshot AND the file's contents from a SINGLE read, so the text used
+    /// to build a replacement and the identity that guards the seam describe the
+    /// same bytes. Reading the content separately from the snapshot would let an
+    /// intervening save be accepted by the seam check and then overwritten with
+    /// text derived from the older file.
+    static func snapshotWithContents(atPath path: String)
+        -> (identity: CommandLineSetupFileIdentity, contents: String)? {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return (identity(stat: st, content: data), String(decoding: data, as: UTF8.self))
+    }
+
     // MARK: Replacement
 
     /// Replace the regular file at `resolvedPath` with `newContents`, cloning the

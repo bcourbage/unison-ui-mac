@@ -81,6 +81,7 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertNotNil(f1.manualSetupReason)
 
         let autoChoice = CommandLineSetupFileChoice(shell: .zsh, file: "/h/.zprofile", automatic: true,
+                                                    destinationEstablished: true,
                                                     manualReason: nil, createIfAbsent: false)
         let f2 = CommandLineSetupFactsBuilder.build(resolution: .none, bundlePreconditionOK: true,
                                                     fileChoice: autoChoice, boundEvaluation: .appendable,
@@ -145,7 +146,7 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertEqual(report.state.row, 12)  // no block, resolution none
         XCTAssertEqual(report.state.action, .add)
 
-        let added = CommandLineSetupCoordinator.performAdd(report: report, bundleURL: app, rewrite: false,
+        let added = CommandLineSetupCoordinator.performAdd(bundleURL: app, rewrite: false,
                                                            environment: env, fs: fs, defaults: defaults)
         let afterAdd = try String(contentsOf: zprofile, encoding: .utf8)
         XCTAssertTrue(afterAdd.hasPrefix("export FOO=1\n"), "original text preserved")
@@ -153,11 +154,94 @@ final class CommandLineSetupControllerTests: XCTestCase {
         XCTAssertTrue(CommandLineSetupPreference.keepInTerminal(defaults: defaults), "preference turned on")
         XCTAssertEqual(added.refreshed.state.action, .remove)  // owned block now present
 
-        let removed = CommandLineSetupCoordinator.performRemove(report: added.refreshed, bundleURL: app,
+        let removed = CommandLineSetupCoordinator.performRemove(bundleURL: app,
                                                                 environment: env, fs: fs, defaults: defaults)
         XCTAssertEqual(removed.statusLine, "PATH entry removed.")
         XCTAssertEqual(try String(contentsOf: zprofile, encoding: .utf8), "export FOO=1\n", "block removed, original byte-identical")
         XCTAssertFalse(CommandLineSetupPreference.keepInTerminal(defaults: defaults), "preference turned off")
         XCTAssertNil(CommandLineSetupRecordStore.confirmed(defaults: defaults), "record cleared")
+    }
+
+    /// A zsh env whose login shell resolves nothing and whose stock layout holds,
+    /// so the account is automatically editable.
+    private func zshEnv(homePath: String) -> CommandLineSetupEnvironment {
+        CommandLineSetupEnvironment(
+            accountRecord: { .init(loginShellPath: "/bin/zsh", homeDirectory: homePath) },
+            resolvedUnison: { _, _ in .empty },
+            fishConfigDirectory: { _ in nil },
+            etcZshenvExists: { false },
+            homeZshenvExists: { _ in false },
+            etcZprofileContents: { CommandLineSetupFileSelection.stockZprofileMacOS26 },
+            zdotdirLaunchd: { .absent },
+            zdotdirAppEnvironment: { false },
+            parses: { _, _ in true },
+            metadataOK: { _ in true })
+    }
+
+    private func setUpZsh() throws -> (root: URL, app: URL, zprofile: URL, env: CommandLineSetupEnvironment,
+                                       fs: CommandLineToolFileSystem, defaults: UserDefaults) {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("clcoord-\(UUID().uuidString)")
+        let home = root.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let app = makeFakeBundle(in: root)
+        let zprofile = home.appendingPathComponent(".zprofile")
+        try "export FOO=1\n".write(to: zprofile, atomically: true, encoding: .utf8)
+        return (root, app, zprofile, zshEnv(homePath: home.path), RealCommandLineToolFileSystem(), freshDefaults())
+    }
+
+    // Regression (P1 #1): Remove revalidates at execution time. If the owned block
+    // is replaced with foreign content while the confirmation is open, the fresh
+    // state is no longer Remove, and nothing is deleted.
+    func test_performRemove_revalidates_refusesWhenBlockBecameForeign() throws {
+        let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
+        _ = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+                                                   environment: t.env, fs: t.fs, defaults: t.defaults)
+        // Tamper: change a line inside the block so it no longer matches the template.
+        let tampered = try String(contentsOf: t.zprofile, encoding: .utf8)
+            .replacingOccurrences(of: CommandLineSetupBlock.comment, with: "# edited by the user")
+        try tampered.write(to: t.zprofile, atomically: true, encoding: .utf8)
+
+        let removed = CommandLineSetupCoordinator.performRemove(bundleURL: t.app,
+                                                                environment: t.env, fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(removed.statusLine, CommandLineSetupCoordinator.situationChanged)
+        XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), tampered, "the foreign file is untouched")
+    }
+
+    // Regression (P1 #1): Add revalidates. Once the block is present (owned), a
+    // repeat Add sees the fresh Remove state and refuses rather than double-write.
+    func test_performAdd_revalidates_refusesWhenAlreadyOwned() throws {
+        let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
+        _ = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+                                                   environment: t.env, fs: t.fs, defaults: t.defaults)
+        let once = try String(contentsOf: t.zprofile, encoding: .utf8)
+        let again = CommandLineSetupCoordinator.performAdd(bundleURL: t.app, rewrite: false,
+                                                           environment: t.env, fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(again.statusLine, CommandLineSetupCoordinator.situationChanged)
+        XCTAssertEqual(try String(contentsOf: t.zprofile, encoding: .utf8), once, "no second block appended")
+    }
+
+    // Regression (P2 #3): a moved app repairs its owned block at startup (row 6).
+    func test_performStartupRewrite_repairsMovedApp() throws {
+        let t = try setUpZsh(); defer { try? FileManager.default.removeItem(at: t.root) }
+        let oldBin = "/Applications/Gone.app/Contents/SharedSupport/bin"
+        let oldBlock = CommandLineSetupBlock.blockText(directory: oldBin)!
+        let resolved = t.fs.realPath(ofPath: t.zprofile.path) ?? t.zprofile.path
+        try ("export FOO=1\n" + oldBlock + "\n").write(to: t.zprofile, atomically: true, encoding: .utf8)
+        let rec = CommandLineSetupOwnership(path: resolved, hash: CommandLineSetupBlock.hash(ofBlockText: oldBlock),
+                                            bundlePath: oldBin, date: Date())
+        CommandLineSetupRecordStore.writePending(rec, defaults: t.defaults)
+        CommandLineSetupRecordStore.promote(defaults: t.defaults)
+
+        let s = CommandLineSetupCoordinator.status(bundleURL: t.app, environment: t.env, fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(s.state.row, 6)
+        XCTAssertEqual(s.state.startup, .rewriteToCurrent)
+
+        let r = CommandLineSetupCoordinator.performStartupRewrite(bundleURL: t.app, environment: t.env,
+                                                                  fs: t.fs, defaults: t.defaults)
+        XCTAssertEqual(r.statusLine, "PATH entry updated to this app's location.")
+        let after = try String(contentsOf: t.zprofile, encoding: .utf8)
+        let currentBin = CommandLineSetupBundle.binDirectory(bundleURL: t.app)
+        XCTAssertTrue(after.contains(currentBin), "block rewritten to this app's current bin directory")
+        XCTAssertFalse(after.contains(oldBin), "the stale location is gone")
     }
 }

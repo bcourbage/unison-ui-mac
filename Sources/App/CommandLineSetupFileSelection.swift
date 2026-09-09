@@ -36,6 +36,12 @@ struct CommandLineSetupFileChoice: Equatable, Sendable {
     let file: String?
     /// Whether the app may edit automatically. When false, `manualReason` says why.
     let automatic: Bool
+    /// Whether `file` is the ESTABLISHED destination, not merely the usual name.
+    /// zsh keeps `~/.zprofile` as `file` even when `ZDOTDIR` or a `.zshenv`
+    /// redirect makes it uncertain which file the login shell reads; in that case
+    /// this is false, and Manual setup must not instruct the user to edit `file`
+    /// or offer Copy Setup Text for it.
+    let destinationEstablished: Bool
     /// The single-line reason the file is Manual setup, or nil when automatic.
     let manualReason: String?
     /// bash only: create the named file if none of the candidates exists.
@@ -118,8 +124,14 @@ enum CommandLineSetupFileSelection {
         let automatic = zshAutomatic(etcZshenvExists: etcZshenvExists, homeZshenvExists: homeZshenvExists,
                                      etcZprofileContents: etcZprofileContents, zdotdir: zdotdir,
                                      zdotdirInAppEnvironment: zdotdirInAppEnvironment)
+        // ~/.zprofile is the established destination only when nothing redirects
+        // where the login shell reads: no .zshenv, and ZDOTDIR positively absent.
+        // (A non-stock /etc/zprofile blocks automatic editing but does not move
+        // the file, so it does not make the destination uncertain.)
+        let destinationEstablished = !etcZshenvExists && !homeZshenvExists
+            && zdotdir == .absent && !zdotdirInAppEnvironment
         return CommandLineSetupFileChoice(
-            shell: .zsh, file: file, automatic: automatic,
+            shell: .zsh, file: file, automatic: automatic, destinationEstablished: destinationEstablished,
             manualReason: automatic ? nil : zshManualReason(
                 etcZshenvExists: etcZshenvExists, homeZshenvExists: homeZshenvExists,
                 etcZprofileContents: etcZprofileContents, zdotdir: zdotdir,
@@ -140,15 +152,17 @@ enum CommandLineSetupFileSelection {
         for candidate in candidates where existing(candidate) {
             if readable(candidate) {
                 return CommandLineSetupFileChoice(shell: .bash, file: candidate, automatic: true,
+                                                  destinationEstablished: true,
                                                   manualReason: nil, createIfAbsent: false)
             }
             return CommandLineSetupFileChoice(
-                shell: .bash, file: candidate, automatic: false,
+                shell: .bash, file: candidate, automatic: false, destinationEstablished: true,
                 manualReason: "a bash startup file exists but could not be read, so setup is manual",
                 createIfAbsent: false)
         }
         // None exists: create ~/.bash_profile.
         return CommandLineSetupFileChoice(shell: .bash, file: candidates[0], automatic: true,
+                                          destinationEstablished: true,
                                           manualReason: nil, createIfAbsent: true)
     }
 
@@ -160,24 +174,25 @@ enum CommandLineSetupFileSelection {
                            directoryExists: (String) -> Bool) -> CommandLineSetupFileChoice {
         guard let dir = configDirectory else {
             return CommandLineSetupFileChoice(
-                shell: .fish, file: nil, automatic: false,
+                shell: .fish, file: nil, automatic: false, destinationEstablished: false,
                 manualReason: "the fish configuration directory could not be determined, so setup is manual",
                 createIfAbsent: true)
         }
         guard dir.hasPrefix("/"), directoryExists(dir) else {
             return CommandLineSetupFileChoice(
-                shell: .fish, file: nil, automatic: false,
+                shell: .fish, file: nil, automatic: false, destinationEstablished: false,
                 manualReason: "the fish configuration directory is not an absolute existing directory, so setup is manual",
                 createIfAbsent: true)
         }
         let file = (dir as NSString).appendingPathComponent("conf.d/unison-ui-mac.fish")
         return CommandLineSetupFileChoice(shell: .fish, file: file, automatic: true,
+                                          destinationEstablished: true,
                                           manualReason: nil, createIfAbsent: true)
     }
 
     static func otherChoice() -> CommandLineSetupFileChoice {
         CommandLineSetupFileChoice(
-            shell: .other, file: nil, automatic: false,
+            shell: .other, file: nil, automatic: false, destinationEstablished: false,
             manualReason: "this login shell is not one the app edits automatically, so setup is manual",
             createIfAbsent: false)
     }

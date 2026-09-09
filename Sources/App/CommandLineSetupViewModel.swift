@@ -46,6 +46,32 @@ enum CommandLineSetupViewModel {
         }
     }
 
+    /// The footnote under the single action, naming the mechanism and the file it
+    /// edits, or nil when there is no action or no established file. zsh/bash name
+    /// the file; fish names its configuration.
+    static func actionFootnote(action: CommandLineSetupAction,
+                               shell: CommandLineSetupShellKind, file: String?) -> String? {
+        switch action {
+        case .none:
+            return nil
+        case .add:
+            guard let file else { return nil }
+            return shell == .fish
+                ? "Adds this app's command to your Terminal by writing a dedicated file in your fish configuration."
+                : "Adds this app's command to your Terminal by writing one marked block to \(file), the file your login shell reads."
+        case .useThisCopy:
+            guard let file else { return nil }
+            return shell == .fish
+                ? "Points this app's command at this copy by rewriting the file in your fish configuration."
+                : "Points this app's command at this copy by rewriting the marked block in \(file)."
+        case .remove:
+            guard let file else { return nil }
+            return shell == .fish
+                ? "Removes this app's file from your fish configuration. Another link may still select this app."
+                : "Removes this app's block from \(file). Another link may still select this app."
+        }
+    }
+
     /// Abbreviate a path inside an app bundle as `<App>.app › <tail after
     /// Contents/>`; other paths are shown in full.
     static func abbreviatedPath(_ path: String) -> String {

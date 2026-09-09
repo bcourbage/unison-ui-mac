@@ -190,60 +190,38 @@ enum CommandLineSetupCoordinator {
 
     // MARK: Write operations
 
-    /// Add or rewrite this app's entry in `resolvedPath` (or create it), recording
-    /// ownership. `newContents` is the file's whole new text; `blockHash` is the
-    /// hash to record. `create` chooses creation vs replacement; `ensureParent` is
-    /// for fish's conf.d.
-    static func write(resolvedPath: String,
-                      newContents: String,
-                      blockHash: String,
-                      binDirectory: String,
-                      create: Bool,
-                      ensureParent: Bool,
-                      now: Date = Date(),
-                      defaults: UserDefaults = .standard) -> CommandLineSetupWriteOutcome {
+    /// Record the pending ownership, then replace `resolvedPath` with `newContents`
+    /// guarded by `expected` — the identity from the SAME read that produced the
+    /// text, so an intervening save is refused at the seam rather than overwritten
+    /// with text derived from the older file.
+    private static func writeReplace(resolvedPath: String, newContents: String,
+                                     blockHash: String, binDirectory: String,
+                                     expected: CommandLineSetupFileIdentity,
+                                     now: Date, defaults: UserDefaults) -> CommandLineSetupWriteOutcome {
         let record = CommandLineSetupOwnership(path: resolvedPath, hash: blockHash,
                                                bundlePath: binDirectory, date: now)
         guard CommandLineSetupRecordStore.writePending(record, defaults: defaults) else {
             return .notMutated(reason: CommandLineSetupStatusLine.recordFailed)
         }
-        let outcome: CommandLineSetupWriteOutcome
-        if create {
-            outcome = CommandLineSetupWriter.create(resolvedPath: resolvedPath, contents: newContents,
-                                                    ensuringParentDirectory: ensureParent)
-        } else {
-            guard let snapshot = CommandLineSetupWriter.snapshot(atPath: resolvedPath) else {
-                CommandLineSetupRecordStore.deletePending(defaults: defaults)
-                return .notMutated(reason: "the file could not be read before writing")
-            }
-            outcome = CommandLineSetupWriter.replace(resolvedPath: resolvedPath, newContents: newContents,
-                                                     expected: snapshot)
-        }
+        let outcome = CommandLineSetupWriter.replace(resolvedPath: resolvedPath,
+                                                     newContents: newContents, expected: expected)
         applyRecordOutcome(outcome, defaults: defaults)
         return outcome
     }
 
-    /// Remove this app's entry: delete the fish file, or rewrite a zsh/bash file
-    /// with the block gone. `fishFile` true deletes the whole file.
-    static func remove(resolvedPath: String,
-                       newContents: String?,
-                       fishFile: Bool,
-                       defaults: UserDefaults = .standard) -> CommandLineSetupWriteOutcome {
-        let outcome: CommandLineSetupWriteOutcome
-        if fishFile {
-            guard let snapshot = CommandLineSetupWriter.snapshot(atPath: resolvedPath) else {
-                return .notMutated(reason: "the file could not be read before writing")
-            }
-            outcome = CommandLineSetupWriter.removeFile(resolvedPath: resolvedPath, expected: snapshot)
-        } else {
-            guard let newContents,
-                  let snapshot = CommandLineSetupWriter.snapshot(atPath: resolvedPath) else {
-                return .notMutated(reason: "the file could not be read before writing")
-            }
-            outcome = CommandLineSetupWriter.replace(resolvedPath: resolvedPath, newContents: newContents,
-                                                     expected: snapshot)
+    /// Record the pending ownership, then create `resolvedPath` (RENAME_EXCL).
+    private static func writeCreate(resolvedPath: String, contents: String,
+                                    blockHash: String, binDirectory: String,
+                                    ensureParent: Bool, now: Date,
+                                    defaults: UserDefaults) -> CommandLineSetupWriteOutcome {
+        let record = CommandLineSetupOwnership(path: resolvedPath, hash: blockHash,
+                                               bundlePath: binDirectory, date: now)
+        guard CommandLineSetupRecordStore.writePending(record, defaults: defaults) else {
+            return .notMutated(reason: CommandLineSetupStatusLine.recordFailed)
         }
-        if case .mutated = outcome { CommandLineSetupRecordStore.deleteBoth(defaults: defaults) }
+        let outcome = CommandLineSetupWriter.create(resolvedPath: resolvedPath, contents: contents,
+                                                    ensuringParentDirectory: ensureParent)
+        applyRecordOutcome(outcome, defaults: defaults)
         return outcome
     }
 
@@ -253,6 +231,46 @@ enum CommandLineSetupCoordinator {
         case .mutatedReadBackFailed, .uncertain: break  // keep pending
         case .notMutated: CommandLineSetupRecordStore.deletePending(defaults: defaults)
         }
+    }
+
+    /// Write (append / rewrite / create) this app's entry into `file`, reading the
+    /// file's content and the snapshot that guards it in ONE read. Shared by Add,
+    /// Use This Copy and the startup rewrite.
+    private static func writeEntry(shell: CommandLineSetupShellKind, file: String,
+                                   binDirectory: String, rewrite: Bool,
+                                   fs: CommandLineToolFileSystem, now: Date,
+                                   defaults: UserDefaults) -> CommandLineSetupWriteOutcome {
+        let resolved = fs.realPath(ofPath: file) ?? file
+        if shell == .fish {
+            let text = CommandLineSetupBlock.fishFileText(directory: binDirectory) ?? ""
+            let hash = CommandLineSetupBlock.hash(ofBlockText: text)
+            if fs.entryExists(atPath: file) {
+                guard let snap = CommandLineSetupWriter.snapshotWithContents(atPath: resolved) else {
+                    return .notMutated(reason: "the file could not be read before writing")
+                }
+                return writeReplace(resolvedPath: resolved, newContents: text, blockHash: hash,
+                                    binDirectory: binDirectory, expected: snap.identity, now: now, defaults: defaults)
+            }
+            return writeCreate(resolvedPath: file, contents: text, blockHash: hash,
+                               binDirectory: binDirectory, ensureParent: true, now: now, defaults: defaults)
+        }
+        let blockText = CommandLineSetupBlock.blockText(directory: binDirectory) ?? ""
+        let hash = CommandLineSetupBlock.hash(ofBlockText: blockText)
+        if fs.entryExists(atPath: file) {
+            guard let snap = CommandLineSetupWriter.snapshotWithContents(atPath: resolved) else {
+                return .notMutated(reason: "the file could not be read before writing")
+            }
+            let newContents: String
+            if rewrite, case .single(let b, let e) = CommandLineSetupBlock.markerArrangement(inContents: snap.contents) {
+                newContents = CommandLineSetupEdit.rewritten(snap.contents, beginLine: b, endLine: e, newBlockText: blockText)
+            } else {
+                newContents = CommandLineSetupEdit.appended(to: snap.contents, blockText: blockText)
+            }
+            return writeReplace(resolvedPath: resolved, newContents: newContents, blockHash: hash,
+                                binDirectory: binDirectory, expected: snap.identity, now: now, defaults: defaults)
+        }
+        return writeCreate(resolvedPath: file, contents: blockText + "\n", blockHash: hash,
+                           binDirectory: binDirectory, ensureParent: false, now: now, defaults: defaults)
     }
 
     // MARK: High-level actions
@@ -265,75 +283,85 @@ enum CommandLineSetupCoordinator {
         let refreshed: CommandLineSetupStatusReport
     }
 
+    /// Shown when the situation changed between the confirmation and the write, so
+    /// the action no longer applies. The refreshed status accompanies it.
+    static let situationChanged = "The setup changed since this was shown; nothing was written."
+
     /// Add or update this app's entry, then re-probe. Turns the preference on.
-    /// `rewrite` true rewrites an existing owned block (Use This Copy / row 6);
-    /// false appends a new one.
-    static func performAdd(report: CommandLineSetupStatusReport,
-                           bundleURL: URL,
+    /// RE-ESTABLISHES the whole status at execution time (shell layout, editable
+    /// bound, ownership, bundle validity) rather than trusting the report shown
+    /// with the confirmation; refuses if the fresh state no longer offers Add or
+    /// Use This Copy. `rewrite` requests a rewrite; a fresh Use This Copy state
+    /// forces one.
+    static func performAdd(bundleURL: URL,
                            rewrite: Bool,
                            environment env: CommandLineSetupEnvironment = .real,
                            fs: CommandLineToolFileSystem = RealCommandLineToolFileSystem(),
                            defaults: UserDefaults = .standard,
                            now: Date = Date()) -> ActionResult {
-        let choice = report.fileChoice
-        let binDir = report.thisBinDirectory
-        guard choice.automatic, let file = choice.file else {
-            return ActionResult(statusLine: CommandLineSetupBundle.missingCommandNote, secondLine: nil, refreshed: report)
+        let fresh = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
+        guard fresh.state.action == .add || fresh.state.action == .useThisCopy,
+              fresh.fileChoice.automatic, let file = fresh.fileChoice.file else {
+            return ActionResult(statusLine: situationChanged, secondLine: nil, refreshed: fresh)
         }
-        let outcome: CommandLineSetupWriteOutcome
-        if choice.shell == .fish {
-            let text = CommandLineSetupBlock.fishFileText(directory: binDir) ?? ""
-            let exists = fs.entryExists(atPath: file)
-            let resolved = fs.realPath(ofPath: file) ?? file
-            outcome = write(resolvedPath: exists ? resolved : file, newContents: text,
-                            blockHash: CommandLineSetupBlock.hash(ofBlockText: text), binDirectory: binDir,
-                            create: !exists, ensureParent: true, now: now, defaults: defaults)
-        } else {
-            let blockText = CommandLineSetupBlock.blockText(directory: binDir) ?? ""
-            let blockHash = CommandLineSetupBlock.hash(ofBlockText: blockText)
-            if let contents = fs.contentsOfFile(atPath: file) {
-                let resolved = fs.realPath(ofPath: file) ?? file
-                let newContents: String
-                if rewrite, case .single(let b, let e) = CommandLineSetupBlock.markerArrangement(inContents: contents) {
-                    newContents = CommandLineSetupEdit.rewritten(contents, beginLine: b, endLine: e, newBlockText: blockText)
-                } else {
-                    newContents = CommandLineSetupEdit.appended(to: contents, blockText: blockText)
-                }
-                outcome = write(resolvedPath: resolved, newContents: newContents, blockHash: blockHash,
-                                binDirectory: binDir, create: false, ensureParent: false, now: now, defaults: defaults)
-            } else {
-                outcome = write(resolvedPath: file, newContents: blockText + "\n", blockHash: blockHash,
-                                binDirectory: binDir, create: true, ensureParent: false, now: now, defaults: defaults)
-            }
-        }
+        let outcome = writeEntry(shell: fresh.fileChoice.shell, file: file, binDirectory: fresh.thisBinDirectory,
+                                 rewrite: rewrite || fresh.state.action == .useThisCopy,
+                                 fs: fs, now: now, defaults: defaults)
         CommandLineSetupPreference.setKeepInTerminal(true, defaults: defaults)
         let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
         return ActionResult(statusLine: CommandLineSetupStatusLine.afterWrite(outcome, postResolution: refreshed.resolution),
                             secondLine: nil, refreshed: refreshed)
     }
 
+    /// Row 6 at launch: rewrite an owned block that records a stale location with
+    /// this app's CURRENT path. Revalidates; acts only while the state still asks
+    /// for it (startup behavior `.rewriteToCurrent`). Silent; the caller reports.
+    static func performStartupRewrite(bundleURL: URL,
+                                      environment env: CommandLineSetupEnvironment = .real,
+                                      fs: CommandLineToolFileSystem = RealCommandLineToolFileSystem(),
+                                      defaults: UserDefaults = .standard,
+                                      now: Date = Date()) -> ActionResult {
+        let fresh = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
+        guard fresh.state.startup == .rewriteToCurrent,
+              fresh.fileChoice.automatic, let file = fresh.fileChoice.file else {
+            return ActionResult(statusLine: "", secondLine: nil, refreshed: fresh)
+        }
+        let outcome = writeEntry(shell: fresh.fileChoice.shell, file: file, binDirectory: fresh.thisBinDirectory,
+                                 rewrite: true, fs: fs, now: now, defaults: defaults)
+        let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
+        return ActionResult(statusLine: CommandLineSetupStatusLine.afterRewrite(outcome),
+                            secondLine: nil, refreshed: refreshed)
+    }
+
     /// Remove this app's entry, then re-probe. Turns the preference off.
-    static func performRemove(report: CommandLineSetupStatusReport,
-                              bundleURL: URL,
+    /// Revalidates at execution time and reads content and snapshot together, so a
+    /// file that became foreign, or changed since the confirmation, is not deleted.
+    static func performRemove(bundleURL: URL,
                               environment env: CommandLineSetupEnvironment = .real,
                               fs: CommandLineToolFileSystem = RealCommandLineToolFileSystem(),
                               defaults: UserDefaults = .standard) -> ActionResult {
-        let choice = report.fileChoice
-        guard let file = choice.file else {
-            return ActionResult(statusLine: "There is no entry to remove.", secondLine: nil, refreshed: report)
+        let fresh = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
+        guard fresh.state.action == .remove, let file = fresh.fileChoice.file else {
+            return ActionResult(statusLine: situationChanged, secondLine: nil, refreshed: fresh)
         }
         let resolved = fs.realPath(ofPath: file) ?? file
         let outcome: CommandLineSetupWriteOutcome
-        if choice.shell == .fish {
-            outcome = remove(resolvedPath: resolved, newContents: nil, fishFile: true, defaults: defaults)
-        } else if let contents = fs.contentsOfFile(atPath: file),
-                  case .single(let b, let e) = CommandLineSetupBlock.markerArrangement(inContents: contents) {
-            outcome = remove(resolvedPath: resolved,
-                             newContents: CommandLineSetupEdit.removed(contents, beginLine: b, endLine: e),
-                             fishFile: false, defaults: defaults)
+        if fresh.fileChoice.shell == .fish {
+            if let snap = CommandLineSetupWriter.snapshotWithContents(atPath: resolved) {
+                outcome = CommandLineSetupWriter.removeFile(resolvedPath: resolved, expected: snap.identity)
+            } else {
+                outcome = .notMutated(reason: "the file could not be read before writing")
+            }
+        } else if let snap = CommandLineSetupWriter.snapshotWithContents(atPath: resolved),
+                  case .single(let b, let e) = CommandLineSetupBlock.markerArrangement(inContents: snap.contents) {
+            outcome = CommandLineSetupWriter.replace(
+                resolvedPath: resolved,
+                newContents: CommandLineSetupEdit.removed(snap.contents, beginLine: b, endLine: e),
+                expected: snap.identity)
         } else {
             outcome = .notMutated(reason: "no entry from this app was found to remove")
         }
+        if case .mutated = outcome { CommandLineSetupRecordStore.deleteBoth(defaults: defaults) }
         CommandLineSetupPreference.setKeepInTerminal(false, defaults: defaults)
         let refreshed = status(bundleURL: bundleURL, environment: env, fs: fs, defaults: defaults)
         let (first, second) = CommandLineSetupStatusLine.afterRemove(outcome, postResolution: refreshed.resolution)
@@ -352,21 +380,29 @@ enum CommandLineSetupCoordinator {
         }
     }
 
-    static func performAddAsync(report: CommandLineSetupStatusReport, bundleURL: URL, rewrite: Bool,
+    static func performAddAsync(bundleURL: URL, rewrite: Bool,
                                 defaults: UserDefaults = .standard) async -> ActionResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: performAdd(report: report, bundleURL: bundleURL, rewrite: rewrite,
-                                                          defaults: defaults))
+                continuation.resume(returning: performAdd(bundleURL: bundleURL, rewrite: rewrite, defaults: defaults))
             }
         }
     }
 
-    static func performRemoveAsync(report: CommandLineSetupStatusReport, bundleURL: URL,
+    static func performRemoveAsync(bundleURL: URL,
                                    defaults: UserDefaults = .standard) async -> ActionResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: performRemove(report: report, bundleURL: bundleURL, defaults: defaults))
+                continuation.resume(returning: performRemove(bundleURL: bundleURL, defaults: defaults))
+            }
+        }
+    }
+
+    static func performStartupRewriteAsync(bundleURL: URL,
+                                           defaults: UserDefaults = .standard) async -> ActionResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: performStartupRewrite(bundleURL: bundleURL, defaults: defaults))
             }
         }
     }

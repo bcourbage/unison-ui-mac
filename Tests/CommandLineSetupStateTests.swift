@@ -240,4 +240,36 @@ final class CommandLineSetupStateTests: XCTestCase {
         XCTAssertFalse(CommandLineSetupViewModel.commandPathNeedsCare("/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison"))
         XCTAssertTrue(CommandLineSetupViewModel.commandPathNeedsCare("/Users/My Apps/unison.app/x"))
     }
+
+    func test_viewModel_actionFootnote() {
+        XCTAssertEqual(CommandLineSetupViewModel.actionFootnote(action: .add, shell: .zsh, file: "/h/.zprofile"),
+                       "Adds this app's command to your Terminal by writing one marked block to /h/.zprofile, the file your login shell reads.")
+        XCTAssertEqual(CommandLineSetupViewModel.actionFootnote(action: .remove, shell: .zsh, file: "/h/.zprofile"),
+                       "Removes this app's block from /h/.zprofile. Another link may still select this app.")
+        XCTAssertEqual(CommandLineSetupViewModel.actionFootnote(action: .add, shell: .fish, file: "/h/x.fish"),
+                       "Adds this app's command to your Terminal by writing a dedicated file in your fish configuration.")
+        XCTAssertNil(CommandLineSetupViewModel.actionFootnote(action: .none, shell: .zsh, file: "/h/.zprofile"))
+        XCTAssertNil(CommandLineSetupViewModel.actionFootnote(action: .add, shell: .zsh, file: nil))
+    }
+
+    // P2 #4: zsh keeps ~/.zprofile as the name, but the destination is established
+    // only when nothing redirects where the login shell reads.
+    func test_zshChoice_destinationEstablished() {
+        let stock = CommandLineSetupFileSelection.stockZprofileMacOS26
+        func choice(_ etcZ: Bool, _ homeZ: Bool, _ zd: CommandLineSetupZDOTDIRState, _ appEnv: Bool) -> CommandLineSetupFileChoice {
+            CommandLineSetupFileSelection.zshChoice(homeDirectory: "/h", etcZshenvExists: etcZ, homeZshenvExists: homeZ,
+                                                    etcZprofileContents: stock, zdotdir: zd, zdotdirInAppEnvironment: appEnv)
+        }
+        XCTAssertTrue(choice(false, false, .absent, false).destinationEstablished)
+        XCTAssertFalse(choice(false, false, .present, false).destinationEstablished)   // ZDOTDIR in launchd
+        XCTAssertFalse(choice(false, false, .uncertain, false).destinationEstablished) // uncertain is not absent
+        XCTAssertFalse(choice(false, false, .absent, true).destinationEstablished)      // ZDOTDIR in app env
+        XCTAssertFalse(choice(true, false, .absent, false).destinationEstablished)      // .zshenv redirect
+        // A non-stock /etc/zprofile blocks automatic editing but does not move the file.
+        let nonStock = CommandLineSetupFileSelection.zshChoice(
+            homeDirectory: "/h", etcZshenvExists: false, homeZshenvExists: false,
+            etcZprofileContents: "not stock\n", zdotdir: .absent, zdotdirInAppEnvironment: false)
+        XCTAssertFalse(nonStock.automatic)
+        XCTAssertTrue(nonStock.destinationEstablished, "the file is still established even when not auto-editable")
+    }
 }
