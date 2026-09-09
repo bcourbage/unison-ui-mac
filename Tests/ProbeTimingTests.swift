@@ -47,7 +47,33 @@ final class ProbeTimingTests: XCTestCase {
     }
 
     private func ids(_ lines: [String]) -> [String] {
-        lines.compactMap { line in line.split(separator: " ").first { $0.hasPrefix("id=") }.map(String.init) }
+        lines.compactMap { line in idOf(line) }
+    }
+
+    private func idOf(_ line: String) -> String? {
+        line.split(separator: " ").first { $0.hasPrefix("id=") }.map(String.init)
+    }
+
+    private func firstLine(inFile path: String, containing s: String) -> String? {
+        (try? String(contentsOfFile: path, encoding: .utf8))?
+            .split(separator: "\n").map(String.init).first { $0.contains(s) }
+    }
+
+    /// Polls a file for a line containing `s`, up to a generous timeout (this is
+    /// the test's own failure timeout, not a behavioral bound).
+    private func waitForLine(inFile path: String, containing s: String, timeout: TimeInterval) -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let line = firstLine(inFile: path, containing: s) { return line }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return firstLine(inFile: path, containing: s)
+    }
+
+    /// Carries a RawExecResult out of a background dispatch; the surrounding
+    /// semaphore provides the happens-before.
+    private final class ResultBox: @unchecked Sendable {
+        var value: VersionCheck.RawExecResult = .cancelled
     }
 
     // MARK: 1. recorder scenarios
@@ -101,42 +127,68 @@ final class ProbeTimingTests: XCTestCase {
         XCTAssertTrue(lines[0].contains("waitUntilExitReturn="))
     }
 
-    func test_recorder_concurrentEmitAndNote_holdInvariants() {
-        // emit() and noteWaitTaskComplete() racing must never crash, never
-        // produce two return lines, and never drop the exit event.
-        for _ in 0..<200 {
+    func test_recorder_exitArrivalRacingEmission_holdInvariants() {
+        // The exit ARRIVING (the wait task marking waitUntilExitReturn) races the
+        // executor's emission, the interleaving that matters. Under any order:
+        // exactly one return line, the exit preserved somewhere (the return line
+        // if emission lost the race, else a correlated late-exit line), and no
+        // crash. If emission wins and the late-exit path were removed, the exit
+        // would be dropped here.
+        for _ in 0..<500 {
             let lines = withTimingFile {
                 let t = Timing()
                 t.begin(executable: "/bin/sh", deadline: 1)
-                t.mark("launch"); t.mark("waitTaskEntry"); t.mark("waitUntilExitReturn")
+                t.mark("launch"); t.mark("waitTaskEntry")
                 let g = DispatchGroup()
+                g.enter(); DispatchQueue.global().async { t.mark("waitUntilExitReturn"); t.noteWaitTaskComplete(); g.leave() }
                 g.enter(); DispatchQueue.global().async { t.emit(); g.leave() }
-                g.enter(); DispatchQueue.global().async { t.noteWaitTaskComplete(); g.leave() }
                 g.wait()
             }
-            XCTAssertEqual(lines.filter { $0.contains("phase=return") }.count, 1, "exactly one return line")
-            XCTAssertTrue(lines.contains { $0.contains("waitUntilExitReturn=") }, "exit preserved")
-            XCTAssertEqual(lines.count, 1, "exit already recorded, so no late-exit line")
+            XCTAssertEqual(lines.filter { $0.contains("phase=return") }.count, 1, "exactly one return line under the race")
+            XCTAssertTrue(lines.contains { $0.contains("waitUntilExitReturn=") }, "exit arrival preserved under the race")
+            XCTAssertLessThanOrEqual(lines.count, 2, "at most a return line and one late-exit line")
         }
     }
 
-    func test_recorder_cancellation_recordsCancelSIGTERM_beforeEOF() {
-        let lines = withTimingFile {
-            let t = Timing()
-            t.begin(executable: "/bin/sh", deadline: 60)
-            t.mark("launch"); t.mark("waitTaskEntry")
-            t.mark("cancelSIGTERM")        // the cancel-triggered signal
-            t.mark("stdoutEOF")            // output closed as a consequence
-            t.mark("waitUntilExitReturn")  // the reaped child's exit, seen before return
-            t.setResult("cancelled")
-            t.emit(); t.noteWaitTaskComplete()
+    func test_executor_cancellation_realRecord_containsCancelSIGTERM() {
+        // Drive the REAL executor's cancellation path (not a hand-built record),
+        // so removing the executor's cancelSIGTERM mark would fail this test.
+        let path = NSTemporaryDirectory() + "cancel-\(UUID().uuidString).log"
+        let prevOn = getenv("UUM_PROBE_TIMING").map { String(cString: $0) }
+        let prevFile = getenv("UUM_PROBE_TIMING_FILE").map { String(cString: $0) }
+        setenv("UUM_PROBE_TIMING", "1", 1)
+        setenv("UUM_PROBE_TIMING_FILE", path, 1)
+        defer {
+            if let prevOn { setenv("UUM_PROBE_TIMING", prevOn, 1) } else { unsetenv("UUM_PROBE_TIMING") }
+            if let prevFile { setenv("UUM_PROBE_TIMING_FILE", prevFile, 1) } else { unsetenv("UUM_PROBE_TIMING_FILE") }
+            try? FileManager.default.removeItem(atPath: path)
         }
-        XCTAssertEqual(lines.count, 1)
-        XCTAssertTrue(lines[0].contains("result=cancelled"))
-        XCTAssertTrue(lines[0].contains("cancelSIGTERM="))
-        let cancel = offset("cancelSIGTERM", lines), eof = offset("stdoutEOF", lines)
-        XCTAssertNotNil(cancel); XCTAssertNotNil(eof)
-        XCTAssertLessThanOrEqual(cancel ?? .infinity, eof ?? 0, "the cancel signal precedes the EOF it caused")
+        let launched = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        let exec = Exec(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.3,
+                        onLaunch: { _ in launched.signal() })
+        let canceller = VersionCheck.ProbeCanceller()
+        // Controlled child: prints a line, then stays alive so it is cancelled
+        // while running. Its stdout closes only when the cancel kills it, so the
+        // cancel signal precedes the EOF.
+        let cfg = sh("printf READY; sleep 10")
+        let box = ResultBox()
+        DispatchQueue.global().async {
+            box.value = exec.execute(cfg, deadline: 30, canceller: canceller)
+            done.signal()
+        }
+        XCTAssertEqual(launched.wait(timeout: .now() + 10), .success, "child launched")
+        canceller.cancel()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "executor returned after cancel")
+        XCTAssertEqual(box.value, .cancelled)
+
+        let lines = (try? String(contentsOfFile: path, encoding: .utf8))?
+            .split(separator: "\n").map(String.init) ?? []
+        XCTAssertTrue(lines.contains { $0.contains("result=cancelled") && $0.contains("cancelSIGTERM=") },
+                      "the executor's own cancellation record contains cancelSIGTERM")
+        if let cancel = offset("cancelSIGTERM", lines), let eof = offset("stdoutEOF", lines) {
+            XCTAssertLessThanOrEqual(cancel, eof, "the cancel signal precedes the EOF it caused")
+        }
     }
 
     func test_recorder_correlationIds_areDistinctPerInstance() {
@@ -182,54 +234,68 @@ final class ProbeTimingTests: XCTestCase {
 
     // MARK: 3. test-only delay seams
 
-    /// Runs the executor with the given seam configured, capturing this probe's
-    /// timing lines. Polls (bounded) for the late-exit line the background task
-    /// writes after the executor returns, so the record is complete before the
-    /// env is restored.
-    private func runSeam(_ configure: (inout Exec) -> Void)
-        -> (lines: [String], result: VersionCheck.RawExecResult, elapsed: TimeInterval) {
+    private enum Stage { case entry, exit }
+
+    /// Runs the executor with a seam that BLOCKS until the executor has already
+    /// returned, then releases it and waits (generously) for the late-exit line.
+    /// The executor returning while the hook is still blocked is the proof that
+    /// its return is independent of the delayed background task — no timing
+    /// threshold. A return that instead waited for the background task would
+    /// block here and fail the test's own 10 s guard.
+    private func runBlockingSeam(_ stage: Stage)
+        -> (returnLine: String?, lateLine: String?, result: VersionCheck.RawExecResult) {
         let path = NSTemporaryDirectory() + "seam-\(UUID().uuidString).log"
-        // Enable the executor's timing explicitly (do not depend on another test
-        // class's bootstrap having run first), and point it at our temp file.
         let prevOn = getenv("UUM_PROBE_TIMING").map { String(cString: $0) }
         let prev = getenv("UUM_PROBE_TIMING_FILE").map { String(cString: $0) }
         setenv("UUM_PROBE_TIMING", "1", 1)
         setenv("UUM_PROBE_TIMING_FILE", path, 1)
-        var exec = Exec(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
-        configure(&exec)
-        let start = Date()
-        let result = exec.execute(sh("echo done"), deadline: 0.3, canceller: VersionCheck.ProbeCanceller())
-        let elapsed = Date().timeIntervalSince(start)
-        let poll = Date().addingTimeInterval(3)
-        while Date() < poll {
-            if let t = try? String(contentsOfFile: path, encoding: .utf8), t.contains("phase=late-exit") { break }
-            Thread.sleep(forTimeInterval: 0.02)
+        defer {
+            if let prevOn { setenv("UUM_PROBE_TIMING", prevOn, 1) } else { unsetenv("UUM_PROBE_TIMING") }
+            if let prev { setenv("UUM_PROBE_TIMING_FILE", prev, 1) } else { unsetenv("UUM_PROBE_TIMING_FILE") }
+            try? FileManager.default.removeItem(atPath: path)
         }
-        if let prevOn { setenv("UUM_PROBE_TIMING", prevOn, 1) } else { unsetenv("UUM_PROBE_TIMING") }
-        if let prev { setenv("UUM_PROBE_TIMING_FILE", prev, 1) } else { unsetenv("UUM_PROBE_TIMING_FILE") }
-        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        try? FileManager.default.removeItem(atPath: path)
-        return (text.split(separator: "\n").map(String.init), result, elapsed)
+        let release = DispatchSemaphore(value: 0)
+        let hook: @Sendable () -> Void = { release.wait() }
+        var exec = Exec(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
+        switch stage {
+        case .entry: exec.waitTaskEntryHook = hook
+        case .exit:  exec.exitObservationHook = hook
+        }
+        let cfg = sh("echo done")
+        // Returns while the hook is still blocked (deadline + reap fire without
+        // the wait task signalling). The primary line is written in execute()'s
+        // defer, so it is already on disk here.
+        let result = exec.execute(cfg, deadline: 0.3, canceller: VersionCheck.ProbeCanceller())
+        let returnLine = firstLine(inFile: path, containing: "phase=return")
+        release.signal()   // the wait task now finishes and writes the late line
+        let lateLine = waitForLine(inFile: path, containing: "phase=late-exit", timeout: 10)
+        return (returnLine, lateLine, result)
     }
 
-    func test_seam_delayedWaitTaskEntry_returnsBounded_diagnosisShowsLateEntry() {
-        let (lines, result, elapsed) = runSeam { $0.waitTaskEntryHook = { Thread.sleep(forTimeInterval: 1.2) } }
+    func test_seam_delayedWaitTaskEntry_returnsIndependently_lateRecordShowsEntry() {
+        let (ret, late, result) = runBlockingSeam(.entry)
         guard case .timedOut = result else { return XCTFail("\(result)") }
-        XCTAssertLessThan(elapsed, 2.5, "the executor return is bounded, not blocked on the delayed wait task")
-        let entry = offset("waitTaskEntry", lines)
-        XCTAssertNotNil(entry, "wait-task entry is recorded (via the late-exit line)")
-        XCTAssertGreaterThan(entry ?? 0, 1000, "wait-task ENTRY is the delayed stage")
+        XCTAssertNotNil(ret, "the return line was written before the wait task was released")
+        XCTAssertNotNil(late, "the late-exit line is written once the hook is released")
+        guard let ret, let late else { return }
+        // The delayed stage is wait-task ENTRY: the return line predates the
+        // entry mark; the late line carries it (and the exit).
+        XCTAssertFalse(ret.contains("waitTaskEntry="), "the wait task had not entered when the executor returned")
+        XCTAssertTrue(late.contains("waitTaskEntry="), "entry is recorded once the hook is released")
+        XCTAssertTrue(late.contains("waitUntilExitReturn="), "the exit is preserved in the late record")
+        XCTAssertEqual(idOf(ret), idOf(late), "return and late-exit share a correlation id")
     }
 
-    func test_seam_delayedExitObservation_returnsBounded_diagnosisShowsLateExit() {
-        let (lines, result, elapsed) = runSeam { $0.exitObservationHook = { Thread.sleep(forTimeInterval: 1.2) } }
+    func test_seam_delayedExitObservation_returnsIndependently_lateRecordShowsExit() {
+        let (ret, late, result) = runBlockingSeam(.exit)
         guard case .timedOut = result else { return XCTFail("\(result)") }
-        XCTAssertLessThan(elapsed, 2.5, "the executor return is bounded")
-        let entry = offset("waitTaskEntry", lines)
-        let exitReturn = offset("waitUntilExitReturn", lines)
-        XCTAssertNotNil(entry); XCTAssertLessThan(entry ?? .infinity, 300, "wait-task entry was prompt")
-        XCTAssertNotNil(exitReturn, "the exit observation is recorded via the late-exit line")
-        XCTAssertGreaterThan(exitReturn ?? 0, 1000, "EXIT OBSERVATION is the delayed stage")
-        XCTAssertTrue(lines.contains { $0.contains("phase=late-exit") }, "a correlated late-exit line was written")
+        XCTAssertNotNil(ret); XCTAssertNotNil(late)
+        guard let ret, let late else { return }
+        // The delayed stage is EXIT observation: entry was recorded before the
+        // return; the exit appears only in the late record.
+        XCTAssertTrue(ret.contains("waitTaskEntry="), "the wait task entered promptly")
+        XCTAssertFalse(ret.contains("waitUntilExitReturn="), "the exit was not observed by return")
+        XCTAssertTrue(late.contains("waitUntilExitReturn="), "the exit is preserved in the late record")
+        XCTAssertEqual(idOf(ret), idOf(late), "return and late-exit share a correlation id")
     }
 }
