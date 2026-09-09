@@ -25,6 +25,7 @@ enum KeyboardFocus {
     /// for the stack-view layout, is top-to-bottom then left-to-right): the
     /// enabled, visible `NSControl`s that accept first responder. A label is a
     /// non-editable text field and does not accept it, so labels are excluded.
+    @MainActor
     static func focusables(in root: NSView) -> [NSView] {
         var out: [NSView] = []
         func walk(_ v: NSView) {
