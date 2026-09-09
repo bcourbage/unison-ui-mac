@@ -44,6 +44,7 @@ enum KeyboardFocus {
     /// while it is being edited (its field editor is the responder), which
     /// would drop it from the list mid-edit and strand Tab on the first row.
     /// Labels are non-editable text fields and are excluded.
+    @MainActor
     private static func isNavigable(_ c: NSControl) -> Bool {
         if c is NSComboBox || c is NSPopUpButton || c is NSButton { return true }
         if let field = c as? NSTextField { return field.isEditable }
