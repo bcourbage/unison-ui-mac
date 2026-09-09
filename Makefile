@@ -415,6 +415,14 @@ check-sparkle-output-path:
 check-sign-app:
 	@./scripts/test-sign-app.sh
 
+# Release gate "known elevation APIs absent": no privilege-escalation identifier
+# appears in the app source (see docs/command-line-setup-design.md). Runs the
+# gate against Sources and then the gate's own tests. Pure shell.
+.PHONY: check-no-elevation
+check-no-elevation:
+	@./scripts/check-no-elevation.sh
+	@./scripts/test-check-no-elevation.sh
+
 # The `unison` launcher (Sources/CLTool/cltool.c): compiled with cc against a
 # throwaway bundle identifier into a fake bundle, then exercised through a PATH
 # symlink, by direct path, copied out of the bundle, and against a bundle with

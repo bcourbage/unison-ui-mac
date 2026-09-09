@@ -180,6 +180,12 @@ jobs:
         # (required Sparkle components; explicit identity must be Developer ID).
         run: make check-sign-app
 
+      - name: Check no elevation APIs
+        # Release gate "known elevation APIs absent": the app source contains none
+        # of the known privilege-escalation identifiers (command-line setup writes
+        # only the user's own files). Pure shell.
+        run: make check-no-elevation
+
       - name: Check the `unison` launcher
         # Pure cc gate (no Xcode/OCaml/signing): compiles Sources/CLTool/cltool.c
         # against a throwaway bundle id into a fake bundle and exercises it via a
