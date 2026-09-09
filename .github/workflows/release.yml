@@ -72,6 +72,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
+      - name: Check stock /etc/zprofile (recognized on this runner's macOS)
+        # Release gate: this runner's /etc/zprofile matches the embedded stock
+        # fixture for its macOS major (here macos-26), so the shipped app offers
+        # automatic zsh setup on this OS. A drift fails the release; re-measure
+        # the fixture + the CommandLineSetupFileSelection.stockZprofileMacOS<major>
+        # constant. The smoke-macos15 job runs the same gate on macos-15. Pure
+        # shell; runs before the OCaml/Xcode setup.
+        run: make check-stock-zprofile
+
       - name: Select and verify Xcode 26.6 (fail closed)
         run: |
           dev="/Applications/Xcode_26.6.app/Contents/Developer"
@@ -193,6 +202,14 @@ jobs:
 
       - name: Show runner macOS version
         run: sw_vers
+
+      - name: Check stock /etc/zprofile (recognized on macOS 15)
+        # Release gate on the deployment-floor OS: macos-15's /etc/zprofile must
+        # match the embedded macOS 15 stock fixture, so the shipped app offers
+        # automatic zsh setup there. A drift fails the release; re-measure the
+        # fixture + the CommandLineSetupFileSelection.stockZprofileMacOS15
+        # constant. The build job runs the same gate on macos-26.
+        run: make check-stock-zprofile
 
       - name: Download the unsigned release build
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7

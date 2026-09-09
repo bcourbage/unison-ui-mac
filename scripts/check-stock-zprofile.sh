@@ -17,9 +17,31 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 fixtures="$here/fixtures"
 zprofile="${ZPROFILE_PATH:-/etc/zprofile}"
-major="${MACOS_MAJOR_OVERRIDE:-$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)}"
-version="$(sw_vers -productVersion 2>/dev/null || echo '?')"
-build="$(sw_vers -buildVersion 2>/dev/null || echo '?')"
+
+# Establishing the OS is a precondition, kept distinct from its outcome. A failed
+# OS query (sw_vers unavailable or erroring) is an infrastructure failure and
+# must FAIL the gate: it is not the same as successfully identifying an
+# unsupported major, and must never silently skip the check this gate promises.
+# MACOS_MAJOR_OVERRIDE (used by the self-test) stands in for a successful
+# identification.
+if [ -n "${MACOS_MAJOR_OVERRIDE:-}" ]; then
+	major="$MACOS_MAJOR_OVERRIDE"
+	version="(major override $major)"
+	build="(override)"
+else
+	if ! version="$(sw_vers -productVersion 2>/dev/null)" || [ -z "$version" ]; then
+		echo "check-stock-zprofile: FAIL — could not determine the macOS version (sw_vers failed); the stock text cannot be verified" >&2
+		exit 1
+	fi
+	build="$(sw_vers -buildVersion 2>/dev/null || echo '?')"
+	major="$(printf '%s\n' "$version" | cut -d. -f1)"
+	case "$major" in
+		'' | *[!0-9]*)
+			echo "check-stock-zprofile: FAIL — could not parse a macOS major from '$version'; the stock text cannot be verified" >&2
+			exit 1
+			;;
+	esac
+fi
 echo "check-stock-zprofile: macOS $version ($build), major $major"
 
 fixture="$fixtures/stock-zprofile-macos$major.txt"

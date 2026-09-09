@@ -29,5 +29,16 @@ ZPROFILE_PATH="$here/does-not-exist-zprofile" MACOS_MAJOR_OVERRIDE=15 "$gate" >/
 [ "$?" -ne 0 ]
 check "unreadable zprofile fails" $?
 
+# A failed OS query must FAIL, distinct from an identified unsupported major.
+# Shadow sw_vers with a stub that errors, and do NOT override the major, so the
+# gate takes the real detection path and finds it cannot establish the OS.
+stub=$(mktemp -d)
+printf '#!/bin/sh\nexit 2\n' > "$stub/sw_vers"
+chmod +x "$stub/sw_vers"
+env -u MACOS_MAJOR_OVERRIDE PATH="$stub:$PATH" "$gate" >/dev/null 2>&1
+[ "$?" -ne 0 ]
+check "failed OS detection fails" $?
+rm -rf "$stub"
+
 if [ "$fail" -ne 0 ]; then echo "TEST-CHECK-STOCK-ZPROFILE FAILED" >&2; exit 1; fi
 echo "all check-stock-zprofile tests passed"
