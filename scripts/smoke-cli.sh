@@ -45,6 +45,13 @@ out=$("$U" -version 2>"$work/err"); rc=$?
 printf '%s\n' "$out" | grep -Eq '^unison version [0-9]+\.[0-9]+\.[0-9]+ \(ocaml [0-9.]+\)$'; check "-version: exactly one version line on stdout" $?
 [ ! -s "$work/err" ]; check "-version: stderr empty" $?
 
+# 1b. -version through the bundle's OWN in-bundle command, the relative symlink
+# Contents/SharedSupport/bin/unison -> ../../MacOS/cltool that ships in the app.
+B="$app/Contents/SharedSupport/bin/unison"
+[ -L "$B" ]; check "in-bundle command: SharedSupport/bin/unison is a symlink" $?
+out=$("$B" -version 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Eq '^unison version [0-9]+\.[0-9]+\.[0-9]+ \(ocaml [0-9.]+\)$'; check "in-bundle command: -version through SharedSupport symlink" $?
+
 # 2. stdin/stdout server transport, app as both peers
 mkdir -p "$work/a" "$work/b"
 echo hello > "$work/a/h.txt"; mkdir "$work/a/sub"; echo nested > "$work/a/sub/n.txt"

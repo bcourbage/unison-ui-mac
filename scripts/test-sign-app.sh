@@ -31,6 +31,8 @@ skel() {
 	: > "$v/Autoupdate"
 	: > "$d/Contents/MacOS/unison-ui-mac"
 	: > "$d/Contents/MacOS/cltool"
+	mkdir -p "$d/Contents/SharedSupport/bin"
+	ln -s ../../MacOS/cltool "$d/Contents/SharedSupport/bin/unison"
 	cat > "$d/Contents/Info.plist" <<-PLIST
 		<?xml version="1.0" encoding="UTF-8"?>
 		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,6 +88,15 @@ printf '  %-26s rc=%s  %s\n' "sort-failure" "$rc" "$r"
 # the structural stage, before any signing.
 i=$(skel i.app); rm -f "$i/Contents/MacOS/cltool"
 expect_fail "missing-cltool" "$i" "-" "required command-line launcher missing"
+
+# The in-bundle command Contents/SharedSupport/bin/unison must be present and
+# resolve to the launcher. Absent, or pointed somewhere else, fails structurally.
+k=$(skel k.app); rm -f "$k/Contents/SharedSupport/bin/unison"
+expect_fail "missing-bundle-command" "$k" "-" "required in-bundle command missing"
+
+l=$(skel l.app); rm -f "$l/Contents/SharedSupport/bin/unison"
+ln -s ../../MacOS/unison-ui-mac "$l/Contents/SharedSupport/bin/unison"
+expect_fail "bundle-command-retargeted" "$l" "-" "must point at the launcher"
 
 # A real Mach-O at Contents/MacOS/cltool is the whitelisted launcher, NOT
 # unexpected embedded code. The run still fails later (the skeleton's Sparkle

@@ -65,6 +65,18 @@ main="$app/Contents/MacOS/$main_exe"
 cli="$app/Contents/MacOS/cltool"
 [ -f "$cli" ] || { echo "sign-app: required command-line launcher missing: Contents/MacOS/cltool" >&2; exit 1; }
 
+# The same launcher is exposed inside the bundle at a stable, PATH-friendly path
+# (Contents/SharedSupport/bin/unison) that command-line setup and a peer's
+# servercmd can name. It is a symlink to the launcher; require it to be present
+# and to resolve to that same file, so the sealed bundle carries a working
+# command. A missing or retargeted symlink fails here, before signing.
+cmd="$app/Contents/SharedSupport/bin/unison"
+[ -L "$cmd" ] || { echo "sign-app: required in-bundle command missing: Contents/SharedSupport/bin/unison" >&2; exit 1; }
+cmd_real=$(realpath "$cmd" 2>/dev/null) \
+	|| { echo "sign-app: in-bundle command does not resolve: Contents/SharedSupport/bin/unison" >&2; exit 1; }
+[ "$cmd_real" = "$(realpath "$cli")" ] \
+	|| { echo "sign-app: in-bundle command Contents/SharedSupport/bin/unison must point at the launcher (resolves to $cmd_real)" >&2; exit 1; }
+
 # Inventory every embedded code object (code bundles + Mach-O files, the latter
 # by content) and reject anything outside the whitelist. No `|| true`: a scan
 # error must fail the run, not pass silently.

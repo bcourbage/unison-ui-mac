@@ -110,6 +110,23 @@ targets:
         codeSign: true
         copy:
           destination: executables
+    postBuildScripts:
+      # Expose the same `unison` launcher inside the bundle at a stable,
+      # PATH-friendly path, so command-line setup (Settings > Command Line) and a
+      # peer's servercmd can name it without writing to a system directory. It is
+      # a relative symlink to Contents/MacOS/cltool; the launcher resolves its own
+      # path with realpath and requires the /Contents/MacOS/cltool suffix, so the
+      # symlink target needs no launcher change. Created before Xcode's code-sign
+      # step so it is sealed into the bundle. sign-app.sh, test-cltool.sh and
+      # smoke-cli.sh resolve the command through it. See
+      # docs/command-line-setup-design.md, "The command inside the bundle".
+      - name: Add SharedSupport/bin/unison command symlink
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          dir="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/SharedSupport/bin"
+          /bin/mkdir -p "$dir"
+          /bin/ln -sfn ../../MacOS/cltool "$dir/unison"
     info:
       path: Resources/Info.plist
       properties:
