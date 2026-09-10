@@ -48,10 +48,12 @@ Swift and AppKit interface with a visual conflict-review step.</p>
 core, so the <code>unison</code> CLI does not need to be installed for the app to run, and
 everything happens through the macOS interface instead of a terminal: choosing
 profiles, reviewing changes, and resolving conflicts.</p>
-<p>Since 0.7.0 the app also provides the <code>unison</code> command itself. Linked onto your
-PATH, it opens the app for <code>unison -ui graphic</code>, runs Unison's text interface for
+<p>Since 0.7.0 the app also provides the <code>unison</code> command itself; on your PATH, it
+opens the app for <code>unison -ui graphic</code>, runs Unison's text interface for
 <code>unison &lt;profile&gt;</code>, and serves <code>unison -server</code> for machines that sync to this Mac
-over ssh. See <a href="../install/#the-unison-command">Install</a>.</p>
+over ssh. Since 0.8.0, Settings ▸ Command Line can add it to your login-shell PATH
+for you, with no administrator password. See
+<a href="../install/#the-unison-command">Install</a>.</p>
 <h2 id="how-does-it-compare-to-the-macos-app-included-with-unison">How does it compare to the macOS app included with Unison?</h2>
 <p>Upstream Unison ships its own front ends, including a native macOS Cocoa app (built
 from the <code>uimac</code> sources in the Unison repository) alongside the text and GTK
