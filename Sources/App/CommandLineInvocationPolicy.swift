@@ -75,11 +75,12 @@ enum CommandLineInvocationPolicy {
     }
 
     /// The argv handed to the engine for a shell launch: the caller's tokens in
-    /// order, preceded by the `-ui text` default that a later `-ui graphic`
-    /// overrides (upstream keeps the last value given).
-    static func engineArguments(_ arguments: [String]) -> [String] {
+    /// order, preceded by the default `-ui <defaultInterface>` that a later
+    /// caller-supplied `-ui` overrides (upstream keeps the last value given).
+    /// `defaultInterface` is "text" or "graphic", from the account's preference.
+    static func engineArguments(_ arguments: [String], defaultInterface: String) -> [String] {
         let argv0 = arguments.first ?? "unison-ui-mac"
-        return [argv0, "-ui", "text"] + Array(arguments.dropFirst())
+        return [argv0, "-ui", defaultInterface] + Array(arguments.dropFirst())
     }
 
     /// `unisonNonGuiStartup` returned, so the effective interface is graphical.
@@ -129,7 +130,10 @@ enum CommandLineInvocationPolicy {
 /// or inside OCaml.
 enum CommandLineEngineLaunch {
     static func run(arguments: [String], hasWindowServerSession: Bool) {
-        let engineArguments = CommandLineInvocationPolicy.engineArguments(arguments)
+        // The omitted-`-ui` default comes from the account preference, resolved
+        // (and persisted) here; an explicit `-ui` in `arguments` still wins.
+        let defaultInterface = CommandLineDefaultInterface.resolved().uiArgument
+        let engineArguments = CommandLineInvocationPolicy.engineArguments(arguments, defaultInterface: defaultInterface)
         // The OCaml runtime keeps Sys.argv pointing into this array for the
         // life of the process, so it is allocated once and never freed.
         let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: engineArguments.count + 1)

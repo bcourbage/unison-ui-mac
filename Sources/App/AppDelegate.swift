@@ -1541,6 +1541,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("XCTest host detected — UNISON redirected to \(testDir)")
         }
 
+        // Resolve and persist the default command-line interface once, so the
+        // stored value matches what a bare `unison` used. Skipped under the test
+        // host and the launch smoke, which do not read that preference and must
+        // not touch the real defaults domain.
+        if CommandLineDefaultInterface.shouldResolveOnLaunch() {
+            CommandLineDefaultInterface.resolved()
+        }
+
         logEnvSnapshot()
 
         // Ask for notification permission up front (only if the cue is
