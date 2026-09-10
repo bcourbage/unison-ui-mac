@@ -39,6 +39,22 @@ brew uninstall --cask unison-app
 brew install --cask bcourbage/tap/unison-ui
 ```
 
+The conflict is between the two Homebrew casks, not between the applications:
+each cask installs a command named `unison`, and Homebrew won't let both own it.
+You can keep either application managed by Homebrew and install the other outside
+Homebrew.
+
+Which application Homebrew manages does not have to decide which one `unison`
+launches. In Settings → Command Line, this app can add its bundled `unison` to
+your login-shell PATH ahead of the Homebrew command: choose Add Terminal Setup
+(or Use This Copy when offered), open a new Terminal, and `unison -ui graphic`
+launches this app. Remove that setup and your shell falls back to whatever
+`unison` is otherwise on your PATH, such as a Homebrew-managed upstream Unison.
+
+For an ssh profile, set `servercmd` to an explicit path to choose exactly which
+Unison the remote side runs; Settings → Command Line → Copy This App's Command
+Path copies this app's path for that.
+
 To uninstall:
 
 ```sh

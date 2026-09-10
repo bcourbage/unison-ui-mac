@@ -11,6 +11,47 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-10
+
+### Added
+- **Guided remote check (Check Remote Command).** Before you depend on an ssh
+  profile, get a read on what the far side will run: a version or engine mismatch
+  on the remote is a common cause of sync failures, and it is easier to look up
+  front than mid-sync. The check tests whether this profile's remote command
+  reports a Unison version over ssh, and offers discovered alternatives if you
+  want to change it. Discovery uses a plain `sh` lookup, which may resolve
+  commands differently from the profile. Only a synchronization confirms the
+  server protocol. It changes nothing on either side, is reachable from the
+  profile picker and the Profile Editor, states the current result first, titles
+  its alternatives by their consequence, and reports a failed connection plainly.
+  Effective-value fields show the actual host, user, port and remote command a
+  profile will use; the advice that avoids the question is an absolute `servercmd`
+  in the peer's profile, which the pane can copy and the check can assess.
+- **Command-line setup through your login shell (Settings → Command Line).** So
+  you can type `unison` and get this app — `unison -ui graphic` opens it, and the
+  same install serves Unison's text interface and its ssh-server role — the app
+  can put its command on your PATH. Its command lives inside the bundle at
+  `Contents/SharedSupport/bin/unison`.
+  Add Terminal Setup puts that directory on your PATH by writing a marked,
+  app-managed block to your own shell startup file — automatically only when the
+  case is unambiguous and safe (a recognized stock zsh startup, this app's own
+  earlier block, or a stated set of bash and fish cases), and otherwise as
+  Manual setup, where the pane shows what to add and names the file to edit when
+  it can identify one — when it cannot safely identify the file, such as a
+  redirected `ZDOTDIR` or an unsupported shell, it says so rather than point at
+  the wrong file. The pane
+  leads with what `unison` resolves to in your login shell and names it — this
+  app, another copy of this app, no unison, could not be checked, or manual —
+  with the resolved path shown as evidence, and offers Use This Copy, Remove
+  Terminal Setup, and copying this app's command path. Removing restores the
+  file with its other contents intact. No administrator password, and nothing is
+  written outside your own files. macOS 15 and macOS 26 stock `/etc/zprofile`
+  are recognized so a fresh account is offered automatic zsh setup; an
+  unrecognized system file falls back to Manual setup rather than guessing.
+- **Profile Editor keyboard navigation.** The General, Roots, File Attributes,
+  Options and Includes sections of the Profile Editor are navigable from the
+  keyboard.
+
 ### Changed
 - **Homebrew cask renamed to `unison-ui`.** Homebrew's token rules drop
   platform suffixes, so the tap's cask is now `bcourbage/tap/unison-ui`.
@@ -23,35 +64,14 @@ across releases per Apple's bundle-version rules.
   including the migrated layout where the old Caskroom entry is a link to the
   new one.
 
-### Fixed
-- **Settings → Command Line no longer presents a guessed PATH as the one an
-  incoming ssh command receives.** The "Remote SSH command" line now reads
-  "Not determined locally" and explains that SSH server configuration and the
-  login shell's startup files decide that PATH, with the advice that avoids the
-  question: an absolute `servercmd` in the peer's profile. Install and the
-  first-launch offer are gated on the Terminal probe alone; the remote context
-  can neither enable nor block them. The Terminal line is described as the
-  result of a login-shell probe, which an interactive shell's `.zshrc` can
-  differ from, and Install's copy says it creates `/usr/local/bin/unison`
-  without promising which shells will find it. The manual, the design document
-  and the 0.7.0 release notes are corrected in the same way; the manual records
-  the one measurement made (Demeter, macOS 26.6.2: `/usr/bin:/bin:/usr/sbin:/sbin`)
-  as that machine's observation, not as a rule.
-- **Homebrew's behavior when `unison` is already taken is now described
-  precisely, and the manual gains a Repair and migration section.** With the
-  `unison` formula linked, Homebrew installs the cask and skips the app's link
-  with a warning, leaving the command with the formula; a link already
-  pointing at the app is accepted; any other resolving occupant makes the
-  install fail with "already a Binary" and revert; a dangling link is replaced
-  (`cask/artifact/symlinked.rb`, Homebrew 6.0.22). The earlier text called the
-  formula case a refusal. The manual's new section explains which of the
-  three `unison` paths a shell or a peer's `servercmd` selects, what Settings'
-  Repair does and does not do, how to give the Homebrew command to the app
-  (`brew unlink unison`, then `brew reinstall --cask unison-ui`), how to
-  migrate from the legacy `unison-app` cask while keeping the upstream server
-  as a fallback, how Sparkle and Homebrew updates interact, and how to verify
-  the intended remote server. The Finder first-launch step is described as
-  launch acceptance, not quarantine removal.
+### Removed
+- **The 0.7.0 privileged command installer** and its administrator prompt. 0.7.0
+  linked `/usr/local/bin/unison` with an administrator password; the `unison`
+  command is now placed on your PATH through your own login-shell startup file
+  instead (Command-line setup, above). A `/usr/local/bin/unison` link left by
+  0.7.0 keeps working — it points at the app's launcher, and Settings → Command
+  Line reports it as this app — and is not removed automatically; remove it
+  yourself if you no longer want it.
 
 ## [0.7.0] — 2026-09-06
 
@@ -937,7 +957,9 @@ commit `745dccd3ba31c5cf0b89b41f3487091b4871ad31`); see
 - No auto-update mechanism yet. Watch this repo's Releases for new
   versions.
 
-[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/bcourbage/unison-ui-mac/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/bcourbage/unison-ui-mac/compare/v0.5.0...v0.5.1

@@ -139,5 +139,4 @@ Group by generality, which is the natural PR split:
 
 - `docs/ssh-reaper-design.md` — 0004.
 - Issue #8 — 0003 rationale.
-- `docs/scan-interruption-design.md` — engine connection-lifecycle reasoning.
 - `vendor/README.md` — provenance, toolchain, and the full patch-set description.

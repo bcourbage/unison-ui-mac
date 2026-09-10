@@ -81,14 +81,13 @@ landed across the bring-up and follow-on sessions.*
       **removed the dormant machinery outright** (done). On `main` the safe
       Return-to-Profiles fallback is the only path (it abandons presentation
       only, and does not cancel the scan). Full rationale, rejected approaches,
-      and the upstream contract that reconsideration would require:
-      `docs/scan-interruption-design.md` (decision record). Sync-time Stop
-      (`Abort.all`) is separate and unaffected.
+      and the upstream contract that reconsideration would require were captured
+      in the scan-interruption decision record (removed in 0.8.0; see git
+      history). Sync-time Stop (`Abort.all`) is separate and unaffected.
 
 - [x] **SSH keepalive (`ServerAliveInterval` / `ServerAliveCountMax`, issue #55)
-      — WILL NOT IMPLEMENT.** The Phase-0 spike
-      (`docs/ssh-keepalive-spike-results.md`) was **transport-positive,
-      app-inconclusive**: direct `ssh -vvv` evidence confirmed the transport
+      — WILL NOT IMPLEMENT.** The Phase-0 spike (results removed in 0.8.0; see
+      git history) was **transport-positive, app-inconclusive**: direct `ssh -vvv` evidence confirmed the transport
       layer behaves as expected, but the spike did **not** establish bounded
       failure recovery in the application, so a user-facing feature cannot
       promise behavior the app never demonstrated. Recovery from a wedged
