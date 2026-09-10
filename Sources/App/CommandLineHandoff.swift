@@ -10,19 +10,18 @@ import Foundation
 /// Wire format is one newline-terminated line each way, so a partial read is
 /// always detectable (no terminating newline means a lost or truncated reply):
 ///
-///   request:   `open\t<rootsSet>\t<plain 0|1>\t<unisonDir b64>\t<given b64>\n`
+///   request:   `open\t<rootsSet>\t<plain 0|1>\t<unisonDir b64>\t<install b64>\t<given b64>\n`
 ///   response:  `ok\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
 ///
-/// The variable-length fields are base64, so a directory or profile name with a
-/// tab or any other byte round-trips unambiguously.
+/// The variable-length fields are base64, so a directory, path or profile name
+/// with a tab or any other byte round-trips unambiguously.
 enum CommandLineHandoff {
 
     /// A client's request to open a profile in the running instance. It carries
     /// enough context for the primary to confirm the request would open the same
     /// thing the caller meant, and to refuse rather than silently do something
-    /// different (finding 1): the caller's Unison directory, and whether the
-    /// invocation was a plain profile open (no extra options the primary could
-    /// not reproduce).
+    /// different (finding 1): the caller's Unison directory, the app installation
+    /// it came from, and whether the invocation was a plain profile open.
     struct Request: Equatable {
         /// The profile string exactly as the engine parsed it (upstream has
         /// already checked the named file exists); the primary re-validates it
@@ -36,6 +35,10 @@ enum CommandLineHandoff {
         /// differs from its own, so `UNISON=/other unison work` cannot open the
         /// running app's unrelated `work`.
         var unisonDirectory: String
+        /// The caller's app bundle path. The primary refuses when it differs from
+        /// its own, so a request from a separate copy of the app is not served by
+        /// an unrelated installation.
+        var installationPath: String
         /// True when the caller's command line was a plain profile open. When
         /// false, the invocation carried options (`-path`, `-ignore`,
         /// `-servercmd`, …) that a fresh launch honors but the already-running
@@ -46,8 +49,9 @@ enum CommandLineHandoff {
 
         func encoded() -> String? {
             let dir = Data(unisonDirectory.utf8).base64EncodedString()
+            let install = Data(installationPath.utf8).base64EncodedString()
             let name = Data(given.utf8).base64EncodedString()
-            return "\(Request.verb)\t\(rootsSet)\t\(plainRequest ? 1 : 0)\t\(dir)\t\(name)\n"
+            return "\(Request.verb)\t\(rootsSet)\t\(plainRequest ? 1 : 0)\t\(dir)\t\(install)\t\(name)\n"
         }
 
         /// Parse a request line (with or without the trailing newline). nil on
@@ -55,21 +59,25 @@ enum CommandLineHandoff {
         init?(line: String) {
             let body = line.hasSuffix("\n") ? String(line.dropLast()) : line
             let parts = body.split(separator: "\t", omittingEmptySubsequences: false)
-            guard parts.count == 5, parts[0] == Request.verb,
+            guard parts.count == 6, parts[0] == Request.verb,
                   let roots = Int(parts[1]), let plain = Int(parts[2]), plain == 0 || plain == 1,
                   let dir = Self.decodeBase64(String(parts[3])),
-                  let name = Self.decodeBase64(String(parts[4]))
+                  let install = Self.decodeBase64(String(parts[4])),
+                  let name = Self.decodeBase64(String(parts[5]))
             else { return nil }
             self.given = name
             self.rootsSet = roots
             self.unisonDirectory = dir
+            self.installationPath = install
             self.plainRequest = plain == 1
         }
 
-        init(given: String, rootsSet: Int, unisonDirectory: String, plainRequest: Bool) {
+        init(given: String, rootsSet: Int, unisonDirectory: String,
+             installationPath: String, plainRequest: Bool) {
             self.given = given
             self.rootsSet = rootsSet
             self.unisonDirectory = unisonDirectory
+            self.installationPath = installationPath
             self.plainRequest = plainRequest
         }
 
@@ -150,13 +158,34 @@ enum CommandLineHandoff {
     }
 
     /// Whether the request can be faithfully transferred to this instance. Returns
-    /// a refusal when it cannot (a different Unison directory, or extra options the
-    /// primary cannot reproduce), or nil when the request is safe to act on.
-    static func contextCheck(request: Request, localUnisonDirectory: String) -> Response? {
+    /// a refusal when it cannot, or nil when the request is safe to act on. Four
+    /// ways a handoff would not be faithful (finding 1):
+    ///
+    /// - The receiving instance was itself launched with options. Upstream
+    ///   reparses the process command line on every profile load, so the primary's
+    ///   own `-path …` would be applied to the handoff's profile. Only an instance
+    ///   whose own launch was a clean profile open can serve handoffs.
+    /// - The caller carried extra options the primary cannot reproduce.
+    /// - The caller came from a different app installation.
+    /// - The caller uses a different Unison directory.
+    static func contextCheck(request: Request,
+                             localUnisonDirectory: String,
+                             localInstallationPath: String,
+                             receiverLaunchWasClean: Bool) -> Response? {
+        if !receiverLaunchWasClean {
+            return .invalid(message:
+                "unison-ui-mac is already running with command-line options that would affect other profiles. "
+                + "Quit it and run again, or add -ui text to run it in the terminal.")
+        }
         if !request.plainRequest {
             return .invalid(message:
                 "unison-ui-mac cannot apply the extra command-line options to the already-running app. "
                 + "Quit it and run again, or add -ui text to run it in the terminal.")
+        }
+        if request.installationPath != localInstallationPath {
+            return .invalid(message:
+                "unison-ui-mac is already running from a different copy of the app (\(localInstallationPath)); "
+                + "it did not open \(request.given). Quit the running copy, or add -ui text to run it in the terminal.")
         }
         let requested = (request.unisonDirectory as NSString).standardizingPath
         let local = (localUnisonDirectory as NSString).standardizingPath
@@ -191,7 +220,7 @@ enum CommandLineHandoff {
                 case .waitForCompletion:
                     howToProceed = "Wait for it to finish and choose \(name) in the app"
                 case .closeEditor:
-                    howToProceed = "Close the profile editor to let the command proceed"
+                    howToProceed = "Close the profile editor, then run the command again"
                 }
                 return .reply(.refused(message:
                     "unison-ui-mac is \(reason), so it did not start \(name). "
@@ -211,14 +240,16 @@ enum CommandLineHandoff {
                 + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
     }
 
-    /// Whether the caller's command line was a plain profile open, so the handoff
-    /// can carry it faithfully. Anything beyond the profile name and a `-ui`
-    /// selector (roots, `-path`, `-batch`, `-servercmd`, …) makes it non-plain,
-    /// because a fresh launch would honor those but the running instance cannot.
-    /// `arguments` is `CommandLine.arguments` (argv[0] included).
-    static func isPlainProfileRequest(arguments: [String], profile: String) -> Bool {
-        var tokens = CommandLineInvocationPolicy.withoutHostInjected(Array(arguments.dropFirst()))
-        // Drop a `-ui <value>` or `-ui=value` selector; the engine already used it.
+    /// Whether a graphical launch was a clean profile open — nothing beyond a
+    /// `-ui` selector and, at most, the profile name. Anything else (roots,
+    /// `-path`, `-batch`, `-servercmd`, …) is not clean, because upstream reparses
+    /// the command line on every profile load: a fresh launch would honor those,
+    /// but they must not leak into a handoff (as the caller's request, or as the
+    /// receiving instance's own launch context). `arguments` is
+    /// `CommandLine.arguments` (argv[0] included); `launchProfile` is the profile
+    /// the launch named, or nil (e.g. a Finder launch).
+    static func isCleanGraphicalLaunch(arguments: [String], launchProfile: String?) -> Bool {
+        let tokens = CommandLineInvocationPolicy.withoutHostInjected(Array(arguments.dropFirst()))
         var pruned: [String] = []
         var i = 0
         while i < tokens.count {
@@ -227,7 +258,7 @@ enum CommandLineHandoff {
             if t.hasPrefix("-ui=") { i += 1; continue }
             pruned.append(t); i += 1
         }
-        tokens = pruned
-        return tokens == [profile]
+        if let launchProfile { return pruned == [launchProfile] }
+        return pruned.isEmpty
     }
 }

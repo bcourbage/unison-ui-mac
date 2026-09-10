@@ -5,8 +5,8 @@ import Darwin
 /// binds a per-user socket and listens; a graphical `unison <profile>` launch
 /// connects, sends its request, and reads one reply. There is no daemon: the
 /// socket lives only as long as the app, and a crash leaves at most a stale file
-/// that the next election detects and removes. Only graphical profile requests
-/// ever reach here — `-ui text` and `-server` exit in the engine first.
+/// that the next election reclaims. Only graphical profile requests ever reach
+/// here — `-ui text` and `-server` exit in the engine first.
 enum CommandLineHandoffSocket {
 
     /// `sizeof(sockaddr_un.sun_path)` on Darwin. A path that does not fit cannot
@@ -15,8 +15,9 @@ enum CommandLineHandoffSocket {
 
     /// The socket path for a bundle id, under the per-user temporary directory
     /// (`$TMPDIR`, e.g. /var/folders/…/T/). Keyed by bundle id so several copies
-    /// of the same app coordinate on one endpoint. nil when it would not fit in
-    /// `sun_path` (a `.lock` sibling must fit too).
+    /// of the same app coordinate on one endpoint (the primary then checks that a
+    /// handoff's installation matches). nil when it would not fit in `sun_path`
+    /// (a `.lock` sibling must fit too).
     static func path(bundleID: String, temporaryDirectory: String = NSTemporaryDirectory()) -> String? {
         let candidate = (temporaryDirectory as NSString).appendingPathComponent(bundleID + ".cli.sock")
         return (candidate + ".lock").utf8.count < sunPathCapacity ? candidate : nil
@@ -39,7 +40,7 @@ enum CommandLineHandoffSocket {
     /// us buffer without bound.
     static let maxLineBytes = 8192
 
-    // MARK: - Deadlines (finding 3: one elapsed-time bound over connect + I/O)
+    // MARK: - Deadlines (finding 3, round 1: one elapsed-time bound over connect + I/O)
 
     /// A single wall-clock budget shared across connect, send and receive, so the
     /// whole exchange is bounded no matter how the bytes are paced.
@@ -76,18 +77,22 @@ enum CommandLineHandoffSocket {
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
     }
 
-    enum ConnectResult {
+    /// The outcome of a connect attempt, distinguishing outcomes that prove there
+    /// is no listener (safe to reclaim) from ones that do not (finding 2).
+    enum ConnectResult: Equatable {
         case connected(Int32)
-        case noListener   // ENOENT (no file) or ECONNREFUSED (stale, no listener)
-        case timedOut     // the deadline elapsed before the connection completed
+        case refused   // ECONNREFUSED: a socket file exists but nothing is listening
+        case noFile    // ENOENT: no socket file at all
+        case timedOut  // the deadline elapsed before the connection completed
+        case failed    // any other error (EACCES, EMFILE, …): inconclusive
     }
 
-    /// Non-blocking connect(2) bounded by the deadline. Distinguishes "nothing is
-    /// listening" from "a connection could not complete in time".
+    /// Non-blocking connect(2) bounded by the deadline. On `.connected` the fd is
+    /// open and left non-blocking for the caller; every other case has closed it.
     static func connect(path: String, deadline: Deadline) -> ConnectResult {
-        guard var addr = makeAddress(path) else { return .noListener }
+        guard var addr = makeAddress(path) else { return .failed }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return .noListener }
+        guard fd >= 0 else { return .failed }
         setNonBlocking(fd)
         let rc = withUnsafePointer(to: &addr) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
@@ -95,13 +100,27 @@ enum CommandLineHandoffSocket {
             }
         }
         if rc == 0 { return .connected(fd) }
-        if errno != EINPROGRESS { close(fd); return .noListener }
-        if !waitReady(fd, events: Int16(POLLOUT), deadline: deadline) { close(fd); return .timedOut }
-        var soErr: Int32 = 0
-        var len = socklen_t(MemoryLayout<Int32>.size)
-        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len)
-        if soErr != 0 { close(fd); return soErr == ETIMEDOUT ? .timedOut : .noListener }
-        return .connected(fd)
+        if errno == EINPROGRESS {
+            guard waitReady(fd, events: Int16(POLLOUT), deadline: deadline) else { close(fd); return .timedOut }
+            var soErr: Int32 = 0
+            var len = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len)
+            if soErr == 0 { return .connected(fd) }
+            close(fd)
+            return classify(errno: soErr)
+        }
+        let e = errno
+        close(fd)
+        return classify(errno: e)
+    }
+
+    private static func classify(errno e: Int32) -> ConnectResult {
+        switch e {
+        case ECONNREFUSED: return .refused
+        case ENOENT: return .noFile
+        case ETIMEDOUT: return .timedOut
+        default: return .failed
+        }
     }
 
     /// Write every byte of `string` within the deadline. false on timeout or a
@@ -141,6 +160,19 @@ enum CommandLineHandoffSocket {
         }
         return nil
     }
+
+    /// Acquire an advisory lock without blocking, retrying under a deadline
+    /// (finding 3): a suspended or hung holder must not stall the caller's main
+    /// thread. false when the deadline elapses or the lock cannot be taken.
+    static func acquireLock(_ fd: Int32, deadline: Deadline) -> Bool {
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 { return true }
+            if errno == EINTR { continue }
+            if errno != EWOULDBLOCK { return false }
+            guard deadline.remaining > 0 else { return false }
+            usleep(20_000)   // 20 ms
+        }
+    }
 }
 
 /// The client half: hand a request to a listening instance and read its verdict,
@@ -152,12 +184,11 @@ enum CommandLineHandoffClient {
         case reply(CommandLineHandoff.Response)
         /// Nothing is listening; the caller should become the primary.
         case noPrimary
-        /// Connected but no complete reply came back in time (the primary died
-        /// mid-reply, was too slow, or the request could not be sent). Reported to
-        /// the caller; never retried silently.
+        /// Connected but no complete reply came back in time, or the connection
+        /// could not complete. Reported to the caller; never retried silently.
         case lostReply
-        /// The socket could not be used at all (path too long, no fd); the launch
-        /// proceeds without handoff.
+        /// The socket could not be used at all (path too long, resource failure);
+        /// the launch proceeds without handoff.
         case unavailable
     }
 
@@ -169,8 +200,9 @@ enum CommandLineHandoffClient {
         let fd: Int32
         switch CommandLineHandoffSocket.connect(path: path, deadline: deadline) {
         case .connected(let c): fd = c
-        case .noListener: return .noPrimary
+        case .refused, .noFile: return .noPrimary
         case .timedOut: return .lostReply
+        case .failed: return .unavailable
         }
         defer { close(fd) }
         guard CommandLineHandoffSocket.writeAll(fd, line, deadline: deadline) else { return .lostReply }
@@ -193,59 +225,92 @@ final class CommandLineHandoffServer: @unchecked Sendable {
         case listening(CommandLineHandoffServer)
         /// Another instance won the election; this one should hand off instead.
         case lostElection
-        /// The socket could not be used; run without a listener.
+        /// The socket path cannot be used at all; run without a listener.
         case unavailable
+        /// The election could not be completed (its lock is held by a suspended or
+        /// hung holder, or a probe was inconclusive). The caller must not start a
+        /// second instance; it should report failure (finding 3).
+        case couldNotElect
+    }
+
+    /// What to do with the socket file given the election probe (finding 2):
+    /// reclaim only when a stale file is proven, never on an inconclusive result.
+    enum ElectionDecision: Equatable {
+        case lostElection    // a live primary answered
+        case bindFresh       // no file present; bind directly
+        case reclaimThenBind // a stale file (connection refused); unlink then bind
+        case couldNotElect   // timed out or failed; do not touch the file
+    }
+
+    static func electionDecision(for probe: CommandLineHandoffSocket.ConnectResult) -> ElectionDecision {
+        switch probe {
+        case .connected: return .lostElection
+        case .noFile: return .bindFresh
+        case .refused: return .reclaimThenBind
+        case .timedOut, .failed: return .couldNotElect
+        }
     }
 
     private let listenFD: Int32
+    private let wakeWriteFD: Int32
     private let path: String
+    private let ownDevice: dev_t
+    private let ownInode: ino_t
     private let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response
     private let queue = DispatchQueue(label: "net.courbage.unison-ui-mac.handoff")
-    /// Serializes shutdown with itself and the accept loop (finding 5).
+    /// Makes stop() idempotent; the accept loop owns and closes `listenFD`.
     private let lifecycle = NSLock()
     private var stopped = false
 
-    private init(listenFD: Int32, path: String,
+    private init(listenFD: Int32, wakeReadFD: Int32, wakeWriteFD: Int32, path: String,
+                 device: dev_t, inode: ino_t,
                  handler: @escaping @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response) {
         self.listenFD = listenFD
+        self.wakeWriteFD = wakeWriteFD
         self.path = path
+        self.ownDevice = device
+        self.ownInode = inode
         self.handler = handler
+        startAccepting(listenFD: listenFD, wakeReadFD: wakeReadFD)
     }
 
     /// The overall budget for reading a request and writing its reply on one
     /// connection, so a peer that dribbles bytes cannot hold the accept loop.
     static let connectionTimeout: TimeInterval = 5
+    /// How long to wait for the election lock before giving up (finding 3).
+    static let electionLockTimeout: TimeInterval = 2
 
-    /// Elect a primary and start listening. The whole election — is a live primary
-    /// already there, reclaim a stale file, bind, listen — runs under an exclusive
-    /// file lock (finding 2), so two concurrent launches cannot both bind: the
-    /// second blocks on the lock until the first is listening, then observes it and
-    /// loses. `afterBind` is a test seam to force a pause between bind and listen.
+    private static func lockPath(_ path: String) -> String { path + ".lock" }
+
+    /// Elect a primary and start listening. The whole election — probe for a live
+    /// primary, reclaim a *proven* stale file, bind, listen — runs under an
+    /// advisory lock acquired without blocking under a deadline, so a suspended
+    /// holder cannot stall the launch and two concurrent launches cannot both
+    /// bind. `afterBind` is a test seam to force a pause between bind and listen.
     static func start(path: String,
                       handler: @escaping @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response,
+                      lockTimeout: TimeInterval = electionLockTimeout,
                       afterBind: () -> Void = {}) -> StartResult {
         guard CommandLineHandoffSocket.makeAddress(path) != nil else { return .unavailable }
 
-        // Cross-process election lock. Held only for the election; released (by
-        // closing the fd) once we are listening or have lost. A crashed holder
-        // releases it automatically, so this cannot deadlock.
-        let lockFD = open(path + ".lock", O_CREAT | O_RDWR, 0o600)
+        let lockFD = open(lockPath(path), O_CREAT | O_RDWR, 0o600)
         guard lockFD >= 0 else { return .unavailable }
         defer { close(lockFD) }
-        guard flock(lockFD, LOCK_EX) == 0 else { return .unavailable }
+        guard CommandLineHandoffSocket.acquireLock(
+            lockFD, deadline: .init(seconds: lockTimeout)) else { return .couldNotElect }
 
-        // A live primary already listening? (connect succeeds against a bound,
-        // listening socket even before it calls accept.)
-        if case .connected(let live) = CommandLineHandoffSocket.connect(
-            path: path, deadline: .init(seconds: 1)) {
-            close(live)
-            return .lostElection
+        let probe = CommandLineHandoffSocket.connect(path: path, deadline: .init(seconds: 1))
+        if case .connected(let live) = probe { close(live) }
+        switch electionDecision(for: probe) {
+        case .lostElection: return .lostElection
+        case .couldNotElect: return .couldNotElect
+        case .bindFresh: break
+        case .reclaimThenBind: unlink(path)
         }
-        // No live primary. Any file here is stale; reclaim it and bind.
+
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return .unavailable }
         var addr = CommandLineHandoffSocket.makeAddress(path)!
-        unlink(path)
         let bound = withUnsafePointer(to: &addr) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                 Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -255,26 +320,36 @@ final class CommandLineHandoffServer: @unchecked Sendable {
         afterBind()
         guard listen(fd, 8) == 0 else { close(fd); unlink(path); return .unavailable }
 
-        let server = CommandLineHandoffServer(listenFD: fd, path: path, handler: handler)
-        server.startAccepting()
+        // Record the bound file's identity so shutdown removes only this endpoint,
+        // never one a later instance rebound (finding 4).
+        var st = Darwin.stat()
+        let haveStat = stat(path, &st) == 0
+
+        var pipeFDs: [Int32] = [-1, -1]
+        guard pipe(&pipeFDs) == 0 else { close(fd); unlink(path); return .unavailable }
+
+        let server = CommandLineHandoffServer(
+            listenFD: fd, wakeReadFD: pipeFDs[0], wakeWriteFD: pipeFDs[1], path: path,
+            device: haveStat ? st.st_dev : 0, inode: haveStat ? st.st_ino : 0, handler: handler)
         return .listening(server)
     }
 
-    private func isRunning() -> Bool {
-        lifecycle.lock(); defer { lifecycle.unlock() }
-        return !stopped
-    }
-
-    private func startAccepting() {
-        let fd = listenFD
+    /// The accept loop waits on both the listen socket and a wake pipe, so stop()
+    /// never has to close a descriptor the loop is about to use: the loop owns
+    /// `listenFD` and `wakeReadFD` and closes them itself on exit (finding 4).
+    private func startAccepting(listenFD: Int32, wakeReadFD: Int32) {
         let handler = self.handler
-        queue.async { [weak self] in
-            while self?.isRunning() ?? false {
-                let conn = accept(fd, nil, nil)
-                if conn < 0 {
-                    if errno == EINTR { continue }
-                    break   // listen fd closed by stop()
-                }
+        queue.async {
+            defer { close(listenFD); close(wakeReadFD) }
+            while true {
+                var fds = [pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0),
+                           pollfd(fd: wakeReadFD, events: Int16(POLLIN), revents: 0)]
+                let rc = poll(&fds, 2, -1)
+                if rc < 0 { if errno == EINTR { continue }; break }
+                if fds[1].revents != 0 { break }               // stop() signalled
+                guard fds[0].revents & Int16(POLLIN) != 0 else { continue }
+                let conn = accept(listenFD, nil, nil)
+                if conn < 0 { if errno == EINTR || errno == ECONNABORTED { continue }; break }
                 CommandLineHandoffSocket.setNonBlocking(conn)
                 let deadline = CommandLineHandoffSocket.Deadline(
                     seconds: CommandLineHandoffServer.connectionTimeout)
@@ -291,13 +366,31 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     }
 
     /// Stop listening and remove this listener's socket file. Idempotent and
-    /// synchronized: the descriptor is closed exactly once, so a second call
-    /// cannot close a reused descriptor (finding 5).
+    /// synchronized (finding 5, round 1). Cleanup is coordinated with election:
+    /// the file is unlinked under the election lock and only when it is still this
+    /// listener's endpoint, so a shutdown cannot remove an endpoint a newer
+    /// instance rebound (finding 4).
     func stop() {
-        lifecycle.lock(); defer { lifecycle.unlock() }
-        guard !stopped else { return }
+        lifecycle.lock()
+        let already = stopped
         stopped = true
-        close(listenFD)
-        unlink(path)
+        lifecycle.unlock()
+        guard !already else { return }
+
+        // Wake the accept loop; it owns and closes listenFD/wakeReadFD.
+        var byte: UInt8 = 0
+        _ = withUnsafePointer(to: &byte) { Darwin.write(wakeWriteFD, $0, 1) }
+        close(wakeWriteFD)
+
+        let lockFD = open(Self.lockPath(path), O_CREAT | O_RDWR, 0o600)
+        if lockFD >= 0 {
+            if CommandLineHandoffSocket.acquireLock(lockFD, deadline: .init(seconds: 0.5)) {
+                var st = Darwin.stat()
+                if stat(path, &st) == 0, st.st_dev == ownDevice, st.st_ino == ownInode {
+                    unlink(path)
+                }
+            }
+            close(lockFD)
+        }
     }
 }

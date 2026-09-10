@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
     private var commandLineHandoffServer: CommandLineHandoffServer?
+    /// Whether this instance's own launch was a clean profile open. When false
+    /// (it was launched with options), it must not serve handoffs, because
+    /// upstream reparses the command line on every profile load.
+    private var commandLineLaunchWasClean = true
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -1846,13 +1850,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return
         }
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
+        // Whether THIS instance's own launch was a clean profile open. Upstream
+        // reparses the command line on every profile load, so if this instance
+        // became the primary after being launched with options, it must not serve
+        // handoffs (its options would leak into the handoff's profile).
+        commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(
+            arguments: CommandLine.arguments, launchProfile: given)
         let request = given.map { profile in
             CommandLineHandoff.Request(
                 given: profile,
                 rootsSet: Int(unison_bridge_command_line_roots_set()),
                 unisonDirectory: unisonDirectory,
-                plainRequest: CommandLineHandoff.isPlainProfileRequest(
-                    arguments: CommandLine.arguments, profile: profile))
+                installationPath: Bundle.main.bundlePath,
+                plainRequest: CommandLineHandoff.isCleanGraphicalLaunch(
+                    arguments: CommandLine.arguments, launchProfile: profile))
         }
         let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response = { [weak self] req in
             DispatchQueue.main.sync {
@@ -1894,6 +1905,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 exit(1)
             }
             log.write("handoff: another instance is primary; running without a listener")
+        case .couldNotElect:
+            // The election could not complete (a suspended or hung holder). Do not
+            // start a second instance for a profile request; report and stop.
+            if request != nil {
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: could not coordinate with a running instance; it may be busy starting up. "
+                    + "Try again in a moment, or add -ui text to run it in the terminal.")
+                exit(1)
+            }
+            log.write("handoff: election could not complete; running without a listener")
         case .unavailable:
             log.write("handoff: could not start the listener; running without one")
         }
@@ -1912,10 +1933,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// work is preserved and the request is refused. Opening goes through the
     /// same path a user's pick uses and stops at the reconciliation results.
     private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request) -> CommandLineHandoff.Response {
-        // Refuse when the request cannot be faithfully transferred: a different
-        // Unison directory (it would open a different file) or extra options the
-        // running instance cannot reproduce.
-        if let refusal = CommandLineHandoff.contextCheck(request: request, localUnisonDirectory: unisonDirectory) {
+        // Refuse when the request cannot be faithfully transferred: this instance
+        // was launched with contaminating options, a different app copy or Unison
+        // directory, or extra options the running instance cannot reproduce.
+        if let refusal = CommandLineHandoff.contextCheck(
+            request: request,
+            localUnisonDirectory: unisonDirectory,
+            localInstallationPath: Bundle.main.bundlePath,
+            receiverLaunchWasClean: commandLineLaunchWasClean) {
             return refusal
         }
         let dir = unisonDirectory
@@ -1932,9 +1957,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // opened from a background request (no modal to a caller at the
             // terminal); refuse and point them to the app.
             if abandonedStagingBlocking(name) != nil {
+                // Do NOT offer -ui text here: running another Unison before the
+                // archives are recovered is exactly what the safety block prevents.
                 return .refused(message:
-                    "unison-ui-mac did not start \(name); its archives need recovery in the app first. "
-                    + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
+                    "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
+                    + "operation. Complete that recovery in the running app, then run the command again.")
             }
             log.write("handoff: opening '\(name)' for a command-line request")
             NSApp.activate(ignoringOtherApps: true)
