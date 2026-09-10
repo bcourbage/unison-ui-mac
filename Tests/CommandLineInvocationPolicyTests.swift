@@ -143,4 +143,60 @@ final class CommandLineInvocationPolicyTests: XCTestCase {
     func test_launcherMarkerName() {
         XCTAssertEqual(P.launcherMarker, "UNISON_UI_MAC_LAUNCHER")
     }
+
+    // MARK: graphical launch disposition
+
+    private func launch(rootsSet: Int, profile: String?,
+                        files: Set<String> = [], listed: Set<String> = []) -> CommandLineGraphicalLaunch {
+        CommandLineGraphicalLaunch.resolve(
+            rootsSet: rootsSet, profile: profile,
+            fileExists: { files.contains($0) }, isListed: { listed.contains($0) })
+    }
+
+    func test_launch_noProfile_showsPicker() {
+        XCTAssertEqual(launch(rootsSet: 0, profile: nil), .showPicker)
+    }
+
+    func test_launch_rootsPresent_refuses() {
+        guard case .refuse(let m) = launch(rootsSet: 1, profile: nil) else {
+            return XCTFail("expected refusal for roots")
+        }
+        XCTAssertTrue(m.contains("roots given on the command line"))
+        XCTAssertTrue(m.contains("-ui text"))
+    }
+
+    func test_launch_rootsUndetermined_refuses_evenWithAProfile() {
+        // Undetermined must not fall through to opening a profile.
+        guard case .refuse(let m) = launch(rootsSet: 2, profile: "p", files: ["p.prf"], listed: ["p"]) else {
+            return XCTFail("expected refusal when roots are undetermined")
+        }
+        XCTAssertTrue(m.contains("could not report its command-line roots"))
+    }
+
+    func test_launch_suppliedListedProfile_opensAndScans() {
+        XCTAssertEqual(launch(rootsSet: 0, profile: "p", files: ["p.prf"], listed: ["p"]),
+                       .openProfile(name: "p"))
+        // A `.prf`-suffixed name resolves to the same stripped picker name.
+        XCTAssertEqual(launch(rootsSet: 0, profile: "p.prf", files: ["p.prf"], listed: ["p"]),
+                       .openProfile(name: "p"))
+    }
+
+    func test_launch_hiddenOrUnlistedProfile_refuses() {
+        // The file exists (upstream validated it) but the picker does not list it.
+        guard case .refuse(let m) = launch(rootsSet: 0, profile: "p", files: ["p.prf"], listed: []) else {
+            return XCTFail("expected refusal for an unlisted profile")
+        }
+        XCTAssertTrue(m.contains("not shown in the profile picker"))
+        XCTAssertTrue(m.contains("-ui text"))
+    }
+
+    func test_launch_ambiguousHandoff_refuses_withoutOpening() {
+        // `p.prf` given with both `p` and `p.prf` present: the picker's `p` would
+        // open a different file, so refuse rather than open the wrong profile.
+        guard case .refuse(let m) = launch(rootsSet: 0, profile: "p.prf",
+                                           files: ["p.prf", "p"], listed: ["p"]) else {
+            return XCTFail("expected refusal on the p / p.prf ambiguity")
+        }
+        XCTAssertTrue(m.contains("would open p"))
+    }
 }

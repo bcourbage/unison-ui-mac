@@ -159,6 +159,63 @@ enum CommandLineEngineLaunch {
     }
 }
 
+/// What a graphical launch does once the engine has parsed the command line:
+/// open the picker, open and scan a named profile, or refuse with a message.
+///
+/// This is the whole decision for `applicationDidFinishLaunching`'s command-line
+/// handling, kept pure so it is testable; the delegate only runs the effects.
+/// A supplied, listed profile opens and starts its scan without another click
+/// (`.openProfile`); it does not authorize applying changes, because opening a
+/// profile stops at the reconciliation results. Roots on the command line, a
+/// picker name that would open a different file, and a hidden or unlisted
+/// profile all refuse rather than open something the caller did not ask for.
+enum CommandLineGraphicalLaunch: Equatable {
+    /// No profile was given: show the picker and wait for a choice.
+    case showPicker
+    /// A supplied profile that the picker lists: open it and start its scan.
+    case openProfile(name: String)
+    /// A message to write to stderr before exiting non-zero.
+    case refuse(message: String)
+
+    /// - `rootsSet`: `unison_bridge_command_line_roots_set()` — 0 none, 1 roots
+    ///   present, anything else undetermined.
+    /// - `profile`: `unison_bridge_command_line_profile()`, already validated by
+    ///   upstream to name an existing file, or nil.
+    /// - `fileExists`: whether a file with that exact name exists in the Unison
+    ///   directory (for the picker-handoff equivalence check).
+    /// - `isListed`: whether the picker lists that profile name (not hidden).
+    static func resolve(rootsSet: Int,
+                        profile: String?,
+                        fileExists: (String) -> Bool,
+                        isListed: (String) -> Bool) -> CommandLineGraphicalLaunch {
+        switch rootsSet {
+        case 0:
+            break
+        case 1:
+            return .refuse(message:
+                "unison-ui-mac: roots given on the command line are not supported by the graphical interface. "
+                + "Put them in a profile and choose it in the profile picker, or add -ui text to run in the terminal.")
+        default:
+            // Undetermined is not "none": the engine could not say whether roots
+            // were given, so opening the picker could silently drop them.
+            return .refuse(message:
+                "unison-ui-mac: the embedded engine could not report its command-line roots; not continuing.")
+        }
+        guard let given = profile else { return .showPicker }
+        switch CommandLineProfileHandoff.resolve(given: given, fileExists: fileExists) {
+        case .refuse(let reason):
+            return .refuse(message: "unison-ui-mac: \(reason). Add -ui text to run it in the terminal.")
+        case .select(let name):
+            guard isListed(name) else {
+                return .refuse(message:
+                    "unison-ui-mac: profile \(given) exists but is not shown in the profile picker (hidden, or not a profile name). "
+                    + "Unhide it in the Profile Editor, or add -ui text to run it in the terminal.")
+            }
+            return .openProfile(name: name)
+        }
+    }
+}
+
 /// Turning the profile string from the command line into a picker selection
 /// that opens the same file upstream would have opened.
 ///
