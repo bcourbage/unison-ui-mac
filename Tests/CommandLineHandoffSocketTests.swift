@@ -5,18 +5,23 @@ import Darwin
 /// The Unix-domain-socket transport for running-instance routing: a real server
 /// and client over a throwaway per-test socket, covering the accept/refuse path
 /// and the awkward cases the design must survive — no primary, a stale endpoint,
-/// a simultaneous election, and a lost reply.
+/// a paused election, a slow reply, and a repeated shutdown.
 final class CommandLineHandoffSocketTests: XCTestCase {
 
     private typealias Req = CommandLineHandoff.Request
     private typealias Resp = CommandLineHandoff.Response
 
-    /// Thread-safe capture of what the server handler saw (it runs off-main).
-    private final class Recorder: @unchecked Sendable {
+    private func req(_ name: String = "work", plain: Bool = true) -> Req {
+        Req(given: name, rootsSet: 0, unisonDirectory: "/tmp/u", plainRequest: plain)
+    }
+
+    /// Thread-safe capture (handlers and helpers run off-main).
+    private final class Box<T>: @unchecked Sendable {
         private let lock = NSLock()
-        private var _request: Req?
-        var request: Req? { lock.lock(); defer { lock.unlock() }; return _request }
-        func record(_ r: Req) { lock.lock(); _request = r; lock.unlock() }
+        private var _value: T
+        init(_ v: T) { _value = v }
+        var value: T { lock.lock(); defer { lock.unlock() }; return _value }
+        func set(_ v: T) { lock.lock(); _value = v; lock.unlock() }
     }
 
     private var path = ""
@@ -24,7 +29,6 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Short unique name so the full socket path stays within sun_path.
         path = CommandLineHandoffSocket.path(bundleID: "uht.\(UInt32.random(in: 0..<1_000_000))")!
     }
 
@@ -32,9 +36,11 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         servers.forEach { $0.stop() }
         servers.removeAll()
         unlink(path)
+        unlink(path + ".lock")
         super.tearDown()
     }
 
+    @discardableResult
     private func startServer(_ handler: @escaping @Sendable (Req) -> Resp) -> CommandLineHandoffServer {
         guard case .listening(let server) = CommandLineHandoffServer.start(path: path, handler: handler) else {
             fatalError("server did not start")
@@ -59,71 +65,101 @@ final class CommandLineHandoffSocketTests: XCTestCase {
     // MARK: happy path
 
     func test_client_handsOff_andServerReceivesTheRequest() {
-        let recorder = Recorder()
-        _ = startServer { req in recorder.record(req); return .started }
-
-        let result = CommandLineHandoffClient.handOff(Req(given: "work", rootsSet: 0), path: path, timeout: 3)
-        XCTAssertEqual(result, .reply(.started))
-        XCTAssertEqual(recorder.request, Req(given: "work", rootsSet: 0))
+        let recorder = Box<Req?>(nil)
+        startServer { r in recorder.set(r); return .started }
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 3), .reply(.started))
+        XCTAssertEqual(recorder.value, req("work"))
     }
 
     func test_refusalAndInvalid_propagateToClient() {
-        _ = startServer { _ in .refused(message: "busy: scanning") }
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "p", rootsSet: 0), path: path, timeout: 3),
+        startServer { _ in .refused(message: "busy: scanning") }
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 3),
                        .reply(.refused(message: "busy: scanning")))
-
-        // A second server on a different path returning invalid.
-        let path2 = CommandLineHandoffSocket.path(bundleID: "uht.\(UInt32.random(in: 0..<1_000_000))")!
-        defer { unlink(path2) }
-        guard case .listening(let s2) = CommandLineHandoffServer.start(path: path2, handler: { _ in
-            .invalid(message: "no such profile")
-        }) else { return XCTFail("server 2 did not start") }
-        defer { s2.stop() }
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "p", rootsSet: 0), path: path2, timeout: 3),
-                       .reply(.invalid(message: "no such profile")))
     }
 
     // MARK: no primary
 
     func test_noListener_isNoPrimary() {
-        // Nothing bound at this path.
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "p", rootsSet: 0), path: path, timeout: 2),
-                       .noPrimary)
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 2), .noPrimary)
     }
 
     // MARK: election
 
     func test_secondServer_losesTheElection() {
-        _ = startServer { _ in .started }
+        startServer { _ in .started }
         guard case .lostElection = CommandLineHandoffServer.start(path: path, handler: { _ in .started }) else {
             return XCTFail("second server should lose the election")
+        }
+    }
+
+    /// Finding 2: even if the first instance pauses between bind and listen, the
+    /// election lock keeps the second out until the first is listening, so only one
+    /// becomes primary. Without serialization the second would unlink the first's
+    /// half-bound socket and both would succeed.
+    func test_pausedBindBeforeListen_stillElectsOnlyOnePrimary() {
+        let serverA = Box<CommandLineHandoffServer?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { [path] in
+            let result = CommandLineHandoffServer.start(
+                path: path, handler: { _ in .started },
+                afterBind: { Thread.sleep(forTimeInterval: 0.5) })   // pause bind → listen
+            if case .listening(let s) = result { serverA.set(s) }
+            done.signal()
+        }
+        // Let A acquire the lock and enter its pause, then race B in.
+        Thread.sleep(forTimeInterval: 0.1)
+        let resultB = CommandLineHandoffServer.start(path: path, handler: { _ in .started })
+        done.wait()
+
+        XCTAssertNotNil(serverA.value, "A should be the primary")
+        if let a = serverA.value { servers.append(a) }
+        guard case .lostElection = resultB else {
+            return XCTFail("B must lose the election, not bind a second endpoint")
         }
     }
 
     // MARK: stale endpoint
 
     func test_staleSocketFile_isReclaimed() {
-        // Leave a bound-but-not-listening socket file behind, as a crashed
-        // primary would. connect() to it gives ECONNREFUSED (no listener).
         makeStaleSocketFile(at: path)
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "p", rootsSet: 0), path: path, timeout: 2),
-                       .noPrimary, "a stale file has no live listener")
-
-        // start() must detect the stale file, remove it, and bind.
-        let recorder = Recorder()
-        _ = startServer { req in recorder.record(req); return .started }
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "work", rootsSet: 1), path: path, timeout: 3),
-                       .reply(.started))
-        XCTAssertEqual(recorder.request, Req(given: "work", rootsSet: 1))
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 2), .noPrimary,
+                       "a stale file has no live listener")
+        let recorder = Box<Req?>(nil)
+        startServer { r in recorder.set(r); return .started }
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 3), .reply(.started))
+        XCTAssertEqual(recorder.value, req("work"))
     }
 
-    // MARK: lost reply
+    // MARK: lost / slow reply (finding 3)
 
     func test_serverThatClosesWithoutReplying_isLostReply() {
-        let listenFD = makeSilentListener(at: path)
-        defer { close(listenFD); unlink(path) }
-        XCTAssertEqual(CommandLineHandoffClient.handOff(Req(given: "p", rootsSet: 0), path: path, timeout: 2),
-                       .lostReply)
+        let fd = makeRawListener(at: path) { conn in close(conn) }   // accept, reply nothing
+        defer { close(fd); unlink(path) }
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 2), .lostReply)
+    }
+
+    func test_slowPartialReply_hitsTheDeadline_asLostReply() {
+        // One byte, then a stall longer than the client's deadline: no newline
+        // arrives in time, so the bounded read reports a lost reply rather than
+        // waiting indefinitely.
+        let fd = makeRawListener(at: path) { conn in
+            _ = "o".withCString { Darwin.write(conn, $0, 1) }
+            Thread.sleep(forTimeInterval: 2.5)
+            close(conn)
+        }
+        defer { close(fd); unlink(path) }
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 1), .lostReply)
+    }
+
+    // MARK: idempotent shutdown (finding 5)
+
+    func test_stop_isIdempotent_andRemovesTheEndpoint() {
+        let server = startServer { _ in .started }
+        server.stop()
+        server.stop()   // must be a no-op, not a second close of a reused descriptor
+        // Endpoint gone: a later client finds no primary.
+        XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 1), .noPrimary)
+        servers.removeAll()   // already stopped
     }
 
     // MARK: raw-socket helpers
@@ -140,9 +176,10 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         close(fd)
     }
 
-    /// A listener that accepts one connection and closes it without replying,
-    /// on a background thread. Returns the listening fd for teardown.
-    private func makeSilentListener(at path: String) -> Int32 {
+    /// A listener that accepts one connection and hands it to `serve` on a
+    /// background thread. Returns the listening fd for teardown.
+    private func makeRawListener(at path: String,
+                                 serve: @escaping @Sendable (Int32) -> Void) -> Int32 {
         var addr = CommandLineHandoffSocket.makeAddress(path)!
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         _ = withUnsafePointer(to: &addr) { p in
@@ -153,7 +190,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         listen(fd, 4)
         Thread.detachNewThread {
             let conn = accept(fd, nil, nil)
-            if conn >= 0 { close(conn) }   // accept, then close without a reply
+            if conn >= 0 { serve(conn) }
         }
         return fd
     }

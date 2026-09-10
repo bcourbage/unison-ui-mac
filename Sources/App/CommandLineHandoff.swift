@@ -10,15 +10,19 @@ import Foundation
 /// Wire format is one newline-terminated line each way, so a partial read is
 /// always detectable (no terminating newline means a lost or truncated reply):
 ///
-///   request:   `open\t<rootsSet>\t<given>\n`   (given is the rest of the line)
+///   request:   `open\t<rootsSet>\t<plain 0|1>\t<unisonDir b64>\t<given b64>\n`
 ///   response:  `ok\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
 ///
-/// `given` is placed last and read up to the newline, so a profile name may
-/// contain tabs or spaces; only a newline is disallowed (unrepresentable, and
-/// not a valid Unison profile name).
+/// The variable-length fields are base64, so a directory or profile name with a
+/// tab or any other byte round-trips unambiguously.
 enum CommandLineHandoff {
 
-    /// A client's request to open a profile in the running instance.
+    /// A client's request to open a profile in the running instance. It carries
+    /// enough context for the primary to confirm the request would open the same
+    /// thing the caller meant, and to refuse rather than silently do something
+    /// different (finding 1): the caller's Unison directory, and whether the
+    /// invocation was a plain profile open (no extra options the primary could
+    /// not reproduce).
     struct Request: Equatable {
         /// The profile string exactly as the engine parsed it (upstream has
         /// already checked the named file exists); the primary re-validates it
@@ -28,29 +32,49 @@ enum CommandLineHandoff {
         /// undetermined. Forwarded so the primary applies the same refusal for
         /// roots as a fresh launch would.
         var rootsSet: Int
+        /// The caller's resolved Unison directory. The primary refuses when it
+        /// differs from its own, so `UNISON=/other unison work` cannot open the
+        /// running app's unrelated `work`.
+        var unisonDirectory: String
+        /// True when the caller's command line was a plain profile open. When
+        /// false, the invocation carried options (`-path`, `-ignore`,
+        /// `-servercmd`, …) that a fresh launch honors but the already-running
+        /// instance cannot reproduce, so the primary refuses.
+        var plainRequest: Bool
 
         static let verb = "open"
 
-        /// nil when `given` cannot be represented on one line.
         func encoded() -> String? {
-            guard !given.contains("\n") else { return nil }
-            return "\(Request.verb)\t\(rootsSet)\t\(given)\n"
+            let dir = Data(unisonDirectory.utf8).base64EncodedString()
+            let name = Data(given.utf8).base64EncodedString()
+            return "\(Request.verb)\t\(rootsSet)\t\(plainRequest ? 1 : 0)\t\(dir)\t\(name)\n"
         }
 
         /// Parse a request line (with or without the trailing newline). nil on
         /// any malformed line, so the primary refuses rather than guesses.
         init?(line: String) {
             let body = line.hasSuffix("\n") ? String(line.dropLast()) : line
-            // Split into at most three parts so the profile keeps any tabs.
-            let parts = body.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            guard parts.count == 3, parts[0] == Request.verb, let roots = Int(parts[1]) else { return nil }
-            self.given = String(parts[2])
+            let parts = body.split(separator: "\t", omittingEmptySubsequences: false)
+            guard parts.count == 5, parts[0] == Request.verb,
+                  let roots = Int(parts[1]), let plain = Int(parts[2]), plain == 0 || plain == 1,
+                  let dir = Self.decodeBase64(String(parts[3])),
+                  let name = Self.decodeBase64(String(parts[4]))
+            else { return nil }
+            self.given = name
             self.rootsSet = roots
+            self.unisonDirectory = dir
+            self.plainRequest = plain == 1
         }
 
-        init(given: String, rootsSet: Int) {
+        init(given: String, rootsSet: Int, unisonDirectory: String, plainRequest: Bool) {
             self.given = given
             self.rootsSet = rootsSet
+            self.unisonDirectory = unisonDirectory
+            self.plainRequest = plainRequest
+        }
+
+        private static func decodeBase64(_ s: String) -> String? {
+            Data(base64Encoded: s).flatMap { String(data: $0, encoding: .utf8) }
         }
     }
 
@@ -61,8 +85,9 @@ enum CommandLineHandoff {
         /// The instance is busy (a scan, reconciliation, sync, or an open
         /// profile edit); the existing work is preserved and this request is not.
         case refused(message: String)
-        /// The request itself is not valid here (roots, or a hidden or ambiguous
-        /// profile); it would not start a different profile.
+        /// The request itself is not valid or transferable here (roots, a hidden
+        /// or ambiguous profile, a different Unison directory, or extra options);
+        /// it would not start a different profile.
         case invalid(message: String)
 
         func encoded() -> String {
@@ -101,19 +126,46 @@ enum CommandLineHandoff {
         }
     }
 
+    /// How the caller can let a refused request proceed. `waitForCompletion` for
+    /// engine work that will finish on its own; `closeEditor` for an open profile
+    /// edit, which the user resolves by closing the editor.
+    enum Resolution: Equatable {
+        case waitForCompletion
+        case closeEditor
+    }
+
     /// The running instance's activity, as the primary reports it at the moment
     /// a request arrives. Idle means idle at the picker; every busy variant
-    /// carries the reason shown to the caller.
+    /// carries the reason shown to the caller and how to let the request proceed.
     enum Activity: Equatable {
         case idleAtPicker
-        case busy(reason: String)
+        case busy(reason: String, resolution: Resolution)
     }
 
     /// What the primary should do with a request: reply only, or open a profile
-    /// (which implies a `.started` reply) and then honor it.
+    /// (which the caller then attempts) and report the outcome.
     enum Outcome: Equatable {
         case reply(Response)
         case open(name: String)
+    }
+
+    /// Whether the request can be faithfully transferred to this instance. Returns
+    /// a refusal when it cannot (a different Unison directory, or extra options the
+    /// primary cannot reproduce), or nil when the request is safe to act on.
+    static func contextCheck(request: Request, localUnisonDirectory: String) -> Response? {
+        if !request.plainRequest {
+            return .invalid(message:
+                "unison-ui-mac cannot apply the extra command-line options to the already-running app. "
+                + "Quit it and run again, or add -ui text to run it in the terminal.")
+        }
+        let requested = (request.unisonDirectory as NSString).standardizingPath
+        let local = (localUnisonDirectory as NSString).standardizingPath
+        if requested != local {
+            return .invalid(message:
+                "unison-ui-mac is already running with a different Unison directory (\(local)); "
+                + "it did not open \(request.given). Quit the running app, or add -ui text to run it in the terminal.")
+        }
+        return nil
     }
 
     /// The pure decision. `launch` is the same disposition a fresh graphical
@@ -133,11 +185,49 @@ enum CommandLineHandoff {
             switch activity {
             case .idleAtPicker:
                 return .open(name: name)
-            case .busy(let reason):
+            case .busy(let reason, let resolution):
+                let howToProceed: String
+                switch resolution {
+                case .waitForCompletion:
+                    howToProceed = "Wait for it to finish and choose \(name) in the app"
+                case .closeEditor:
+                    howToProceed = "Close the profile editor to let the command proceed"
+                }
                 return .reply(.refused(message:
-                    "unison-ui-mac is \(reason), so it kept that and did not start \(name). "
-                    + "Open the running app and choose \(name) when it is free, or add -ui text to run it in the terminal."))
+                    "unison-ui-mac is \(reason), so it did not start \(name). "
+                    + "\(howToProceed), or add -ui text to run it in the terminal."))
             }
         }
+    }
+
+    /// The reply after the primary attempts the open. `.started` only when the
+    /// engine actually entered opening; otherwise the caller must not be told the
+    /// scan began (finding 4).
+    static func responseForOpenAttempt(enteredOpening: Bool, name: String) -> Response {
+        enteredOpening
+            ? .started
+            : .refused(message:
+                "unison-ui-mac did not start \(name); it needs attention in the app first. "
+                + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
+    }
+
+    /// Whether the caller's command line was a plain profile open, so the handoff
+    /// can carry it faithfully. Anything beyond the profile name and a `-ui`
+    /// selector (roots, `-path`, `-batch`, `-servercmd`, …) makes it non-plain,
+    /// because a fresh launch would honor those but the running instance cannot.
+    /// `arguments` is `CommandLine.arguments` (argv[0] included).
+    static func isPlainProfileRequest(arguments: [String], profile: String) -> Bool {
+        var tokens = CommandLineInvocationPolicy.withoutHostInjected(Array(arguments.dropFirst()))
+        // Drop a `-ui <value>` or `-ui=value` selector; the engine already used it.
+        var pruned: [String] = []
+        var i = 0
+        while i < tokens.count {
+            let t = tokens[i]
+            if t == "-ui" { i += 2; continue }        // flag plus its value
+            if t.hasPrefix("-ui=") { i += 1; continue }
+            pruned.append(t); i += 1
+        }
+        tokens = pruned
+        return tokens == [profile]
     }
 }

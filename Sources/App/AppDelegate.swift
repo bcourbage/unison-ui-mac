@@ -1810,7 +1810,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// User picked a profile in the picker. Hand the intent to the
     /// coordinator, which decides open-now vs queue and returns the effects
     /// (window creation + connect, or a waiting window) we run.
-    private func profileSelected(_ profile: String) {
+    /// Returns whether the profile actually entered opening. False when it stayed
+    /// in the picker (abandoned-staging recovery was offered and not cleared), so
+    /// a caller such as the handoff never reports a scan that did not start.
+    @discardableResult
+    private func profileSelected(_ profile: String) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
         // Fail closed: a profile whose archive is held by an interrupted
         // (pre-commit) mutation must not be opened until recovery.
@@ -1821,10 +1825,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
                 run(engine.requestOpen(profile: profile))
+                return true
             }
-            return
+            return false
         }
         run(engine.requestOpen(profile: profile))
+        return true
     }
 
     // MARK: - Running-instance handoff (req 5 of #122)
@@ -1840,8 +1846,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return
         }
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
-        let request = given.map {
-            CommandLineHandoff.Request(given: $0, rootsSet: Int(unison_bridge_command_line_roots_set()))
+        let request = given.map { profile in
+            CommandLineHandoff.Request(
+                given: profile,
+                rootsSet: Int(unison_bridge_command_line_roots_set()),
+                unisonDirectory: unisonDirectory,
+                plainRequest: CommandLineHandoff.isPlainProfileRequest(
+                    arguments: CommandLine.arguments, profile: profile))
         }
         let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response = { [weak self] req in
             DispatchQueue.main.sync {
@@ -1901,6 +1912,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// work is preserved and the request is refused. Opening goes through the
     /// same path a user's pick uses and stops at the reconciliation results.
     private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request) -> CommandLineHandoff.Response {
+        // Refuse when the request cannot be faithfully transferred: a different
+        // Unison directory (it would open a different file) or extra options the
+        // running instance cannot reproduce.
+        if let refusal = CommandLineHandoff.contextCheck(request: request, localUnisonDirectory: unisonDirectory) {
+            return refusal
+        }
         let dir = unisonDirectory
         let launch = CommandLineGraphicalLaunch.resolve(
             rootsSet: request.rootsSet,
@@ -1911,19 +1928,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .reply(let response):
             return response
         case .open(let name):
+            // A profile whose archives are held by an interrupted mutation is not
+            // opened from a background request (no modal to a caller at the
+            // terminal); refuse and point them to the app.
+            if abandonedStagingBlocking(name) != nil {
+                return .refused(message:
+                    "unison-ui-mac did not start \(name); its archives need recovery in the app first. "
+                    + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
+            }
             log.write("handoff: opening '\(name)' for a command-line request")
             NSApp.activate(ignoringOtherApps: true)
-            profileSelected(name)   // idle → opening synchronously; stops at reconcile results
-            return .started
+            let entered = profileSelected(name)   // idle → opening synchronously; stops at reconcile results
+            return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
         }
     }
 
     /// Whether the app is idle at the picker, or the work a handoff must not
-    /// disturb. An open profile-edit form counts as work to preserve.
+    /// disturb. An open profile-edit form counts as work to preserve, named so the
+    /// caller knows what to close.
     private func currentHandoffActivity() -> CommandLineHandoff.Activity {
-        if !engine.isIdle { return .busy(reason: Self.handoffBusyReason(engine.phase)) }
-        if isEditProfileFormOpen { return .busy(reason: "editing a profile") }
+        if !engine.isIdle {
+            return .busy(reason: Self.handoffBusyReason(engine.phase), resolution: .waitForCompletion)
+        }
+        if isEditProfileFormOpen {
+            let reason = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
+            return .busy(reason: reason, resolution: .closeEditor)
+        }
         return .idleAtPicker
+    }
+
+    /// The profile name shown in the open edit form, or nil for an unsaved new
+    /// profile (or when no form is open).
+    private var editingProfileName: String? {
+        for window in NSApp.windows where window.isVisible {
+            if let form = window.windowController as? ProfileFormWindowController {
+                return form.editingProfileName
+            }
+        }
+        return nil
     }
 
     private static func handoffBusyReason(_ phase: EngineSessionCoordinator.Phase) -> String {
