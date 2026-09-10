@@ -1130,28 +1130,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 extension SettingsWindowController: NSTextFieldDelegate {
     enum LogPathEndEdit: Equatable { case ignore, persist }
 
-    /// End-of-editing fires whenever the field resigns first responder — including
-    /// a tab switch with no edit. Persist (and, in a shared mode, offer to apply
-    /// to all profiles) ONLY when the entered value actually differs from what is
-    /// stored; an unchanged commit is ignored so leaving the Logging tab does not
-    /// re-prompt.
-    nonisolated static func logPathEndEdit(entered: String, stored: String) -> LogPathEndEdit {
-        entered == stored ? .ignore : .persist
+    /// The stored log path in the SAME representation the field displays: the raw
+    /// defaults string, or "" when unset. NOT the getters (`sharedLogFile()` etc.),
+    /// which supply a default path and expand `~`. Comparing against the getters
+    /// would treat an unset field ("" vs a default path) or a tilde path
+    /// ("~/x" vs "/Users/.../x") as a change and re-prompt on a tab switch.
+    nonisolated static func rawStoredLogPath(for mode: SettingsModel.LoggingMode,
+                                             in defaults: UserDefaults = .standard) -> String {
+        let key: String
+        switch mode {
+        case .sameFile:      key = SettingsModel.sharedLogFileKey
+        case .sameDirectory: key = SettingsModel.sharedLogDirectoryKey
+        case .perProfile:    key = SettingsModel.defaultLogDirectoryKey
+        }
+        return defaults.string(forKey: key) ?? ""
     }
 
-    private static func storedLogPath(for mode: SettingsModel.LoggingMode) -> String {
-        switch mode {
-        case .sameFile:      return SettingsModel.sharedLogFile()
-        case .sameDirectory: return SettingsModel.sharedLogDirectory()
-        case .perProfile:    return SettingsModel.defaultLogDirectory()
-        }
+    /// End-of-editing fires whenever the field resigns first responder — including
+    /// a tab switch with no edit. Persist (and, in a shared mode, offer to apply
+    /// to all profiles) ONLY when the entered value differs from the stored one,
+    /// both trimmed and compared in the field's own representation.
+    nonisolated static func logPathEndEdit(entered: String, stored: String) -> LogPathEndEdit {
+        let e = entered.trimmingCharacters(in: .whitespaces)
+        let s = stored.trimmingCharacters(in: .whitespaces)
+        return e == s ? .ignore : .persist
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard obj.object as AnyObject === logPathField else { return }
         let mode = SettingsModel.loggingMode()
         switch Self.logPathEndEdit(entered: logPathField.stringValue,
-                                   stored: Self.storedLogPath(for: mode)) {
+                                   stored: Self.rawStoredLogPath(for: mode)) {
         case .ignore:
             return
         case .persist:

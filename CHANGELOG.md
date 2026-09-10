@@ -15,19 +15,22 @@ across releases per Apple's bundle-version rules.
 
 ### Added
 - **Guided remote check (Check Remote Command).** Before you depend on an ssh
-  profile, confirm the far side will run the Unison you expect: a version or
-  engine mismatch on the remote is a common cause of sync failures, and it is
-  easier to catch up front than mid-sync. For an ssh profile, the app connects
-  to the remote the way the profile would, discovers which `unison` the incoming
-  command resolves to there, and reports the version, the resolved path, and
-  whether it is this app's engine — without changing anything on either side. It is reachable from the profile picker and the Profile Editor,
-  states the current result first and titles its alternatives by their
-  consequence, and reports a failed connection plainly. Effective-value fields
-  show the actual host, user, port and remote command a profile will use. Which
-  `unison` an incoming ssh command runs is decided on the remote, so the check
-  measures it there instead of guessing locally; the advice that avoids the
-  question is an absolute `servercmd` in the peer's profile, which the pane can
-  copy and the check can assess.
+  profile, get a read on what the far side will run: a version or engine mismatch
+  on the remote is a common cause of sync failures, and it is easier to look up
+  front than mid-sync. Over a plain `sh` connection to the remote — which can
+  resolve `unison` differently from the login shell or the exact command Unison's
+  ssh transport uses — the check finds a `unison` with `command -v`, runs its
+  version command, reports the version it prints and the path, and scans for
+  other candidates on the remote's PATH. A printed version is a signal, not
+  proof: a wrapper or a second install can print the same version, so the check
+  does not certify that the remote binary is this app's engine, and only running
+  the profile confirms the server protocol. It changes nothing on either side, is
+  reachable from the profile picker and the Profile Editor, states the current
+  result first, titles its alternatives by their consequence, and reports a
+  failed connection plainly. Effective-value fields show the actual host, user,
+  port and remote command a profile will use; the advice that avoids the question
+  is an absolute `servercmd` in the peer's profile, which the pane can copy and
+  the check can assess.
 - **Command-line setup through your login shell (Settings → Command Line).** So
   you can type `unison` and get this app — `unison -ui graphic` opens it, and the
   same install serves Unison's text interface and its ssh-server role — the app
@@ -37,7 +40,10 @@ across releases per Apple's bundle-version rules.
   app-managed block to your own shell startup file — automatically only when the
   case is unambiguous and safe (a recognized stock zsh startup, this app's own
   earlier block, or a stated set of bash and fish cases), and otherwise as
-  Manual setup, where the pane shows exactly what to add and where. The pane
+  Manual setup, where the pane shows what to add and names the file to edit when
+  it can identify one — when it cannot safely identify the file, such as a
+  redirected `ZDOTDIR` or an unsupported shell, it says so rather than point at
+  the wrong file. The pane
   leads with what `unison` resolves to in your login shell and names it — this
   app, another copy of this app, no unison, could not be checked, or manual —
   with the resolved path shown as evidence, and offers Use This Copy, Remove
