@@ -1544,9 +1544,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Resolve the default command-line interface once, before the launch
         // command-line-setup offer reads any command-line preference below, so a
         // fresh account is not mistaken for an upgrade. Skipped under the test
-        // host, which does not read that preference and must not touch real
-        // defaults.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        // host and the launch smoke, which do not read that preference and must
+        // not touch the real defaults domain.
+        if CommandLineDefaultInterface.shouldResolveOnLaunch() {
             CommandLineDefaultInterface.resolved()
         }
 

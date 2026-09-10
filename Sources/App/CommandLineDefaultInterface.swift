@@ -54,6 +54,17 @@ enum CommandLineDefaultInterface: String {
         defaults.set(value.rawValue, forKey: key)
     }
 
+    /// Whether launch should resolve-and-persist the default. The XCTest host and
+    /// the macOS-baseline launch smoke both run `applicationDidFinishLaunching` in
+    /// a throwaway process; neither reads this preference, and neither may write
+    /// the real preference domain, so both are excluded (matching the other
+    /// launch-time guards).
+    static func shouldResolveOnLaunch(
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil
+            && environment["UNISON_UI_SMOKE"] == nil
+    }
+
     /// The value to inject after `-ui`. Unison names the interfaces `graphic` and
     /// `text`, which are exactly the raw values here.
     var uiArgument: String { rawValue }

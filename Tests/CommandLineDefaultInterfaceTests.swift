@@ -101,6 +101,24 @@ final class CommandLineDefaultInterfaceTests: XCTestCase {
         XCTAssertEqual(D.resolved(defaults: defaults), .graphic)
     }
 
+    // MARK: launch-time resolution is skipped under the test host and the smoke
+
+    func test_shouldResolveOnLaunch_trueForANormalLaunch() {
+        XCTAssertTrue(D.shouldResolveOnLaunch(environment: [:]))
+        XCTAssertTrue(D.shouldResolveOnLaunch(environment: ["PATH": "/usr/bin"]))
+    }
+
+    func test_shouldResolveOnLaunch_falseUnderXCTest() {
+        XCTAssertFalse(D.shouldResolveOnLaunch(
+            environment: ["XCTestConfigurationFilePath": "/tmp/x.xctestconfiguration"]))
+    }
+
+    func test_shouldResolveOnLaunch_falseUnderLaunchSmoke() {
+        // The macOS-baseline smoke launches the release-built app and must not
+        // persist the preference into the real defaults domain.
+        XCTAssertFalse(D.shouldResolveOnLaunch(environment: ["UNISON_UI_SMOKE": "1"]))
+    }
+
     // MARK: uiArgument matches Unison's interface names
 
     func test_uiArgument_matchesUnisonInterfaceNames() {
