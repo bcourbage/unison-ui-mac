@@ -38,11 +38,18 @@ embedded engine, and `unison -server`, which another machine runs over ssh when 
 syncs to this Mac, is served by the app's engine. A Mac with this app therefore
 needs no separate Unison installation to be the far side of an SSH profile.
 
-Homebrew installs create the link automatically once the cask for 0.7.0 or later
-is published. For a direct download, the app offers to create it at first launch
-when nothing on the PATH is named `unison`; the same control lives in **Settings ▸
-Command Line**, which also shows what `unison` currently resolves to. Details, and
-the note for machines that sync to this Mac over ssh, are in the
+Homebrew installs create the `unison` link automatically — unless the `unison`
+formula already owns that name, in which case Homebrew installs the app but keeps
+the formula's command; the [manual]({{REPO}}/blob/main/MANUAL.md#the-unison-command)
+covers running both. For a direct download, **Settings ▸ Command Line** can add the
+app's bundled `unison` to your login-shell PATH with no administrator password: it
+shows what `unison` currently resolves to, writes a marked block to your shell
+startup file when it can do so safely, and otherwise shows what to add and names
+the file to edit when it can identify one — when it cannot safely identify the file,
+such as a redirected `ZDOTDIR` or an unsupported shell, it says so rather than point
+at the wrong file. The app also offers this at first launch when nothing on your
+PATH is named `unison`. Details, and the note for
+machines that sync to this Mac over ssh, are in the
 [manual]({{REPO}}/blob/main/MANUAL.md#the-unison-command).
 
 ## Updating

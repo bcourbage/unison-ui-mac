@@ -15,10 +15,12 @@ core, so the `unison` CLI does not need to be installed for the app to run, and
 everything happens through the macOS interface instead of a terminal: choosing
 profiles, reviewing changes, and resolving conflicts.
 
-Since 0.7.0 the app also provides the `unison` command itself. Linked onto your
-PATH, it opens the app for `unison -ui graphic`, runs Unison's text interface for
+Since 0.7.0 the app also provides the `unison` command itself; on your PATH, it
+opens the app for `unison -ui graphic`, runs Unison's text interface for
 `unison <profile>`, and serves `unison -server` for machines that sync to this Mac
-over ssh. See [Install](../install/#the-unison-command).
+over ssh. Since 0.8.0, Settings ▸ Command Line can add it to your login-shell PATH
+for you, with no administrator password. See
+[Install](../install/#the-unison-command).
 
 ## How does it compare to the macOS app included with Unison?
 
