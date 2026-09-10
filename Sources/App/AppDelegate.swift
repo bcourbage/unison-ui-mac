@@ -5,6 +5,10 @@ import Darwin   // utsname / uname for arch detection in reportIssue body
 final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProviding, ArchiveBlockCoordinating {
 
     private var profileWindowController: ProfileWindowController?
+    /// A profile named on the command line in graphical mode, to open and scan
+    /// once the launch-time checks (crash report, abandoned staging, setup offer)
+    /// have run — the same order a user's pick would follow. Cleared when opened.
+    private var pendingLaunchProfile: String?
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -1619,55 +1623,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
         // A shell launch (`unison -ui graphic …`) reaches here with the full
         // argv in the engine, and init0 has extracted any profile or roots from
-        // it. Two roots have no representation in the picker: say so and stop
-        // rather than open the picker as if nothing was asked. A profile name
-        // is preselected in the picker. On the graphical path both are absent.
-        switch unison_bridge_command_line_roots_set() {
-        case 0:
-            break
-        case 1:
-            CommandLineEngineLaunch.writeStderr(
-                "unison-ui-mac: roots given on the command line are not supported by the graphical interface. "
-                + "Put them in a profile and choose it in the profile picker, or add -ui text to run in the terminal.")
-            exit(1)
-        default:
-            // Undetermined is not "none": the engine could not say whether roots
-            // were given, so opening the picker could silently drop them.
-            CommandLineEngineLaunch.writeStderr(
-                "unison-ui-mac: the embedded engine could not report its command-line roots; not continuing.")
-            exit(1)
-        }
-        if let cstr = unison_bridge_command_line_profile() {
-            // Upstream's profilePathname accepts both `name` and `name.prf`, and
-            // has already checked the file exists. The picker lists names without
-            // the extension and omits hidden profiles, and it falls back to
-            // another row when asked for a name it does not list. Only hand it a
-            // name it will actually select; otherwise say why and stop.
-            let given = String(cString: cstr)
-            let dir = unisonDirectory
-            let handoff = CommandLineProfileHandoff.resolve(given: given) { candidate in
+        // it. The disposition is decided purely in CommandLineGraphicalLaunch:
+        // roots (unrepresentable in the picker) and a hidden or ambiguous profile
+        // refuse and stop; a supplied, listed profile opens and starts its scan
+        // without another click; on the plain graphical path (no profile) the
+        // picker is shown. Opening a profile does not authorize applying changes.
+        let dir = unisonDirectory
+        let launchProfile = unison_bridge_command_line_profile().map { String(cString: $0) }
+        let disposition = CommandLineGraphicalLaunch.resolve(
+            rootsSet: Int(unison_bridge_command_line_roots_set()),
+            profile: launchProfile,
+            fileExists: { candidate in
                 FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(candidate))
-            }
-            switch handoff {
-            case .refuse(let reason):
-                // The picker's name would make the engine open a different file
-                // than the one the caller named (both `p` and `p.prf` exist).
-                CommandLineEngineLaunch.writeStderr(
-                    "unison-ui-mac: \(reason). Add -ui text to run it in the terminal.")
-                exit(1)
-            case .select(let name):
-                if listedProfiles().contains(name) {
-                    log.write("profile named on the command line; preselecting it in the picker")
-                    showProfilePicker(select: name)
-                } else {
-                    CommandLineEngineLaunch.writeStderr(
-                        "unison-ui-mac: profile \(given) exists but is not shown in the profile picker (hidden, or not a profile name). "
-                        + "Unhide it in the Profile Editor, or add -ui text to run it in the terminal.")
-                    exit(1)
-                }
-            }
-        } else {
+            },
+            isListed: { [weak self] name in self?.listedProfiles().contains(name) ?? false })
+        switch disposition {
+        case .refuse(let message):
+            CommandLineEngineLaunch.writeStderr(message)
+            exit(1)
+        case .showPicker:
             showProfilePicker()
+        case .openProfile(let name):
+            // Establish the picker as the home window (the reconcile window's
+            // onClose returns to it) with the profile preselected, then open and
+            // scan it on the next run-loop turn, after the launch-time checks —
+            // the order a user's pick follows. `profileSelected` stops at the
+            // reconciliation results, so nothing is applied without a further,
+            // explicit action.
+            log.write("profile named on the command line; will open it and start its scan")
+            showProfilePicker(select: name)
+            pendingLaunchProfile = name
         }
 
         NSApp.activate(ignoringOtherApps: true)
@@ -1694,6 +1679,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             self?.checkForPriorCrashReport()
             self?.checkForAbandonedArchiveStaging()
             self?.offerCommandLineSetupIfAbsent()
+            // A profile named on the command line opens after those checks, the
+            // same order a user's pick follows. profileSelected re-checks this
+            // profile's own staging block and stops at the reconciliation results.
+            if let name = self?.pendingLaunchProfile {
+                self?.pendingLaunchProfile = nil
+                self?.profileSelected(name)
+            }
         }
 
         // Dev-only autotest hook: if UNISON_AUTOTEST_PROFILE is set, select it
