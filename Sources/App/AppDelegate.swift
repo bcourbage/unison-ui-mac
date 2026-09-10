@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// once the launch-time checks (crash report, abandoned staging, setup offer)
     /// have run — the same order a user's pick would follow. Cleared when opened.
     private var pendingLaunchProfile: String?
+    /// The running-instance handoff listener (req 5 of #122). Present only when
+    /// this instance won the election; a later graphical `unison <profile>` hands
+    /// its request here instead of starting a second instance.
+    private var commandLineHandoffServer: CommandLineHandoffServer?
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -1621,6 +1625,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // a .prf by a crash mid-rescan, so it never silently persists.
         Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
 
+        // Running-instance routing (req 5 of #122): a graphical profile request
+        // hands off to an already-running instance and this process exits with
+        // its verdict; otherwise this instance becomes the primary and starts the
+        // listener so a later request can hand off here. Skipped under the test
+        // host and the launch smoke, which must not bind the shared socket.
+        // Finder and profile-less launches only start the listener.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+            && ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] == nil {
+            routeCommandLineHandoff()
+        }
+
         // A shell launch (`unison -ui graphic …`) reaches here with the full
         // argv in the engine, and init0 has extracted any profile or roots from
         // it. The disposition is decided purely in CommandLineGraphicalLaunch:
@@ -1740,6 +1755,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             activeVersionProbe = nil
             versionProbeSession = nil
         }
+        // Stop listening and remove the socket file so no stale endpoint is left.
+        commandLineHandoffServer?.stop()
+        commandLineHandoffServer = nil
         unison_bridge_shutdown()
     }
 
@@ -1807,6 +1825,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return
         }
         run(engine.requestOpen(profile: profile))
+    }
+
+    // MARK: - Running-instance handoff (req 5 of #122)
+
+    /// Hand a graphical profile request to an already-running instance and exit
+    /// with its verdict, or become the primary and start the listener. Called
+    /// once during launch, before any window is shown.
+    private func routeCommandLineHandoff() {
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              let path = CommandLineHandoffSocket.path(bundleID: bundleID) else {
+            // No usable socket path: run as a normal instance without a listener.
+            log.write("handoff: no socket path available; running without a listener")
+            return
+        }
+        let given = unison_bridge_command_line_profile().map { String(cString: $0) }
+        let request = given.map {
+            CommandLineHandoff.Request(given: $0, rootsSet: Int(unison_bridge_command_line_roots_set()))
+        }
+        let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response = { [weak self] req in
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    self?.handleCommandLineHandoff(req)
+                        ?? .refused(message: "unison-ui-mac is shutting down.")
+                }
+            }
+        }
+
+        // 1. A graphical profile request tries to hand off to an existing primary.
+        if let request {
+            switch CommandLineHandoffClient.handOff(request, path: path) {
+            case .reply(let response):
+                actOnHandoffReply(response)
+            case .lostReply:
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: could not confirm the request with the running app. "
+                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                exit(1)
+            case .noPrimary, .unavailable:
+                break   // become the primary, or run without a listener
+            }
+        }
+
+        // 2. Become the primary listener. If another instance won the election
+        // between the probe above and the bind, hand the request off now.
+        switch CommandLineHandoffServer.start(path: path, handler: handler) {
+        case .listening(let server):
+            commandLineHandoffServer = server
+            log.write("handoff: listening as the primary instance")
+        case .lostElection:
+            if let request, case .reply(let response) = CommandLineHandoffClient.handOff(request, path: path) {
+                actOnHandoffReply(response)
+            } else if request != nil {
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: could not reach the running app. "
+                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                exit(1)
+            }
+            log.write("handoff: another instance is primary; running without a listener")
+        case .unavailable:
+            log.write("handoff: could not start the listener; running without one")
+        }
+    }
+
+    /// Print a client verdict and exit: success is exit 0 with no extra output
+    /// (the app window is the feedback); a refusal or invalid request is stderr
+    /// plus a non-zero exit. Never returns.
+    private func actOnHandoffReply(_ response: CommandLineHandoff.Response) -> Never {
+        if let message = response.clientMessage { CommandLineEngineLaunch.writeStderr(message) }
+        exit(response.isSuccess ? 0 : 1)
+    }
+
+    /// The primary's decision for an incoming request, on the main thread. A
+    /// valid profile opens only when idle at the picker; otherwise the existing
+    /// work is preserved and the request is refused. Opening goes through the
+    /// same path a user's pick uses and stops at the reconciliation results.
+    private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request) -> CommandLineHandoff.Response {
+        let dir = unisonDirectory
+        let launch = CommandLineGraphicalLaunch.resolve(
+            rootsSet: request.rootsSet,
+            profile: request.given,
+            fileExists: { FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0)) },
+            isListed: { [weak self] name in self?.listedProfiles().contains(name) ?? false })
+        switch CommandLineHandoff.decide(launch: launch, activity: currentHandoffActivity()) {
+        case .reply(let response):
+            return response
+        case .open(let name):
+            log.write("handoff: opening '\(name)' for a command-line request")
+            NSApp.activate(ignoringOtherApps: true)
+            profileSelected(name)   // idle → opening synchronously; stops at reconcile results
+            return .started
+        }
+    }
+
+    /// Whether the app is idle at the picker, or the work a handoff must not
+    /// disturb. An open profile-edit form counts as work to preserve.
+    private func currentHandoffActivity() -> CommandLineHandoff.Activity {
+        if !engine.isIdle { return .busy(reason: Self.handoffBusyReason(engine.phase)) }
+        if isEditProfileFormOpen { return .busy(reason: "editing a profile") }
+        return .idleAtPicker
+    }
+
+    private static func handoffBusyReason(_ phase: EngineSessionCoordinator.Phase) -> String {
+        switch phase {
+        case .idle: return "busy"   // not reached: guarded by isIdle
+        case .opening: return "connecting to the remote"
+        case .scanning: return "scanning for changes"
+        case .ready: return "showing reconciliation results"
+        case .diffing: return "showing a file difference"
+        case .syncing: return "synchronizing"
+        case .closing: return "finishing the previous run"
+        case .restartRequired: return "waiting to be quit and reopened after a connection problem"
+        }
     }
 
     /// SSH credential prompt sheet, retained while open.
