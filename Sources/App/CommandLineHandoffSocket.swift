@@ -50,6 +50,13 @@ enum CommandLineHandoffSocket {
     struct Deadline: Sendable {
         private let end: DispatchTime
         init(seconds: TimeInterval) { end = .now() + seconds }
+        /// Reconstruct a deadline from an absolute instant. `mach_absolute_time`
+        /// (which `DispatchTime` uses) is system-wide, so a value stamped by the
+        /// client process is directly comparable here, letting the primary honor
+        /// the CALLER's expiry rather than one that restarts at acceptance.
+        init(uptimeNanos: UInt64) { end = DispatchTime(uptimeNanoseconds: uptimeNanos) }
+        /// The absolute instant this deadline elapses, for transmission.
+        var uptimeNanos: UInt64 { end.uptimeNanoseconds }
         /// Seconds left, never negative.
         var remaining: TimeInterval {
             let now = DispatchTime.now().uptimeNanoseconds
@@ -202,8 +209,11 @@ enum CommandLineHandoffClient {
     static func handOff(_ request: CommandLineHandoff.Request,
                         path: String,
                         timeout: TimeInterval = 5) -> Result {
-        guard let line = request.encoded() else { return .unavailable }
         let deadline = CommandLineHandoffSocket.Deadline(seconds: timeout)
+        // Stamp the caller's absolute expiry into the line so the primary honors
+        // it even if the request waits before being accepted (round 4).
+        guard let line = CommandLineHandoff.encodeEnvelope(
+            request, deadlineUptimeNanos: deadline.uptimeNanos) else { return .unavailable }
         let fd: Int32
         switch CommandLineHandoffSocket.connect(path: path, deadline: deadline) {
         case .connected(let c): fd = c
@@ -369,15 +379,20 @@ final class CommandLineHandoffServer: @unchecked Sendable {
                 let conn = accept(listenFD, nil, nil)
                 if conn < 0 { if errno == EINTR || errno == ECONNABORTED { continue }; break }
                 CommandLineHandoffSocket.setNonBlocking(conn)
-                let deadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
+                // The server keeps its OWN I/O bound so a slow peer cannot hold the
+                // accept loop; the handler is given the CALLER's deadline (from the
+                // envelope) so a request that already expired while waiting to be
+                // accepted, or while the main thread was busy, is not started
+                // (findings, rounds 3 & 4).
+                let ioDeadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
                 // A probe connection (election race detection) sends nothing and
                 // closes; readLine returns nil within the deadline and we drop it.
-                if let line = CommandLineHandoffSocket.readLine(conn, deadline: deadline),
-                   let request = CommandLineHandoff.Request(line: line) {
-                    // The handler gets the deadline: if the main thread was busy
-                    // past it, the request must not start (finding 1, round 3).
-                    let response = handler(request, deadline)
-                    _ = CommandLineHandoffSocket.writeAll(conn, response.encoded(), deadline: deadline)
+                if let line = CommandLineHandoffSocket.readLine(conn, deadline: ioDeadline),
+                   let envelope = CommandLineHandoff.decodeEnvelope(line) {
+                    let callerDeadline = CommandLineHandoffSocket.Deadline(
+                        uptimeNanos: envelope.deadlineUptimeNanos)
+                    let response = handler(envelope.request, callerDeadline)
+                    _ = CommandLineHandoffSocket.writeAll(conn, response.encoded(), deadline: ioDeadline)
                 }
                 close(conn)
             }

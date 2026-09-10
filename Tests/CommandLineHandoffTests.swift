@@ -54,6 +54,23 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertNil(Req(line: ""))
     }
 
+    // MARK: envelope (round 4: the caller's deadline travels with the request)
+
+    func test_envelope_roundTrip() {
+        let r = req(given: "work", dir: "/u", install: "/A/app")
+        let line = CommandLineHandoff.encodeEnvelope(r, deadlineUptimeNanos: 123_456_789)!
+        let decoded = CommandLineHandoff.decodeEnvelope(line)
+        XCTAssertEqual(decoded?.deadlineUptimeNanos, 123_456_789)
+        XCTAssertEqual(decoded?.request, r)
+    }
+
+    func test_envelope_rejectsMalformed() {
+        XCTAssertNil(CommandLineHandoff.decodeEnvelope(req().encoded()!))       // no leading nanos field
+        XCTAssertNil(CommandLineHandoff.decodeEnvelope("notanumber\t" + req().encoded()!))
+        XCTAssertNil(CommandLineHandoff.decodeEnvelope("123\tgarbage\n"))       // bad request part
+        XCTAssertNil(CommandLineHandoff.decodeEnvelope(""))
+    }
+
     // MARK: response codec
 
     func test_response_roundTrip() {

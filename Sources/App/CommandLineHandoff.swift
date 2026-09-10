@@ -86,6 +86,26 @@ enum CommandLineHandoff {
         }
     }
 
+    /// The wire line is the request preceded by the caller's absolute deadline
+    /// (`mach_absolute_time` nanoseconds), so the primary checks the CALLER's
+    /// expiry — not a deadline that would restart when the request is finally
+    /// accepted. The deadline is transport metadata, kept out of `Request` so the
+    /// request's identity does not depend on when it was sent.
+    static func encodeEnvelope(_ request: Request, deadlineUptimeNanos: UInt64) -> String? {
+        guard let body = request.encoded() else { return nil }
+        return "\(deadlineUptimeNanos)\t" + body
+    }
+
+    /// Parse a wire line into the caller's deadline and the request. nil on any
+    /// malformed line, so the primary drops it rather than guessing.
+    static func decodeEnvelope(_ line: String) -> (deadlineUptimeNanos: UInt64, request: Request)? {
+        guard let tab = line.firstIndex(of: "\t"),
+              let nanos = UInt64(line[line.startIndex..<tab]) else { return nil }
+        let rest = String(line[line.index(after: tab)...])
+        guard let request = Request(line: rest) else { return nil }
+        return (nanos, request)
+    }
+
     /// The primary's verdict, sent back to the client.
     enum Response: Equatable {
         /// Accepted: the primary is opening the profile and starting its scan.

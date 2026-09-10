@@ -174,25 +174,74 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         }
     }
 
-    // MARK: deadline carried into the handler (finding 1, round 3)
+    // MARK: the caller's deadline gates admission (findings, rounds 3 & 4)
 
-    /// The handler receives the connection deadline. If the main thread is held
-    /// past it — modelled here by a handler that sleeps beyond a short connection
-    /// timeout — the handler must see the deadline expired and decline to open,
-    /// so a request the caller already timed out on cannot start a scan.
-    func test_expiredDeadline_isVisibleToHandler_soNoOpenOccurs() {
+    /// Round 3: the handler is given the caller's deadline; if the main thread is
+    /// held past it (modelled by a handler that sleeps beyond the caller's short
+    /// timeout), the handler must see it expired and not open. The server's own I/O
+    /// bound is large, so it is not what expires.
+    func test_handlerHeldPastCallerDeadline_doesNotOpen() {
         let opened = Box<Bool?>(nil)
+        let handled = DispatchSemaphore(value: 0)
         guard case .listening(let server) = CommandLineHandoffServer.start(
-            path: path, handler: { _, deadline in
-                Thread.sleep(forTimeInterval: 0.6)   // main thread busy past the deadline
-                if deadline.hasExpired { opened.set(false); return .refused(message: "expired") }
-                opened.set(true); return .started
-            }, connectionTimeout: 0.3) else {
-            return XCTFail("server did not start")
-        }
+            path: path,
+            handler: { _, callerDeadline in
+                Thread.sleep(forTimeInterval: 0.5)   // main thread busy past the caller's deadline
+                opened.set(!callerDeadline.hasExpired)
+                handled.signal()
+                return callerDeadline.hasExpired ? .refused(message: "expired") : .started
+            }, connectionTimeout: 10) else { return XCTFail("server did not start") }
         servers.append(server)
-        _ = CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 2)
-        XCTAssertEqual(opened.value, false, "an expired request must not be opened")
+        Thread.detachNewThread { [path] in
+            _ = CommandLineHandoffClient.handOff(self.req("work"), path: path, timeout: 0.2)
+        }
+        XCTAssertEqual(handled.wait(timeout: .now() + 3), .success, "handler never ran")
+        XCTAssertEqual(opened.value, false, "a request whose caller deadline passed must not open")
+    }
+
+    /// Round 4: the primary must honor the CALLER's deadline, not one that restarts
+    /// at acceptance. The single accept loop is held on a prior connection until the
+    /// waiting caller has already timed out; when the request is finally admitted,
+    /// its caller deadline is expired even though the server's own I/O deadline is
+    /// fresh, so the handler must see it expired.
+    func test_callerDeadline_notServerDeadline_gatesAdmission() {
+        let victimExpired = Box<Bool?>(nil)
+        let handlingBlocker = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        let victimHandled = DispatchSemaphore(value: 0)
+        let victimClientDone = DispatchSemaphore(value: 0)
+        guard case .listening(let server) = CommandLineHandoffServer.start(
+            path: path,
+            handler: { req, callerDeadline in
+                if req.given == "blocker" {
+                    handlingBlocker.signal()
+                    _ = releaseBlocker.wait(timeout: .now() + 3)   // hold the accept loop
+                    return .started
+                }
+                victimExpired.set(callerDeadline.hasExpired)
+                victimHandled.signal()
+                return callerDeadline.hasExpired ? .refused(message: "expired") : .started
+            }, connectionTimeout: 10) else { return XCTFail("server did not start") }  // large server I/O bound: not what expires
+        servers.append(server)
+
+        // Occupy the single accept loop with a blocker.
+        Thread.detachNewThread { [path] in
+            _ = CommandLineHandoffClient.handOff(self.req("blocker"), path: path, timeout: 5)
+        }
+        XCTAssertEqual(handlingBlocker.wait(timeout: .now() + 3), .success, "server never handled the blocker")
+
+        // The victim connects and sends, then times out (short deadline) while the
+        // blocker still holds the loop; its client returning proves it expired.
+        Thread.detachNewThread { [path] in
+            _ = CommandLineHandoffClient.handOff(self.req("victim"), path: path, timeout: 0.3)
+            victimClientDone.signal()
+        }
+        XCTAssertEqual(victimClientDone.wait(timeout: .now() + 3), .success, "victim did not time out")
+
+        releaseBlocker.signal()   // now the accept loop reaches the victim
+        XCTAssertEqual(victimHandled.wait(timeout: .now() + 3), .success, "victim was never handled")
+        XCTAssertEqual(victimExpired.value, true,
+                       "the caller's expired deadline, not the server's fresh one, must gate admission")
     }
 
     // MARK: stale endpoint
