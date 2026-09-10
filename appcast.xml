@@ -6,6 +6,37 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.8.0</title>
+            <pubDate>Thu, 10 Sep 2026 03:59:11 +0000</pubDate>
+            <sparkle:version>24</sparkle:version>
+            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 0.8.0</h1>
+<p>Version 0.8.0 changes how the app's <code>unison</code> command reaches your PATH and adds a guided check that a remote sync profile will use the Unison you intend on the far side. The command is now placed on your PATH by editing your own login-shell startup file, with your consent and without an administrator password; the 0.7.0 installer that wrote a link under <code>/usr/local/bin</code> is removed. Existing profiles and settings continue to work without migration.</p>
+<h2>Added</h2>
+<ul>
+<li><strong>Guided remote check.</strong> Before you depend on an ssh profile, get a read on what the far side will run: a version or engine mismatch on the remote is a common cause of sync failures, and it is easier to look up front than mid-sync. The check tests whether this profile's remote command reports a Unison version over ssh, and offers discovered alternatives if you want to change it. Discovery uses a plain <code>sh</code> lookup, which may resolve commands differently from the profile. Only a synchronization confirms the server protocol. It changes nothing on either side, is reachable from the profile picker and the Profile Editor, states the current result first, titles its alternatives by their consequence, and reports a failed connection plainly. Effective-value fields show the actual host, user, port, and remote command a profile will use; the advice that avoids the question is an absolute <code>servercmd</code> in the peer's profile, which the pane can copy and the check can assess.</li>
+<li><strong>Command-line setup through your login shell (Settings ▸ Command Line).</strong> So you can type <code>unison</code> and get this app — <code>unison -ui graphic</code> opens it, and the same install serves Unison's text interface and its ssh-server role — the app can put its command on your PATH. Its command lives inside the bundle at <code>Contents/SharedSupport/bin/unison</code>. Add Terminal Setup puts that directory on your PATH by writing a marked, app-managed block to your own shell startup file — automatically only when the case is unambiguous and safe (a recognized stock zsh startup, this app's own earlier block, or a stated set of bash and fish cases), and otherwise as Manual setup, where the pane shows what to add and names the file to edit when it can identify one — when it cannot safely identify the file, such as a redirected <code>ZDOTDIR</code> or an unsupported shell, it says so rather than point at the wrong file. The pane leads with what <code>unison</code> resolves to in your login shell and names it — this app, another copy, no unison, could not be checked, or manual — with the resolved path shown as evidence, and offers Use This Copy, Remove Terminal Setup, and copying the app's command path. Removing restores the file with its other contents intact. No administrator password, and nothing is written outside your own files. macOS 15 and macOS 26 stock <code>/etc/zprofile</code> are recognized so a fresh account is offered automatic zsh setup; an unrecognized system file falls back to Manual setup rather than guessing.</li>
+<li><strong>Profile Editor keyboard navigation.</strong> The General, Roots, File Attributes, Options, and Includes sections of the Profile Editor are navigable from the keyboard.</li>
+</ul>
+<h2>Changed</h2>
+<ul>
+<li><strong>Homebrew cask is <code>unison-ui</code>.</strong> Homebrew's token rules drop platform suffixes, so the tap's cask is <code>bcourbage/tap/unison-ui</code>; installs under the old token migrate on their own at the next <code>brew update</code>, and Settings ▸ Command Line recognizes a Homebrew-managed install under either token.</li>
+</ul>
+<h2>Removed</h2>
+<ul>
+<li><strong>The 0.7.0 privileged command installer</strong> and its administrator prompt. The <code>unison</code> command is now placed on your PATH through your own login-shell startup file (Settings ▸ Command Line). A <code>/usr/local/bin/unison</code> link left by 0.7.0 keeps working — it points at the app's launcher, and Settings reports it as this app — and is not removed automatically; remove it yourself if you no longer want it.</li>
+</ul>
+<h2>Compatibility</h2>
+<ul>
+<li>No profile or settings migration is required. Same system requirements as 0.7.0: macOS 15 or later, Apple Silicon.</li>
+<li>Automatic updates are delivered through Sparkle; Homebrew users update with <code>brew upgrade --cask unison-ui</code>.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.8.0/unison-ui-mac-0.8.0.app.zip" length="5574875" type="application/octet-stream" sparkle:edSignature="7Qri2gl5/XeO78sjFd9gfnbqoLlcKy6PiijNncrSuR9EBrDZBqY2xULqGWN2U3b/oLP4+axOxpdP3hgAa6gsBA=="/>
+        </item>
+        <item>
             <title>0.7.0</title>
             <pubDate>Sun, 06 Sep 2026 09:40:21 +0000</pubDate>
             <sparkle:version>23</sparkle:version>
@@ -58,46 +89,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.6.1/unison-ui-mac-0.6.1.app.zip" length="5173262" type="application/octet-stream" sparkle:edSignature="XmXyXDZzfnA+J2Nt8ElH8T337tZ2KXCanAMkgljh1dH68TngugVUmptUSaSOoZL+J5tDa4kx2f3g7rav3SedBw=="/>
         </item>
-        <item>
-            <title>0.6.0</title>
-            <pubDate>Tue, 25 Aug 2026 03:14:23 +0000</pubDate>
-            <sparkle:version>21</sparkle:version>
-            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.6.0</h1>
-<p>Version 0.6.0 is a safety, correctness, and robustness release on top of 0.5.1. Existing profiles and settings continue to work without migration.</p>
-<h2>Safety</h2>
-<ul>
-<li><strong>Archive maintenance is crash-safe.</strong> Clean Stale Archives, Reset Archives, and archive recovery now run as a single locked transaction: they take the same per-archive lock a live Unison uses, stage everything, and only then move the removed set to the Trash as one unit. Before the removal is committed, any failure rolls back the staged files; a crash is detected on the next launch and recovered — restoring the files if it had not yet committed, or finishing the removal if the whole set was already committed — with the locks released only after you confirm no other Unison is running.</li>
-<li><strong>Clean Stale Archives only offers provably superseded copies.</strong> Orphans, "probably old" copies, anything involving a remote replica, and any archive whose roots can't be read unambiguously are now shown for reference only, never selectable and never preselected.</li>
-<li><strong>The manual installer (<code>install.sh</code>) is safer.</strong> It installs atomically, so a failed install can never leave you without a working app, verifies that the download quarantine was actually cleared, and accepts only a Release build. (Homebrew-cask installs are unaffected.)</li>
-<li><strong>Fixed a rare crash or corrupted results at the end of a sync</strong>, caused by values in the end-of-sync snapshot moving under the garbage collector before they were read.</li>
-<li><strong>"Rescan Ignoring Archives…" can no longer overlap in-flight work.</strong> It runs only from a ready state, so it can't start on top of a connection, scan, or sync already in progress.</li>
-</ul>
-<h2>Fixed</h2>
-<ul>
-<li><strong>Editing a profile preserves a symlinked <code>.prf</code>.</strong> Saving no longer replaces a symlinked profile (for example one linked from a dotfiles repository) with a regular file, and it keeps the file's comments, ordering, and escaping intact.</li>
-<li><strong>A profile the app can't read is protected.</strong> An unreadable or non-UTF-8 <code>.prf</code> is not opened as an editable empty form, so a Save can't overwrite it with a blank profile.</li>
-<li><strong>Diffing a file no longer freezes the reconcile window.</strong> The window stays responsive while a diff runs; a stalled diff is reported, and other engine actions stay disabled until it returns. If it never does, quit and reopen the app.</li>
-<li><strong>Ignore and Diff act on the item you mean</strong> — the selection from the menu bar, the clicked row from the right-click menu — and <strong>Select Conflicts</strong> now reveals conflicts hidden inside collapsed folders.</li>
-<li><strong>No false version warning from an SSH login banner.</strong> The remote Unison-version check reads Unison's own version line, so a login banner that mentions a version number no longer triggers a spurious compatibility warning.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>Genuinely built for macOS 15.</strong> The app and its embedded Unison engine are now compiled for the macOS 15 minimum and verified on macOS 15 before release.</li>
-</ul>
-<h2>Compatibility</h2>
-<ul>
-<li>No profile or settings migration is required. Same system requirements as 0.5.1: macOS 15 or later, Apple Silicon.</li>
-<li>If automatic update <em>checking</em> is enabled, Sparkle notifies you when 0.6.0 is available; whether it then downloads and installs automatically or only after you confirm depends on the separate automatic-download choice from the first-launch prompt. You can also update any time from App menu ▸ Check for Updates.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.6.0/unison-ui-mac-0.6.0.app.zip" length="5177077" type="application/octet-stream" sparkle:edSignature="qu0rK5paQfRQqIgMKwJnkWytb/onco9sv1dvEiMVwuy6A6yJAZ5eXgpuorDb+oyiXUXQ41RVf41HUVyzb2nEDA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: f5jPLovZp13GdOErAFkipDkT7Uqj9BJDy2Pm2hDoptHehj8eGF5inKy0q23wCjFqxBYqzga193gjU7q+5EelAQ==
-length: 12461
+edSignature: O7yEqLLYNDK7RxYNhsxyfOHQ8OTniogRKdwzRj7aVbWvT/4VMmPtDAjAvGXnIp4aPNBRz5d7nDv9EZej5tFzAw==
+length: 13186
 -->
