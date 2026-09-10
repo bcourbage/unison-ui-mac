@@ -9,6 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// once the launch-time checks (crash report, abandoned staging, setup offer)
     /// have run — the same order a user's pick would follow. Cleared when opened.
     private var pendingLaunchProfile: String?
+    /// The running-instance handoff listener (req 5 of #122). Present only when
+    /// this instance won the election; a later graphical `unison <profile>` hands
+    /// its request here instead of starting a second instance.
+    private var commandLineHandoffServer: CommandLineHandoffServer?
+    /// Whether this instance's own launch was a clean profile open. When false
+    /// (it was launched with options), it must not serve handoffs, because
+    /// upstream reparses the command line on every profile load.
+    private var commandLineLaunchWasClean = true
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -1621,6 +1629,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // a .prf by a crash mid-rescan, so it never silently persists.
         Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
 
+        // Running-instance routing (req 5 of #122): a graphical profile request
+        // hands off to an already-running instance and this process exits with
+        // its verdict; otherwise this instance becomes the primary and starts the
+        // listener so a later request can hand off here. Skipped under the test
+        // host and the launch smoke, which must not bind the shared socket.
+        // Finder and profile-less launches only start the listener.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+            && ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] == nil {
+            routeCommandLineHandoff()
+        }
+
         // A shell launch (`unison -ui graphic …`) reaches here with the full
         // argv in the engine, and init0 has extracted any profile or roots from
         // it. The disposition is decided purely in CommandLineGraphicalLaunch:
@@ -1740,6 +1759,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             activeVersionProbe = nil
             versionProbeSession = nil
         }
+        // Stop listening and remove the socket file so no stale endpoint is left.
+        commandLineHandoffServer?.stop()
+        commandLineHandoffServer = nil
         unison_bridge_shutdown()
     }
 
@@ -1792,7 +1814,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// User picked a profile in the picker. Hand the intent to the
     /// coordinator, which decides open-now vs queue and returns the effects
     /// (window creation + connect, or a waiting window) we run.
-    private func profileSelected(_ profile: String) {
+    /// Returns whether the profile actually entered opening. False when it stayed
+    /// in the picker (abandoned-staging recovery was offered and not cleared), so
+    /// a caller such as the handoff never reports a scan that did not start.
+    @discardableResult
+    private func profileSelected(_ profile: String) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
         // Fail closed: a profile whose archive is held by an interrupted
         // (pre-commit) mutation must not be opened until recovery.
@@ -1803,10 +1829,207 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
                 run(engine.requestOpen(profile: profile))
+                return true
             }
-            return
+            return false
         }
         run(engine.requestOpen(profile: profile))
+        return true
+    }
+
+    // MARK: - Running-instance handoff (req 5 of #122)
+
+    /// Hand a graphical profile request to an already-running instance and exit
+    /// with its verdict, or become the primary and start the listener. Called
+    /// once during launch, before any window is shown.
+    private func routeCommandLineHandoff() {
+        let given = unison_bridge_command_line_profile().map { String(cString: $0) }
+        // Whether THIS instance's own launch was a clean profile open. Upstream
+        // reparses the command line on every profile load, so if this instance
+        // became the primary after being launched with options, it must not serve
+        // handoffs (its options would leak into the handoff's profile).
+        commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(
+            arguments: CommandLine.arguments, launchProfile: given)
+
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              let path = CommandLineHandoffSocket.path(bundleID: bundleID) else {
+            // Coordination is impossible (no bundle id, or the control-socket path
+            // does not fit). A profile request must not start an uncoordinated
+            // instance; a plain launch runs normally without a listener.
+            refuseUncoordinatedRequestOrRunPlain(hasRequest: given != nil)
+            return
+        }
+        let request = given.map { profile in
+            CommandLineHandoff.Request(
+                given: profile,
+                rootsSet: Int(unison_bridge_command_line_roots_set()),
+                unisonDirectory: unisonDirectory,
+                installationPath: Bundle.main.bundlePath,
+                plainRequest: CommandLineHandoff.isCleanGraphicalLaunch(
+                    arguments: CommandLine.arguments, launchProfile: profile))
+        }
+        let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
+            -> CommandLineHandoff.Response = { [weak self] req, deadline in
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    self?.handleCommandLineHandoff(req, deadline: deadline)
+                        ?? .refused(message: "unison-ui-mac is shutting down.")
+                }
+            }
+        }
+
+        // 1. A graphical profile request tries to hand off to an existing primary.
+        if let request {
+            switch CommandLineHandoffClient.handOff(request, path: path) {
+            case .reply(let response):
+                actOnHandoffReply(response)
+            case .lostReply:
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: could not confirm the request with the running app. "
+                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                exit(1)
+            case .noPrimary:
+                break   // become the primary below
+            case .unavailable:
+                // The client could not use the socket (a resource failure), so it
+                // cannot prove whether a primary exists. Try to become the primary
+                // below; if that also fails, refuse rather than run uncoordinated.
+                break
+            }
+        }
+
+        // 2. Become the primary listener. If another instance won the election
+        // between the probe above and the bind, hand the request off now.
+        switch CommandLineHandoffServer.start(path: path, handler: handler) {
+        case .listening(let server):
+            commandLineHandoffServer = server
+            log.write("handoff: listening as the primary instance")
+        case .lostElection:
+            if let request, case .reply(let response) = CommandLineHandoffClient.handOff(request, path: path) {
+                actOnHandoffReply(response)
+            } else if request != nil {
+                CommandLineEngineLaunch.writeStderr(
+                    "unison-ui-mac: could not reach the running app. "
+                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                exit(1)
+            }
+            log.write("handoff: another instance is primary; running without a listener")
+        case .couldNotElect, .unavailable:
+            // Coordination could not be established (a suspended or hung holder, or
+            // a resource failure that also blocked the probe). Ownership is unknown,
+            // so a profile request must not start independently.
+            refuseUncoordinatedRequestOrRunPlain(hasRequest: request != nil)
+        }
+    }
+
+    /// A graphical profile request that cannot coordinate with a possible running
+    /// instance is refused rather than started independently (finding 2, round 3);
+    /// a plain launch with no profile runs normally without a listener.
+    private func refuseUncoordinatedRequestOrRunPlain(hasRequest: Bool) {
+        if hasRequest {
+            CommandLineEngineLaunch.writeStderr(
+                "unison-ui-mac: could not coordinate with a running instance. "
+                + "Try again in a moment, or add -ui text to run it in the terminal.")
+            exit(1)
+        }
+        log.write("handoff: coordination unavailable; running without a listener")
+    }
+
+    /// Print a client verdict and exit: success is exit 0 with no extra output
+    /// (the app window is the feedback); a refusal or invalid request is stderr
+    /// plus a non-zero exit. Never returns.
+    private func actOnHandoffReply(_ response: CommandLineHandoff.Response) -> Never {
+        if let message = response.clientMessage { CommandLineEngineLaunch.writeStderr(message) }
+        exit(response.isSuccess ? 0 : 1)
+    }
+
+    /// The primary's decision for an incoming request, on the main thread. A
+    /// valid profile opens only when idle at the picker; otherwise the existing
+    /// work is preserved and the request is refused. Opening goes through the
+    /// same path a user's pick uses and stops at the reconciliation results.
+    private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request,
+                                          deadline: CommandLineHandoffSocket.Deadline)
+        -> CommandLineHandoff.Response {
+        // Reaching the main thread past the deadline means the caller already timed
+        // out; do not accept or open anything (finding 1, round 3).
+        if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: request.given) }
+        // Refuse when the request cannot be faithfully transferred: this instance
+        // was launched with contaminating options, a different app copy or Unison
+        // directory, or extra options the running instance cannot reproduce.
+        if let refusal = CommandLineHandoff.contextCheck(
+            request: request,
+            localUnisonDirectory: unisonDirectory,
+            localInstallationPath: Bundle.main.bundlePath,
+            receiverLaunchWasClean: commandLineLaunchWasClean) {
+            return refusal
+        }
+        let dir = unisonDirectory
+        let launch = CommandLineGraphicalLaunch.resolve(
+            rootsSet: request.rootsSet,
+            profile: request.given,
+            fileExists: { FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0)) },
+            isListed: { [weak self] name in self?.listedProfiles().contains(name) ?? false })
+        switch CommandLineHandoff.decide(launch: launch, activity: currentHandoffActivity()) {
+        case .reply(let response):
+            return response
+        case .open(let name):
+            // A profile whose archives are held by an interrupted mutation is not
+            // opened from a background request (no modal to a caller at the
+            // terminal); refuse and point them to the app.
+            if abandonedStagingBlocking(name) != nil {
+                // Do NOT offer -ui text here: running another Unison before the
+                // archives are recovered is exactly what the safety block prevents.
+                return .refused(message:
+                    "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
+                    + "operation. Complete that recovery in the running app, then run the command again.")
+            }
+            // Final deadline check immediately before the open: nothing between
+            // here and the caller's timeout may start a scan it was told did not
+            // start (finding 1, round 3).
+            if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: name) }
+            log.write("handoff: opening '\(name)' for a command-line request")
+            NSApp.activate(ignoringOtherApps: true)
+            let entered = profileSelected(name)   // idle → opening synchronously; stops at reconcile results
+            return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
+        }
+    }
+
+    /// Whether the app is idle at the picker, or the work a handoff must not
+    /// disturb. An open profile-edit form counts as work to preserve, named so the
+    /// caller knows what to close.
+    private func currentHandoffActivity() -> CommandLineHandoff.Activity {
+        if !engine.isIdle {
+            return .busy(reason: Self.handoffBusyReason(engine.phase), resolution: .waitForCompletion)
+        }
+        if isEditProfileFormOpen {
+            let reason = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
+            return .busy(reason: reason, resolution: .closeEditor)
+        }
+        return .idleAtPicker
+    }
+
+    /// The profile name shown in the open edit form, or nil for an unsaved new
+    /// profile (or when no form is open).
+    private var editingProfileName: String? {
+        for window in NSApp.windows where window.isVisible {
+            if let form = window.windowController as? ProfileFormWindowController {
+                return form.editingProfileName
+            }
+        }
+        return nil
+    }
+
+    private static func handoffBusyReason(_ phase: EngineSessionCoordinator.Phase) -> String {
+        switch phase {
+        case .idle: return "busy"   // not reached: guarded by isIdle
+        case .opening: return "connecting to the remote"
+        case .scanning: return "scanning for changes"
+        case .ready: return "showing reconciliation results"
+        case .diffing: return "showing a file difference"
+        case .syncing: return "synchronizing"
+        case .closing: return "finishing the previous run"
+        case .restartRequired: return "waiting to be quit and reopened after a connection problem"
+        }
     }
 
     /// SSH credential prompt sheet, retained while open.
