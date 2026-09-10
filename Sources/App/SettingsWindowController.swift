@@ -1128,13 +1128,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 }
 
 extension SettingsWindowController: NSTextFieldDelegate {
-    // Persist the path when the user finishes editing, then offer to apply
-    // it in shared modes. Editing the field per keystroke would prompt too
-    // eagerly, so we act on commit only.
+    enum LogPathEndEdit: Equatable { case ignore, persist }
+
+    /// End-of-editing fires whenever the field resigns first responder — including
+    /// a tab switch with no edit. Persist (and, in a shared mode, offer to apply
+    /// to all profiles) ONLY when the entered value actually differs from what is
+    /// stored; an unchanged commit is ignored so leaving the Logging tab does not
+    /// re-prompt.
+    nonisolated static func logPathEndEdit(entered: String, stored: String) -> LogPathEndEdit {
+        entered == stored ? .ignore : .persist
+    }
+
+    private static func storedLogPath(for mode: SettingsModel.LoggingMode) -> String {
+        switch mode {
+        case .sameFile:      return SettingsModel.sharedLogFile()
+        case .sameDirectory: return SettingsModel.sharedLogDirectory()
+        case .perProfile:    return SettingsModel.defaultLogDirectory()
+        }
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
         guard obj.object as AnyObject === logPathField else { return }
-        persistLogPath(logPathField.stringValue, for: SettingsModel.loggingMode())
-        offerPropagationIfShared()
+        let mode = SettingsModel.loggingMode()
+        switch Self.logPathEndEdit(entered: logPathField.stringValue,
+                                   stored: Self.storedLogPath(for: mode)) {
+        case .ignore:
+            return
+        case .persist:
+            persistLogPath(logPathField.stringValue, for: mode)
+            offerPropagationIfShared()
+        }
     }
 }
 

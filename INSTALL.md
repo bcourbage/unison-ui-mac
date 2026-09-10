@@ -39,6 +39,14 @@ brew uninstall --cask unison-app
 brew install --cask bcourbage/tap/unison-ui
 ```
 
+The conflict is between the two Homebrew casks — each installs a command named
+`unison`, and Homebrew won't let both own that name. It is not a conflict between
+the applications. To keep the upstream Unison.app as well (for instance as a
+fallback sync server), install it outside Homebrew so only `unison-ui` owns the
+`unison` command, or let the upstream one own `unison` and set specific profiles'
+`servercmd` to this app's command path (Settings → Command Line → Copy This App's
+Command Path).
+
 To uninstall:
 
 ```sh
