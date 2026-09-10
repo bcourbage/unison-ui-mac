@@ -494,11 +494,33 @@ structural test do not stand in for it.
 - Prompt suppression is honored across launches; "Not Now" re-prompts.
 - Copy reviewed before the release that ships it.
 
-## Open items
+## Default interface, direct profile open, and running-instance routing (#122)
 
-- Opening a command-line profile directly in GUI mode (today it is
-  preselected in the picker), and a root pair. Needs picker bypass and a
-  decision on what "profile not found" looks like in a GUI.
+Three additions build on the launcher, each behind the same rule that only
+Unison's own parser decides what a shell invocation means.
+
+- **Default interface.** `CommandLineDefaultInterface` supplies the `-ui` value
+  injected in front of the caller's tokens when none is given. It is `graphic`
+  whenever no interface preference is saved, and the saved value otherwise, with
+  no per-account migration; it is resolved once on launch and persisted. The
+  graphical default is a behavior change for existing launcher users who relied
+  on a bare `unison <profile>` running the text interface. An explicit
+  `-ui graphic`/`-ui text` still wins, because upstream keeps the last value.
+- **Direct profile open.** In graphical mode a named profile no longer only
+  preselects in the picker: `CommandLineGraphicalLaunch` decides `showPicker`,
+  `openProfile`, or `refuse` (roots, or a hidden or ambiguous profile), and the
+  delegate opens an `openProfile` through the same path a user's pick uses. It
+  stops at the reconciliation results, so nothing is applied without a further
+  action.
+- **Running-instance routing.** A per-user Unix-domain socket
+  (`CommandLineHandoff`, `CommandLineHandoffSocket`) lets a graphical
+  `unison <profile>` reach an already-running instance instead of starting a
+  second one: idle at the picker opens the profile, and a scan, reconciliation,
+  sync, or open profile edit is preserved and the request refused with a bounded,
+  explicit verdict and exit code. Only graphical profile requests use the socket;
+  `-ui text` and `-server` exit in the engine first. There is no daemon: the
+  socket lives with the app, a crash leaves a stale file the next election
+  reclaims, and the election also covers a simultaneous launch and a lost reply.
 
 `unisonNonGuiStartup` silences the progress printer before the text
 interface starts, but `uitext.ml` installs its own printer when

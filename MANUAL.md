@@ -103,20 +103,35 @@ app:
 
 | Command | What runs |
 |---|---|
-| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it and its row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui graphic <profile>` | This app. The named profile opens and its connection and scan start right away, with no further click; it stops at the reconciliation results, so nothing is applied until you act. The profile must be one the picker lists and whose row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui graphic` (no profile) | This app, at the profile picker. |
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The text interface, exactly as the `unison` command behaves everywhere. The graphical interface runs only when `-ui graphic` is given. |
+| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The interface set by **Default interface** in Settings ▸ Command Line, which is Graphical unless you save Text, so this opens the app by default. This is a change from earlier versions, where a bare `unison <profile>` ran the text interface; set **Default interface** to Text, or pass `-ui text`, to keep that. An explicit `-ui text` or `-ui graphic` overrides the preference. |
 | `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
 | `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
 
-The command hands Unison's engine `-ui text` followed by the arguments
-exactly as typed, and Unison interprets them: a later `-ui graphic` wins
-over that default, `-server` and `-version` take effect before any interface
-choice, `-ui=text` means the same as `-ui text`, and options take exactly one
-leading dash (`--ui` is an unknown option to Unison). Unknown options are
-reported by Unison with its usage text.
+The command hands Unison's engine the default interface (Text or Graphical, per
+the **Default interface** preference above) followed by the arguments exactly as
+typed, and Unison interprets them: a later `-ui graphic` or `-ui text` wins over
+that default, `-server` and `-version` take effect before any interface choice,
+`-ui=text` means the same as `-ui text`, and options take exactly one leading
+dash (`--ui` is an unknown option to Unison). Unknown options are reported by
+Unison with its usage text.
+
+When the graphical interface is already running and a `unison <profile>` request
+reaches it, the request goes to that instance rather than starting a second one.
+If it is idle at the picker, it opens the profile and starts its scan. If a scan,
+reconciliation, sync, or a profile edit is already in progress, it keeps that
+work and reports that it did not start the new profile, so nothing in progress is
+disturbed. The command reports what happened and returns a matching exit status.
+
+For scripts and scheduled jobs, pass `-ui text` explicitly rather than relying on
+the default. A script that omits it runs the graphical interface wherever the
+preference is Graphical, and a `unison <profile>` with no graphical session (over
+ssh, from `cron`, or from `launchd`) is then refused with a message instead of
+running in the terminal.
 
 `unison -ui graphic` keeps the terminal busy until the app quits, like any
 foreground command. Append `&` to get the prompt back.
@@ -994,6 +1009,14 @@ or Repair once per launch after the picker appears. "Not Now" asks again next
 launch; "Do not ask again" stops the offer, and the Command Line tab remains
 the way to install later.
 
+**Default interface.** The **Default interface** control (Graphical or Text)
+sets which interface `unison` uses when a command omits `-ui`, described under
+[The `unison` command](#the-unison-command). It is Graphical unless you save
+Text, so a bare `unison <profile>` opens this app; this is a change from earlier
+versions, where it ran the text interface. An explicit `-ui graphic` or
+`-ui text` on the command line always overrides it. Scripts and scheduled jobs
+should pass `-ui text` explicitly rather than depend on this setting.
+
 ### What's stored, and where
 
 Everything lives in `~/Library/Preferences/net.courbage.unison-ui-mac.plist`,
@@ -1011,6 +1034,7 @@ Sparkle, not as app keys of its own). The keys this app writes:
 | `sync.complete.notify` | Show a Notification Center banner on sync completion (default on) |
 | `sync.complete.sound` | Play a sound on sync completion (default on) |
 | `commandLineTool.doNotAsk` | "Do not ask again" on the first-launch offer to install the `unison` command |
+| `commandLine.defaultInterface` | `graphic` or `text`: the interface `unison` uses when a command omits `-ui` |
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
 | `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 
