@@ -14,11 +14,13 @@ across releases per Apple's bundle-version rules.
 ## [0.8.0] — 2026-09-10
 
 ### Added
-- **Guided remote check (Check Remote Command).** For an ssh profile, the app
-  connects to the remote the way the profile would, discovers which `unison` the
-  incoming command resolves to there, and reports the version, the resolved
-  path, and whether it is this app's engine — without changing anything on
-  either side. It is reachable from the profile picker and the Profile Editor,
+- **Guided remote check (Check Remote Command).** Before you depend on an ssh
+  profile, confirm the far side will run the Unison you expect: a version or
+  engine mismatch on the remote is a common cause of sync failures, and it is
+  easier to catch up front than mid-sync. For an ssh profile, the app connects
+  to the remote the way the profile would, discovers which `unison` the incoming
+  command resolves to there, and reports the version, the resolved path, and
+  whether it is this app's engine — without changing anything on either side. It is reachable from the profile picker and the Profile Editor,
   states the current result first and titles its alternatives by their
   consequence, and reports a failed connection plainly. Effective-value fields
   show the actual host, user, port and remote command a profile will use. Which
@@ -26,8 +28,11 @@ across releases per Apple's bundle-version rules.
   measures it there instead of guessing locally; the advice that avoids the
   question is an absolute `servercmd` in the peer's profile, which the pane can
   copy and the check can assess.
-- **Command-line setup through your login shell (Settings → Command Line).** The
-  app's command lives inside the bundle at `Contents/SharedSupport/bin/unison`.
+- **Command-line setup through your login shell (Settings → Command Line).** So
+  you can type `unison` and get this app — `unison -ui graphic` opens it, and the
+  same install serves Unison's text interface and its ssh-server role — the app
+  can put its command on your PATH. Its command lives inside the bundle at
+  `Contents/SharedSupport/bin/unison`.
   Add Terminal Setup puts that directory on your PATH by writing a marked,
   app-managed block to your own shell startup file — automatically only when the
   case is unambiguous and safe (a recognized stock zsh startup, this app's own
