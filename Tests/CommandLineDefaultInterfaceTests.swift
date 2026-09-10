@@ -1,9 +1,9 @@
 import XCTest
 @testable import unison_ui_mac
 
-/// The omitted-`-ui` default and its one-time migration. The migration reads the
-/// same keys `CommandLineSetupPreference` writes, so these tests exercise the two
-/// together against an isolated defaults suite rather than the real domain.
+/// The omitted-`-ui` default: graphical when nothing is saved, a saved choice
+/// otherwise, with no per-account migration. Exercised against an isolated
+/// defaults suite rather than the real domain.
 final class CommandLineDefaultInterfaceTests: XCTestCase {
 
     private typealias D = CommandLineDefaultInterface
@@ -23,71 +23,48 @@ final class CommandLineDefaultInterfaceTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: fresh account → graphic
+    // MARK: no saved preference → graphic
 
-    func test_freshAccount_resolvesToGraphic_andPersistsIt() {
+    func test_noSavedPreference_resolvesToGraphic_andPersistsIt() {
         XCTAssertNil(defaults.string(forKey: D.key))
         XCTAssertEqual(D.resolved(defaults: defaults), .graphic)
-        // Persisted, so a later preference write cannot flip the resolved default.
+        // Persisted, so the stored value matches what a bare `unison` used.
         XCTAssertEqual(defaults.string(forKey: D.key), "graphic")
     }
 
-    // MARK: upgraded account → text
+    // MARK: a saved value is honored, whatever the account history
 
-    func test_accountWithKeepPreference_resolvesToText() {
-        defaults.set(true, forKey: CommandLineSetupPreference.keepKey)
-        XCTAssertEqual(D.resolved(defaults: defaults), .text)
-        XCTAssertEqual(defaults.string(forKey: D.key), "text")
-    }
-
-    func test_accountWithKeepPreferenceOff_stillResolvesToText() {
-        // The value of the old preference does not matter, only that the account
-        // ran a version whose omitted default was text.
-        defaults.set(false, forKey: CommandLineSetupPreference.keepKey)
-        XCTAssertEqual(D.resolved(defaults: defaults), .text)
-    }
-
-    func test_accountWithLegacyDoNotAskKey_resolvesToText() {
-        defaults.set(true, forKey: CommandLineSetupPreference.legacyDoNotAskKey)
-        XCTAssertEqual(D.resolved(defaults: defaults), .text)
-    }
-
-    func test_accountWithLegacyDoNotAskKeyFalse_resolvesToText() {
-        defaults.set(false, forKey: CommandLineSetupPreference.legacyDoNotAskKey)
-        XCTAssertEqual(D.resolved(defaults: defaults), .text)
-    }
-
-    // MARK: an already-stored value is authoritative
-
-    func test_storedGraphic_isRespected_evenWithUpgradeMarkers() {
+    func test_savedGraphic_isRespected() {
         defaults.set("graphic", forKey: D.key)
-        defaults.set(true, forKey: CommandLineSetupPreference.keepKey)
         XCTAssertEqual(D.resolved(defaults: defaults), .graphic)
     }
 
-    func test_storedText_isRespected_onFreshLookingAccount() {
+    func test_savedText_isRespected() {
         defaults.set("text", forKey: D.key)
         XCTAssertEqual(D.resolved(defaults: defaults), .text)
     }
 
-    func test_unrecognizedStoredValue_fallsBackToMigration() {
+    func test_unrecognizedStoredValue_fallsBackToGraphic() {
         defaults.set("verbose", forKey: D.key)
-        // No upgrade markers → treated as a fresh account.
+        XCTAssertEqual(D.resolved(defaults: defaults), .graphic)
+    }
+
+    // MARK: no migration — prior command-line-setup keys do not force text
+
+    func test_priorCommandLineSetupKeys_doNotForceText() {
+        // Keys an earlier version may have written must not change the default;
+        // an account without a saved interface preference still gets graphical.
+        defaults.set(true, forKey: CommandLineSetupPreference.keepKey)
+        defaults.set(true, forKey: CommandLineSetupPreference.legacyDoNotAskKey)
         XCTAssertEqual(D.resolved(defaults: defaults), .graphic)
     }
 
     // MARK: current() reads without persisting
 
-    func test_current_doesNotPersist_soSettingsDoesNotMigrate() {
+    func test_current_doesNotPersist() {
         XCTAssertNil(defaults.string(forKey: D.key))
         XCTAssertEqual(D.current(defaults: defaults), .graphic)
-        // No write: an account that only opened Settings is still unresolved.
-        XCTAssertNil(defaults.string(forKey: D.key))
-    }
-
-    func test_current_matchesResolved_onUpgradedAccount() {
-        defaults.set(true, forKey: CommandLineSetupPreference.keepKey)
-        XCTAssertEqual(D.current(defaults: defaults), .text)
+        // No write: an account that only opened Settings has nothing saved.
         XCTAssertNil(defaults.string(forKey: D.key))
     }
 
