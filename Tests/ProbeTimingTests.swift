@@ -240,20 +240,22 @@ final class ProbeTimingTests: XCTestCase {
     /// returned, then releases it and waits (generously) for the late-exit line.
     /// The executor returning while the hook is still blocked is the proof that
     /// its return is independent of the delayed background task — no timing
-    /// threshold. A return that instead waited for the background task would
-    /// block here and fail the test's own 10 s guard.
+    /// threshold.
+    ///
+    /// `execute()` runs on a background queue so a regression (a return that
+    /// waited for the blocked task) cannot hang the suite: its return is bounded
+    /// by a generous guard, and the hook is released on BOTH the return and the
+    /// guard-tripped path before the background work is unwound and cleaned up. A
+    /// `nil` result means the guard tripped (the executor did not return while the
+    /// hook was blocked), which fails the calling test.
     private func runBlockingSeam(_ stage: Stage)
-        -> (returnLine: String?, lateLine: String?, result: VersionCheck.RawExecResult) {
+        -> (returnLine: String?, lateLine: String?, result: VersionCheck.RawExecResult?) {
         let path = NSTemporaryDirectory() + "seam-\(UUID().uuidString).log"
         let prevOn = getenv("UUM_PROBE_TIMING").map { String(cString: $0) }
         let prev = getenv("UUM_PROBE_TIMING_FILE").map { String(cString: $0) }
         setenv("UUM_PROBE_TIMING", "1", 1)
         setenv("UUM_PROBE_TIMING_FILE", path, 1)
-        defer {
-            if let prevOn { setenv("UUM_PROBE_TIMING", prevOn, 1) } else { unsetenv("UUM_PROBE_TIMING") }
-            if let prev { setenv("UUM_PROBE_TIMING_FILE", prev, 1) } else { unsetenv("UUM_PROBE_TIMING_FILE") }
-            try? FileManager.default.removeItem(atPath: path)
-        }
+
         let release = DispatchSemaphore(value: 0)
         let hook: @Sendable () -> Void = { release.wait() }
         var exec = Exec(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
@@ -262,19 +264,30 @@ final class ProbeTimingTests: XCTestCase {
         case .exit:  exec.exitObservationHook = hook
         }
         let cfg = sh("echo done")
-        // Returns while the hook is still blocked (deadline + reap fire without
-        // the wait task signalling). The primary line is written in execute()'s
-        // defer, so it is already on disk here.
-        let result = exec.execute(cfg, deadline: 0.3, canceller: VersionCheck.ProbeCanceller())
-        let returnLine = firstLine(inFile: path, containing: "phase=return")
-        release.signal()   // the wait task now finishes and writes the late line
-        let lateLine = waitForLine(inFile: path, containing: "phase=late-exit", timeout: 10)
-        return (returnLine, lateLine, result)
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.value = exec.execute(cfg, deadline: 0.3, canceller: VersionCheck.ProbeCanceller())
+            done.signal()
+        }
+        // The proof: execute() must return WHILE the hook is still blocked. Wait
+        // for that with a generous guard; capture the return line before releasing.
+        let returnedWhileBlocked = done.wait(timeout: .now() + 10) == .success
+        let returnLine = returnedWhileBlocked ? firstLine(inFile: path, containing: "phase=return") : nil
+        // Release on BOTH paths so a regression unwinds instead of hanging.
+        release.signal()
+        if !returnedWhileBlocked { _ = done.wait(timeout: .now() + 10) }   // let it unwind post-release
+        let lateLine = returnedWhileBlocked ? waitForLine(inFile: path, containing: "phase=late-exit", timeout: 10) : nil
+
+        if let prevOn { setenv("UUM_PROBE_TIMING", prevOn, 1) } else { unsetenv("UUM_PROBE_TIMING") }
+        if let prev { setenv("UUM_PROBE_TIMING_FILE", prev, 1) } else { unsetenv("UUM_PROBE_TIMING_FILE") }
+        try? FileManager.default.removeItem(atPath: path)
+        return (returnLine, lateLine, returnedWhileBlocked ? box.value : nil)
     }
 
     func test_seam_delayedWaitTaskEntry_returnsIndependently_lateRecordShowsEntry() {
         let (ret, late, result) = runBlockingSeam(.entry)
-        guard case .timedOut = result else { return XCTFail("\(result)") }
+        guard case .timedOut? = result else { return XCTFail("executor did not return while the wait task was blocked: \(String(describing: result))") }
         XCTAssertNotNil(ret, "the return line was written before the wait task was released")
         XCTAssertNotNil(late, "the late-exit line is written once the hook is released")
         guard let ret, let late else { return }
@@ -288,7 +301,7 @@ final class ProbeTimingTests: XCTestCase {
 
     func test_seam_delayedExitObservation_returnsIndependently_lateRecordShowsExit() {
         let (ret, late, result) = runBlockingSeam(.exit)
-        guard case .timedOut = result else { return XCTFail("\(result)") }
+        guard case .timedOut? = result else { return XCTFail("executor did not return while the wait task was blocked: \(String(describing: result))") }
         XCTAssertNotNil(ret); XCTAssertNotNil(late)
         guard let ret, let late else { return }
         // The delayed stage is EXIT observation: entry was recorded before the
