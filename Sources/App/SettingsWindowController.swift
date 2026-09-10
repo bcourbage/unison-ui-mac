@@ -130,6 +130,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let clRefreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let clKeepCheckbox = NSButton(checkboxWithTitle: CommandLineSetupPreference.checkboxTitle,
                                           target: nil, action: nil)
+    /// The interface `unison` uses when a command omits `-ui`. Segment 0 is
+    /// Graphical (`.graphic`), segment 1 is Text (`.text`).
+    private let clDefaultInterfaceControl = NSSegmentedControl(
+        labels: ["Graphical", "Text"], trackingMode: .selectOne, target: nil, action: nil)
     private let clCopyPathButton = NSButton(title: "Copy This App's Command Path", target: nil, action: nil)
     private let clManualHeading = NSTextField(wrappingLabelWithString: "")
     private let clManualDirField = NSTextField(labelWithString: "")
@@ -408,6 +412,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         section9CopyRow.orientation = .horizontal
         let section9CopyNote = sectionDescription(CommandLineSetupViewModel.commandPathFootnote)
         let section9KeepNote = sectionDescription(CommandLineSetupPreference.checkboxExplanation)
+
+        // The omitted-`-ui` default. New accounts start on Graphical; accounts
+        // upgraded from a version whose default was text keep Text.
+        let section9DefaultLabel = NSTextField(labelWithString: CommandLineDefaultInterface.label)
+        clDefaultInterfaceControl.segmentStyle = .rounded
+        clDefaultInterfaceControl.target = self
+        clDefaultInterfaceControl.action = #selector(commandLineDefaultInterfaceChanged(_:))
+        // AppDelegate locks this on launch; Settings only reads it, so use the
+        // non-persisting getter and never migrate an account from here.
+        clDefaultInterfaceControl.selectedSegment =
+            (CommandLineDefaultInterface.current() == .graphic) ? 0 : 1
+        let section9DefaultRow = NSStackView(views: [
+            section9DefaultLabel, clDefaultInterfaceControl, NSView(),
+        ])
+        section9DefaultRow.orientation = .horizontal
+        section9DefaultRow.spacing = 8
+        let section9DefaultNote = sectionDescription(CommandLineDefaultInterface.explanation)
         let section9Limits = sectionDescription(
             "Applies to new Terminal windows for this account. A shell set up " +
             "differently can still choose another unison.")
@@ -452,6 +473,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                     section9ActionRow, clActionFootnote, clStatusLabel,
                     clManualHeading, clManualDirField, clManualFileField, clCopySetupButton,
                     divider(),
+                    section9DefaultRow, section9DefaultNote,
                     section9CopyRow, section9CopyNote,
                     clKeepCheckbox, section9KeepNote,
                     section9Limits]))
@@ -790,6 +812,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         default:
             break
         }
+    }
+
+    @objc private func commandLineDefaultInterfaceChanged(_ sender: Any?) {
+        let value: CommandLineDefaultInterface =
+            clDefaultInterfaceControl.selectedSegment == 0 ? .graphic : .text
+        CommandLineDefaultInterface.set(value)
     }
 
     @objc private func commandLineSetupCopyPath(_ sender: Any?) {

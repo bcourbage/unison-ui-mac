@@ -55,16 +55,30 @@ final class CommandLineInvocationPolicyTests: XCTestCase {
 
     // MARK: engine argv
 
-    func test_engineArguments_prependUITextAndKeepEverythingElseIntact() {
-        XCTAssertEqual(P.engineArguments([exe]), [exe, "-ui", "text"])
-        XCTAssertEqual(P.engineArguments([exe, "-server", "__new-rpc-mode"]), [exe, "-ui", "text", "-server", "__new-rpc-mode"])
+    func test_engineArguments_prependDefaultUIAndKeepEverythingElseIntact() {
+        XCTAssertEqual(P.engineArguments([exe], defaultInterface: "text"), [exe, "-ui", "text"])
+        XCTAssertEqual(P.engineArguments([exe, "-server", "__new-rpc-mode"], defaultInterface: "text"),
+                       [exe, "-ui", "text", "-server", "__new-rpc-mode"])
         // The caller's later -ui wins in upstream's scanner; the policy does not touch it.
-        XCTAssertEqual(P.engineArguments([exe, "-ui", "graphic", "p"]), [exe, "-ui", "text", "-ui", "graphic", "p"])
+        XCTAssertEqual(P.engineArguments([exe, "-ui", "graphic", "p"], defaultInterface: "text"),
+                       [exe, "-ui", "text", "-ui", "graphic", "p"])
         // Option-value boundaries are the engine's business.
         let tricky = ["-label", "-server", "-batch", "p"]
-        XCTAssertEqual(P.engineArguments([exe] + tricky), [exe, "-ui", "text"] + tricky)
+        XCTAssertEqual(P.engineArguments([exe] + tricky, defaultInterface: "text"), [exe, "-ui", "text"] + tricky)
         let host = ["-NSDocumentRevisionsDebugMode", "YES", "-ui", "graphic"]
-        XCTAssertEqual(P.engineArguments([exe] + host), [exe, "-ui", "text"] + host)
+        XCTAssertEqual(P.engineArguments([exe] + host, defaultInterface: "text"), [exe, "-ui", "text"] + host)
+    }
+
+    func test_engineArguments_graphicDefault_isInjected_andExplicitUIStillWins() {
+        // New-user default: `unison p` becomes `-ui graphic p`.
+        XCTAssertEqual(P.engineArguments([exe, "p"], defaultInterface: "graphic"), [exe, "-ui", "graphic", "p"])
+        // An explicit `-ui text` after the default wins (last value), so a script
+        // that asks for text gets text regardless of the preference.
+        XCTAssertEqual(P.engineArguments([exe, "-ui", "text", "p"], defaultInterface: "graphic"),
+                       [exe, "-ui", "graphic", "-ui", "text", "p"])
+        // -server is untouched; it runs before -ui in the engine either way.
+        XCTAssertEqual(P.engineArguments([exe, "-server", "__new-rpc-mode"], defaultInterface: "graphic"),
+                       [exe, "-ui", "graphic", "-server", "__new-rpc-mode"])
     }
 
     // MARK: graphical continuation
