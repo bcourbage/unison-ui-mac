@@ -229,6 +229,14 @@ enum CommandLineHandoff {
         }
     }
 
+    /// The reply when the request's deadline elapsed before the app could act on
+    /// it — the caller has already given up, so nothing must be opened (finding 1,
+    /// round 3). The message is for completeness; the caller is no longer reading.
+    static func expiredResponse(name: String) -> Response {
+        .refused(message: "unison-ui-mac did not start \(name): the request expired before it was handled. "
+            + "Run the command again.")
+    }
+
     /// The reply after the primary attempts the open. `.started` only when the
     /// engine actually entered opening; otherwise the caller must not be told the
     /// scan began (finding 4).

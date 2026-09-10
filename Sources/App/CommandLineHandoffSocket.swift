@@ -43,8 +43,11 @@ enum CommandLineHandoffSocket {
     // MARK: - Deadlines (finding 3, round 1: one elapsed-time bound over connect + I/O)
 
     /// A single wall-clock budget shared across connect, send and receive, so the
-    /// whole exchange is bounded no matter how the bytes are paced.
-    struct Deadline {
+    /// whole exchange is bounded no matter how the bytes are paced. It is an
+    /// absolute instant, so it stays meaningful after crossing a thread boundary —
+    /// the handler checks it on the main thread to catch a request whose deadline
+    /// already passed while the main thread was busy (finding 1, round 3).
+    struct Deadline: Sendable {
         private let end: DispatchTime
         init(seconds: TimeInterval) { end = .now() + seconds }
         /// Seconds left, never negative.
@@ -53,6 +56,8 @@ enum CommandLineHandoffSocket {
             let e = end.uptimeNanoseconds
             return e > now ? Double(e - now) / 1_000_000_000 : 0
         }
+        /// Whether the budget is spent.
+        var hasExpired: Bool { remaining <= 0 }
     }
 
     /// Wait until `fd` is ready for `events`, bounded by the deadline. false on
@@ -164,11 +169,13 @@ enum CommandLineHandoffSocket {
     /// Acquire an advisory lock without blocking, retrying under a deadline
     /// (finding 3): a suspended or hung holder must not stall the caller's main
     /// thread. false when the deadline elapses or the lock cannot be taken.
-    static func acquireLock(_ fd: Int32, deadline: Deadline) -> Bool {
+    static func acquireLock(_ fd: Int32, deadline: Deadline, onContended: () -> Void = {}) -> Bool {
+        var announced = false
         while true {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 { return true }
             if errno == EINTR { continue }
             if errno != EWOULDBLOCK { return false }
+            if !announced { announced = true; onContended() }   // proven to be contending
             guard deadline.remaining > 0 else { return false }
             usleep(20_000)   // 20 ms
         }
@@ -256,20 +263,26 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     private let path: String
     private let ownDevice: dev_t
     private let ownInode: ino_t
-    private let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response
+    /// The handler is given the connection's deadline so it can decline to act on a
+    /// request whose budget already elapsed while the main thread was busy.
+    private let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
+        -> CommandLineHandoff.Response
+    private let connectionTimeout: TimeInterval
     private let queue = DispatchQueue(label: "net.courbage.unison-ui-mac.handoff")
     /// Makes stop() idempotent; the accept loop owns and closes `listenFD`.
     private let lifecycle = NSLock()
     private var stopped = false
 
     private init(listenFD: Int32, wakeReadFD: Int32, wakeWriteFD: Int32, path: String,
-                 device: dev_t, inode: ino_t,
-                 handler: @escaping @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response) {
+                 device: dev_t, inode: ino_t, connectionTimeout: TimeInterval,
+                 handler: @escaping @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
+                     -> CommandLineHandoff.Response) {
         self.listenFD = listenFD
         self.wakeWriteFD = wakeWriteFD
         self.path = path
         self.ownDevice = device
         self.ownInode = inode
+        self.connectionTimeout = connectionTimeout
         self.handler = handler
         startAccepting(listenFD: listenFD, wakeReadFD: wakeReadFD)
     }
@@ -288,16 +301,19 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     /// holder cannot stall the launch and two concurrent launches cannot both
     /// bind. `afterBind` is a test seam to force a pause between bind and listen.
     static func start(path: String,
-                      handler: @escaping @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response,
+                      handler: @escaping @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
+                          -> CommandLineHandoff.Response,
                       lockTimeout: TimeInterval = electionLockTimeout,
-                      afterBind: () -> Void = {}) -> StartResult {
+                      connectionTimeout: TimeInterval = connectionTimeout,
+                      afterBind: () -> Void = {},
+                      onContended: () -> Void = {}) -> StartResult {
         guard CommandLineHandoffSocket.makeAddress(path) != nil else { return .unavailable }
 
         let lockFD = open(lockPath(path), O_CREAT | O_RDWR, 0o600)
         guard lockFD >= 0 else { return .unavailable }
         defer { close(lockFD) }
         guard CommandLineHandoffSocket.acquireLock(
-            lockFD, deadline: .init(seconds: lockTimeout)) else { return .couldNotElect }
+            lockFD, deadline: .init(seconds: lockTimeout), onContended: onContended) else { return .couldNotElect }
 
         let probe = CommandLineHandoffSocket.connect(path: path, deadline: .init(seconds: 1))
         if case .connected(let live) = probe { close(live) }
@@ -330,7 +346,8 @@ final class CommandLineHandoffServer: @unchecked Sendable {
 
         let server = CommandLineHandoffServer(
             listenFD: fd, wakeReadFD: pipeFDs[0], wakeWriteFD: pipeFDs[1], path: path,
-            device: haveStat ? st.st_dev : 0, inode: haveStat ? st.st_ino : 0, handler: handler)
+            device: haveStat ? st.st_dev : 0, inode: haveStat ? st.st_ino : 0,
+            connectionTimeout: connectionTimeout, handler: handler)
         return .listening(server)
     }
 
@@ -339,6 +356,7 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     /// `listenFD` and `wakeReadFD` and closes them itself on exit (finding 4).
     private func startAccepting(listenFD: Int32, wakeReadFD: Int32) {
         let handler = self.handler
+        let connectionTimeout = self.connectionTimeout
         queue.async {
             defer { close(listenFD); close(wakeReadFD) }
             while true {
@@ -351,13 +369,14 @@ final class CommandLineHandoffServer: @unchecked Sendable {
                 let conn = accept(listenFD, nil, nil)
                 if conn < 0 { if errno == EINTR || errno == ECONNABORTED { continue }; break }
                 CommandLineHandoffSocket.setNonBlocking(conn)
-                let deadline = CommandLineHandoffSocket.Deadline(
-                    seconds: CommandLineHandoffServer.connectionTimeout)
+                let deadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
                 // A probe connection (election race detection) sends nothing and
                 // closes; readLine returns nil within the deadline and we drop it.
                 if let line = CommandLineHandoffSocket.readLine(conn, deadline: deadline),
                    let request = CommandLineHandoff.Request(line: line) {
-                    let response = handler(request)
+                    // The handler gets the deadline: if the main thread was busy
+                    // past it, the request must not start (finding 1, round 3).
+                    let response = handler(request, deadline)
                     _ = CommandLineHandoffSocket.writeAll(conn, response.encoded(), deadline: deadline)
                 }
                 close(conn)

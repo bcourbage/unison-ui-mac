@@ -41,8 +41,10 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         super.tearDown()
     }
 
+    private typealias Deadline = CommandLineHandoffSocket.Deadline
+
     @discardableResult
-    private func startServer(_ handler: @escaping @Sendable (Req) -> Resp) -> CommandLineHandoffServer {
+    private func startServer(_ handler: @escaping @Sendable (Req, Deadline) -> Resp) -> CommandLineHandoffServer {
         guard case .listening(let server) = CommandLineHandoffServer.start(path: path, handler: handler) else {
             fatalError("server did not start")
         }
@@ -69,13 +71,13 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
     func test_client_handsOff_andServerReceivesTheRequest() {
         let recorder = Box<Req?>(nil)
-        startServer { r in recorder.set(r); return .started }
+        startServer { r, _ in recorder.set(r); return .started }
         XCTAssertEqual(CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 3), .reply(.started))
         XCTAssertEqual(recorder.value, req("work"))
     }
 
     func test_refusalAndInvalid_propagateToClient() {
-        startServer { _ in .refused(message: "busy: scanning") }
+        startServer { _, _ in .refused(message: "busy: scanning") }
         XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 3),
                        .reply(.refused(message: "busy: scanning")))
     }
@@ -98,24 +100,30 @@ final class CommandLineHandoffSocketTests: XCTestCase {
     }
 
     func test_secondServer_losesTheElection() {
-        startServer { _ in .started }
-        guard case .lostElection = CommandLineHandoffServer.start(path: path, handler: { _ in .started }) else {
+        startServer { _, _ in .started }
+        guard case .lostElection = CommandLineHandoffServer.start(path: path, handler: { _, _ in .started }) else {
             return XCTFail("second server should lose the election")
         }
     }
 
     /// Finding 2, round 1: even if the first instance pauses between bind and
     /// listen, the election lock keeps the second out until the first is listening,
-    /// so only one becomes primary. Entry into the pause is acknowledged by a
-    /// semaphore rather than a sleep, and the release is guaranteed.
+    /// so only one becomes primary. Every step is acknowledged by a semaphore with
+    /// bounded waits: A signals when it reaches the pause (holding the lock), B
+    /// signals when it is actually contending for that lock, and only then is A
+    /// released — so B is proven to have contended while A was paused.
     func test_pausedBindBeforeListen_stillElectsOnlyOnePrimary() {
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let bContending = DispatchSemaphore(value: 0)
         let serverA = Box<CommandLineHandoffServer?>(nil)
+        let resultB = Box<CommandLineHandoffServer.StartResult?>(nil)
         let doneA = DispatchSemaphore(value: 0)
+        let doneB = DispatchSemaphore(value: 0)
+
         Thread.detachNewThread { [path] in
             let result = CommandLineHandoffServer.start(
-                path: path, handler: { _ in .started },
+                path: path, handler: { _, _ in .started },
                 afterBind: { entered.signal(); _ = release.wait(timeout: .now() + 3) })
             if case .listening(let s) = result { serverA.set(s) }
             doneA.signal()
@@ -123,14 +131,16 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         // A is now inside afterBind, holding the election lock (deterministic).
         XCTAssertEqual(entered.wait(timeout: .now() + 3), .success, "A did not reach afterBind")
 
-        // B races in on its own thread; it must block on the lock, then lose.
-        let resultB = Box<CommandLineHandoffServer.StartResult?>(nil)
-        let doneB = DispatchSemaphore(value: 0)
         Thread.detachNewThread { [path] in
-            resultB.set(CommandLineHandoffServer.start(path: path, handler: { _ in .started }, lockTimeout: 5))
-            doneB.signal()
+            let r = CommandLineHandoffServer.start(
+                path: path, handler: { _, _ in .started }, lockTimeout: 5,
+                onContended: { bContending.signal() })
+            resultB.set(r); doneB.signal()
         }
-        release.signal()   // let A finish listen and release the lock
+        // B is proven to be contending for the lock while A holds it, paused.
+        XCTAssertEqual(bContending.wait(timeout: .now() + 3), .success, "B did not contend for the lock")
+
+        release.signal()   // now let A finish listen and release the lock
         XCTAssertEqual(doneA.wait(timeout: .now() + 4), .success)
         XCTAssertEqual(doneB.wait(timeout: .now() + 4), .success)
 
@@ -159,9 +169,30 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         XCTAssertEqual(flock(held, LOCK_EX), 0)
         defer { close(held); unlink(path + ".lock") }
         guard case .couldNotElect = CommandLineHandoffServer.start(
-            path: path, handler: { _ in .started }, lockTimeout: 0.3) else {
+            path: path, handler: { _, _ in .started }, lockTimeout: 0.3) else {
             return XCTFail("a held election lock must report couldNotElect, not start a second instance")
         }
+    }
+
+    // MARK: deadline carried into the handler (finding 1, round 3)
+
+    /// The handler receives the connection deadline. If the main thread is held
+    /// past it — modelled here by a handler that sleeps beyond a short connection
+    /// timeout — the handler must see the deadline expired and decline to open,
+    /// so a request the caller already timed out on cannot start a scan.
+    func test_expiredDeadline_isVisibleToHandler_soNoOpenOccurs() {
+        let opened = Box<Bool?>(nil)
+        guard case .listening(let server) = CommandLineHandoffServer.start(
+            path: path, handler: { _, deadline in
+                Thread.sleep(forTimeInterval: 0.6)   // main thread busy past the deadline
+                if deadline.hasExpired { opened.set(false); return .refused(message: "expired") }
+                opened.set(true); return .started
+            }, connectionTimeout: 0.3) else {
+            return XCTFail("server did not start")
+        }
+        servers.append(server)
+        _ = CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 2)
+        XCTAssertEqual(opened.value, false, "an expired request must not be opened")
     }
 
     // MARK: stale endpoint
@@ -171,7 +202,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 2), .noPrimary,
                        "a stale file has no live listener")
         let recorder = Box<Req?>(nil)
-        startServer { r in recorder.set(r); return .started }
+        startServer { r, _ in recorder.set(r); return .started }
         XCTAssertEqual(CommandLineHandoffClient.handOff(req("work"), path: path, timeout: 3), .reply(.started))
         XCTAssertEqual(recorder.value, req("work"))
     }
@@ -197,7 +228,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
     // MARK: shutdown, replacement, restart (findings 4 & 5)
 
     func test_stop_isIdempotent_andRemovesTheEndpoint() {
-        let server = startServer { _ in .started }
+        let server = startServer { _, _ in .started }
         server.stop()
         server.stop()   // no-op, not a second close of a reused descriptor
         XCTAssertEqual(CommandLineHandoffClient.handOff(req("p"), path: path, timeout: 1), .noPrimary)
@@ -207,7 +238,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
     /// Finding 4: a shutdown must remove only its own endpoint. If a newer instance
     /// has rebound the path, the old stop() must not unlink the new endpoint.
     func test_stop_doesNotRemoveAReplacedEndpoint() {
-        let server = startServer { _ in .started }
+        let server = startServer { _, _ in .started }
         // Simulate a newer instance replacing the endpoint (a different inode).
         unlink(path)
         makeStaleSocketFile(at: path)
@@ -218,11 +249,11 @@ final class CommandLineHandoffSocketTests: XCTestCase {
     }
 
     func test_restart_afterStop_bindsAndServesAgain() {
-        let a = startServer { _ in .refused(message: "old") }
+        let a = startServer { _, _ in .refused(message: "old") }
         a.stop()
         let recorder = Box<Req?>(nil)
         guard case .listening(let b) = CommandLineHandoffServer.start(
-            path: path, handler: { r in recorder.set(r); return .started }) else {
+            path: path, handler: { r, _ in recorder.set(r); return .started }) else {
             return XCTFail("a fresh instance should bind after the old one stopped")
         }
         servers.append(b)

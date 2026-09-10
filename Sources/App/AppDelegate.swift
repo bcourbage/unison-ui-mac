@@ -1843,12 +1843,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// with its verdict, or become the primary and start the listener. Called
     /// once during launch, before any window is shown.
     private func routeCommandLineHandoff() {
-        guard let bundleID = Bundle.main.bundleIdentifier,
-              let path = CommandLineHandoffSocket.path(bundleID: bundleID) else {
-            // No usable socket path: run as a normal instance without a listener.
-            log.write("handoff: no socket path available; running without a listener")
-            return
-        }
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
         // Whether THIS instance's own launch was a clean profile open. Upstream
         // reparses the command line on every profile load, so if this instance
@@ -1856,6 +1850,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // handoffs (its options would leak into the handoff's profile).
         commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(
             arguments: CommandLine.arguments, launchProfile: given)
+
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              let path = CommandLineHandoffSocket.path(bundleID: bundleID) else {
+            // Coordination is impossible (no bundle id, or the control-socket path
+            // does not fit). A profile request must not start an uncoordinated
+            // instance; a plain launch runs normally without a listener.
+            refuseUncoordinatedRequestOrRunPlain(hasRequest: given != nil)
+            return
+        }
         let request = given.map { profile in
             CommandLineHandoff.Request(
                 given: profile,
@@ -1865,10 +1868,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 plainRequest: CommandLineHandoff.isCleanGraphicalLaunch(
                     arguments: CommandLine.arguments, launchProfile: profile))
         }
-        let handler: @Sendable (CommandLineHandoff.Request) -> CommandLineHandoff.Response = { [weak self] req in
+        let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
+            -> CommandLineHandoff.Response = { [weak self] req, deadline in
             DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
-                    self?.handleCommandLineHandoff(req)
+                    self?.handleCommandLineHandoff(req, deadline: deadline)
                         ?? .refused(message: "unison-ui-mac is shutting down.")
                 }
             }
@@ -1884,8 +1888,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     "unison-ui-mac: could not confirm the request with the running app. "
                     + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
                 exit(1)
-            case .noPrimary, .unavailable:
-                break   // become the primary, or run without a listener
+            case .noPrimary:
+                break   // become the primary below
+            case .unavailable:
+                // The client could not use the socket (a resource failure), so it
+                // cannot prove whether a primary exists. Try to become the primary
+                // below; if that also fails, refuse rather than run uncoordinated.
+                break
             }
         }
 
@@ -1905,19 +1914,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 exit(1)
             }
             log.write("handoff: another instance is primary; running without a listener")
-        case .couldNotElect:
-            // The election could not complete (a suspended or hung holder). Do not
-            // start a second instance for a profile request; report and stop.
-            if request != nil {
-                CommandLineEngineLaunch.writeStderr(
-                    "unison-ui-mac: could not coordinate with a running instance; it may be busy starting up. "
-                    + "Try again in a moment, or add -ui text to run it in the terminal.")
-                exit(1)
-            }
-            log.write("handoff: election could not complete; running without a listener")
-        case .unavailable:
-            log.write("handoff: could not start the listener; running without one")
+        case .couldNotElect, .unavailable:
+            // Coordination could not be established (a suspended or hung holder, or
+            // a resource failure that also blocked the probe). Ownership is unknown,
+            // so a profile request must not start independently.
+            refuseUncoordinatedRequestOrRunPlain(hasRequest: request != nil)
         }
+    }
+
+    /// A graphical profile request that cannot coordinate with a possible running
+    /// instance is refused rather than started independently (finding 2, round 3);
+    /// a plain launch with no profile runs normally without a listener.
+    private func refuseUncoordinatedRequestOrRunPlain(hasRequest: Bool) {
+        if hasRequest {
+            CommandLineEngineLaunch.writeStderr(
+                "unison-ui-mac: could not coordinate with a running instance. "
+                + "Try again in a moment, or add -ui text to run it in the terminal.")
+            exit(1)
+        }
+        log.write("handoff: coordination unavailable; running without a listener")
     }
 
     /// Print a client verdict and exit: success is exit 0 with no extra output
@@ -1932,7 +1947,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// valid profile opens only when idle at the picker; otherwise the existing
     /// work is preserved and the request is refused. Opening goes through the
     /// same path a user's pick uses and stops at the reconciliation results.
-    private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request) -> CommandLineHandoff.Response {
+    private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request,
+                                          deadline: CommandLineHandoffSocket.Deadline)
+        -> CommandLineHandoff.Response {
+        // Reaching the main thread past the deadline means the caller already timed
+        // out; do not accept or open anything (finding 1, round 3).
+        if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: request.given) }
         // Refuse when the request cannot be faithfully transferred: this instance
         // was launched with contaminating options, a different app copy or Unison
         // directory, or extra options the running instance cannot reproduce.
@@ -1963,6 +1983,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                     "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
                     + "operation. Complete that recovery in the running app, then run the command again.")
             }
+            // Final deadline check immediately before the open: nothing between
+            // here and the caller's timeout may start a scan it was told did not
+            // start (finding 1, round 3).
+            if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: name) }
             log.write("handoff: opening '\(name)' for a command-line request")
             NSApp.activate(ignoringOtherApps: true)
             let entered = profileSelected(name)   // idle → opening synchronously; stops at reconcile results
