@@ -32,11 +32,25 @@ Swift and links in a few seconds rather than compiling Unison from source.
 ## The `unison` command
 
 The app bundle includes a command-line launcher. Linked onto your PATH under the
-name `unison`, it behaves like Unison's own command: `unison -ui graphic` opens the
-app, `unison <profile>` runs Unison's text interface in the terminal on the app's
-embedded engine, and `unison -server`, which another machine runs over ssh when it
-syncs to this Mac, is served by the app's engine. A Mac with this app therefore
-needs no separate Unison installation to be the far side of an SSH profile.
+name `unison`, it makes one command serve both of Unison's roles through this app.
+`unison -ui graphic <profile>` opens the app and starts that profile's connection
+and scan right away, stopping at the reconciliation results so you can review
+before anything is applied. `unison -ui text <profile>` runs Unison's text
+interface in the terminal on the app's embedded engine. `unison -server`, which
+another machine runs over ssh when it syncs to this Mac, is served by that engine,
+so a Mac with this app needs no separate Unison installation to be the far side of
+an SSH profile.
+
+A bare `unison <profile>`, with no `-ui`, follows the **Default interface**
+preference in Settings ▸ Command Line, which is Graphical unless you save Text. So
+by default it opens the app on that profile. This is a change from earlier
+versions, where a bare `unison <profile>` ran the text interface; pass `-ui text`,
+or set the preference to Text, to keep that. For scripts and scheduled jobs, pass
+`-ui text` explicitly, since a graphical launch with no available session (over
+ssh, from cron, or from launchd) is refused with a message rather than run in the
+terminal. When the app is already running, a `unison <profile>` request goes to
+that instance: it opens the profile if the app is idle at the picker, and otherwise
+keeps the work in progress and tells you it did not start the new one.
 
 Homebrew installs create the `unison` link automatically — unless the `unison`
 formula already owns that name, in which case Homebrew installs the app but keeps
