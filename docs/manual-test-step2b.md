@@ -371,14 +371,24 @@ disposable `UNISON` export stays in effect.
    option). Return to the picker and open `second`: now unscoped, both changes.
    This is the qualified contract: the option applies to the first opened profile,
    named or picked, and nothing after.
-6. **(Remote) A reconnecting Rescan reloads unscoped.** Using a **key
-   (non-interactive) remote profile** like TC1's, whose roots hold a change inside
-   and one outside a `Documents` subpath, run `"<RC launcher>" <keyprofile> -path Documents`.
-   It scans limited to `Documents`; click **Go** to sync. On sync-end the
-   non-interactive connection **closes**. Now click **Rescan**. **Expect:** the
-   Rescan reconnects and shows the **full** scan (both changes): the reconnect is a
-   fresh engine load that reloads the profile without the launch option. This is
-   expected under the first-load-only contract, not a defect.
+6. **(Remote) A reconnecting Rescan reloads unscoped.** This needs a remote root so
+   the connection actually closes on sync-end. First **quit** the instance left by
+   step 5: it was launched with options, so the next command would meet the
+   preserved handoff refusal instead of starting this test. In the same exported
+   `UNISON` directory, add a disposable remote fixture: a key (non-interactive)
+   remote host that connects without a prompt, an empty remote scratch directory,
+   and a profile `remote` with roots `"$TC14/A"` and `ssh://<host>//<remote-scratch>`
+   (point `servercmd` at the RC's engine). `A` still holds the inside-`Documents`
+   change and the outside change from the setup; the remote scratch is empty.
+   1. Run `"<RC launcher>" remote -path Documents`. **Expect:** the initial scan
+      lists **only** the inside change (`Documents/inside.txt`).
+   2. Click **Go**. **Expect:** the sync completes, propagating only the inside
+      change, and the non-interactive connection **closes** on sync-end.
+   3. Click **Rescan**. **Expect:** it **reconnects** and lists **only the outside
+      change** (`outside.txt`): the change the scoped launch hid and the scoped
+      sync never touched. This proves the reconnecting Rescan reloaded unscoped, and
+      is expected under the first-load-only contract, not a defect. Do **not** sync
+      this second scan.
 
 Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
 the exact launcher path, and pass/fail evidence for each step.
@@ -386,9 +396,9 @@ the exact launcher path, and pass/fail evidence for each step.
 **PASS =** the launched `-path Documents` scan is limited to `Documents`; an
 in-place local Rescan stays limited to `Documents`; returning to the picker opens
 both `second` and `first` unscoped (both changes, no refusal); a no-profile
-`-path` launch scopes only the first selection; the remote reconnecting Rescan is
-unscoped; and after a normal
-relaunch the scope is gone.
+`-path` launch scopes only the first selection; the remote reconnecting Rescan
+(after a scoped sync) exposes only the untouched outside change; and after a
+normal relaunch the scope is gone.
 
 ### Interactive-password cases (run last)
 
