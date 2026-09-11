@@ -64,24 +64,15 @@ workflow → Homebrew cask bump) is in the release runbook.
 
 ### Command-line option isolation (#122), first release that ships it
 
-The unit tests cover the decision gate, not the end-to-end behavior (upstream's
-per-load command-line reparse and the preserved override). Demonstrate it live on
-the first release that ships the command-line interface behavior, using disposable
-profiles and roots so nothing real is touched:
-
-- [ ] **(required, live)** Create two throwaway profiles `first` and `second`
-      whose local root has both a `Documents` subfolder and at least one file
-      outside it. Launch `unison first -path Documents` graphically and confirm the
-      scan for `first` covers **only** `Documents`.
-- [ ] **(required, live)** From the picker in that same instance, open `second`:
-      it is **refused** with the "Reopen the app to open second" message; `second`
-      does not open.
-- [ ] **(required, live)** Rescan `first`: it is still restricted to `Documents`
-      (the launch override is preserved for the original profile and its rescans).
-- [ ] **(required, live)** Quit, reopen the app normally (no options), and open
-      `second`: it scans its full root, with the earlier `-path` override **gone**.
-- [ ] Record the tested build (`MARKETING_VERSION (CURRENT_PROJECT_VERSION)`) and
-      the observed results.
+- [ ] **(pre-publication gate, live on the signed RC)** **TC14**
+      (`docs/manual-test-step2b.md`) — CLI option isolation across profile opens
+      and rescans: `unison first -path Documents` scans only `Documents`, opening
+      `second` is refused with the reopen message, a rescan of `first` keeps the
+      restriction, and after a normal relaunch `second` scans its full root
+      without the override. Uses disposable roots with distinguishable changes
+      inside and outside `Documents`; no synchronization is applied. Record the RC
+      version/build, macOS version, exact launcher path, and pass/fail evidence.
+      Required before publication. The unit tests cover only the decision gate.
 
 ## 0.6.0
 

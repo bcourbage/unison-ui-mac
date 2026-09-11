@@ -290,6 +290,43 @@ password prompt follows.
 (password/passphrase/OTP) uses a masked secure field; and a host-key line
 followed by a password prompt is masked, never plain.
 
+### TC14 — CLI option isolation across profile opens and rescans (issue #122)
+
+Verifies, on the signed release candidate, that command-line option overrides
+passed at launch stay bound to the launch's own profile and do not silently
+reshape other profiles opened through the GUI. It exercises upstream's per-load
+command-line reparse and the app's option-isolation gate end to end; the unit
+tests cover only the Boolean gate. No synchronization is applied.
+
+**Setup.** Create two disposable local-only profiles, `first` and `second`, whose
+root is a throwaway folder holding a `Documents` subfolder with a distinguishable
+change inside it and at least one changed file outside it, so the scan's proposed
+changes reveal whether the `-path Documents` restriction is in effect. Note the
+exact launcher path used (the linked `unison`, or the bundle's
+`Contents/SharedSupport/bin/unison`).
+
+1. **Launched restriction applies.** Run `unison first -path Documents`.
+   **Expect:** `first` opens and scans, and the reconcile results list only
+   changes inside `Documents`; the change outside `Documents` is absent.
+2. **Other profile refused.** From the picker in that same instance, open
+   `second`. **Expect:** it is refused with *"Reopen the app to open second"*; the
+   picker stays and `second` does not open.
+3. **Rescan keeps the restriction.** Rescan `first`. **Expect:** its results are
+   again limited to `Documents` (the launch override is preserved for the original
+   profile and its rescans).
+4. **Normal relaunch clears it.** Quit, reopen the app normally (from Finder, or a
+   plain `unison` with no options), and open `second`. **Expect:** `second` scans
+   its full root, including the change outside `Documents`; the earlier `-path`
+   override is gone.
+
+Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
+the exact launcher path, and pass/fail evidence for each step.
+
+**PASS =** the launched `-path Documents` scan is limited to `Documents`; opening
+a different profile is refused with the reopen message; a rescan of `first` stays
+limited to `Documents`; and after a normal relaunch `second` scans its full root
+without the override.
+
 ---
 
 ## Known limitations (do NOT file as bugs — tracked in issues #6 / #24)
