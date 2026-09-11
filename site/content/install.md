@@ -33,18 +33,10 @@ Swift and links in a few seconds rather than compiling Unison from source.
 
 The app bundle includes a command-line launcher. Linked onto your PATH under the
 name `unison`, it behaves like Unison's own command: `unison -ui graphic` opens the
-app, `unison -ui text <profile>` runs Unison's text interface in the terminal on
-the app's embedded engine, and `unison -server`, which another machine runs over
-ssh when it syncs to this Mac, is served by the app's engine. A Mac with this app
-therefore needs no separate Unison installation to be the far side of an SSH
-profile.
-
-When you omit `-ui`, a **Settings ▸ Command Line** preference chooses which
-interface a bare `unison <profile>` uses. It defaults to Graphical, so this opens
-the app on that profile; earlier versions ran the text interface, so if you rely
-on that, set the preference to Text or pass `-ui text`. An explicit `-ui graphic`
-or `-ui text` always wins, so scripts and scheduled jobs should pass `-ui text`
-rather than depend on the preference.
+app, `unison <profile>` runs Unison's text interface in the terminal on the app's
+embedded engine, and `unison -server`, which another machine runs over ssh when it
+syncs to this Mac, is served by the app's engine. A Mac with this app therefore
+needs no separate Unison installation to be the far side of an SSH profile.
 
 Homebrew installs create the `unison` link automatically — unless the `unison`
 formula already owns that name, in which case Homebrew installs the app but keeps

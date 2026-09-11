@@ -17,13 +17,9 @@ profiles, reviewing changes, and resolving conflicts.
 
 Since 0.7.0 the app also provides the `unison` command itself; on your PATH, it
 opens the app for `unison -ui graphic`, runs Unison's text interface for
-`unison -ui text <profile>`, and serves `unison -server` for machines that sync to
-this Mac over ssh. When you omit `-ui`, a Settings ▸ Command Line preference
-chooses whether a bare `unison <profile>` opens the app or runs the text interface;
-it defaults to opening the app, a change from earlier versions that ran the text
-interface, so set it to Text or pass `-ui text` if you rely on that. Since 0.8.0,
-Settings ▸ Command Line can also add the command to your login-shell PATH for you,
-with no administrator password. See
+`unison <profile>`, and serves `unison -server` for machines that sync to this Mac
+over ssh. Since 0.8.0, Settings ▸ Command Line can add it to your login-shell PATH
+for you, with no administrator password. See
 [Install](../install/#the-unison-command).
 
 ## How does it compare to the macOS app included with Unison?

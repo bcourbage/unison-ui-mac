@@ -108,9 +108,10 @@ app:
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The interface set by **Default interface** in Settings ▸ Command Line, which is Graphical unless you save Text, so this opens the app by default. This is a change from earlier versions, where a bare `unison <profile>` ran the text interface; set **Default interface** to Text, or pass `-ui text`, to keep that. An explicit `-ui text` or `-ui graphic` overrides the preference. |
-| `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
-| `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
+| `unison <profile>`, `unison -batch <profile>`, with no `-ui` | The interface set by **Default interface** in Settings ▸ Command Line, which is Graphical unless you save Text, so this opens the app by default. This is a change from earlier versions, where a bare `unison <profile>` ran the text interface; set **Default interface** to Text, or pass `-ui text`, to keep that. An explicit `-ui text` or `-ui graphic` overrides the preference. |
+| `unison root1 root2` (two roots), with no `-ui` | Roots are not supported by the graphical interface, so they require Text: pass `-ui text`. Under the Graphical default they are refused with a message. |
+| `unison -ui graphic …`, or the Graphical default, where no graphical session exists (over ssh, `cron`, `launchd`) | Refused with a message; pass `-ui text`. |
+| `unison` with no arguments, over ssh | Uses the **Default interface** preference. With Text it runs the text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. With the Graphical default there is no graphical session over ssh, so it is refused; pass `-ui text`. |
 
 The command hands Unison's engine the default interface (Text or Graphical, per
 the **Default interface** preference above) followed by the arguments exactly as
@@ -123,9 +124,16 @@ Unison with its usage text.
 When the graphical interface is already running and a `unison <profile>` request
 reaches it, the request goes to that instance rather than starting a second one.
 If it is idle at the picker, it opens the profile and starts its scan. If a scan,
-reconciliation, sync, or a profile edit is already in progress, it keeps that
-work and reports that it did not start the new profile, so nothing in progress is
-disturbed. The command reports what happened and returns a matching exit status.
+reconciliation, sync, or a profile edit is already in progress, it keeps that work
+and reports that it did not start the new profile, so nothing in progress is
+disturbed. The running instance also refuses a request it cannot carry faithfully,
+saying why: one that carries options beyond the profile name (on the request, or
+on the running instance's own launch, since those options would otherwise affect
+it), one from a different copy of the app, or one that uses a different Unison
+directory. A successful handoff means the profile was accepted and began opening,
+not that its scan or synchronization finished; the command returns an exit status
+that reflects that. If the reply is lost, because the running instance did not
+answer in time, the outcome is left unconfirmed and the command says so.
 
 For scripts and scheduled jobs, pass `-ui text` explicitly rather than relying on
 the default. A script that omits it runs the graphical interface wherever the

@@ -517,10 +517,17 @@ Unison's own parser decides what a shell invocation means.
   `unison <profile>` reach an already-running instance instead of starting a
   second one: idle at the picker opens the profile, and a scan, reconciliation,
   sync, or open profile edit is preserved and the request refused with a bounded,
-  explicit verdict and exit code. Only graphical profile requests use the socket;
+  explicit verdict and exit code. A request is also refused when it cannot be
+  carried faithfully: options beyond the profile on the request or on the
+  receiver's own launch (upstream reparses the command line on every profile
+  load), a different installation, or a different Unison directory. A successful
+  reply means the open was accepted, not that the sync finished. The caller's
+  deadline travels with the request so a late admission does not start a scan the
+  caller gave up on. Only graphical profile requests use the socket;
   `-ui text` and `-server` exit in the engine first. There is no daemon: the
   socket lives with the app, a crash leaves a stale file the next election
-  reclaims, and the election also covers a simultaneous launch and a lost reply.
+  reclaims, and the election also covers a simultaneous launch, an inconclusive
+  probe, a contended lock, and a lost reply.
 
 `unisonNonGuiStartup` silences the progress printer before the text
 interface starts, but `uitext.ml` installs its own printer when
