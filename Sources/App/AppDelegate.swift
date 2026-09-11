@@ -17,6 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// (it was launched with options), it must not serve handoffs, because
     /// upstream reparses the command line on every profile load.
     private var commandLineLaunchWasClean = true
+    /// The profile this instance was launched to open, if any, as a picker name.
+    /// When the launch carried command-line options (`commandLineLaunchWasClean`
+    /// is false), those options apply on every profile load, so only this profile
+    /// may be opened; opening a different one is refused until the app is reopened
+    /// normally.
+    private var commandLineLaunchProfile: String?
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -1672,6 +1678,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("profile named on the command line; will open it and start its scan")
             showProfilePicker(select: name)
             pendingLaunchProfile = name
+            // Remember it as the only profile the launch's options may open.
+            commandLineLaunchProfile = name
         }
 
         NSApp.activate(ignoringOtherApps: true)
@@ -1820,6 +1828,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     @discardableResult
     private func profileSelected(_ profile: String) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
+        // If this instance was launched with command-line options, they apply on
+        // every profile load (upstream reparses the command line each time), so
+        // only the launch's own profile may be opened. Refuse a different one and
+        // point the user to a normal relaunch, rather than silently reshape it.
+        guard CommandLineGraphicalLaunch.mayOpenAfterOptionLaunch(
+            launchWasClean: commandLineLaunchWasClean,
+            launchProfile: commandLineLaunchProfile, requested: profile) else {
+            presentLaunchOptionIsolationRefusal(requested: profile)
+            return false
+        }
         // Fail closed: a profile whose archive is held by an interrupted
         // (pre-commit) mutation must not be opened until recovery.
         if let blocking = abandonedStagingBlocking(profile) {
@@ -1835,6 +1853,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         run(engine.requestOpen(profile: profile))
         return true
+    }
+
+    /// The picker tried to open a profile other than the one this instance was
+    /// launched with, while the launch carried command-line options that would
+    /// otherwise reshape it. Explain and leave the picker as it was.
+    private func presentLaunchOptionIsolationRefusal(requested: String) {
+        log.write("AppDelegate: refusing '\(requested)' — launched with options for "
+            + "\(commandLineLaunchProfile ?? "the command line")")
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Can't open \(requested) in this window"
+        let boundTo = commandLineLaunchProfile.map { "the profile \($0)" } ?? "this command"
+        alert.informativeText =
+            "This app was started from the command line with options that apply to "
+            + "\(boundTo). Opening another profile here would apply them to it too. "
+            + "Quit and reopen the app normally to open \(requested)."
+        alert.addButton(withTitle: "OK")
+        if let window = profileWindowController?.window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
     }
 
     // MARK: - Running-instance handoff (req 5 of #122)
