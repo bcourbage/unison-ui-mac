@@ -99,9 +99,11 @@ The implementation must also prevent ordinary picker actions from silently repla
 
 A request contains enough information to reproduce the caller's intended graphical profile session, including its profile, ordered option arguments, and any caller context needed to interpret relative paths.
 
+Relative arguments follow each option's own upstream interpretation. In particular, `-path Documents` is a path within the synchronization roots, not the caller's working directory, and is never rewritten against a cwd. Caller context such as the working directory travels only for arguments whose upstream semantics require it, and the app never changes its own process-wide working directory to serve a request.
+
 Existing installation and Unison-directory compatibility checks remain unless separately redesigned and reviewed. This design removes dependence on the receiver's original launch options; it does not authorize routing a request to an incompatible app installation or configuration directory.
 
-Invalid or unsupported requests are rejected before disturbing the current session where validation permits. Errors must not terminate the running app.
+Invalid or unsupported requests are rejected before disturbing the current session where validation permits. Errors must not terminate the running app. Because a mutating parser changes global preferences, validation is itself subject to the concurrency rule in **Engine integration**: a queued request only stores its arguments, and neither applying them nor any preference-touching validation runs until the prior operation and its cleanup finish.
 
 Arguments are transported as structured values, preserving their boundaries and order. They are not reconstructed as a shell command.
 
@@ -117,11 +119,19 @@ For each fresh session load, the engine should:
 
 The same session overrides are reapplied when reconnecting requires a fresh preference load. A new session receives its own overrides, including an empty set for an ordinary picker selection.
 
-Preference changes occur only when the engine is available for that operation. They must not alter an earlier scan or synchronization still running in the background.
+Preference changes occur only when the engine is available for that operation. They must not alter an earlier scan or synchronization still running in the background. A queued request only stores its arguments; nothing that touches engine preferences, including validation, runs until the prior operation and its cleanup finish.
 
-Temporary edits to profile files and mutation of the process-wide command line are not the intended mechanism. Parser failure must leave the app in a defined state and must never cause a partially configured session to synchronize.
+Session overrides must match upstream's own parsing, including list accumulation and command-line versus profile precedence. A list option such as `-path` follows upstream's rule for combining a command-line value with the profile's configured paths; it must not be assumed to replace them. Scalar, boolean, alias, and repeated-list options are all in scope.
 
-The exact bridge and parser changes require implementation investigation. Reuse of upstream parsing is the preferred approach, not an assertion that the current bridge already exposes the necessary API.
+Temporary edits to profile files and mutation of the process-wide command line are not the intended mechanism. Parser failure must leave the app in a defined state: a partially applied option set must not begin connection or scanning either, not only synchronization. After a failure the app establishes a clean configuration before another request runs, or requires a restart. Catching the parser's error is not sufficient; the recovered state must be demonstrably clean.
+
+The exact bridge and parser changes require implementation investigation, in this order:
+
+1. First investigate an **app-owned adapter** that reaches existing OCaml APIs (for example `Prefs.loadStrings`, which is **not** currently exposed as a Swift/C bridge capability) **without changing upstream engine source**. Establish how the adapter reaches those APIs through the bridge.
+2. Distinguish avoiding an upstream **source patch** from avoiding a **blob rebuild**: exposing a new bridge callback still rebuilds the blob (via the repository's existing `unison/src/Makefile.OCaml` path invoked by `make vendor-blob`, not a new `opam`/`dune` install), but it does not patch the engine's own parser.
+3. If the adapter would require substantial duplication of the command-line option semantics, report that tradeoff before choosing an upstream source patch.
+
+Neither approach is promised to work until the prototype demonstrates it, including its invalid-input and parser-parity cases.
 
 ## User-facing presentation
 
@@ -141,7 +151,8 @@ Acceptance covers the real engine and running-instance path, not only decision h
 
 Required scenarios include:
 
-- A CLI session with `-path Documents` scans only that path; local rescans and remote reconnecting rescans preserve it.
+- A CLI session with `-path Documents`, on a profile that configures no additional paths, scans only that path; local rescans and remote reconnecting rescans preserve it.
+- Scalar, boolean, alias, and repeated-list options each match upstream's parsing, including list accumulation and command-line versus profile precedence, not only `-path` on an otherwise empty profile.
 - A later CLI request with different overrides uses only its own overrides.
 - A later picker selection, of either the same or a different profile, uses no previous CLI overrides.
 - An option-bearing launch without a profile applies its overrides to the first selected session only.
@@ -150,14 +161,18 @@ Required scenarios include:
 - An open editor retains its contents and causes a clear refusal.
 - A second pending request cannot replace the first.
 - Expired requests cannot start later; lost replies do not cause retries or duplicate opens.
+- Holding session A active, a received request B leaves A's effective settings unchanged, and no preference-touching validation of B runs while A is active.
+- A failure after an earlier option has already been applied leaves no partial state: the next request cannot inherit it, and it does not begin connection or scanning; the app reaches a clean configuration or requires a restart. Catching the exception alone does not satisfy this.
 - Invalid options do not terminate the app or disturb an active synchronization.
-- Relative arguments retain their intended meaning across handoff.
+- Relative arguments retain their intended meaning across handoff, `-path` included as a root-relative path.
 - Installation, configuration-directory, and recovery restrictions remain effective.
 
 Tests involving synchronization use disposable local and remote roots. Release acceptance runs against the signed RC and records the exact build and results.
 
 ## Delivery approach
 
-The engine's session-specific option handling is established and reviewed first, including initial loads and reconnects. The running-instance transitions and caller-result handling follow on that foundation.
+The first deliverable is a bounded engine prototype and an evidence report: A with overrides, then reload A, then B with different or no overrides, plus invalid-input recovery and parser parity. The report identifies the supported options, the limitations, the required build changes, and whether avoiding an upstream source patch actually reduces maintenance. The prototype uses the repository's existing OCaml build path (`unison/src/Makefile.OCaml`, invoked by `make vendor-blob`), not a new toolchain install, and adds no UI or socket changes.
 
-Removing the current handoff refusals alone does not complete this design. The release includes the behavior only when option lifetime, queued-request handling, and the live acceptance scenarios are verified.
+On that basis, the engine's session-specific option handling is established and reviewed first, including initial loads and reconnects. The running-instance transitions and caller-result handling follow.
+
+Removing the current handoff refusals alone does not complete this design. The release includes the behavior only when option lifetime, queued-request handling, and the live acceptance scenarios are verified. #161, the interim removal of the picker "launched with options" refusal, is a separate change and remains independent of this design.
