@@ -109,8 +109,8 @@ a hands-on or UI-automation pass against the RC.
 **Coverage is partial even on Debug.** The hooks only select a profile, cycle the
 first row's directions, and start a sync. They do **not** exercise TC6's
 window-close choices, TC9's picking a second profile while the engine is busy, or
-TC14's full launch / refuse / relaunch sequence; those need real interaction on any
-build. Treat what follows as a fast smoke aid for the flows it does reach, not a
+TC14's full launch / rescan / picker-reopen sequence; those need real interaction on
+any build. Treat what follows as a fast smoke aid for the flows it does reach, not a
 substitute for running each case as written.
 
 **Drive with the app's own autotest hooks, in preference to scripted UI
@@ -302,13 +302,13 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
-### TC14 — CLI option isolation across profile opens and rescans (issue #122)
+### TC14 — CLI option scope: launched scan and rescans only, picker opens unscoped (issue #122)
 
-Verifies, on the signed release candidate, that command-line option overrides
-passed at launch stay bound to the launch's own profile and do not silently
-reshape other profiles opened through the GUI. It exercises upstream's per-load
-command-line reparse and the app's option-isolation gate end to end; the unit
-tests cover only the Boolean gate. No synchronization is applied.
+Verifies, on the signed release candidate, that a command-line option passed at
+launch (for example `-path`) scopes the launched profile's initial scan and that
+scan's in-place rescans, and that returning to the profile picker opens any
+profile normally, the same as a plain app launch, with no refusal. No
+synchronization is applied.
 
 **Setup.** In one Terminal, create a uniquely-named throwaway directory so nothing
 real is touched, and point the Unison directory and two local roots inside it:
@@ -338,30 +338,33 @@ linked `unison`, first confirm with `readlink`/`-version` that it resolves into
 the RC bundle. Record that path. Run **every** step from this same Terminal so the
 disposable `UNISON` export stays in effect.
 
-1. **Launched restriction applies.** Run `"<RC launcher>" first -path Documents`.
-   **Expect:** `first` opens and scans, and the reconcile results list **only** the
-   change inside `Documents` (`Documents/inside.txt`); the outside change
-   (`outside.txt`) is absent.
-2. **Other profile refused.** From the picker in that same instance, open
-   `second`. **Expect:** it is refused with *"Reopen the app to open second"*; the
-   picker stays and `second` does not open.
-3. **Rescan keeps the restriction.** Back at the picker, reopen `first`, then
-   invoke **Rescan**. **Expect:** its results are again limited to `Documents`
-   (the launch override is preserved for the original profile and its rescans).
-4. **Normal relaunch clears it.** Quit, then from the **same Terminal** (with
-   `UNISON` still exported) run `"<RC launcher>"` with **no arguments**, and open
-   `second`. Do not relaunch from Finder: a Finder launch would not inherit
-   `UNISON` and could open your real configuration instead. **Expect:** `second`
-   scans both roots in full, listing the outside change (`outside.txt`) as well as
-   the one inside `Documents`; the earlier `-path` override is gone.
+1. **Launched option scopes the initial scan.** Run
+   `"<RC launcher>" first -path Documents`. **Expect:** `first` opens and scans,
+   and the reconcile results list **only** the change inside `Documents`
+   (`Documents/inside.txt`); the outside change (`outside.txt`) is absent.
+2. **In-place Rescan keeps the scope.** Without leaving the profile, click
+   **Rescan**. **Expect:** the results are again limited to `Documents`. The launch
+   option is preserved for the launched scan and its in-place rescans.
+3. **The picker opens any profile unscoped.** Click **Profiles** to return to the
+   picker, then:
+   1. Open `second`. **Expect:** it opens normally and lists **both** changes
+      (`Documents/inside.txt` and `outside.txt`); there is **no** refusal.
+   2. Return to the picker and reopen `first`. **Expect:** it also lists **both**
+      changes. A picker selection is a fresh, unscoped open, so the launch's
+      `-path` no longer applies. This matches what a plain app launch would show.
+4. **The scope does not persist across a restart.** Quit, then from the **same
+   Terminal** (with `UNISON` still exported) run `"<RC launcher>"` with **no
+   arguments** and open `first`. Do not relaunch from Finder: a Finder launch
+   would not inherit `UNISON` and could open your real configuration instead.
+   **Expect:** `first` scans both roots in full.
 
 Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
 the exact launcher path, and pass/fail evidence for each step.
 
-**PASS =** the launched `-path Documents` scan is limited to `Documents`; opening
-a different profile is refused with the reopen message; a rescan of `first` stays
-limited to `Documents`; and after a normal relaunch `second` scans its full root
-without the override.
+**PASS =** the launched `-path Documents` scan is limited to `Documents`; an
+in-place Rescan stays limited to `Documents`; returning to the picker opens both
+`second` and `first` unscoped (both changes, no refusal); and after a normal
+relaunch the scope is gone.
 
 ### Interactive-password cases (run last)
 
