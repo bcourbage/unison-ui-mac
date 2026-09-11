@@ -298,26 +298,38 @@ reshape other profiles opened through the GUI. It exercises upstream's per-load
 command-line reparse and the app's option-isolation gate end to end; the unit
 tests cover only the Boolean gate. No synchronization is applied.
 
-**Setup.** Create two disposable local-only profiles, `first` and `second`, whose
-root is a throwaway folder holding a `Documents` subfolder with a distinguishable
-change inside it and at least one changed file outside it, so the scan's proposed
-changes reveal whether the `-path Documents` restriction is in effect. Note the
-exact launcher path used (the linked `unison`, or the bundle's
-`Contents/SharedSupport/bin/unison`).
+**Setup.** Use a throwaway Unison directory and roots so nothing real is touched,
+for example `export UNISON=/tmp/tc14/config` and two local root folders
+`/tmp/tc14/A` and `/tmp/tc14/B`. In root **A** only, create a file **inside**
+`Documents` (`A/Documents/inside.txt`) and a file **outside** it (`A/outside.txt`);
+leave root **B** empty, so the differences between the two roots are one change
+inside `Documents` and one outside it. Create two local-only profiles, `first` and
+`second`, **both** with roots `A` and `B` and **no** `path`, `include`, or `ignore`
+preferences, so `-path` is the only thing that can narrow the scan.
 
-1. **Launched restriction applies.** Run `unison first -path Documents`.
-   **Expect:** `first` opens and scans, and the reconcile results list only
-   changes inside `Documents`; the change outside `Documents` is absent.
+Before starting: **quit** any running copy of the app (a running instance would
+serve the request instead, changing what is exercised), and make sure **Default
+interface** is **Graphical** (a saved Text preference would send `first` to the
+text interface). Run the RC's **in-bundle launcher explicitly** so the test
+exercises the RC and not an installed release or the Homebrew formula, for example
+`/Volumes/…/unison-ui-mac.app/Contents/SharedSupport/bin/unison`; if you test a
+linked `unison`, first confirm with `readlink`/`-version` that it resolves into
+the RC bundle. Record that path.
+
+1. **Launched restriction applies.** Run `<RC launcher> first -path Documents`.
+   **Expect:** `first` opens and scans, and the reconcile results list **only** the
+   change inside `Documents` (`Documents/inside.txt`); the outside change
+   (`outside.txt`) is absent.
 2. **Other profile refused.** From the picker in that same instance, open
    `second`. **Expect:** it is refused with *"Reopen the app to open second"*; the
    picker stays and `second` does not open.
-3. **Rescan keeps the restriction.** Rescan `first`. **Expect:** its results are
-   again limited to `Documents` (the launch override is preserved for the original
-   profile and its rescans).
-4. **Normal relaunch clears it.** Quit, reopen the app normally (from Finder, or a
-   plain `unison` with no options), and open `second`. **Expect:** `second` scans
-   its full root, including the change outside `Documents`; the earlier `-path`
-   override is gone.
+3. **Rescan keeps the restriction.** Back at the picker, reopen `first`, then
+   invoke **Rescan**. **Expect:** its results are again limited to `Documents`
+   (the launch override is preserved for the original profile and its rescans).
+4. **Normal relaunch clears it.** Quit, reopen the app normally (from Finder, or
+   the same RC launcher with no options), and open `second`. **Expect:** `second`
+   scans both roots in full, listing the outside change (`outside.txt`) as well as
+   the one inside `Documents`; the earlier `-path` override is gone.
 
 Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
 the exact launcher path, and pass/fail evidence for each step.
