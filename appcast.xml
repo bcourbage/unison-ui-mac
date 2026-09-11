@@ -6,6 +6,32 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.9.0</title>
+            <pubDate>Fri, 11 Sep 2026 14:24:52 +0000</pubDate>
+            <sparkle:version>25</sparkle:version>
+            <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 0.9.0</h1>
+<p>Version 0.9.0 makes the app's <code>unison</code> command open the graphical app by default and act on a profile you name. When you run <code>unison &lt;profile&gt;</code> without choosing an interface, it now follows a Default interface preference that is Graphical unless you set it to Text, and a graphical launch opens that profile and starts its connection and scan right away. Existing profiles and settings continue to work without migration.</p>
+<h2>Added</h2>
+<ul>
+<li><strong>Default interface for the <code>unison</code> command (Settings ▸ Command Line).</strong> A Graphical or Text control sets which interface <code>unison</code> uses when a command omits <code>-ui</code>. It defaults to Graphical, so typing <code>unison &lt;profile&gt;</code> opens this app. An explicit <code>-ui graphic</code> or <code>-ui text</code> always overrides the preference.</li>
+<li><strong>A profile on the command line opens and scans.</strong> In graphical mode, <code>unison &lt;profile&gt;</code> opens the app and starts that profile's connection and scan right away, without a further click. It stops at the reconciliation results, so nothing is applied until you act.</li>
+<li><strong>Requests reach a running instance.</strong> When the app is already running, <code>unison &lt;profile&gt;</code> is handled by that instance instead of starting a second one: it opens the profile when idle at the picker, and keeps its work and reports a clear refusal when a scan, reconciliation, sync, or a profile edit is in progress. The command returns a matching exit status.</li>
+</ul>
+<h2>Changed</h2>
+<ul>
+<li><strong>A bare <code>unison &lt;profile&gt;</code> now opens the app by default.</strong> Earlier versions ran Unison's text interface when <code>-ui</code> was omitted; the default is now Graphical for every account without a saved preference. If you relied on the text interface from a bare <code>unison &lt;profile&gt;</code>, set <strong>Default interface</strong> to Text in Settings ▸ Command Line, or pass <code>-ui text</code>.</li>
+</ul>
+<h2>Notes</h2>
+<ul>
+<li>Scripts and scheduled jobs should pass <code>-ui text</code> explicitly rather than depend on the default interface. With the Graphical default in effect, a headless <code>unison &lt;profile&gt;</code> (over ssh, from <code>cron</code>, or from <code>launchd</code>, with no graphical session) is refused with a message instead of running in the terminal.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.9.0/unison-ui-mac-0.9.0.app.zip" length="5613018" type="application/octet-stream" sparkle:edSignature="zSiioO2V6kIHXgeTu2heIRW1VKw3c/hjRoWfi9HmTVMN+4sfwAKAirjUGvjeeOEAtf00b8p7MyB9V+ThKQ64Cg=="/>
+        </item>
+        <item>
             <title>0.8.0</title>
             <pubDate>Thu, 10 Sep 2026 03:59:11 +0000</pubDate>
             <sparkle:version>24</sparkle:version>
@@ -61,37 +87,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.7.0/unison-ui-mac-0.7.0.app.zip" length="5260748" type="application/octet-stream" sparkle:edSignature="S9Zd+BPqWkCYkj/sjWFlZK86NWJGxXwqZdTuxAy9nln3XdLyA7ap3p5aTz5tMHAKpi9HD+kYVFFUhwLcj/joBA=="/>
         </item>
-        <item>
-            <title>0.6.1</title>
-            <pubDate>Sun, 30 Aug 2026 01:20:37 +0000</pubDate>
-            <sparkle:version>22</sparkle:version>
-            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.6.1</h1>
-<p>Version 0.6.1 is a small user-interface and update-infrastructure release on top of 0.6.0. Existing profiles and settings continue to work without migration.</p>
-<h2>Fixed</h2>
-<ul>
-<li><strong>The reconcile toolbar no longer shifts between phases.</strong> After a scan finished, the Go button used to move to where another control had been, because a single button was relabelled and resized per phase. The toolbar is now spatially stable: every button keeps its position, so Go stays where you expect it.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>Stop is a sync-only control.</strong> The Stop button keeps its "Stop" label and its position in every phase, and is active (red) only while a synchronization is running, when it aborts that sync. During a connect or scan it is inactive. To return to the profile list at any time, including during a scan, use Profiles (or ⌘⇧P). Leaving during a scan does not cancel it; the scan continues in the background. If it does not finish, quit and relaunch the app. Rescan is disabled while a scan or sync is already running.</li>
-<li><strong>Update checks now go through <code>updates.courbage.net</code>.</strong> Builds from 0.6.1 onward check for updates through a project-run proxy rather than contacting GitHub Pages directly. It serves the same signed appcast byte-for-byte, so update integrity is unchanged and a signed feed is still required.</li>
-</ul>
-<p>When anonymous system-profile sharing is enabled, the project records a bounded per-check telemetry row containing the shared profile fields and coarse country, subject to the documented retention period. When sharing is disabled, the project creates no telemetry record, although Cloudflare still processes the request as the hosting provider. No IP address, user agent, cookie, or user identifier is stored. See <a href="https://bcourbage.github.io/unison-ui-mac/faq/#what-data-does-the-app-send">what data the app sends</a> in the FAQ.</p>
-<h2>Compatibility</h2>
-<ul>
-<li>No profile or settings migration is required. Same system requirements as 0.6.0: macOS 15 or later, Apple Silicon.</li>
-<li>The move to <code>updates.courbage.net</code> takes effect for update checks made by this build and later. A 0.6.0 install discovers 0.6.1 through its existing feed; once 0.6.1 is installed, its later checks use the new address.</li>
-<li>If automatic update checking is enabled, Sparkle notifies you when 0.6.1 is available; whether it then downloads and installs automatically or only after you confirm depends on the separate automatic-download choice from the first-launch prompt. You can also update any time from App menu ▸ Check for Updates.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.6.1/unison-ui-mac-0.6.1.app.zip" length="5173262" type="application/octet-stream" sparkle:edSignature="XmXyXDZzfnA+J2Nt8ElH8T337tZ2KXCanAMkgljh1dH68TngugVUmptUSaSOoZL+J5tDa4kx2f3g7rav3SedBw=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: O7yEqLLYNDK7RxYNhsxyfOHQ8OTniogRKdwzRj7aVbWvT/4VMmPtDAjAvGXnIp4aPNBRz5d7nDv9EZej5tFzAw==
-length: 13186
+edSignature: 5wodQKp4U/8AEe1wRI2m755RFvTLEQSQCRfb2/z7MZMChNK1hDj1Rree9YsC6B/tqo4TLxGtmC8y8DQ3wcvtAg==
+length: 12961
 -->
