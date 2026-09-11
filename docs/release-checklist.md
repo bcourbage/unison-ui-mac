@@ -117,16 +117,18 @@ gate; they do not authorize skipping it.
       are pre-publication gates in the job; inspecting the finished artifact
       happens after it is published.)
 
-### Command-line option scope (#122), first release that ships it
+### Command-line option scope (#122)
 
 - [ ] **(pre-publication gate, live on the signed RC)** **TC14**
-      (`docs/manual-test-step2b.md`) — CLI option scope: `unison first -path Documents`
-      scans only `Documents`, an in-place rescan of `first` stays limited to
-      `Documents`, returning to the picker opens both `second` and `first` in full
-      (unscoped, no refusal), and after a normal relaunch the scope is gone. Uses
-      disposable roots with distinguishable changes inside and outside `Documents`;
-      no synchronization is applied. Record the RC version/build, macOS version,
-      exact launcher path, and pass/fail evidence. Required before publication.
+      (`docs/manual-test-step2b.md`) — CLI option scope, first-load-only contract:
+      `unison first -path Documents` scans only `Documents`; an in-place local
+      rescan of `first` stays limited to `Documents`; returning to the picker opens
+      both `second` and `first` in full (unscoped, no refusal); a no-profile
+      `-path` launch scopes only the first selection; and a key/remote profile's
+      reconnecting Rescan after a sync is unscoped. Uses disposable roots with
+      changes inside and outside `Documents`. Record the RC version/build, macOS
+      version, exact launcher path, and pass/fail evidence. Required before
+      publication.
 
 ## 0.6.0
 

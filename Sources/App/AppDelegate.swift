@@ -1821,12 +1821,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     @discardableResult
     private func profileSelected(_ profile: String) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
-        // A picker selection is a fresh, clean-argv profile load: the picker path
-        // starts the engine with only argv[0] (see application(_:didFinishLaunching)),
-        // so a command-line launch's options never carry into a profile opened here.
-        // Any profile opens normally, exactly as it would from a plain app launch;
-        // the launch's own options scope only its initial scan and that scan's
-        // in-place rescans.
+        // No option-isolation gate is needed here. A launch's command-line options
+        // are consumed by the engine's FIRST profile load only: upstream's
+        // do_unisonInit1 parses the command line on its first call and resets
+        // preferences to defaults on every later call (uimacbridge.ml, the
+        // `firstTime` flag). So a launch option scopes the launch's first opened
+        // profile — the profile it named, or the first one selected here when it
+        // named none — and that load while it persists; every later picker
+        // selection loads fresh and unscoped, the same as a plain app launch.
         // Fail closed: a profile whose archive is held by an interrupted
         // (pre-commit) mutation must not be opened until recovery.
         if let blocking = abandonedStagingBlocking(profile) {
@@ -1847,10 +1849,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     // MARK: - Running-instance handoff (req 5 of #122)
 
     /// Classify this launch once, independently of any routing: whether it was a
-    /// clean profile open, with no command-line options that upstream's per-load
-    /// argv reparse would apply to whatever profile is opened next. Both the
-    /// running-instance handoff policy (a non-clean primary refuses handoffs) and
-    /// the picker's option-isolation gate read the result.
+    /// clean profile open, with no command-line options besides the profile name.
+    /// The running-instance handoff policy reads the result: a primary launched
+    /// with options refuses handoffs (see `contextCheck`), so a handed-off request
+    /// is never served by an instance whose launch options it cannot reproduce.
     private func classifyCommandLineLaunch() {
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
         commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(

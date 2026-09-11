@@ -302,13 +302,18 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
-### TC14 — CLI option scope: launched scan and rescans only, picker opens unscoped (issue #122)
+### TC14 — CLI option scope: first load only, picker opens unscoped (issue #122)
 
-Verifies, on the signed release candidate, that a command-line option passed at
-launch (for example `-path`) scopes the launched profile's initial scan and that
-scan's in-place rescans, and that returning to the profile picker opens any
-profile normally, the same as a plain app launch, with no refusal. No
-synchronization is applied.
+Verifies, on the signed release candidate, how a command-line option passed at
+launch (for example `-path`) is scoped, and that returning to the profile picker
+opens any profile normally, with no refusal. The contract: a launch option is
+consumed by the engine's **first** profile load only (upstream's `firstTime`
+behavior in `uimacbridge.ml`, which parses the command line on the first
+`do_unisonInit1` and resets preferences to defaults on every later call). So the
+option scopes the launch's first opened profile and that load while it persists;
+every later picker selection loads fresh and unscoped. Steps 1 to 5 are
+local-only and apply no synchronization; step 6 uses a remote profile and does
+sync.
 
 **Setup.** In one Terminal, create a uniquely-named throwaway directory so nothing
 real is touched, and point the Unison directory and two local roots inside it:
@@ -342,28 +347,47 @@ disposable `UNISON` export stays in effect.
    `"<RC launcher>" first -path Documents`. **Expect:** `first` opens and scans,
    and the reconcile results list **only** the change inside `Documents`
    (`Documents/inside.txt`); the outside change (`outside.txt`) is absent.
-2. **In-place Rescan keeps the scope.** Without leaving the profile, click
-   **Rescan**. **Expect:** the results are again limited to `Documents`. The launch
-   option is preserved for the launched scan and its in-place rescans.
+2. **In-place Rescan keeps the scope while the load persists.** Without leaving the
+   profile, click **Rescan**. **Expect:** the results are again limited to
+   `Documents`. A local profile's engine load persists across an in-place rescan
+   (no reconnect), so the launch option still applies. (Step 6 shows the remote
+   case, where the load does not persist.)
 3. **The picker opens any profile unscoped.** Click **Profiles** to return to the
    picker, then:
    1. Open `second`. **Expect:** it opens normally and lists **both** changes
       (`Documents/inside.txt` and `outside.txt`); there is **no** refusal.
    2. Return to the picker and reopen `first`. **Expect:** it also lists **both**
-      changes. A picker selection is a fresh, unscoped open, so the launch's
-      `-path` no longer applies. This matches what a plain app launch would show.
+      changes. A picker selection after the first load is a fresh, unscoped open,
+      so the launch's `-path` no longer applies. This matches a plain app launch.
 4. **The scope does not persist across a restart.** Quit, then from the **same
    Terminal** (with `UNISON` still exported) run `"<RC launcher>"` with **no
    arguments** and open `first`. Do not relaunch from Finder: a Finder launch
    would not inherit `UNISON` and could open your real configuration instead.
    **Expect:** `first` scans both roots in full.
+5. **A no-profile launch scopes the FIRST selection.** Quit, then run
+   `"<RC launcher>" -path Documents` with **no profile name** (an option but no
+   profile). The picker appears. Select `first`. **Expect:** this first selection
+   is limited to `Documents` (it is the engine's first load, which consumes the
+   option). Return to the picker and open `second`: now unscoped, both changes.
+   This is the qualified contract: the option applies to the first opened profile,
+   named or picked, and nothing after.
+6. **(Remote) A reconnecting Rescan reloads unscoped.** Using a **key
+   (non-interactive) remote profile** like TC1's, whose roots hold a change inside
+   and one outside a `Documents` subpath, run `"<RC launcher>" <keyprofile> -path Documents`.
+   It scans limited to `Documents`; click **Go** to sync. On sync-end the
+   non-interactive connection **closes**. Now click **Rescan**. **Expect:** the
+   Rescan reconnects and shows the **full** scan (both changes): the reconnect is a
+   fresh engine load that reloads the profile without the launch option. This is
+   expected under the first-load-only contract, not a defect.
 
 Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
 the exact launcher path, and pass/fail evidence for each step.
 
 **PASS =** the launched `-path Documents` scan is limited to `Documents`; an
-in-place Rescan stays limited to `Documents`; returning to the picker opens both
-`second` and `first` unscoped (both changes, no refusal); and after a normal
+in-place local Rescan stays limited to `Documents`; returning to the picker opens
+both `second` and `first` unscoped (both changes, no refusal); a no-profile
+`-path` launch scopes only the first selection; the remote reconnecting Rescan is
+unscoped; and after a normal
 relaunch the scope is gone.
 
 ### Interactive-password cases (run last)
