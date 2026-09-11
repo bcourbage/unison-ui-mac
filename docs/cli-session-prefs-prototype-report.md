@@ -2,97 +2,92 @@
 
 **Status:** Feasibility evidence for [`docs/cli-session-requests-design.md`](cli-session-requests-design.md).
 **Prototype:** [`docs/spikes/cli-session-prefs-prototype.ml`](spikes/cli-session-prefs-prototype.ml).
+**Reproduce:** [`docs/spikes/run-cli-session-prefs-prototype.sh`](spikes/run-cli-session-prefs-prototype.sh).
 
-## Verdict (revised)
+## Verdict
 
-An earlier draft concluded "the adapter works; only one callback remains." That
-was premature. This iteration tests an actual CLI-to-preference translation
-against the engine's own parser and demonstrates the lifecycle, and the honest
-result is narrower:
+This half of the comparison evaluates an **app-owned adapter over
+`Prefs.loadStrings`**. The honest result:
 
-- The `Prefs.loadStrings` adapter **does** apply scalar, boolean, string, and
-  aliased profile-settable options, resets cleanly between sessions, and rejects
+- The adapter **applies** scalar, boolean, `BOOLDEF`, string, string-list, and
+  aliased profile-settable options; resets cleanly between sessions; and rejects
   invalid and `cli_only` options with catchable errors, matching the engine's own
   command-line parser for those options.
-- But it **does not generically translate `-path`** (or any `CUSTOM`-typed pref),
-  and it **trims whitespace** that the command line preserves. `-path` is the
-  central option of this feature.
-- And the production insertion point **requires an upstream source edit**, not
-  only a bridge callback: `-path`-style overrides must be applied between profile
-  load and connection, and there is no hook there today.
+- A generic **CLI-args translator** built on it **cannot handle `-path`**: `path`
+  is a `CUSTOM`-typed pref, so the translator cannot infer its arity from the
+  public API and refuses it. (This is a limit of the *translator*, not of
+  `loadStrings`, which applies a path value fine; see the repeated-list case.)
+- `loadStrings` **trims whitespace** the command line preserves.
+- The production insertion point needs a **source edit**: overrides must be
+  applied between profile load and connection, and today's `do_unisonInit1` has
+  no hook there.
 
-So a `loadStrings`-translation adapter is **not sufficient on its own**, and a
-small command-line-parser variant is **not ruled out**. The investigation should
-continue rather than commit to either mechanism.
+So a `loadStrings`-only adapter is **not sufficient** for the feature's own
+options, and the command-line-parser variant is the candidate to weigh next.
 
 ## Approach and why
 
 - `Uarg.parse` (the engine's command-line parser) reads a fixed `Sys.argv`
   (`system_generic.ml`: `argv () = Sys.argv`) and calls `exit` on bad input.
   Driving it on a per-session argument vector would need a patch (args-taking,
-  raising). It does, however, know each option's arity from its `Uarg` spec.
+  raising). It does know each option's arity from its `Uarg` spec.
 - `Prefs.loadStrings : string list -> unit` applies profile-file-syntax lines and
-  raises `Util.Fatal` (catchable) on bad input, no `exit`. But it takes
-  profile-file lines (`path = X`), not CLI args, so it needs a translator, and
-  the translator can only see `Prefs.typ` (the value type), not the arity.
+  raises `Util.Fatal` (catchable), no `exit`, but takes `key = value` lines, not
+  CLI args, so it needs a translator that can only see `Prefs.typ` (value type),
+  not arity.
 
-The prototype uses `loadStrings` as the adapter and compares it, on the same
-argv, against `Prefs.parseCmdLine` (the engine's own parser) as the baseline.
+The prototype uses `loadStrings` as the adapter and compares it, on the same argv,
+against `Prefs.parseCmdLine` (the engine's own parser) as the baseline.
 
 ## Reproducing it
 
-Toolchain is the repository's own (`ocamlopt`), no `opam`/`dune`.
+One committed script does everything (build the engine objects on the repository's
+own OCaml path, link the prototype, run every asserted case, restore the tree),
+and exits non-zero if any assertion fails:
 
 ```sh
-# 1. Build the engine objects (same path make vendor-blob uses):
-cd unison/src && make Makefile.cfg && make -f Makefile.OCaml tui
-# 2. Compile the prototype (copied from docs/spikes/cli-session-prefs-prototype.ml):
-inc="-I lwt -I ubase -I system -I system/generic -I lwt/generic -I +unix -I +str"
-ocamlopt -g $inc -c prototype2.ml
-# 3. Link with the unison binary's exact native objects, main.cmx/linktext.cmx
-#    replaced by prototype2.cmx (see the -o unison line in the tui build log).
-ocamlopt -g $inc -o prototype2 <those .cmx, ending prototype2.cmx> <the .o C stubs>
-# 4. Fixtures + run (three modes; the CLI parser reads a fixed argv, so one per run):
-U=$(mktemp -d); printf '# A: no path\n' > "$U/A.prf"; printf 'path = Preset\n' > "$U/B.prf"
-EXPECT=match      UNISON="$U" ./prototype2 -batch -confirmbigdeletes -maxerrors 5
-EXPECT=path-custom UNISON="$U" ./prototype2 -path Documents
-EXPECT=whitespace  UNISON="$U" ./prototype2 -path '  ws  '
-# The unison tree is restored afterward with `make clean`; no engine source is edited.
+UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-prefs-prototype.sh
 ```
 
-The prototype **asserts** each expectation and **exits non-zero** on any surprise.
+No `opam`/`dune`; no engine source is edited (`make clean` restores the tree).
 
 ## Result (verbatim run)
 
 ```
-=== prototype2 EXPECT=match argv=[-batch -confirmbigdeletes -maxerrors 5] ===
-  baseline(parseCmdLine): path=[] batch=true confirmBigDeletes=true maxerrors=5
-  adapter lines: [batch = true | confirmbigdeletes = true | maxerrors = 5]
-  PASS  boolean matches CLI baseline             true
-  PASS  alias matches CLI baseline               true
-  PASS  scalar (maxerrors) matches CLI baseline  5
+##### match (bool, alias-opposite-default, int, BOOLDEF) #####
+  baseline(parseCmdLine): path=[] batch=true confirmBigDeletes=false maxerrors=5 fastcheck=default
+  adapter lines: [batch = true | confirmbigdeletes = false | maxerrors = 5 | fastcheck = default]
+  PASS  boolean matches CLI baseline               true
+  PASS  alias set OPPOSITE its default (proves effect) false
+  PASS  scalar (maxerrors) matches CLI baseline    5
+  PASS  BOOLDEF (fastcheck=default) matches CLI baseline default
 B. Reset isolation:
-  PASS  A scoped to Documents                    Documents
-  PASS  B clean, no leak                         Preset
+  PASS  A scoped to Documents                      Documents
+  PASS  B clean, no leak                           Preset
 C. Invalid override raises, no exit:
   PASS  invalid raised Util.Fatal
-  PASS  process alive
 D. cli_only rejected:
   PASS  dumparchives (cli_only) rejected
-E. Failure isolation (reset-before-next, NOT connect/scan prevention):
+E. Failure isolation (reset-before-next only):
   PASS  next session clean after partial-apply failure Preset
-F. Lifecycle point (override in effect before connect):
-  PASS  servercmd applied after loadTheFile      /session/unison
+F. Preference assignment at the pre-connection point (NOT a production integration):
+  PASS  servercmd set after loadTheFile            /session/unison
 === PASS (0 failure(s)) ===
 
-=== prototype2 EXPECT=path-custom argv=[-path Documents] ===
-  baseline(parseCmdLine): path=[Documents] batch=false confirmBigDeletes=true maxerrors=1
-  PASS  -path is CUSTOM: generic translate refuses (engine's own parser handled it in the baseline above)
-  PASS  CLI baseline still applied -path         Documents
+##### repeated-list #####
+  baseline(parseCmdLine): path=[A; B] ...
+  adapter(loadStrings path=A; path=B): path=[A; B]
+  PASS  repeated list accumulates, matches CLI baseline A,B
 === PASS (0 failure(s)) ===
 
-=== prototype2 EXPECT=whitespace argv=[-path   ws  ] ===
-  baseline(parseCmdLine): path=[  ws  ] batch=false confirmBigDeletes=true maxerrors=1
+##### path-custom #####
+  baseline(parseCmdLine): path=[Documents] ...
+  PASS  -path is CUSTOM: generic TRANSLATOR refuses (loadStrings itself CAN apply a path value; see repeated-list)
+  PASS  CLI baseline still applied -path           Documents
+=== PASS (0 failure(s)) ===
+
+##### whitespace #####
+  baseline(parseCmdLine): path=[  ws  ] ...
   adapter(loadStrings 'path =   ws  '): path=[ws]
   PASS  CLI keeps whitespace, loadStrings trims (DIFFER) CLI=  ws   vs adapter=ws
 === PASS (0 failure(s)) ===
@@ -100,65 +95,67 @@ F. Lifecycle point (override in effect before connect):
 
 ## Findings, mapped to the review
 
-**1. Lifecycle and "no source patch" (P1).** Section F applies a connection-affecting
-override (`servercmd`) at the point it must land: after `loadTheFile`, before a
-connection. Production `do_unisonInit1` runs `reset -> loadTheFile -> (parse on
-first) -> checkThatPreferredRootIsValid -> openConnectionStart` with **no hook**
-between load and connect. Applying overrides there is an **upstream source edit**
-to that engine function (`uimacbridge.ml`). It is not a *parser* patch, but the
-"no source patch" claim was wrong; those are different claims, and this one needs
-a lifecycle edit.
+**Lifecycle and "no source patch" (P1).** Section F is a preference assignment plus
+source inspection, **not** a demonstrated production lifecycle: it sets a
+connection-affecting pref (`servercmd`) at the point overrides must land (after
+`loadTheFile`), and inspects `do_unisonInit1`, which today runs
+`reset -> loadTheFile -> (parse on first) -> checkThatPreferredRootIsValid ->
+openConnectionStart` with no hook between load and connect. That shows the
+*current* function has no suitable hook; it does not prove every app-owned
+replacement entry would need a source edit, though such a replacement would
+duplicate that lifecycle. Applying overrides in the existing function is an
+**upstream source edit** (not a *parser* patch); "no parser patch" and "no source
+patch" are different claims, and this needs the latter.
 
-**2. CLI translation vs an independent baseline (P2).** The baseline is
-`Prefs.parseCmdLine` (the engine's own parser) on the same argv.
-- **Matches for bool, alias, and int** (`-batch`, `-confirmbigdeletes`,
-  `-maxerrors 5`), with `maxerrors` read back from a preference dump.
-- **`-path` cannot be translated generically.** `Prefs.typ "path"` is `CUSTOM`
-  (path uses a custom parser, not `createStringList`), so the translator cannot
-  learn its arity from the public API and refuses rather than guess. The engine's
-  own parser handles `-path` in the baseline. A `loadStrings` adapter would have
-  to hardcode `-path` (and every other `CUSTOM` option's) arity, which is the
-  duplication of CLI semantics the design set out to avoid, or the engine must
-  expose per-option arity.
-- **Whitespace differs.** The command line preserves `  ws  `; the profile parser
-  `loadStrings` uses trims to `ws` (`prefs.ml`: `Util.trimWhitespace`). Values
-  with significant whitespace cannot be round-tripped through `key = value`.
-- Bare booleans are handled by querying `Prefs.typ` and emitting `name = true`;
-  repeated list arguments accumulate. Both are shown for translatable options.
+**CLI translation vs the engine's own parser (P2).** Baseline is `Prefs.parseCmdLine`.
+- **Bool, alias, int, and `BOOLDEF` match.** `BOOLDEF` (`createBoolWithDefault`,
+  e.g. `-fastcheck default`) takes a value; the translator splits it from bare
+  `BOOL` and emits `fastcheck = default`, matching the baseline.
+- **The alias is set opposite its default** (`-confirmbigdeletes=false` where the
+  default is `true`), so the check would fail if the alias did nothing.
+- **Repeated list demonstrated:** `-path A -path B` yields `[A; B]` from the CLI,
+  and `loadStrings ["path = A"; "path = B"]` yields the same, so list accumulation
+  matches. (Constructed directly because the generic translator refuses `-path`.)
+- **`-path` refused by the translator** (`Prefs.typ = CUSTOM`); the engine's own
+  parser applied it in the baseline.
+- **Whitespace differs:** the CLI keeps `  ws  `; `loadStrings` trims to `ws`
+  (`prefs.ml`: `Util.trimWhitespace`).
 
-**3. Assertions, reproducibility, and scoped claims (P2).** The prototype now
-asserts and exits non-zero (an accepted invalid value, or an unexpected raise,
-fails the run). The build/link/run commands and fixtures are above. The
-failure-isolation case (E) is scoped: it proves the **next** session resets
-clean, **not** that a scan or connection is prevented on the failed session,
-which is an app control-flow guarantee shown elsewhere.
+**Assertions and reproducibility (P2).** Every case asserts and the run exits
+non-zero on any surprise (an accepted invalid value, or an unexpected raise). The
+full build/link/run and fixtures are the committed script above. The
+failure-isolation case (E) is scoped to what it proves: the next session resets
+clean, not that a scan or connection is prevented on the failed session (an
+app-level control-flow guarantee).
 
 ## What is supported vs not
 
-- **Supported:** profile-settable scalar, boolean, string, string-list, and
-  aliased options, applied with reset isolation and catchable rejection of invalid
-  and `cli_only` options. That is the majority of options a session would carry.
+- **Supported:** profile-settable scalar, boolean, `BOOLDEF`, string, string-list,
+  and aliased options, with reset isolation and catchable rejection of invalid and
+  `cli_only` options.
 - **Not, via a generic `loadStrings` translator:** `CUSTOM`-typed options,
-  including **`-path`** (the feature's central option); and any value with
+  including **`-path`** (the feature's central option), and any value with
   significant leading/trailing whitespace.
 
 ## Productionization is more than one callback
 
 - Exposing `loadStrings` needs a bridge callback (`uimacbridge.ml`).
 - Applying overrides at the right lifecycle point needs a **source edit** to
-  `do_unisonInit1` (or a new bridge entry that splits load from connect).
-- Handling `-path` and other `CUSTOM` options needs either per-option arity
-  hardcoded in the app, or an engine change to expose arity, or reuse of the
-  command-line parser (an args-taking, raising variant), which is a parser patch.
+  `do_unisonInit1`, or a new entry that splits load from connect (which duplicates
+  the lifecycle).
+- Handling `-path`/`CUSTOM` needs per-option arity hardcoded in the app, or an
+  engine change to expose arity, or reuse of the command-line parser.
 - Concurrency (#2) remains an app-level guarantee, proven with session A held
-  active; it is not attempted here.
+  active; not attempted here.
 
-## Recommendation
+## Recommendation and next step
 
-Continue the adapter investigation; **do not** declare a command-line-parser patch
-unnecessary. The `-path`/`CUSTOM` gap and the whitespace trim mean a
-`loadStrings`-only adapter cannot faithfully carry the feature's own options
-without duplicating semantics, and the lifecycle needs a source edit regardless.
-The next comparison worth running is a bounded args-taking, raising variant of the
-engine's command-line parser against the same baseline, to weigh it against the
-adapter on exactly `-path`, whitespace, and the lifecycle insertion.
+A `loadStrings`-only adapter cannot faithfully carry `-path` or preserve
+whitespace, and the lifecycle needs a source edit regardless. The next experiment,
+now authorized (as an experiment, not a commitment to ship a vendor patch), is a
+**small, backward-compatible command-line-parser extension** that accepts
+per-session arguments and **raises instead of exiting**, plus the required
+lifecycle integration, measured against this same upstream baseline on exactly
+`-path`, whitespace, and the insertion point. The two approaches will be compared
+on behavior and maintenance cost, with the actual diff and evidence put up for
+review before any adoption decision.
