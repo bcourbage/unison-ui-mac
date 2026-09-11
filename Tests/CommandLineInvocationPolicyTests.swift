@@ -199,4 +199,26 @@ final class CommandLineInvocationPolicyTests: XCTestCase {
         }
         XCTAssertTrue(m.contains("would open p"))
     }
+
+    // MARK: option-launch isolation for GUI opens
+
+    private func mayOpen(clean: Bool, launch: String?, requested: String) -> Bool {
+        CommandLineGraphicalLaunch.mayOpenAfterOptionLaunch(
+            launchWasClean: clean, launchProfile: launch, requested: requested)
+    }
+
+    func test_cleanLaunch_opensAnyProfile() {
+        XCTAssertTrue(mayOpen(clean: true, launch: "first", requested: "second"))
+        XCTAssertTrue(mayOpen(clean: true, launch: nil, requested: "anything"))
+    }
+
+    func test_optionLaunch_opensOnlyItsOwnProfile() {
+        XCTAssertTrue(mayOpen(clean: false, launch: "first", requested: "first"))
+        XCTAssertFalse(mayOpen(clean: false, launch: "first", requested: "second"))
+    }
+
+    func test_optionLaunch_withNoProfile_opensNothing() {
+        // `unison -path X` with no profile: every open would inherit the options.
+        XCTAssertFalse(mayOpen(clean: false, launch: nil, requested: "any"))
+    }
 }
