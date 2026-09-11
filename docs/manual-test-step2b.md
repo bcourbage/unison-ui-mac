@@ -100,6 +100,13 @@ pgrep -af ssh | grep -i <remote-host>          # adjust host
 
 Fill in PASS/FAIL in the table at the bottom.
 
+The cases are grouped by whether a person has to type a password. Run the
+non-interactive cases first (TC1, TC2, TC6, TC7, TC8, TC9, TC10, TC11, TC14),
+then the interactive-password cases last (TC3, TC4, TC5, TC12, TC13), which are
+collected under **Interactive-password cases (run last)** at the end. Case
+numbers are kept stable so the release checklist and cross-references still
+resolve, which is why the interactive numbers appear out of sequence there.
+
 ### TC1 — Non-interactive: connection closes on sync-end *(re-confirm)*
 
 1. Open the **key** profile.
@@ -119,33 +126,6 @@ Fill in PASS/FAIL in the table at the bottom.
 5. **Expect (ssh):** an ssh child reappears during the rescan.
 
 **PASS =** Rescan works with no prompt and repopulates the list.
-
-### TC3 — Interactive: connection is HELD through sync-end
-
-1. Open the **password** profile. Enter the password when the sheet appears.
-2. **Expect (log):** `connection prompt: …` before the scan.
-3. Sync (Go), wait for completion.
-4. **Expect (log):** `sync complete — holding interactive-auth connection until leave` (NOT the "closing" line).
-5. **Expect (ssh):** the ssh child **persists** after the sync completes (window still open).
-
-**PASS =** connection is *not* closed on sync-end for a password profile.
-
-### TC4 — Interactive: same-session Rescan does NOT re-prompt
-
-1. Continuing from TC3 (connection held).
-2. Click **Rescan**.
-3. **Expect (log):** `rescan: re-running init2 …` (reuse path, NOT "reopening").
-4. **Expect (UI):** **no** password sheet — the held connection is reused.
-
-**PASS =** Rescan reuses the connection with no second password prompt.
-
-### TC5 — Interactive: connection closes on leave
-
-1. Continuing from TC4. Click **Profiles** (or close the window) to return to the picker.
-2. **Expect (log):** `closeConnection (left profile) -> status 0`.
-3. **Expect (ssh):** ssh child reaped after returning to the picker.
-
-**PASS =** the held connection closes when you leave the profile.
 
 ### TC6 — Mid-sync window-close choices
 
@@ -246,50 +226,6 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
-### TC12 — Interactive auth failure (live)
-
-A real password profile with a wrong/failing password.
-
-1. Enter the **wrong** password. **Expect:** the credential sheet is re-presented **once**, carrying the "Permission denied, please try again." message, and entering the correct password authenticates on that single entry (issue #63, fixed).
-2. Confirm **Cancel** on the sheet returns cleanly to the picker.
-3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11.
-
-**PASS =** a wrong password re-prompts exactly once (no phantom extra prompt), the correct password then authenticates, **Cancel** returns cleanly to the picker, and any post-auth scan wedge reaches restart-required. A credential-sheet wait is expected, not a failure.
-
-### TC13 — Auth prompt field style: host-key plain, secrets masked (issue #35)
-
-Verifies, in the live UI, that the credential sheet renders a **plain** field for
-a non-secret host-key question and a **masked** field for secrets — the
-`ConnectPromptClassifier` → `PasswordSheet.InputStyle` decision (unit-tested in
-`ConnectPromptClassifierTests` / `PasswordSheetInputStyleTests`), confirmed
-end-to-end. The response field is masked iff it is an `NSSecureTextField` (dots
-instead of characters).
-
-**Setup.** Use a profile to a host **not yet in `~/.ssh/known_hosts`** (or
-temporarily remove its line) so the first connect asks the host-key question,
-followed by a password profile (no key / `sshargs = -i /nonexistent`) so a
-password prompt follows.
-
-1. **Host-key question → plain field.** On first connect the sheet shows
-   *"The authenticity of host '…' can't be established… Are you sure you want to
-   continue connecting (yes/no/[fingerprint])?"*. **Expect:** the response field
-   is **plain** (you can read what you type); type `yes` and it is accepted.
-2. **Password / passphrase / OTP → masked field.** The next prompt is the
-   password (or key passphrase, or an MFA/verification code). **Expect:** the
-   response field is a **masked** secure field (dots). Entering the correct
-   secret authenticates.
-3. **Host-key line then a password prompt in one chunk → masked.** Harder to
-   elicit live; if you can drive a peer that emits the host-key line immediately
-   followed by `Password:` in the same read, **Expect:** the field is **masked**
-   (the combined chunk classifies as a credential, not a host-key question — the
-   fail-safe). If you cannot reproduce it live, the equality-based classifier
-   cases `test_hostKeyQuestionThenPasswordPrompt_isCredential` and
-   `test_hostKeyQuestionWithTrailingPasswordSameLine_isCredential` cover it.
-
-**PASS =** the host-key yes/no question uses a plain field; every secret
-(password/passphrase/OTP) uses a masked secure field; and a host-key line
-followed by a password prompt is masked, never plain.
-
 ### TC14 — CLI option isolation across profile opens and rescans (issue #122)
 
 Verifies, on the signed release candidate, that command-line option overrides
@@ -350,6 +286,83 @@ the exact launcher path, and pass/fail evidence for each step.
 a different profile is refused with the reopen message; a rescan of `first` stays
 limited to `Documents`; and after a normal relaunch `second` scans its full root
 without the override.
+
+### Interactive-password cases (run last)
+
+These cases need a person to type a real password (or answer a host-key
+prompt), so they run after every non-interactive case. Their numbers are kept
+stable for cross-references, so they are out of sequence here by design.
+
+### TC3 — Interactive: connection is HELD through sync-end
+
+1. Open the **password** profile. Enter the password when the sheet appears.
+2. **Expect (log):** `connection prompt: …` before the scan.
+3. Sync (Go), wait for completion.
+4. **Expect (log):** `sync complete — holding interactive-auth connection until leave` (NOT the "closing" line).
+5. **Expect (ssh):** the ssh child **persists** after the sync completes (window still open).
+
+**PASS =** connection is *not* closed on sync-end for a password profile.
+
+### TC4 — Interactive: same-session Rescan does NOT re-prompt
+
+1. Continuing from TC3 (connection held).
+2. Click **Rescan**.
+3. **Expect (log):** `rescan: re-running init2 …` (reuse path, NOT "reopening").
+4. **Expect (UI):** **no** password sheet — the held connection is reused.
+
+**PASS =** Rescan reuses the connection with no second password prompt.
+
+### TC5 — Interactive: connection closes on leave
+
+1. Continuing from TC4. Click **Profiles** (or close the window) to return to the picker.
+2. **Expect (log):** `closeConnection (left profile) -> status 0`.
+3. **Expect (ssh):** ssh child reaped after returning to the picker.
+
+**PASS =** the held connection closes when you leave the profile.
+
+### TC12 — Interactive auth failure (live)
+
+A real password profile with a wrong/failing password.
+
+1. Enter the **wrong** password. **Expect:** the credential sheet is re-presented **once**, carrying the "Permission denied, please try again." message, and entering the correct password authenticates on that single entry (issue #63, fixed).
+2. Confirm **Cancel** on the sheet returns cleanly to the picker.
+3. If a run gets past auth and then wedges in the scan, confirm the init2 scan-stall detector bounds it to **restart-required** as in TC11.
+
+**PASS =** a wrong password re-prompts exactly once (no phantom extra prompt), the correct password then authenticates, **Cancel** returns cleanly to the picker, and any post-auth scan wedge reaches restart-required. A credential-sheet wait is expected, not a failure.
+
+### TC13 — Auth prompt field style: host-key plain, secrets masked (issue #35)
+
+Verifies, in the live UI, that the credential sheet renders a **plain** field for
+a non-secret host-key question and a **masked** field for secrets — the
+`ConnectPromptClassifier` → `PasswordSheet.InputStyle` decision (unit-tested in
+`ConnectPromptClassifierTests` / `PasswordSheetInputStyleTests`), confirmed
+end-to-end. The response field is masked iff it is an `NSSecureTextField` (dots
+instead of characters).
+
+**Setup.** Use a profile to a host **not yet in `~/.ssh/known_hosts`** (or
+temporarily remove its line) so the first connect asks the host-key question,
+followed by a password profile (no key / `sshargs = -i /nonexistent`) so a
+password prompt follows.
+
+1. **Host-key question → plain field.** On first connect the sheet shows
+   *"The authenticity of host '…' can't be established… Are you sure you want to
+   continue connecting (yes/no/[fingerprint])?"*. **Expect:** the response field
+   is **plain** (you can read what you type); type `yes` and it is accepted.
+2. **Password / passphrase / OTP → masked field.** The next prompt is the
+   password (or key passphrase, or an MFA/verification code). **Expect:** the
+   response field is a **masked** secure field (dots). Entering the correct
+   secret authenticates.
+3. **Host-key line then a password prompt in one chunk → masked.** Harder to
+   elicit live; if you can drive a peer that emits the host-key line immediately
+   followed by `Password:` in the same read, **Expect:** the field is **masked**
+   (the combined chunk classifies as a credential, not a host-key question — the
+   fail-safe). If you cannot reproduce it live, the equality-based classifier
+   cases `test_hostKeyQuestionThenPasswordPrompt_isCredential` and
+   `test_hostKeyQuestionWithTrailingPasswordSameLine_isCredential` cover it.
+
+**PASS =** the host-key yes/no question uses a plain field; every secret
+(password/passphrase/OTP) uses a masked secure field; and a host-key line
+followed by a password prompt is masked, never plain.
 
 ---
 

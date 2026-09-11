@@ -33,6 +33,38 @@ before publication:
 The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`, tag →
 workflow → Homebrew cask bump) is in the release runbook.
 
+## Release sequence
+
+Every release runs in this order. The point is that the artifact the public
+receives is the exact artifact the manual tests passed on, and that no failing
+artifact is ever published.
+
+1. **Build, sign and notarize the release candidate without publishing it.**
+   Produce the signed, notarized, stapled `.app` from the tagged commit as a
+   downloadable artifact only. Do not create the public GitHub Release and do
+   not publish the appcast yet.
+2. **Run every applicable TC case against that exact artifact.** Work through
+   `docs/manual-test-step2b.md` on the signed RC, recording each case as
+   **Pass**, **Fail**, or **Not Applicable with a stated justification**. The
+   non-interactive cases run first and the interactive-password cases last, in
+   the order that file lays out.
+3. **Fix any failures and repeat the affected tests on the replacement RC.** A
+   failure means fixing forward to a new build and re-running the tests it
+   affected on that replacement artifact. Only a run that leaves no outstanding
+   Fail proceeds.
+4. **Publish the same tested artifact, then update Sparkle and Homebrew.**
+   Publish the exact bytes from step 1 (or the step 3 replacement), never a
+   fresh rebuild: create the GitHub Release, then publish the appcast (Sparkle)
+   and bump the Homebrew cask.
+
+Today `release.yml` signs, notarizes and publishes in a single run, so it does
+not yet stop between steps 1 and 4. Running this sequence as written therefore
+requires the protected manual-promotion stage noted above: a job that uploads
+the signed, notarized RC without creating the public Release or feed, promoted
+to publish only after step 2 passes. Until that split exists, the single-run
+publish is the RC and any step-2 failure is handled as the rollback incident
+documented per release below, not as a blocked publication.
+
 ## Every release
 
 - [ ] **(pre-tag)** `main` is green.
