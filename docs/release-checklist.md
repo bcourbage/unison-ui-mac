@@ -81,6 +81,15 @@ gate; they do not authorize skipping it.
       regenerate from `MANUAL.md` and `project.yml` / `Makefile` on deploy; the rest
       is manual. The site deploys from `main` via `pages.yml`, which preserves
       `appcast.xml` byte-for-byte, so this is independent of the feed publish.
+- [ ] **(post-publication canary — live site tree)** Walk the full deployed site at
+      https://bcourbage.github.io/unison-ui-mac/ and confirm every page is current for
+      this release: the landing page, Install, FAQ, and Credits render the intended
+      copy; `/manual/` matches this release's `MANUAL.md`; the visible version fields
+      show this release; internal links and anchors resolve (for example Install's
+      `#the-unison-command`); and the served `appcast.xml` names this release. This
+      checks the rendered live tree, not just the `site/` sources, so a deploy that
+      dropped or staled a page is caught. It runs after the site deploys from `main`,
+      so it is a canary, not a gate.
 - [ ] **(pre-publication gate — in-job)** The release build (`release.yml`,
       Release configuration) is built from the exact tagged commit. (Cannot be
       confirmed before the tag exists; it is the job's checkout/build guarantee.)
