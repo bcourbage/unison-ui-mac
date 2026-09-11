@@ -11,6 +11,8 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-11
+
 ### Added
 - **Default interface for the `unison` command (Settings ▸ Command Line).**
   A Graphical / Text control sets which interface `unison` uses when a command
