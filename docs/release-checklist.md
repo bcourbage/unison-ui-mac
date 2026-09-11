@@ -33,6 +33,44 @@ before publication:
 The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`, tag →
 workflow → Homebrew cask bump) is in the release runbook.
 
+## Release sequence
+
+Every release runs in this order. The point is that the artifact the public
+receives is the exact artifact the manual tests passed on, and that no failing
+artifact is ever published.
+
+1. **Build, sign and notarize the release candidate without publishing it.**
+   Produce the signed, notarized, stapled `.app` from the tagged commit as a
+   downloadable artifact only. Do not create the public GitHub Release and do
+   not publish the appcast yet.
+2. **Run every applicable TC case against that exact artifact.** Work through
+   `docs/manual-test-step2b.md` on the signed RC, recording each case as
+   **Pass**, **Fail**, or **Not Applicable with a stated justification**. Not
+   Applicable means the case does not apply to this release (a feature it
+   covers is absent, for example), never that automation to drive it was
+   unavailable; a case that applies but was not exercised is not a Pass. The
+   non-interactive cases run first and the interactive-password cases last, in
+   the order that file lays out.
+3. **Fix any failures and repeat the affected tests on the replacement RC.** A
+   failure means fixing forward to a new build and re-running the tests it
+   affected on that replacement artifact. Only a run that leaves no outstanding
+   Fail proceeds.
+4. **Publish the same tested artifact, then update Sparkle and Homebrew.**
+   Publish the exact bytes from step 1 (or the step 3 replacement), never a
+   fresh rebuild: create the GitHub Release, then publish the appcast (Sparkle)
+   and bump the Homebrew cask.
+
+Today `release.yml` signs, notarizes and publishes in a single run, so it does
+not yet stop between steps 1 and 4. That is a release blocker, not a license to
+publish first and roll back on failure: **publication stays held until the
+workflow can hand off an unpublished signed RC for step 2 and promote that exact
+artifact to publish without rebuilding.** Building the protected manual-promotion
+stage (a job that uploads the signed, notarized RC without creating the public
+Release or feed, promoted only after step 2 passes) can be separate work, but
+until it exists the sequence above is not satisfiable and a release must not go
+out. The per-release rollback procedures below cover a defect that escapes this
+gate; they do not authorize skipping it.
+
 ## Every release
 
 - [ ] **(pre-tag)** `main` is green.
@@ -61,6 +99,18 @@ workflow → Homebrew cask bump) is in the release runbook.
       Debug/autotest symbols. (The signing/notarization steps that PRODUCE this
       are pre-publication gates in the job; inspecting the finished artifact
       happens after it is published.)
+
+### Command-line option isolation (#122), first release that ships it
+
+- [ ] **(pre-publication gate, live on the signed RC)** **TC14**
+      (`docs/manual-test-step2b.md`) — CLI option isolation across profile opens
+      and rescans: `unison first -path Documents` scans only `Documents`, opening
+      `second` is refused with the reopen message, a rescan of `first` keeps the
+      restriction, and after a normal relaunch `second` scans its full root
+      without the override. Uses disposable roots with distinguishable changes
+      inside and outside `Documents`; no synchronization is applied. Record the RC
+      version/build, macOS version, exact launcher path, and pass/fail evidence.
+      Required before publication. The unit tests cover only the decision gate.
 
 ## 0.6.0
 

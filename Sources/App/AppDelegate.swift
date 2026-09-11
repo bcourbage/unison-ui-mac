@@ -1880,9 +1880,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     // MARK: - Running-instance handoff (req 5 of #122)
 
-    /// Hand a graphical profile request to an already-running instance and exit
-    /// with its verdict, or become the primary and start the listener. Called
-    /// once during launch, before any window is shown.
     /// Classify this launch once, independently of any routing: whether it was a
     /// clean profile open, with no command-line options that upstream's per-load
     /// argv reparse would apply to whatever profile is opened next. Both the
@@ -1894,6 +1891,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             arguments: CommandLine.arguments, launchProfile: given)
     }
 
+    /// Hand a graphical profile request to an already-running instance and exit
+    /// with its verdict, or become the primary and start the listener. Called
+    /// once during launch, before any window is shown.
     private func routeCommandLineHandoff() {
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
 

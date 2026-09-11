@@ -96,9 +96,92 @@ pgrep -af ssh | grep -i <remote-host>          # adjust host
 
 ---
 
+## Supplementary Debug automation (development aid, not RC acceptance)
+
+This section is for exercising some of these behaviors quickly on a **Debug**
+build during development. It is **not** release acceptance. The release checklist
+requires every applicable case to be run against the **signed RC**, and the hooks
+below are `#if DEBUG` only, so they do not exist in that artifact at all. Signed-RC
+acceptance therefore needs a person, or suitable UI automation, driving the actual
+signed build. A case you cannot automate is still not **Not Applicable**; it needs
+a hands-on or UI-automation pass against the RC.
+
+**Coverage is partial even on Debug.** The hooks only select a profile, cycle the
+first row's directions, and start a sync. They do **not** exercise TC6's
+window-close choices, TC9's picking a second profile while the engine is busy, or
+TC14's full launch / refuse / relaunch sequence; those need real interaction on any
+build. Treat what follows as a fast smoke aid for the flows it does reach, not a
+substitute for running each case as written.
+
+**Drive with the app's own autotest hooks, in preference to scripted UI
+automation.** A Debug build exposes three environment hooks (compiled out of
+Release). Launch the inner
+binary directly so it inherits the environment; `open(1)` does not pass
+environment variables and only refocuses an already-running instance, so kill
+any running copy first (`pkill -x unison-ui-mac`).
+
+```sh
+make build   # Debug; the hooks are #if DEBUG only
+bin=.build/derived/Build/Products/Debug/unison-ui-mac.app/Contents/MacOS/unison-ui-mac
+UNISON_AUTOTEST_PROFILE=<name> "$bin" &
+```
+
+- `UNISON_AUTOTEST_PROFILE=<name>` selects that profile and starts its
+  connection and scan at launch, with no picker click.
+- `UNISON_AUTOTEST_RI_OPS` cycles the first row through its direction overrides.
+- `UNISON_AUTOTEST_SYNC` starts the sync automatically once the scan reconciles.
+
+**Observe with screenshots, not the log.** Under `os_log` the lifecycle lines
+render their interpolated values as `<private>`, and lifting that redaction
+needs a sudo `log config` profile, so the `log stream` command in the
+Observation tools section is for a hands-on operator and is otherwise unreliable
+for content. For an unattended run the window is the observable:
+`screencapture -x -o f.png`, then read the PNG. The status line, toolbar control
+titles, and the restart-required dialog text are all legible that way.
+
+**Wedge the transport yourself for the stall cases (TC10, TC11).** A key profile
+authenticates with no prompt, so the freeze is a plain shell command over the
+same key. Run the `kill -STOP` and the `kill -CONT` / `kill -9` cleanup exactly
+as those cases document, and freeze the remote unison *server* (not sshd) so the
+socket stays alive at the SSH layer and the app sees a genuine post-auth wedge.
+
+**`pgrep` gotcha.** The working-directory path contains `unison-ui-mac`, so a
+local `pgrep -af unison` matches your own shell. Use `pgrep -x unison-ui-mac`
+(exact process name) or a bracket pattern (`pgrep -f '[u]nison-ui-mac'`) for a
+true count of the app or its ssh children.
+
+### The interactive-password cases stay human-run
+
+TC3, TC4, TC5, TC12, and TC13 (the run-last group) need a person typing a real
+password and must not be driven unattended, for two reasons:
+
+1. **Credential rule.** They require the correct real password typed into the
+   sheet, which an automated pass does not supply.
+2. **Timing, and unverified failure causes.** A drive loop that screenshots,
+   locates the field, sends keystrokes, and clicks OK across separate tool calls
+   is far slower than a person typing, and a slow entry can miss the remote's own
+   authentication window and surface a "Couldn't connect... Connection closed"
+   message. Do not assume that is the cause: the connect watchdog is disarmed
+   before the password sheet is shown (`disarmConnectWatchdog()` in
+   `AppDelegate`), so the message alone does not establish why a given timeout
+   happened, and a genuine remote-auth timeout remains possible. Record any
+   unexpected failure with its evidence and investigate it rather than dismissing
+   it; do not widen a deadline without evidence of what it fixes. Hand these
+   cases to the human operator, and do not co-drive the GUI while someone is
+   using the Mac.
+
+---
+
 ## Test cases
 
 Fill in PASS/FAIL in the table at the bottom.
+
+The cases are grouped by whether a person has to type a password. Run the
+non-interactive cases first (TC1, TC2, TC6, TC7, TC8, TC9, TC10, TC11, TC14),
+then the interactive-password cases last (TC3, TC4, TC5, TC12, TC13), which are
+collected under **Interactive-password cases (run last)** at the end. Case
+numbers are kept stable so the release checklist and cross-references still
+resolve, which is why the interactive numbers appear out of sequence there.
 
 ### TC1 — Non-interactive: connection closes on sync-end *(re-confirm)*
 
@@ -119,33 +202,6 @@ Fill in PASS/FAIL in the table at the bottom.
 5. **Expect (ssh):** an ssh child reappears during the rescan.
 
 **PASS =** Rescan works with no prompt and repopulates the list.
-
-### TC3 — Interactive: connection is HELD through sync-end
-
-1. Open the **password** profile. Enter the password when the sheet appears.
-2. **Expect (log):** `connection prompt: …` before the scan.
-3. Sync (Go), wait for completion.
-4. **Expect (log):** `sync complete — holding interactive-auth connection until leave` (NOT the "closing" line).
-5. **Expect (ssh):** the ssh child **persists** after the sync completes (window still open).
-
-**PASS =** connection is *not* closed on sync-end for a password profile.
-
-### TC4 — Interactive: same-session Rescan does NOT re-prompt
-
-1. Continuing from TC3 (connection held).
-2. Click **Rescan**.
-3. **Expect (log):** `rescan: re-running init2 …` (reuse path, NOT "reopening").
-4. **Expect (UI):** **no** password sheet — the held connection is reused.
-
-**PASS =** Rescan reuses the connection with no second password prompt.
-
-### TC5 — Interactive: connection closes on leave
-
-1. Continuing from TC4. Click **Profiles** (or close the window) to return to the picker.
-2. **Expect (log):** `closeConnection (left profile) -> status 0`.
-3. **Expect (ssh):** ssh child reaped after returning to the picker.
-
-**PASS =** the held connection closes when you leave the profile.
 
 ### TC6 — Mid-sync window-close choices
 
@@ -245,6 +301,100 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 7. After returning to the picker via **Profiles**, immediately open another profile: it shows *"Waiting for the previous operation to finish…"*, then transitions to **restart-required** when the retained detector fires.
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
+
+### TC14 — CLI option isolation across profile opens and rescans (issue #122)
+
+Verifies, on the signed release candidate, that command-line option overrides
+passed at launch stay bound to the launch's own profile and do not silently
+reshape other profiles opened through the GUI. It exercises upstream's per-load
+command-line reparse and the app's option-isolation gate end to end; the unit
+tests cover only the Boolean gate. No synchronization is applied.
+
+**Setup.** In one Terminal, create a uniquely-named throwaway directory so nothing
+real is touched, and point the Unison directory and two local roots inside it:
+
+```sh
+TC14="$(mktemp -d)"
+export UNISON="$TC14/config"
+mkdir -p "$TC14/A/Documents" "$TC14/B"
+printf 'x' > "$TC14/A/Documents/inside.txt"   # a change INSIDE Documents
+printf 'x' > "$TC14/A/outside.txt"            # a change OUTSIDE it
+```
+
+Root **B** stays empty, so the only differences between the two roots are one
+change inside `Documents` and one outside it. Create two local-only profiles,
+`first` and `second`, **both** with roots `"$TC14/A"` and `"$TC14/B"` and **no**
+`path`, `include`, or `ignore` preferences, so `-path` is the only thing that can
+narrow the scan.
+
+Before starting: **quit** any running copy of the app (a running instance would
+serve the request instead, changing what is exercised), and make sure **Default
+interface** is **Graphical** (a saved Text preference would send `first` to the
+text interface). Run the RC's **in-bundle launcher explicitly** so the test
+exercises the RC and not an installed release or the Homebrew formula; quote its
+path, for example
+`"/Volumes/…/unison-ui-mac.app/Contents/SharedSupport/bin/unison"`. If you test a
+linked `unison`, first confirm with `readlink`/`-version` that it resolves into
+the RC bundle. Record that path. Run **every** step from this same Terminal so the
+disposable `UNISON` export stays in effect.
+
+1. **Launched restriction applies.** Run `"<RC launcher>" first -path Documents`.
+   **Expect:** `first` opens and scans, and the reconcile results list **only** the
+   change inside `Documents` (`Documents/inside.txt`); the outside change
+   (`outside.txt`) is absent.
+2. **Other profile refused.** From the picker in that same instance, open
+   `second`. **Expect:** it is refused with *"Reopen the app to open second"*; the
+   picker stays and `second` does not open.
+3. **Rescan keeps the restriction.** Back at the picker, reopen `first`, then
+   invoke **Rescan**. **Expect:** its results are again limited to `Documents`
+   (the launch override is preserved for the original profile and its rescans).
+4. **Normal relaunch clears it.** Quit, then from the **same Terminal** (with
+   `UNISON` still exported) run `"<RC launcher>"` with **no arguments**, and open
+   `second`. Do not relaunch from Finder: a Finder launch would not inherit
+   `UNISON` and could open your real configuration instead. **Expect:** `second`
+   scans both roots in full, listing the outside change (`outside.txt`) as well as
+   the one inside `Documents`; the earlier `-path` override is gone.
+
+Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
+the exact launcher path, and pass/fail evidence for each step.
+
+**PASS =** the launched `-path Documents` scan is limited to `Documents`; opening
+a different profile is refused with the reopen message; a rescan of `first` stays
+limited to `Documents`; and after a normal relaunch `second` scans its full root
+without the override.
+
+### Interactive-password cases (run last)
+
+These cases need a person to type a real password (or answer a host-key
+prompt), so they run after every non-interactive case. Their numbers are kept
+stable for cross-references, so they are out of sequence here by design.
+
+### TC3 — Interactive: connection is HELD through sync-end
+
+1. Open the **password** profile. Enter the password when the sheet appears.
+2. **Expect (log):** `connection prompt: …` before the scan.
+3. Sync (Go), wait for completion.
+4. **Expect (log):** `sync complete — holding interactive-auth connection until leave` (NOT the "closing" line).
+5. **Expect (ssh):** the ssh child **persists** after the sync completes (window still open).
+
+**PASS =** connection is *not* closed on sync-end for a password profile.
+
+### TC4 — Interactive: same-session Rescan does NOT re-prompt
+
+1. Continuing from TC3 (connection held).
+2. Click **Rescan**.
+3. **Expect (log):** `rescan: re-running init2 …` (reuse path, NOT "reopening").
+4. **Expect (UI):** **no** password sheet — the held connection is reused.
+
+**PASS =** Rescan reuses the connection with no second password prompt.
+
+### TC5 — Interactive: connection closes on leave
+
+1. Continuing from TC4. Click **Profiles** (or close the window) to return to the picker.
+2. **Expect (log):** `closeConnection (left profile) -> status 0`.
+3. **Expect (ssh):** ssh child reaped after returning to the picker.
+
+**PASS =** the held connection closes when you leave the profile.
 
 ### TC12 — Interactive auth failure (live)
 
