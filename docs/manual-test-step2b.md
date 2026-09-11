@@ -96,6 +96,66 @@ pgrep -af ssh | grep -i <remote-host>          # adjust host
 
 ---
 
+## Running these unattended (automated agent)
+
+Every non-interactive case can be driven and observed from the shell with no
+human present. The interactive-password cases collected at the end cannot; see
+the carve-out below and do not attempt them unattended.
+
+**Drive with the app's own autotest hooks, not UI automation.** A Debug build
+exposes three environment hooks (compiled out of Release). Launch the inner
+binary directly so it inherits the environment; `open(1)` does not pass
+environment variables and only refocuses an already-running instance, so kill
+any running copy first (`pkill -x unison-ui-mac`).
+
+```sh
+make build   # Debug; the hooks are #if DEBUG only
+bin=.build/derived/Build/Products/Debug/unison-ui-mac.app/Contents/MacOS/unison-ui-mac
+UNISON_AUTOTEST_PROFILE=<name> "$bin" &
+```
+
+- `UNISON_AUTOTEST_PROFILE=<name>` selects that profile and starts its
+  connection and scan at launch, with no picker click.
+- `UNISON_AUTOTEST_RI_OPS` cycles the first row through its direction overrides.
+- `UNISON_AUTOTEST_SYNC` starts the sync automatically once the scan reconciles.
+
+**Observe with screenshots, not the log.** Under `os_log` the lifecycle lines
+render their interpolated values as `<private>`, and lifting that redaction
+needs a sudo `log config` profile, so the `log stream` command in the
+Observation tools section is for a hands-on operator and is otherwise unreliable
+for content. For an unattended run the window is the observable:
+`screencapture -x -o f.png`, then read the PNG. The status line, toolbar control
+titles, and the restart-required dialog text are all legible that way.
+
+**Wedge the transport yourself for the stall cases (TC10, TC11).** A key profile
+authenticates with no prompt, so the freeze is a plain shell command over the
+same key. Run the `kill -STOP` and the `kill -CONT` / `kill -9` cleanup exactly
+as those cases document, and freeze the remote unison *server* (not sshd) so the
+socket stays alive at the SSH layer and the app sees a genuine post-auth wedge.
+
+**`pgrep` gotcha.** The working-directory path contains `unison-ui-mac`, so a
+local `pgrep -af unison` matches your own shell. Use `pgrep -x unison-ui-mac`
+(exact process name) or a bracket pattern (`pgrep -f '[u]nison-ui-mac'`) for a
+true count of the app or its ssh children.
+
+### The interactive-password cases stay human-run
+
+TC3, TC4, TC5, TC12, and TC13 (the run-last group) need a person typing a real
+password and must not be driven unattended, for two reasons:
+
+1. **Credential rule.** They require the correct real password typed into the
+   sheet, which an automated pass does not supply.
+2. **Timing, not a defect.** A drive loop that screenshots, locates the field,
+   sends keystrokes, and clicks OK across separate tool calls is far slower than
+   a person typing. The connect watchdog and the ssh grace window close the
+   connection before that loop finishes, and the app then shows a "Couldn't
+   connect... Connection closed" message. That is the slowness timeout, not a
+   connect or retry-flow bug: do not file it, and do not widen a deadline over
+   it. Hand these cases to the human operator, and do not co-drive the GUI while
+   someone is using the Mac.
+
+---
+
 ## Test cases
 
 Fill in PASS/FAIL in the table at the bottom.
