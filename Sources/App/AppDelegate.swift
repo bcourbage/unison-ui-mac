@@ -1643,6 +1643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Finder and profile-less launches only start the listener.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
             && ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] == nil {
+            classifyCommandLineLaunch()
             routeCommandLineHandoff()
         }
 
@@ -1863,11 +1864,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             + "\(commandLineLaunchProfile ?? "the command line")")
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Can't open \(requested) in this window"
+        alert.messageText = "Reopen the app to open \(requested)"
         let boundTo = commandLineLaunchProfile.map { "the profile \($0)" } ?? "this command"
         alert.informativeText =
             "This app was started from the command line with options that apply to "
-            + "\(boundTo). Opening another profile here would apply them to it too. "
+            + "\(boundTo), and they would apply to any other profile it opens too. "
             + "Quit and reopen the app normally to open \(requested)."
         alert.addButton(withTitle: "OK")
         if let window = profileWindowController?.window {
@@ -1882,14 +1883,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Hand a graphical profile request to an already-running instance and exit
     /// with its verdict, or become the primary and start the listener. Called
     /// once during launch, before any window is shown.
-    private func routeCommandLineHandoff() {
+    /// Classify this launch once, independently of any routing: whether it was a
+    /// clean profile open, with no command-line options that upstream's per-load
+    /// argv reparse would apply to whatever profile is opened next. Both the
+    /// running-instance handoff policy (a non-clean primary refuses handoffs) and
+    /// the picker's option-isolation gate read the result.
+    private func classifyCommandLineLaunch() {
         let given = unison_bridge_command_line_profile().map { String(cString: $0) }
-        // Whether THIS instance's own launch was a clean profile open. Upstream
-        // reparses the command line on every profile load, so if this instance
-        // became the primary after being launched with options, it must not serve
-        // handoffs (its options would leak into the handoff's profile).
         commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(
             arguments: CommandLine.arguments, launchProfile: given)
+    }
+
+    private func routeCommandLineHandoff() {
+        let given = unison_bridge_command_line_profile().map { String(cString: $0) }
 
         guard let bundleID = Bundle.main.bundleIdentifier,
               let path = CommandLineHandoffSocket.path(bundleID: bundleID) else {
