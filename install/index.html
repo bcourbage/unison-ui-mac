@@ -60,11 +60,24 @@ and OCaml 5.5.0 built for the macOS 15 deployment target, then run <code>make bu
 Swift and links in a few seconds rather than compiling Unison from source.</p>
 <h2 id="the-unison-command">The <code>unison</code> command</h2>
 <p>The app bundle includes a command-line launcher. Linked onto your PATH under the
-name <code>unison</code>, it behaves like Unison's own command: <code>unison -ui graphic</code> opens the
-app, <code>unison &lt;profile&gt;</code> runs Unison's text interface in the terminal on the app's
-embedded engine, and <code>unison -server</code>, which another machine runs over ssh when it
-syncs to this Mac, is served by the app's engine. A Mac with this app therefore
-needs no separate Unison installation to be the far side of an SSH profile.</p>
+name <code>unison</code>, it makes one command serve both of Unison's roles through this app.
+<code>unison -ui graphic &lt;profile&gt;</code> opens the app and starts that profile's connection
+and scan right away, stopping at the reconciliation results so you can review
+before anything is applied. <code>unison -ui text &lt;profile&gt;</code> runs Unison's text
+interface in the terminal on the app's embedded engine. <code>unison -server</code>, which
+another machine runs over ssh when it syncs to this Mac, is served by that engine,
+so a Mac with this app needs no separate Unison installation to be the far side of
+an SSH profile.</p>
+<p>A bare <code>unison &lt;profile&gt;</code>, with no <code>-ui</code>, follows the <strong>Default interface</strong>
+preference in Settings ▸ Command Line, which is Graphical unless you save Text. So
+by default it opens the app on that profile. This is a change from earlier
+versions, where a bare <code>unison &lt;profile&gt;</code> ran the text interface; pass <code>-ui text</code>,
+or set the preference to Text, to keep that. For scripts and scheduled jobs, pass
+<code>-ui text</code> explicitly, since a graphical launch with no available session (over
+ssh, from cron, or from launchd) is refused with a message rather than run in the
+terminal. When the app is already running, a <code>unison &lt;profile&gt;</code> request goes to
+that instance: it opens the profile if the app is idle at the picker, and otherwise
+keeps the work in progress and tells you it did not start the new one.</p>
 <p>Homebrew installs create the <code>unison</code> link automatically — unless the <code>unison</code>
 formula already owns that name, in which case Homebrew installs the app but keeps
 the formula's command; the <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md#the-unison-command">manual</a>
