@@ -62,6 +62,27 @@ workflow → Homebrew cask bump) is in the release runbook.
       are pre-publication gates in the job; inspecting the finished artifact
       happens after it is published.)
 
+### Command-line option isolation (#122), first release that ships it
+
+The unit tests cover the decision gate, not the end-to-end behavior (upstream's
+per-load command-line reparse and the preserved override). Demonstrate it live on
+the first release that ships the command-line interface behavior, using disposable
+profiles and roots so nothing real is touched:
+
+- [ ] **(required, live)** Create two throwaway profiles `first` and `second`
+      whose local root has both a `Documents` subfolder and at least one file
+      outside it. Launch `unison first -path Documents` graphically and confirm the
+      scan for `first` covers **only** `Documents`.
+- [ ] **(required, live)** From the picker in that same instance, open `second`:
+      it is **refused** with the "Reopen the app to open second" message; `second`
+      does not open.
+- [ ] **(required, live)** Rescan `first`: it is still restricted to `Documents`
+      (the launch override is preserved for the original profile and its rescans).
+- [ ] **(required, live)** Quit, reopen the app normally (no options), and open
+      `second`: it scans its full root, with the earlier `-path` override **gone**.
+- [ ] Record the tested build (`MARKETING_VERSION (CURRENT_PROJECT_VERSION)`) and
+      the observed results.
+
 ## 0.6.0
 
 Build **21** (v0.6.0), on top of 0.5.1 (build 20). No profile/settings migration.
