@@ -11,6 +11,35 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+- **Default interface for the `unison` command (Settings ▸ Command Line).**
+  A Graphical / Text control sets which interface `unison` uses when a command
+  omits `-ui`. It defaults to Graphical, so typing `unison <profile>` opens this
+  app. An explicit `-ui graphic` or `-ui text` always overrides the preference.
+- **A profile on the command line opens and scans.** In graphical mode,
+  `unison <profile>` opens the app and starts that profile's connection and scan
+  right away, without a further click. It stops at the reconciliation results, so
+  nothing is applied until you act.
+- **Requests reach a running instance.** When the app is already running,
+  `unison <profile>` is handled by that instance instead of starting a second
+  one: it opens the profile when idle at the picker, and keeps its work and
+  reports a clear refusal when a scan, reconciliation, sync, or a profile edit is
+  in progress. The command returns a matching exit status.
+
+### Changed
+- **A bare `unison <profile>` now opens the app by default.** Earlier versions
+  ran Unison's text interface when `-ui` was omitted; the default is now
+  Graphical for every account without a saved preference. If you relied on the
+  text interface from a bare `unison <profile>`, set **Default interface** to
+  Text in Settings ▸ Command Line, or pass `-ui text`. The launcher itself dates
+  to 0.7.0; per-user PATH setup arrived in 0.8.0.
+
+### Notes
+- Scripts and scheduled jobs should pass `-ui text` explicitly rather than depend
+  on the default interface. With the Graphical default in effect, a headless
+  `unison <profile>` (over ssh, from `cron`, or from `launchd`, with no graphical
+  session) is refused with a message instead of running in the terminal.
+
 ## [0.8.0] — 2026-09-10
 
 ### Added

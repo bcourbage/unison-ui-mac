@@ -103,39 +103,75 @@ app:
 
 | Command | What runs |
 |---|---|
-| `unison -ui graphic` | This app. A profile name after the flags is preselected in the picker when the picker lists it and its row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui graphic <profile>` | This app. The named profile opens and its connection and scan start right away, with no further click; it stops at the reconciliation results, so nothing is applied until you act. The profile must be one the picker lists and whose row opens the same file Unison would (`p.prf` given while a file named plainly `p` also exists is refused, since the picker's `p` would open that other file); a hidden profile is refused with a message. Two roots are refused. |
+| `unison -ui graphic` (no profile) | This app, at the profile picker. |
 | `unison -ui text <profile>` | Unison's text interface in the terminal, on the embedded engine. |
 | `unison -version`, `unison -doc …`, `unison -help` | Printed by the embedded engine. |
 | `unison -server`, `unison -socket …` | The embedded engine in server mode. This is what a remote peer's ssh invocation runs, so a Mac with this app installed needs no other Unison to be the far side of an SSH profile. |
-| `unison <profile>`, `unison -batch <profile>`, `unison root1 root2`, with no `-ui` | The text interface, exactly as the `unison` command behaves everywhere. The graphical interface runs only when `-ui graphic` is given. |
-| `unison -ui graphic …` where no graphical session exists (over ssh) | Refused with a message. Use `-ui text`. |
-| `unison` with no arguments, over ssh | The text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. |
+| `unison <profile>`, `unison -batch <profile>`, with no `-ui` | The interface set by **Default interface** in Settings ▸ Command Line, which is Graphical unless you save Text, so this opens the app by default. This is a change from earlier versions, where a bare `unison <profile>` ran the text interface; set **Default interface** to Text, or pass `-ui text`, to keep that. An explicit `-ui text` or `-ui graphic` overrides the preference. |
+| `unison root1 root2` (two roots), with no `-ui` | Roots are not supported by the graphical interface, so they require Text: pass `-ui text`. Under the Graphical default they are refused with a message. |
+| `unison -ui graphic …`, or the Graphical default, where no graphical session exists (over ssh, `cron`, `launchd`) | Refused with a message; pass `-ui text`. |
+| `unison` with no arguments, over ssh | Uses the **Default interface** preference. With Text it runs the text interface, which like upstream's `unison` uses the `default` profile if one exists and prints usage otherwise. With Graphical selected, it requires an available graphical session; otherwise it is refused. Pass `-ui text` to request the text interface explicitly. |
 
-The command hands Unison's engine `-ui text` followed by the arguments
-exactly as typed, and Unison interprets them: a later `-ui graphic` wins
-over that default, `-server` and `-version` take effect before any interface
-choice, `-ui=text` means the same as `-ui text`, and options take exactly one
-leading dash (`--ui` is an unknown option to Unison). Unknown options are
-reported by Unison with its usage text.
+The command hands Unison's engine the default interface (Text or Graphical, per
+the **Default interface** preference above) followed by the arguments exactly as
+typed, and Unison interprets them: a later `-ui graphic` or `-ui text` wins over
+that default, `-server` and `-version` take effect before any interface choice,
+`-ui=text` means the same as `-ui text`, and options take exactly one leading
+dash (`--ui` is an unknown option to Unison). Unknown options are reported by
+Unison with its usage text.
+
+When the graphical interface is already running and a `unison <profile>` request
+reaches it, the request goes to that instance rather than starting a second one.
+If it is idle at the picker, it opens the profile and starts its scan. If a scan,
+reconciliation, sync, or a profile edit is already in progress, it keeps that work
+and reports that it did not start the new profile, so nothing in progress is
+disturbed. The running instance also refuses a request it cannot carry faithfully,
+saying why: one that carries options beyond the profile name (on the request, or
+on the running instance's own launch, since those options would otherwise affect
+it), one from a different copy of the app, or one that uses a different Unison
+directory. A successful handoff means the profile was accepted and began opening,
+not that its scan or synchronization finished; the command returns an exit status
+that reflects that. If the reply is lost, because the running instance did not
+answer in time, the outcome is left unconfirmed and the command says so.
+
+For scripts and scheduled jobs, pass `-ui text` explicitly rather than relying on
+the default. A script that omits it runs the graphical interface wherever the
+preference is Graphical, and a `unison <profile>` with no graphical session (over
+ssh, from `cron`, or from `launchd`) is then refused with a message instead of
+running in the terminal.
 
 `unison -ui graphic` keeps the terminal busy until the app quits, like any
 foreground command. Append `&` to get the prompt back.
 
 ### Putting it on PATH
 
-Settings → Command Line shows what `unison` resolves to and offers Install
-when nothing owns the name (see [Settings](#command-line)). The manual
-equivalent: create a symlink named `unison`. Whether a given shell finds it
-depends on that shell's PATH; `/usr/local/bin` is on the PATH `/etc/paths`
-gives login shells on a stock macOS. Writing there needs an administrator
-password:
+Settings → Command Line shows what `unison` resolves to and adds the app's
+command to your login shell's PATH for you, with no administrator password (see
+[Settings](#command-line)). The command lives inside the bundle at
+`unison-ui-mac.app/Contents/SharedSupport/bin/unison`; **Add Terminal Setup**
+writes a marked, app-managed block to your login shell's startup file that puts
+that directory on PATH. When the app cannot edit the file safely on its own it
+falls back to **Manual setup**, naming the directory to add and, when it can
+identify one, the file to edit.
+
+The Settings setup and a hand-edit are separate, and the app manages only its
+own. Settings adds a marked block it records, repairs that block when the app
+moves (while **Keep unison in Terminal pointing at this app** is on), and removes
+it with **Remove Terminal Setup**. A line you add by hand is yours to keep up to
+date: the app never reads, repairs, or removes it.
+
+To do it by hand, put the app's command directory on your login shell's PATH.
+This example is for a login shell that reads `~/.zprofile` (stock zsh); use your
+own shell's startup file, and substitute the app's actual location if it is not
+in `/Applications`:
 
 ```sh
-sudo ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /usr/local/bin/unison
+echo 'export PATH="/Applications/unison-ui-mac.app/Contents/SharedSupport/bin:$PATH"' >> ~/.zprofile
 ```
 
 Only one command can own the name. Check what `unison` resolves to before
-and after:
+and after, in a fresh login shell:
 
 ```sh
 which -a unison
@@ -148,13 +184,6 @@ the formula linked, Homebrew installs the app but skips the `unison` link with
 a warning and the formula keeps the command; to give the command to the app,
 run `brew unlink unison` and then `brew reinstall --cask unison-ui`.
 
-If the app is moved, the link dangles and `unison` reports "command not
-found"; recreate it. To uninstall the command, remove the link:
-
-```sh
-sudo rm /usr/local/bin/unison
-```
-
 ### Remote peers
 
 Peers whose profiles target this Mac run `unison -server` here through
@@ -163,8 +192,9 @@ depends on this Mac's SSH server configuration and on the login shell's
 non-interactive startup files, and it may or may not include the directory
 that holds the link. Do not rely on it: set `servercmd` in the peer's profile
 to the full path of the executable you intend to run, for example
-`servercmd = /usr/local/bin/unison` or `servercmd = /opt/homebrew/bin/unison`,
-after checking with `readlink` that the path resolves into this app (see
+`servercmd = /Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison`
+or `servercmd = /opt/homebrew/bin/unison`, after checking with `readlink` that
+the path resolves into this app (see
 [Repair and migration](#repair-and-migration)).
 
 Launch a freshly installed app once from Finder before relying on it as an
@@ -178,12 +208,12 @@ launching; it is not a statement about the bundle's quarantine metadata.
 **Which command runs.** Three things can answer to the name `unison` on a
 Mac with this app:
 
-- the app's embedded launcher, `/Applications/unison-ui-mac.app/Contents/MacOS/cltool`;
-- a direct-install link, `/usr/local/bin/unison`, created by Settings →
-  Command Line or by hand;
+- the app's command, `/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison`,
+  reached when its directory is on PATH (added by Settings → Command Line, or by
+  hand);
+- a link you created by hand, wherever you put it;
 - the Homebrew cask link, `/opt/homebrew/bin/unison` on Apple Silicon (on Intel
-  the Homebrew prefix is `/usr/local`, so it is the same path as a direct
-  install).
+  the Homebrew prefix is `/usr/local`).
 
 Typing bare `unison` runs whichever comes first on that shell's PATH. A peer's
 `servercmd` with an absolute path runs exactly that path on this Mac,
@@ -195,15 +225,13 @@ app's engine and Homebrew's formula are usually built with different ones) but
 it is the resolved path, not the version string, that identifies the
 installation.
 
-**Repairing a broken direct-install link.** Settings → Command Line offers
-**Repair…** only when the first `unison` on the Terminal PATH is a broken link
-whose target path ends in `unison-ui-mac.app/Contents/MacOS/cltool`, that is,
-a link to a former copy of this app. The confirmation shows the old target
-and, when a working command sits later on the PATH, names it as the command
-the repaired link will take precedence over. At execution the app re-checks
-that the link is still broken and still stores the target the dialog showed;
-otherwise nothing changes. Broken links to anything else are shown but never
-replaced by the app. Remove or fix those by hand only if you own them.
+**Repairing the app's setup after a move.** When the app is moved or replaced,
+its command directory changes and a PATH block that named the old location stops
+resolving. While **Keep unison in Terminal pointing at this app** is on, the app
+rewrites its own block to the current location at the next launch; the Command
+Line tab also offers to add or repair it. The app only ever rewrites its own
+marked block: a link or PATH entry you created by hand is shown but left for you
+to fix.
 
 **Formula and app.** Homebrew's `unison` formula and this app can be installed
 together. With the formula linked, `brew install --cask unison-ui` (or an
@@ -953,46 +981,51 @@ Unison reads). The matching per-profile controls live in the editor's
 
 ### Command Line
 
-Shows what the `unison` command resolves to right now, for two PATHs, read
-from the filesystem each time the tab is shown (nothing here is a stored
-preference):
+Shows what `unison` resolves to in your login shell right now, and offers one
+action to manage the app's own Terminal setup. The resolution is read by running
+your login shell each time the tab is shown, so it is not a stored preference;
+the **Keep unison in Terminal pointing at this app** and **Default interface**
+preferences below are stored.
 
-- **Terminal**: the PATH obtained by running your login shell
-  non-interactively. An interactive Terminal also reads `.zshrc`, which can
-  change what `unison` resolves to there.
-- **Remote SSH command**: not determined locally. The PATH an incoming ssh
-  command receives depends on the SSH server configuration and on the login
-  shell's startup files on this Mac, which the app does not evaluate. Set
-  `servercmd` in the peer's profile to the link's full path so the peer does
-  not rely on remote PATH at all.
+The verdict names what the check found (this app, another `unison`, no `unison`,
+or that the shell's PATH could not be read), with the resolved command shown as
+evidence. From that, and whether the app already owns a setup block in your
+startup file, the pane offers at most one action. None needs an administrator
+password, and nothing is written outside your own files:
 
-Each line names the first `unison` entry on that PATH, broken links
-included, and says what it is: this app's command, another copy of this app,
-Homebrew-managed, the Homebrew `unison` formula, upstream Unison.app's
-command, a broken link, or something else. When a broken link comes before a
-command that works, both are named, because repairing the link changes which
-command the name reaches.
+- **Add Terminal Setup…** when the app owns no block yet. It writes one marked,
+  app-managed block to your login shell's startup file, adding the bundle's
+  command directory (`Contents/SharedSupport/bin`) to PATH. When the file cannot
+  be edited safely on its own, the pane shows **Manual setup** instead, naming
+  the directory to add; it names the file to edit and offers **Copy Setup Text**
+  only when it can identify the destination file, the shell is one it supports,
+  and the block can be written out as text.
+- **Use This Copy…** when the app's own block records a different copy of this
+  app, or one whose location can no longer be checked. It rewrites the block to
+  point at this copy.
+- **Remove Terminal Setup…** when this installation owns the block. It removes
+  that block; a link elsewhere may still select this app, and the app keeps
+  working from the profile picker regardless.
 
-One button is offered at a time, and only when the evidence supports it:
+**Copy This App's Command Path** copies the full path for a peer's `servercmd`.
 
-- **Install…** when neither PATH holds a `unison`. Creates
-  `/usr/local/bin/unison` as a link to this app's launcher after an
-  administrator password.
-- **Repair…** when the first entry is a broken link to a former copy of this
-  app's launcher. The confirmation shows the old target and, if a working
-  command sits later on the PATH, names it as the one that will no longer be
-  reached.
-- **Remove…** when the entry is this installation's link. Deletes it; the app
-  keeps working from the profile picker.
+**Startup offer.** While **Keep unison in Terminal pointing at this app** is on,
+the app offers, once at launch, to add the setup when it owns no block and
+`unison` does not already resolve to this app. Turn the preference off to stop
+the offer; the Command Line tab remains the way to set it up later.
 
-Anything else (the formula, upstream's command, Homebrew's link, another copy
-of this app) is shown and left alone.
+**Automatic maintenance.** Separately, and without asking, the app repairs its
+own block at launch when that block records a location the app has moved away
+from, rewriting it to the app's current path. It only ever touches its own marked
+block; a link or line you added by hand is left alone.
 
-**First-launch offer.** When neither PATH holds a `unison`, or the first
-entry is a broken link to a former copy of this app, the app offers Install
-or Repair once per launch after the picker appears. "Not Now" asks again next
-launch; "Do not ask again" stops the offer, and the Command Line tab remains
-the way to install later.
+**Default interface.** The **Default interface** control (Graphical or Text)
+sets which interface `unison` uses when a command omits `-ui`, described under
+[The `unison` command](#the-unison-command). It is Graphical unless you save
+Text, so a bare `unison <profile>` opens this app; this is a change from earlier
+versions, where it ran the text interface. An explicit `-ui graphic` or
+`-ui text` on the command line always overrides it. Scripts and scheduled jobs
+should pass `-ui text` explicitly rather than depend on this setting.
 
 ### What's stored, and where
 
@@ -1010,7 +1043,8 @@ Sparkle, not as app keys of its own). The keys this app writes:
 | `reconcile.expandPolicy` | `smart` / `all` / `rootOnly` |
 | `sync.complete.notify` | Show a Notification Center banner on sync completion (default on) |
 | `sync.complete.sound` | Play a sound on sync completion (default on) |
-| `commandLineTool.doNotAsk` | "Do not ask again" on the first-launch offer to install the `unison` command |
+| `commandLine.keepInTerminal` | Whether the app keeps `unison` in Terminal pointing at it (offers setup at launch when missing, and repairs it if the app moves) |
+| `commandLine.defaultInterface` | `graphic` or `text`: the interface `unison` uses when a command omits `-ui` |
 | `NSWindow Frame <name>` | AppKit auto: window position/size per window |
 | `NSToolbar Configuration ReconcileToolbar.v6` | Reconcile toolbar customization |
 
