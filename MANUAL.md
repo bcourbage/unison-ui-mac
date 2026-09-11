@@ -155,8 +155,16 @@ that directory on PATH. When the app cannot edit the file safely on its own it
 falls back to **Manual setup**, naming the directory to add and, when it can
 identify one, the file to edit.
 
-The manual equivalent puts the same directory on PATH yourself. For a login
-shell that reads `~/.zprofile` (stock zsh):
+The Settings setup and a hand-edit are separate, and the app manages only its
+own. Settings adds a marked block it records, repairs that block when the app
+moves (while **Keep unison in Terminal pointing at this app** is on), and removes
+it with **Remove Terminal Setup**. A line you add by hand is yours to keep up to
+date: the app never reads, repairs, or removes it.
+
+To do it by hand, put the app's command directory on your login shell's PATH.
+This example is for a login shell that reads `~/.zprofile` (stock zsh); use your
+own shell's startup file, and substitute the app's actual location if it is not
+in `/Applications`:
 
 ```sh
 echo 'export PATH="/Applications/unison-ui-mac.app/Contents/SharedSupport/bin:$PATH"' >> ~/.zprofile
@@ -175,11 +183,6 @@ from the profile picker either way. For Homebrew installs of the app: with
 the formula linked, Homebrew installs the app but skips the `unison` link with
 a warning and the formula keeps the command; to give the command to the app,
 run `brew unlink unison` and then `brew reinstall --cask unison-ui`.
-
-If the app is moved, the app repairs its own block at the next launch (while
-**Keep unison in Terminal pointing at this app** is on). To undo the setup, use
-**Remove Terminal Setup**, which restores the startup file with its other
-contents intact, or delete the block by hand.
 
 ### Remote peers
 
@@ -978,50 +981,43 @@ Unison reads). The matching per-profile controls live in the editor's
 
 ### Command Line
 
-Shows what the `unison` command resolves to right now, for two PATHs, read
-from the filesystem each time the tab is shown; the two preferences below (keep
-pointing at this app, and the default interface) are stored:
+Shows what `unison` resolves to in your login shell right now, and offers one
+action to manage the app's own Terminal setup. The resolution is read by running
+your login shell each time the tab is shown, so it is not a stored preference;
+the **Keep unison in Terminal pointing at this app** and **Default interface**
+preferences below are stored.
 
-- **Terminal**: the PATH obtained by running your login shell
-  non-interactively. An interactive Terminal also reads `.zshrc`, which can
-  change what `unison` resolves to there.
-- **Remote SSH command**: not determined locally. The PATH an incoming ssh
-  command receives depends on the SSH server configuration and on the login
-  shell's startup files on this Mac, which the app does not evaluate. Set
-  `servercmd` in the peer's profile to the link's full path so the peer does
-  not rely on remote PATH at all.
+The verdict names what the check found (this app, another `unison`, no `unison`,
+or that the shell's PATH could not be read), with the resolved command shown as
+evidence. From that, and whether the app already owns a setup block in your
+startup file, the pane offers at most one action. None needs an administrator
+password, and nothing is written outside your own files:
 
-Each line names the first `unison` entry on that PATH, broken links
-included, and says what it is: this app's command, another copy of this app,
-Homebrew-managed, the Homebrew `unison` formula, upstream Unison.app's
-command, a broken link, or something else. When a broken link comes before a
-command that works, both are named, because repairing the link changes which
-command the name reaches.
+- **Add Terminal Setup…** when the app owns no block yet. It writes one marked,
+  app-managed block to your login shell's startup file, adding the bundle's
+  command directory (`Contents/SharedSupport/bin`) to PATH. When the file cannot
+  be edited safely on its own, the pane shows **Manual setup** instead, naming
+  the directory to add; it names the file to edit and offers **Copy Setup Text**
+  only when it can identify the destination file, the shell is one it supports,
+  and the block can be written out as text.
+- **Use This Copy…** when the app's own block records a different copy of this
+  app, or one whose location can no longer be checked. It rewrites the block to
+  point at this copy.
+- **Remove Terminal Setup…** when this installation owns the block. It removes
+  that block; a link elsewhere may still select this app, and the app keeps
+  working from the profile picker regardless.
 
-One action is offered at a time, and only when the evidence supports it. None
-needs an administrator password, and nothing is written outside your own files:
+**Copy This App's Command Path** copies the full path for a peer's `servercmd`.
 
-- **Add Terminal Setup…** when `unison` does not already resolve to this app.
-  It writes an app-managed block to your login shell's startup file that adds
-  the bundle's command directory (`Contents/SharedSupport/bin`) to PATH. When
-  the file cannot be edited safely on its own (a redirected `ZDOTDIR`, an
-  unrecognized system file, or an unsupported shell), it becomes **Manual
-  setup**, naming the directory to add and, when it can identify one, the file
-  to edit, with **Copy Setup Text** for the block.
-- **Use This Copy…** when another copy of this app owns the command; it points
-  the setup at this copy instead.
-- **Remove Terminal Setup…** when the block is this installation's. It restores
-  the startup file with its other contents intact; the app keeps working from
-  the profile picker.
+**Startup offer.** While **Keep unison in Terminal pointing at this app** is on,
+the app offers, once at launch, to add the setup when it owns no block and
+`unison` does not already resolve to this app. Turn the preference off to stop
+the offer; the Command Line tab remains the way to set it up later.
 
-The Homebrew formula, upstream's command and a Homebrew-managed link are shown
-and left alone. **Copy This App's Command Path** copies the full path for a
-peer's `servercmd`.
-
-**First-launch offer.** While **Keep unison in Terminal pointing at this app**
-is on, the app offers to add the setup, or repair it if the app has moved, once
-at launch when `unison` does not resolve to this app. Turn the preference off to
-stop the offer; the Command Line tab remains the way to set it up later.
+**Automatic maintenance.** Separately, and without asking, the app repairs its
+own block at launch when that block records a location the app has moved away
+from, rewriting it to the app's current path. It only ever touches its own marked
+block; a link or line you added by hand is left alone.
 
 **Default interface.** The **Default interface** control (Graphical or Text)
 sets which interface `unison` uses when a command omits `-ui`, described under
