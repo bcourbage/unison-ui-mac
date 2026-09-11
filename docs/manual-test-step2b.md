@@ -96,14 +96,26 @@ pgrep -af ssh | grep -i <remote-host>          # adjust host
 
 ---
 
-## Running these unattended (automated agent)
+## Supplementary Debug automation (development aid, not RC acceptance)
 
-Every non-interactive case can be driven and observed from the shell with no
-human present. The interactive-password cases collected at the end cannot; see
-the carve-out below and do not attempt them unattended.
+This section is for exercising some of these behaviors quickly on a **Debug**
+build during development. It is **not** release acceptance. The release checklist
+requires every applicable case to be run against the **signed RC**, and the hooks
+below are `#if DEBUG` only, so they do not exist in that artifact at all. Signed-RC
+acceptance therefore needs a person, or suitable UI automation, driving the actual
+signed build. A case you cannot automate is still not **Not Applicable**; it needs
+a hands-on or UI-automation pass against the RC.
 
-**Drive with the app's own autotest hooks, not UI automation.** A Debug build
-exposes three environment hooks (compiled out of Release). Launch the inner
+**Coverage is partial even on Debug.** The hooks only select a profile, cycle the
+first row's directions, and start a sync. They do **not** exercise TC6's
+window-close choices, TC9's picking a second profile while the engine is busy, or
+TC14's full launch / refuse / relaunch sequence; those need real interaction on any
+build. Treat what follows as a fast smoke aid for the flows it does reach, not a
+substitute for running each case as written.
+
+**Drive with the app's own autotest hooks, in preference to scripted UI
+automation.** A Debug build exposes three environment hooks (compiled out of
+Release). Launch the inner
 binary directly so it inherits the environment; `open(1)` does not pass
 environment variables and only refocuses an already-running instance, so kill
 any running copy first (`pkill -x unison-ui-mac`).
@@ -145,14 +157,18 @@ password and must not be driven unattended, for two reasons:
 
 1. **Credential rule.** They require the correct real password typed into the
    sheet, which an automated pass does not supply.
-2. **Timing, not a defect.** A drive loop that screenshots, locates the field,
-   sends keystrokes, and clicks OK across separate tool calls is far slower than
-   a person typing. The connect watchdog and the ssh grace window close the
-   connection before that loop finishes, and the app then shows a "Couldn't
-   connect... Connection closed" message. That is the slowness timeout, not a
-   connect or retry-flow bug: do not file it, and do not widen a deadline over
-   it. Hand these cases to the human operator, and do not co-drive the GUI while
-   someone is using the Mac.
+2. **Timing, and unverified failure causes.** A drive loop that screenshots,
+   locates the field, sends keystrokes, and clicks OK across separate tool calls
+   is far slower than a person typing, and a slow entry can miss the remote's own
+   authentication window and surface a "Couldn't connect... Connection closed"
+   message. Do not assume that is the cause: the connect watchdog is disarmed
+   before the password sheet is shown (`disarmConnectWatchdog()` in
+   `AppDelegate`), so the message alone does not establish why a given timeout
+   happened, and a genuine remote-auth timeout remains possible. Record any
+   unexpected failure with its evidence and investigate it rather than dismissing
+   it; do not widen a deadline without evidence of what it fixes. Hand these
+   cases to the human operator, and do not co-drive the GUI while someone is
+   using the Mac.
 
 ---
 

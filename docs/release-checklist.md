@@ -45,7 +45,10 @@ artifact is ever published.
    not publish the appcast yet.
 2. **Run every applicable TC case against that exact artifact.** Work through
    `docs/manual-test-step2b.md` on the signed RC, recording each case as
-   **Pass**, **Fail**, or **Not Applicable with a stated justification**. The
+   **Pass**, **Fail**, or **Not Applicable with a stated justification**. Not
+   Applicable means the case does not apply to this release (a feature it
+   covers is absent, for example), never that automation to drive it was
+   unavailable; a case that applies but was not exercised is not a Pass. The
    non-interactive cases run first and the interactive-password cases last, in
    the order that file lays out.
 3. **Fix any failures and repeat the affected tests on the replacement RC.** A
@@ -58,12 +61,15 @@ artifact is ever published.
    and bump the Homebrew cask.
 
 Today `release.yml` signs, notarizes and publishes in a single run, so it does
-not yet stop between steps 1 and 4. Running this sequence as written therefore
-requires the protected manual-promotion stage noted above: a job that uploads
-the signed, notarized RC without creating the public Release or feed, promoted
-to publish only after step 2 passes. Until that split exists, the single-run
-publish is the RC and any step-2 failure is handled as the rollback incident
-documented per release below, not as a blocked publication.
+not yet stop between steps 1 and 4. That is a release blocker, not a license to
+publish first and roll back on failure: **publication stays held until the
+workflow can hand off an unpublished signed RC for step 2 and promote that exact
+artifact to publish without rebuilding.** Building the protected manual-promotion
+stage (a job that uploads the signed, notarized RC without creating the public
+Release or feed, promoted only after step 2 passes) can be separate work, but
+until it exists the sequence above is not satisfiable and a release must not go
+out. The per-release rollback procedures below cover a defect that escapes this
+gate; they do not authorize skipping it.
 
 ## Every release
 
