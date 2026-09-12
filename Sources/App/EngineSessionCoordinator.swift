@@ -305,8 +305,11 @@ final class EngineSessionCoordinator {
             }
             let op = mintOp()
             phase = .opening(s, op)
-            // Reconnect re-runs init1, which resets prefs; re-apply this
-            // session's own overrides so its scope survives the reconnect.
+            // Reconnect re-runs init1, which resets prefs; re-apply this session's
+            // same override source. For `.explicit(v)` the scope survives the
+            // reconnect; `.inheritLaunch` does NOT re-apply the launch options
+            // (the engine's first-load parse is spent) — a transitional limit to
+            // be retired by explicit launch-argument delivery.
             return [.beginConnect(s, op, profile: profile, overrides: currentOverrides)]
         case .failed(let r):
             return enterRestartRequired("previous close failed: \(r)")

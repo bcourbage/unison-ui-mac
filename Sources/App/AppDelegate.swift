@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// once the launch-time checks (crash report, abandoned staging, setup offer)
     /// have run — the same order a user's pick would follow. Cleared when opened.
     private var pendingLaunchProfile: String?
+    /// Routes the transitional launch-command-line inheritance to the first
+    /// launch-origin profile session (named launch profile, or the first picker
+    /// selection when none was named); later selections are explicitly unscoped.
+    private var launchOverrides = LaunchOverrideRouter()
     /// The running-instance handoff listener (req 5 of #122). Present only when
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
@@ -1720,13 +1724,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // A profile named on the command line opens after those checks, the
             // same order a user's pick follows. profileSelected re-checks this
             // profile's own staging block and stops at the reconciliation results.
-            if let name = self?.pendingLaunchProfile {
-                self?.pendingLaunchProfile = nil
-                // The launch session inherits the process command line (the
-                // engine parses it on the first load); every later open is an
-                // explicit session. This transitional inheritance is superseded
-                // once launch options are delivered as explicit args (later PR).
-                self?.profileSelected(name, overrides: .inheritLaunch)
+            if let self, let name = self.pendingLaunchProfile {
+                self.pendingLaunchProfile = nil
+                // A profile named on the command line is the launch session and
+                // claims the launch inheritance (the engine parses the process
+                // argv on the first load). Transitional; superseded once launch
+                // options are delivered as explicit args (later PR).
+                self.profileSelected(name, overrides: self.launchOverrides.forLaunchProfile())
             }
         }
 
@@ -1813,7 +1817,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // here — doing so was part of the old single-window authority.
         let controller = profileWindowController
             ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile in
-                self?.profileSelected(profile)
+                guard let self else { return }
+                // The first picker selection after an option launch that named no
+                // profile inherits the launch command line; later selections are
+                // explicitly unscoped.
+                self.profileSelected(profile, overrides: self.launchOverrides.forPickerSelection())
             }
         controller.onRemoteCheckRequested = { [weak self] profile in
             self?.checkRemoteCommand(forProfile: profile)
