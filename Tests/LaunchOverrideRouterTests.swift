@@ -48,3 +48,24 @@ final class LaunchOverrideRouterTests: XCTestCase {
         XCTAssertEqual(r2.argsForNextOpen(), [])
     }
 }
+
+/// Extraction-failure handling (finding P1): a failed extraction must STOP the
+/// launch (the delegate writes the message and exits), never open a session that
+/// would silently ignore the command line's options.
+final class LaunchExtractionTests: XCTestCase {
+    func test_ok_proceedsWithArgs() {
+        XCTAssertEqual(LaunchExtraction.decide(status: UNISON_BRIDGE_OK, args: ["-path", "X"]),
+                       .proceed(["-path", "X"]))
+        XCTAssertEqual(LaunchExtraction.decide(status: UNISON_BRIDGE_OK, args: []), .proceed([]))
+    }
+    func test_missingCallback_refuses() {
+        guard case .refuse = LaunchExtraction.decide(status: UNISON_BRIDGE_ERR_MISSING, args: []) else {
+            return XCTFail("a missing callback (stale blob) must refuse, not open unscoped")
+        }
+    }
+    func test_parseOrAllocError_refuses() {
+        guard case .refuse = LaunchExtraction.decide(status: UNISON_BRIDGE_ERR_EXN, args: []) else {
+            return XCTFail("an extraction error must refuse, not open unscoped")
+        }
+    }
+}

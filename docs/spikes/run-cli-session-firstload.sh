@@ -74,6 +74,7 @@ ocamlopt -g "${inc[@]}" -o firstload "${CMX[@]}" "${COBJ[@]}"
 
 printf 'root = %s/r1\nroot = %s/r2\n' "$U" "$U" > "$U/firstload.prf"
 printf 'root = %s/r1\nroot = %s/r2\npath = ProfA\npath = ProfB\n' "$U" "$U" > "$U/Pprec.prf"
+printf 'path = FragPath\n' > "$U/frag.prf"    # a fragment included via -include
 mkdir -p "$U/r1" "$U/r2"
 
 rc=0
@@ -101,10 +102,16 @@ e5=$(SESS=extract UNISON="$U" ./firstload -confirmbigdeletes=false home)
 check "preserves the alias as given (non-canonical)"   "[-confirmbigdeletes=false]" "$e5"
 e6=$(SESS=extract UNISON="$U" ./firstload -ui graphic home)
 check "cli_only-only command line extracts nothing"    ""                          "$e6"
+e7=$(SESS=extract UNISON="$U" ./firstload -ui graphic -include frag home)
+check "keeps -include (config-bearing cli_only exception)" "[-include][frag]"       "$e7"
+e8=$(SESS=extract UNISON="$U" ./firstload -source frag)
+check "keeps -source (config-bearing cli_only exception)"  "[-source][frag]"        "$e8"
 
 echo "##### extraction -> application: profile precedence + list accumulation #####"
 a1=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -ui graphic -path CliX home)
 check "extracted -path accumulates onto the profile's paths" "[ProfA][ProfB][CliX]" "$a1"
+a2=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -include frag -path CliX home)
+check "-include fragment's path, then -path, accumulate onto profile" "[ProfA][ProfB][FragPath][CliX]" "$a2"
 
 echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
 cleanup; trap - EXIT

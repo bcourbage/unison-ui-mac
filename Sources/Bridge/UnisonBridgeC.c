@@ -1797,6 +1797,29 @@ int unison_bridge_set_session_args(int argc, const char *const argv[]) {
  * resulting string array out to a malloc'd char** the caller owns. */
 struct cmdline_args_io { int argc; char **argv; int status; };
 
+/* Copy an OCaml string array (already rooted; runtime lock held) out to a
+ * malloc'd char**. Fails CLOSED: on ANY failed element copy, free everything and
+ * return non-OK with empty outputs (*argc=0,*argv=NULL) — a partially-copied
+ * vector would silently drop a token (Swift skips NULLs) and change the meaning
+ * of the rest. Uses bridge_strdup so the allocation-failure test seam applies. */
+static int marshal_ocaml_string_array(value arr, int *out_argc, char ***out_argv) {
+    *out_argc = 0; *out_argv = NULL;
+    int n = (int)Wosize_val(arr);
+    if (n == 0) return UNISON_BRIDGE_OK;
+    char **out = (char **)calloc((size_t)n, sizeof(char *));
+    if (out == NULL) return UNISON_BRIDGE_ERR_EXN;
+    for (int i = 0; i < n; i++) {
+        out[i] = bridge_strdup(String_val(Field(arr, i)));
+        if (out[i] == NULL) {
+            for (int j = 0; j < i; j++) free(out[j]);
+            free(out);
+            return UNISON_BRIDGE_ERR_EXN;
+        }
+    }
+    *out_argc = n; *out_argv = out;
+    return UNISON_BRIDGE_OK;
+}
+
 static void _ocaml_command_line_session_args(void *user) {
     CAMLparam0();
     CAMLlocal1(arr);
@@ -1810,14 +1833,7 @@ static void _ocaml_command_line_session_args(void *user) {
     bool raised = false;
     arr = bridge_call1_exn(fn, Val_unit, &raised);
     if (raised) { io->status = UNISON_BRIDGE_ERR_EXN; CAMLreturn0; }
-    int n = (int)Wosize_val(arr);          /* string array: boxed block, one field per element */
-    char **out = NULL;
-    if (n > 0) {
-        out = (char **)calloc((size_t)n, sizeof(char *));
-        if (out == NULL) { io->status = UNISON_BRIDGE_ERR_EXN; CAMLreturn0; }
-        for (int i = 0; i < n; i++) out[i] = strdup(String_val(Field(arr, i)));
-    }
-    io->argc = n; io->argv = out; io->status = UNISON_BRIDGE_OK;
+    io->status = marshal_ocaml_string_array(arr, &io->argc, &io->argv);
     CAMLreturn0;
 }
 
@@ -1826,6 +1842,37 @@ int unison_bridge_command_line_session_args(int *out_argc, char ***out_argv) {
     run_on_ocaml_thread(_ocaml_command_line_session_args, &io);
     if (out_argc) *out_argc = io.argc;
     if (out_argv) *out_argv = io.argv;
+    return io.status;
+}
+
+/* TEST-ONLY: exercise the session-args out-marshaling (marshal_ocaml_string_array)
+ * on a caller-provided vector, so its allocation-failure path is coverable
+ * without controlling the process argv. Builds an OCaml string array from
+ * in_argv and marshals it back out through the SAME helper the accessor uses
+ * (combine with unison_bridge_test_fail_strdup_at). */
+struct marshal_test_io { int in_argc; const char *const *in_argv; int out_argc; char **out_argv; int status; };
+static void _ocaml_test_marshal(void *user) {
+    CAMLparam0();
+    CAMLlocal2(arr, s);
+    struct marshal_test_io *io = user;
+    int n = io->in_argc < 0 ? 0 : io->in_argc;
+    arr = caml_alloc_tuple(n);
+    for (int i = 0; i < n; i++) {
+        s = caml_copy_string(io->in_argv[i] ? io->in_argv[i] : "");
+        Store_field(arr, i, s);
+    }
+    io->status = marshal_ocaml_string_array(arr, &io->out_argc, &io->out_argv);
+    CAMLreturn0;
+}
+
+int unison_bridge_test_marshal_string_array(int in_argc, const char *const in_argv[],
+                                            int *out_argc, char ***out_argv) {
+    struct marshal_test_io io = { .in_argc = in_argc, .in_argv = in_argv,
+                                  .out_argc = 0, .out_argv = NULL,
+                                  .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_test_marshal, &io);
+    if (out_argc) *out_argc = io.out_argc;
+    if (out_argv) *out_argv = io.out_argv;
     return io.status;
 }
 

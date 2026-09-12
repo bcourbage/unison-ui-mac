@@ -1,8 +1,8 @@
 diff --git a/src/ubase/prefs.ml b/src/ubase/prefs.ml
-index e68fb12..71d49ca 100644
+index e68fb12..0f8c063 100644
 --- a/src/ubase/prefs.ml
 +++ b/src/ubase/prefs.ml
-@@ -678,6 +678,50 @@ let scanCmdLine usage =
+@@ -678,6 +678,59 @@ let scanCmdLine usage =
         | _             -> assert false);
    !m
  
@@ -14,10 +14,16 @@ index e68fb12..71d49ca 100644
 +   reimplement option parsing or keep a separate arity table.  Each option's
 +   registered spec both consumes its value and tells us how to re-emit the token.
 +
-+   - cli_only options (process roles such as -ui/-server/-doc) are consumed by
-+     their real spec but NOT emitted.  (cli_only is the classifier; roots given
-+     on the command line are refused separately by the graphical-launch policy,
-+     so they do not reach a session here.)
++   - cli_only options are consumed by their real spec but NOT emitted, WITH two
++     documented exceptions: [-source] and [-include] are cli_only yet
++     config-bearing (their handlers load a profile/file's preferences, e.g. a
++     [path]), so they ARE emitted and re-applied through the parser in order.
++     cli_only is thus evidence of a process role, not a complete classifier; the
++     remaining cli_only options (-ui/-server/-socket/-doc/-version/-host/-selftest
++     /-dumparchives/-prefsdocs/-prefsman and the anonymous "rest" collector) are
++     genuine process/CLI-management roles and are excluded.  (Roots given on the
++     command line are refused separately by the graphical-launch policy, so they
++     do not reach a session here.)
 +   - Anonymous arguments (the profile and any roots) are ignored by the anonfun,
 +     so profile/root removal follows the engine's own parsing rules.
 +   - Read-only: the recording specs never set a preference.
@@ -36,7 +42,10 @@ index e68fb12..71d49ca 100644
 +  let acc = ref [] in
 +  let emit toks = acc := !acc @ toks in
 +  let hook name (spec : Uarg.spec) : Uarg.spec =
-+    let keep = not (isCliOnly name) in
++    (* Keep profile-settable options; also keep the config-bearing cli_only
++       exceptions -source and -include (their handlers load preferences). *)
++    let canon = canonicalName name in
++    let keep = (not (isCliOnly canon)) || canon = "source" || canon = "include" in
 +    let opt = "-" ^ name in
 +    match spec with
 +      Uarg.Bool _   -> Uarg.Bool   (fun b -> if keep then emit (if b then [opt] else [opt ^ "=false"]))

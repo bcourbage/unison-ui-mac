@@ -1,5 +1,26 @@
 import Foundation
 
+/// What to do with the result of extracting the launch's session args
+/// (`UnisonBridge.commandLineSessionArgs`). A failure must STOP the launch:
+/// opening a session unscoped would silently ignore the options the command line
+/// asked for (for example, scanning the whole profile when `-path Documents` was
+/// given). Fail closed — finding P1. Pure + testable; the delegate performs the
+/// effect (proceed with the args, or write the message and exit).
+enum LaunchExtraction {
+    enum Decision: Equatable {
+        case proceed([String])
+        case refuse(message: String)
+    }
+
+    static func decide(status: Int32, args: [String]) -> Decision {
+        if status == UNISON_BRIDGE_OK { return .proceed(args) }
+        return .refuse(message:
+            "unison-ui-mac: could not read this launch's command-line options (code \(status)); "
+            + "not opening a session that would silently ignore them. "
+            + "The app may need to be reinstalled.")
+    }
+}
+
 /// Delivers a graphical launch's own command-line options (extracted by the
 /// engine, patch 0009) to the FIRST launch-origin profile session that actually
 /// opens, matching the #162 contract: a launch that supplies options belongs to

@@ -1684,18 +1684,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Extract this launch's own session-scoped options (patch 0009) and route
         // them to the first launch-origin open (the named profile, or the first
         // picker selection). Delivered as explicit args, so the scope survives
-        // rescans and reconnects; later picker selections are unscoped.
+        // rescans and reconnects; later picker selections are unscoped. On an
+        // extraction failure, STOP the launch rather than open a session that
+        // would silently ignore the options — before the named open or the picker
+        // is reached, so neither can bypass the failure (finding P1).
         let (extractStatus, launchArgs) = UnisonBridge.commandLineSessionArgs()
-        if extractStatus == UNISON_BRIDGE_OK {
-            launchOverrides = LaunchOverrideRouter(launchArgs: launchArgs)
-        } else {
-            // The engine already parsed and accepted this command line at startup,
-            // so a re-extraction failure is unexpected. Don't silently apply a
-            // wrong scope: surface it and open unscoped.
-            CommandLineEngineLaunch.writeStderr(
-                "unison-ui-mac: could not read the launch command-line options (code \(extractStatus)); opening unscoped.")
-            log.write("commandLineSessionArgs failed status \(extractStatus) — launch opens unscoped")
-            launchOverrides = LaunchOverrideRouter(launchArgs: nil)
+        switch LaunchExtraction.decide(status: extractStatus, args: launchArgs) {
+        case .proceed(let a):
+            launchOverrides = LaunchOverrideRouter(launchArgs: a)
+        case .refuse(let message):
+            log.write("commandLineSessionArgs failed status \(extractStatus) — refusing the launch")
+            CommandLineEngineLaunch.writeStderr(message)
+            exit(1)
         }
 
         switch disposition {

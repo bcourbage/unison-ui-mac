@@ -189,14 +189,22 @@ non-additive part is the first-load parse contract (both documented below).
   are ignored by the anonfun, so profile/root removal follows the parser's own
   rules. It sets no preference (read-only) and raises `Util.Fatal` on a parse
   error, so the caller refuses rather than silently dropping input.
-- **Classification note (`cli_only` as evidence):** the session/process-role
-  split uses `cli_only` (verified: `-ui`/`-server`/`-socket`/`-doc`/… are
-  `cli_only`; `-path`/`-ignore`/… are not). Roots given on the command line are a
-  separate case, refused for graphical launches by `CommandLineGraphicalLaunch`
-  before extraction is reached. The extraction is validated against the engine's
-  own parsing by the fresh-process harness (`docs/spikes/run-cli-session-firstload.sh`:
-  order, repeats, aliases, whitespace, option-like values, and
-  extraction→application with profile precedence + list accumulation).
+- **Classification note (`cli_only` as evidence, not a complete classifier):**
+  the split treats a command-line option as a session override when it is NOT
+  `cli_only`, with two documented **exceptions**: `-source` and `-include` are
+  `cli_only` yet **config-bearing** (their handlers load a profile/file's
+  preferences, e.g. a `path`), so they ARE kept and re-applied in order. Verified
+  against the engine's registrations: `-ui`/`-server`/`-socket`/`-doc`/`-version`/
+  `-host`/`-selftest`/`-dumparchives`/`-prefsdocs`/`-prefsman` and the anonymous
+  `rest` collector are genuine process/CLI-management roles (excluded); `-path`/
+  `-ignore`/… are not `cli_only` (kept); `-source`/`-include` are the kept
+  exceptions. Roots given on the command line are refused for graphical launches
+  by `CommandLineGraphicalLaunch` before extraction is reached. All of this is
+  validated against the engine's own parsing by the fresh-process harness
+  (`docs/spikes/run-cli-session-firstload.sh`: order, repeats, aliases,
+  whitespace, option-like values, `-include`/`-source` kept, and
+  extraction→application with profile precedence + list accumulation, including a
+  fragment's `path` included via `-include`).
 - **Upstream relevance: LOW–MEDIUM.** `isCliOnly` is a small general accessor;
   the extractor is general engine code but motivated by the macUI session model.
 

@@ -169,4 +169,49 @@ final class SessionArgsBridgeTests: XCTestCase {
         XCTAssertGreaterThan(unison_bridge_test_connect_setup_count(), setupBefore,
                        "a normal load advances the connect-setup counter")
     }
+
+    /// Marshal a vector through the SAME out-marshaling as the session-args
+    /// accessor (the C helper), returning its status + copied args.
+    private func marshal(_ argv: [String]) -> (status: Int32, args: [String]) {
+        let cargv: [UnsafePointer<CChar>?] = argv.map { UnsafePointer(strdup($0)) }
+        defer { for p in cargv { free(UnsafeMutablePointer(mutating: p)) } }
+        var outArgc: Int32 = 0
+        var outArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? = nil
+        let st = cargv.withUnsafeBufferPointer {
+            unison_bridge_test_marshal_string_array(Int32(argv.count), $0.baseAddress, &outArgc, &outArgv)
+        }
+        var out: [String] = []
+        if st == UNISON_BRIDGE_OK, let base = outArgv {
+            for i in 0..<Int(outArgc) { if let s = base[i] { out.append(String(cString: s)); free(s) } }
+        }
+        if let base = outArgv { free(base) }
+        return (st, out)
+    }
+
+    /// **Finding P2 (allocation failure).** A failed element copy must return
+    /// non-OK with EMPTY outputs — never a partially-copied vector that silently
+    /// drops a token (which would change the remaining tokens' meaning).
+    func test_d_marshalStringArray_allocFailureIsEmptyNotPartial() {
+        let ok = marshal(["-path", "A", "-path", "B"])
+        XCTAssertEqual(ok.status, UNISON_BRIDGE_OK)
+        XCTAssertEqual(ok.args, ["-path", "A", "-path", "B"])
+
+        // Fail the 1st copy → non-OK, empty (no dropped token).
+        unison_bridge_test_fail_strdup_at(1)
+        let f1 = marshal(["-path", "A", "-path", "B"])
+        XCTAssertNotEqual(f1.status, UNISON_BRIDGE_OK)
+        XCTAssertEqual(f1.args, [], "a failed copy returns empty, not a partial vector")
+
+        // Fail the 2nd copy → non-OK, empty (the first is freed, not leaked/returned).
+        unison_bridge_test_fail_strdup_at(2)
+        let f2 = marshal(["-path", "A", "-path", "B"])
+        XCTAssertNotEqual(f2.status, UNISON_BRIDGE_OK)
+        XCTAssertEqual(f2.args, [])
+
+        // Runtime still usable after the injected failures.
+        unison_bridge_test_fail_strdup_at(0)
+        let ok2 = marshal(["-x"])
+        XCTAssertEqual(ok2.status, UNISON_BRIDGE_OK)
+        XCTAssertEqual(ok2.args, ["-x"])
+    }
 }

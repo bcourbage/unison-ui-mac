@@ -260,6 +260,14 @@ int unison_bridge_set_session_args(int argc, const char *const argv[]);
  * *out_argc is 0 and *out_argv is NULL. */
 int unison_bridge_command_line_session_args(int *out_argc, char ***out_argv);
 
+/* TEST-ONLY: marshal a caller-provided vector through the SAME out-marshaling as
+ * unison_bridge_command_line_session_args, so its allocation-failure path is
+ * coverable (pair with unison_bridge_test_fail_strdup_at). On success sets
+ * *out_argc/*out_argv (caller frees each element + the array); on a failed copy
+ * returns non-OK with *out_argc=0, *out_argv=NULL and frees everything. */
+int unison_bridge_test_marshal_string_array(int in_argc, const char *const in_argv[],
+                                            int *out_argc, char ***out_argv);
+
 /* === Credential prompts ===
  *
  * Used between init1 (needs_prompt=true) and init2 to walk OCaml's
