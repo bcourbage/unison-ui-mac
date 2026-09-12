@@ -25,12 +25,12 @@ review.
 | 0005 sync-completion snapshot | `uimacbridge.ml` (+11/−2) | **No** | macUI bridge | Low (macUI perf) |
 | 0006 register-lock | `uimacbridge.ml` (+59/−0) | **Yes** | macUI bridge | Low (macUI-only) |
 | 0007 session-argv parser | `ubase/uarg.ml` (+82/−21), `ubase/uarg.mli` (+11/−0), `ubase/prefs.ml` (+28/−0), `ubase/prefs.mli` (+9/−0) | **No** | general engine (CLI parser) | Medium (backward-compatible, general) |
-| 0008 session-argv bridge | `uimacbridge.ml` (+40/−0) | **Yes** | macUI bridge | Low (macUI-only) |
+| 0008 session-argv bridge | `uimacbridge.ml` (additive + first-load contract) | **No** | macUI bridge | Low (macUI-only) |
 
-Four of the seven are strictly additive (0002, 0004, 0006, 0008). The three
+Three of the seven are strictly additive (0002, 0004, 0006). The four
 non-additive ones each change a small, well-scoped piece of existing code (see
-below); 0007's `uarg.ml` change is a behavior-preserving refactor (evidence
-below).
+below); 0007's `uarg.ml` change is a behavior-preserving refactor, and 0008's
+non-additive part is the first-load parse contract (both documented below).
 
 ---
 
@@ -141,11 +141,13 @@ below).
 
 ## 0008 — `uimacbridge-session-argv`
 
-- **Additive only: YES** — `src/uimacbridge.ml` +40/−0. Adds a `sessionArgs` ref,
-  the `unisonSetSessionArgs` callback (store-only), and, inside `do_unisonInit1`,
-  a call to `Prefs.parseCmdLineArgs` in the window after the profile (and any
-  first-time command line) is loaded and before root validation / connection
-  setup. No existing line changes.
+- **Additive only: NO** — `src/uimacbridge.ml`. Adds a `sessionArgs` option ref,
+  the store-only `unisonSetSessionArgs` callback, a test-only `connectSetupCount`
+  and its read callback, and inside `do_unisonInit1` both a `Prefs.parseCmdLineArgs`
+  apply and a counter bump. It also **changes the existing first-load parse
+  block** so the legacy `Prefs.parseCmdLine` runs only when no explicit session
+  arguments were supplied (see the contract below), so the two override sources
+  cannot compete.
 - **What:** gives the app a per-session option channel. Swift stores the current
   session's argument vector via the callback (which touches no preference), and
   `do_unisonInit1` applies it through 0007's parser on **every** (re)load — so a
@@ -153,6 +155,20 @@ below).
   mutate an active session (storing is separate from applying). A bad argument
   raises before `openConnectionStart`, so a failed apply never begins a connection
   or scan; the next load resets clean.
+- **First-load contract (why it is not additive):** `sessionArgs` is an OPTION.
+  `None` means no explicit session arguments were supplied, so the legacy
+  process-argv parse is preserved (first load only). `Some v` (even empty) means
+  the caller owns this session's options: the process argv is **not** also parsed
+  (avoiding double-counted list prefs and leaked launch options), and `v` is
+  applied. The driver leaves it `None` only on the very first connect of the
+  process when the session has no explicit overrides (so a launch command line is
+  still honored); every later load sets `Some` (an empty vector resets), so no
+  scope leaks between sessions.
+- **`connectSetupCount`** is a monotonic counter bumped where `do_unisonInit1`
+  reaches root validation + connection setup, i.e. strictly after session
+  arguments are applied. It is read only through a test bridge accessor
+  (`unison_bridge_test_connect_setup_count`) to prove a failed argument apply
+  started no connection or scan.
 - **Upstream relevance: LOW.** macUI-bridge-only surface; depends on 0007.
 
 ---
