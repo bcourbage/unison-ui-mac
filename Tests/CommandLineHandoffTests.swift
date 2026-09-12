@@ -222,7 +222,9 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertTrue(m.contains("synchronizing"))
         XCTAssertTrue(m.contains("work"))
         XCTAssertTrue(m.contains("handle the current sync in the app"))
-        XCTAssertTrue(m.contains("-ui text"))
+        // No "-ui text" alternative during an active sync (must not suggest
+        // starting another process against these roots mid-sync).
+        XCTAssertFalse(m.contains("-ui text"))
     }
 
     func test_decide_editing_refuses_withCloseEditorGuidance() {
@@ -243,6 +245,9 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertTrue(m.contains("needs to be quit and reopened"))
         XCTAssertTrue(m.contains("work"))
         XCTAssertTrue(m.contains("Quit and reopen it"))
+        // No "-ui text" alternative: a restart must clear the uncertain runtime
+        // first; starting another process is not the fix.
+        XCTAssertFalse(m.contains("-ui text"))
     }
 
     func test_decide_requestAlreadyPending_refuses() {

@@ -284,21 +284,23 @@ enum CommandLineHandoff {
             case .synchronizing(let reason):
                 // This slice does not drive the sync decision from a request; the
                 // user makes it in the app. Refuse clearly and do not disturb the
-                // running synchronization.
+                // running synchronization. No "-ui text" alternative here: starting
+                // another process against these roots mid-sync is exactly what must
+                // not be suggested while active work is unresolved.
                 return .reply(.refused(message:
                     "unison-ui-mac is \(reason), so it did not start \(name). "
-                    + "Choose how to handle the current sync in the app, then run the command again, "
-                    + "or add -ui text to run it in the terminal."))
+                    + "Choose how to handle the current sync in the app, then run the command again."))
             case .editing(let profileDescription):
                 return .reply(.refused(message:
                     "unison-ui-mac is \(profileDescription), so it did not start \(name). "
                     + "Close the profile editor, then run the command again, "
                     + "or add -ui text to run it in the terminal."))
             case .restartRequired(let reason):
+                // No "-ui text" alternative: the runtime is in an uncertain state a
+                // restart must clear first; starting another process is not the fix.
                 return .reply(.refused(message:
                     "unison-ui-mac \(reason), so it did not start \(name). "
-                    + "Quit and reopen it, then run the command again, "
-                    + "or add -ui text to run it in the terminal."))
+                    + "Quit and reopen it, then run the command again."))
             case .requestAlreadyPending:
                 return .reply(.refused(message:
                     "unison-ui-mac is already handling another command-line request, so it did not start \(name). "
