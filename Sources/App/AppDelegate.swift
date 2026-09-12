@@ -303,6 +303,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// closeConnection; a successful close before the queued session start).
     private func run(_ effects: [EngineSessionCoordinator.Effect]) {
         for effect in effects { execute(effect) }
+        // A pending sync decision whose sync has just ended/failed must be resolved
+        // here (identity-bound, idempotent) so the caller is not left waiting to the
+        // deadline while the sheet still says the sync is running (#4). Checked
+        // before the notification so observers see a consistent state.
+        resolvePendingSyncDecisionIfStale()
         // The single funnel for EVERY coordinator mutation: `run(...)` wraps
         // all of them, and `runScanEffects` routes its remainder through here
         // too, so this notification fires on every engine-phase transition
@@ -2238,14 +2243,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     /// How a pending sync decision was resolved.
-    private enum SyncDecisionOutcome { case keepSyncing, abortAndClose, closeAndLetRun, expired, unavailable }
+    private enum SyncDecisionOutcome {
+        case keepSyncing, abortAndClose, closeAndLetRun
+        case expired          // the admission deadline elapsed with no choice
+        case unavailable      // the sync ended/changed while the decision was open
+        case transportLost    // the caller went away before the interim could be sent
+    }
 
     /// Hold a command-line request that arrived during an active (windowed) sync,
     /// arm its monotonic admission deadline, and raise the three-way decision. The
     /// caller waits (two-phase): this returns `.awaitDecision`, and the outcome the
-    /// user's choice (or the deadline timer) produces is delivered through the
-    /// ticket. The sheet is presented on the next runloop turn so the interim reply
-    /// is sent first (this runs synchronously on the main thread inside the handler).
+    /// user's choice (or the deadline timer, a state change, or a transport failure)
+    /// produces is delivered through the ticket. The sheet is presented on the next
+    /// runloop turn so the interim reply is sent first (this runs synchronously on
+    /// the main thread inside the handler). Every callback captures THIS `pending`
+    /// instance and resolves only while it is still the armed one, so a late
+    /// callback for an expired request can never resolve a newer one (#2).
     private func armSyncDecision(request: CommandLineHandoff.Request,
                                  session: EngineSessionCoordinator.SessionID) -> HandoffServe {
         let ticket = HandoffDecisionTicket()
@@ -2258,12 +2271,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // slot is released, and the sheet is dismissed.
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: deadline)
-        timer.setEventHandler { [weak self] in self?.finishSyncDecision(.expired) }
+        timer.setEventHandler { [weak self] in self?.finishSyncDecision(pending, .expired) }
         pending.timer = timer
         timer.resume()
+        // If the caller goes away before the interim is sent, the serving thread
+        // abandons the ticket; invalidate the still-armed decision (#3).
+        ticket.setAbandonHandler { [weak self] in
+            DispatchQueue.main.async { self?.finishSyncDecision(pending, .transportLost) }
+        }
         log.write("handoff: '\(request.given)' arrived during a sync; raising the decision (\(Int(windowSecs))s)")
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async { [weak self] in self?.presentSyncDecisionSheet() }
+        DispatchQueue.main.async { [weak self] in self?.presentSyncDecisionSheet(pending) }
         return .awaitDecision(
             interim: CommandLineHandoff.syncDecisionInterim(name: request.given, timeoutSeconds: Int(windowSecs)),
             ticket: ticket,
@@ -2274,12 +2292,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// window-modal sheet on the syncing session's window (non-blocking, so a second
     /// request is still refused rather than stalling the main thread). If the sync
     /// state changed before we could present, resolve the request as unavailable.
-    private func presentSyncDecisionSheet() {
-        guard let p = pendingSyncDecision else { return }
+    private func presentSyncDecisionSheet(_ pending: PendingSyncDecision) {
+        guard pendingSyncDecision === pending else { return }   // already resolved (expiry / state change)
+        let p = pending
         guard case .syncing(let s, _) = engine.phase, s == p.session,
               let window = windowBySession[p.session]?.window else {
             log.write("handoff: sync state changed before its decision was shown; refusing '\(p.request.given)'")
-            finishSyncDecision(.unavailable)
+            finishSyncDecision(p, .unavailable)
             return
         }
         if Self.testSyncDecisionSheetSuppressed { return }
@@ -2301,34 +2320,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         p.sheetAlert = alert
         alert.beginSheetModal(for: window) { [weak self] response in
             switch response {
-            case .alertSecondButtonReturn: self?.applySyncDecision(.abortAndClose)
-            case .alertThirdButtonReturn:  self?.applySyncDecision(.closeAndLetRun)
-            default:                       self?.applySyncDecision(.keepSyncing)   // Keep Syncing / dismissed
+            case .alertSecondButtonReturn: self?.applySyncDecision(p, .abortAndClose)
+            case .alertThirdButtonReturn:  self?.applySyncDecision(p, .closeAndLetRun)
+            default:                       self?.applySyncDecision(p, .keepSyncing)   // Keep Syncing / dismissed
             }
         }
     }
 
-    /// Map a user choice to the resolution (also the test entry point).
-    private func applySyncDecision(_ decision: CommandLineHandoff.SyncDecision) {
+    /// Map a user choice for a SPECIFIC pending decision to the resolution.
+    private func applySyncDecision(_ pending: PendingSyncDecision,
+                                   _ decision: CommandLineHandoff.SyncDecision) {
         switch decision {
-        case .keepSyncing:    finishSyncDecision(.keepSyncing)
-        case .abortAndClose:  finishSyncDecision(.abortAndClose)
-        case .closeAndLetRun: finishSyncDecision(.closeAndLetRun)
+        case .keepSyncing:    finishSyncDecision(pending, .keepSyncing)
+        case .abortAndClose:  finishSyncDecision(pending, .abortAndClose)
+        case .closeAndLetRun: finishSyncDecision(pending, .closeAndLetRun)
         }
     }
 
-    /// The single, idempotent resolution point for a pending sync decision — reached
-    /// from the user's sheet choice, the expiry timer, or a state change. The first
-    /// caller wins; the rest are no-ops. Cancels the timer, releases the slot,
-    /// dismisses the sheet if it is still up, computes the final verdict, and
-    /// completes the ticket the waiting caller reads.
-    private func finishSyncDecision(_ outcome: SyncDecisionOutcome) {
+    /// Resolve the pending decision if the sync it was raised for has ended, failed,
+    /// or otherwise left `.syncing`. Called after every engine transition so the
+    /// caller does not wait to the deadline while the sheet still says the sync is
+    /// running (#4). Identity-bound and idempotent via `finishSyncDecision`.
+    private func resolvePendingSyncDecisionIfStale() {
         guard let p = pendingSyncDecision else { return }
+        if case .syncing(let s, _) = engine.phase, s == p.session { return }   // still its sync
+        log.write("sync decision: the sync for '\(p.request.given)' ended/changed while waiting; refusing")
+        finishSyncDecision(p, .unavailable)
+    }
+
+    /// The single, idempotent, IDENTITY-BOUND resolution point — reached from the
+    /// user's sheet choice, the expiry timer, a state change, or a transport failure.
+    /// It resolves only `pending` and only while it is still the armed decision, so a
+    /// stale callback for an already-resolved request cannot resolve a newer one
+    /// (#2). Cancels the timer, releases the slot, dismisses the sheet if it is still
+    /// up, computes the final verdict, and completes the ticket the caller reads.
+    private func finishSyncDecision(_ pending: PendingSyncDecision, _ outcome: SyncDecisionOutcome) {
+        guard pendingSyncDecision === pending else { return }
+        let p = pending
         pendingSyncDecision = nil
         p.timer?.cancel()
-        // Dismiss the request-specific sheet if still up (the expiry / state-change
-        // paths). On the user-choice path it has already closed, so this is a no-op.
-        // The user's normal sync controls (the window's own close) are unaffected.
+        // Dismiss the request-specific sheet if still up (the expiry / state-change /
+        // transport paths). On the user-choice path it has already closed, so this is
+        // a no-op. The user's normal sync controls (the window's own close) are
+        // unaffected.
         if let parent = p.sheetParent, let sheetWindow = p.sheetAlert?.window {
             parent.endSheet(sheetWindow)
         }
@@ -2343,6 +2377,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             response = CommandLineHandoff.syncDecisionExpiredResponse(name: name)
         case .unavailable:
             response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
+        case .transportLost:
+            // The caller is gone; completing the ticket only unblocks the serving
+            // thread. The point of this path is releasing the slot + sheet above.
+            log.write("sync decision: caller went away before the interim; dropping '\(name)'")
+            response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
         case .abortAndClose, .closeAndLetRun:
             response = resolveSyncLeaveChoice(outcome, pending: p)
         }
@@ -2350,9 +2389,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     /// Apply a "leave the sync" choice: revalidate that the ORIGINATING session is
-    /// still syncing (a phase change gets an explicit refusal, never an
-    /// unconditional takeover into a phase that cannot drain, #3), honour the sync
-    /// exit, and open the request only when it has not passed its admission deadline.
+    /// still syncing (a phase change gets an explicit refusal, never a takeover into
+    /// a phase that cannot drain, #3). An expired request-specific choice is wholly
+    /// inactive — it does not touch the sync (the user keeps their own window
+    /// controls), so there is no half-done sync-exit (#5). A live, in-deadline choice
+    /// honours the sync exit and opens the request via the takeover (which also tears
+    /// the syncing window down).
     private func resolveSyncLeaveChoice(_ outcome: SyncDecisionOutcome,
                                         pending p: PendingSyncDecision) -> CommandLineHandoff.Response {
         let name = p.request.given
@@ -2360,15 +2402,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("sync decision: state changed before the choice; refusing '\(name)'")
             return CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
         }
-        let expired = DispatchTime.now() >= p.deadline
-        let intent: EngineSessionCoordinator.SyncExitIntent =
-            (outcome == .abortAndClose) ? .abortAndClose : .closeAndLetRun
-        // Honour the user's sync choice regardless of the request's admission.
-        run(engine.requestSyncExit(intent))
-        guard !expired else {
-            log.write("sync decision: leave chosen but the request expired — not opening '\(name)'")
+        guard DispatchTime.now() < p.deadline else {
+            // Expired: the request-specific choice is inactive; leave the sync as it
+            // is (the user retains the window's own close controls).
+            log.write("sync decision: choice arrived after the deadline; the request is inactive — '\(name)'")
             return CommandLineHandoff.syncDecisionExpiredResponse(name: name)
         }
+        let intent: EngineSessionCoordinator.SyncExitIntent =
+            (outcome == .abortAndClose) ? .abortAndClose : .closeAndLetRun
+        run(engine.requestSyncExit(intent))
         let started = commandLineTakeover(name: name, args: p.request.sessionArgs)
         return started
             ? .started
@@ -3608,12 +3650,18 @@ extension AppDelegate {
         -> HandoffServe {
         handleCommandLineHandoff(request, deadline: deadline)
     }
-    /// The real sync-decision application (PR-B), bypassing the sheet.
+    /// The real sync-decision application (PR-B), bypassing the sheet, for the
+    /// currently-armed decision.
     func applySyncDecisionForTesting(_ decision: CommandLineHandoff.SyncDecision) {
-        applySyncDecision(decision)
+        if let p = pendingSyncDecision { applySyncDecision(p, decision) }
     }
-    /// Expire the pending decision as the timer would.
-    func expireSyncDecisionForTesting() { finishSyncDecision(.expired) }
+    /// Expire the currently-armed decision as the timer would.
+    func expireSyncDecisionForTesting() {
+        if let p = pendingSyncDecision { finishSyncDecision(p, .expired) }
+    }
+    /// Drive the post-transition resolution hook (as `run` does after an engine
+    /// transition), so a test can assert a real sync end resolves the decision.
+    func resolvePendingSyncDecisionIfStaleForTesting() { resolvePendingSyncDecisionIfStale() }
     /// Arm a pending sync decision directly (no sheet), returning the ticket the
     /// caller would wait on. `expired` seeds a deadline already in the past.
     @discardableResult
@@ -3625,6 +3673,18 @@ extension AppDelegate {
         pendingSyncDecision = PendingSyncDecision(request: request, session: session,
                                                   ticket: ticket, deadline: deadline)
         return ticket
+    }
+    /// Arm a decision and return its ticket plus a closure that fires a late
+    /// callback BOUND to this specific decision (as a stale sheet dismissal would),
+    /// for the identity-safety test (#2).
+    func armSyncDecisionForTesting(request: CommandLineHandoff.Request,
+                                   session: EngineSessionCoordinator.SessionID)
+        -> (ticket: HandoffDecisionTicket, fireStaleCallback: () -> Void) {
+        let ticket = HandoffDecisionTicket()
+        let pending = PendingSyncDecision(request: request, session: session, ticket: ticket,
+                                          deadline: DispatchTime.now() + Self.syncDecisionAdmissionWindow)
+        pendingSyncDecision = pending
+        return (ticket, { [weak self] in self?.applySyncDecision(pending, .keepSyncing) })
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
 }
