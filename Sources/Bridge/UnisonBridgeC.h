@@ -231,6 +231,20 @@ typedef void (*unison_init1_complete_handler_t)(bool needs_prompt);
 void unison_bridge_set_init1_complete_handler(unison_init1_complete_handler_t h);
 int unison_bridge_init1(const char *profile_name);
 
+/* === Per-session command-line overrides ===
+ *
+ * Stores the current graphical session's own command-line option arguments
+ * (for example {"-path", "Documents"}) in the engine, to be applied by the
+ * next unison_bridge_init1 through the engine's own parser. The caller MUST
+ * call this before every unison_bridge_init1 (with an empty vector when the
+ * session has no overrides), because the engine re-applies the stored vector
+ * on every profile (re)load: a stale vector would otherwise leak into a later
+ * session. Storing does NOT touch any preference — application happens only
+ * inside init1 — so this can never mutate an active session's preferences.
+ * Synchronous and fast. Returns UNISON_BRIDGE_OK, UNISON_BRIDGE_ERR_MISSING
+ * (callback not registered — a stale blob), or UNISON_BRIDGE_ERR_EXN. */
+int unison_bridge_set_session_args(int argc, const char *const argv[]);
+
 /* === Credential prompts ===
  *
  * Used between init1 (needs_prompt=true) and init2 to walk OCaml's

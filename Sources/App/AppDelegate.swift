@@ -290,8 +290,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         switch effect {
         case .showSession(let s, let profile):
             driveShowSession(s, profile: profile)
-        case .beginConnect(let s, let op, let profile):
-            driveBeginConnect(s, op, profile: profile)
+        case .beginConnect(let s, let op, let profile, let args):
+            driveBeginConnect(s, op, profile: profile, args: args)
         case .beginScan(let s, let op):
             driveBeginScan(s, op)
         case .beginSync(let s, let op):
@@ -505,10 +505,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         showProfilePicker(select: profile)
     }
 
-    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String) {
+    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String, args: [String]) {
         pendingConnect = (s, op)
         sheetShownThisConnect = false
         retryNotice.reset()
+        // Apply this session's own command-line overrides before init1, on both
+        // the first connect and every reconnect. Always called (with an empty
+        // vector when there are none) so a previous session's overrides can
+        // never leak into this one — the engine re-applies whatever is stored on
+        // each profile (re)load. Storing touches no preference; the mutation
+        // happens inside init1 (patch 0008), where a bad option raises before the
+        // connection opens.
+        let argStatus = UnisonBridge.setSessionArgs(args)
+        if argStatus != UNISON_BRIDGE_OK {
+            log.write("set_session_args (\(s)/\(op)) status \(argStatus) (args=\(args))")
+        }
         // Show the scanning spinner for a reconnect (a rescan after we closed
         // a non-interactive connection on sync-end). The first open already
         // shows it via `beginInitialScan` in driveShowSession, so guard on the

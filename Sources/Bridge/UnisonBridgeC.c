@@ -1734,6 +1734,41 @@ int unison_bridge_init1(const char *profile_name) {
     return io.status;
 }
 
+/* Per-session command-line overrides: store the caller's argument vector in the
+ * engine (patch 0008's unisonSetSessionArgs), to be applied by the next init1.
+ * Store-only: builds an OCaml string array and hands it to the setter, which
+ * merely records it — no preference is touched here. */
+struct set_session_args_io { int argc; const char *const *argv; int status; };
+
+static void _ocaml_set_session_args(void *user) {
+    CAMLparam0();
+    CAMLlocal2(arr, s);
+    struct set_session_args_io *io = user;
+    io->status = UNISON_BRIDGE_ERR_MISSING;
+    const value *fn = caml_named_value("unisonSetSessionArgs");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonSetSessionArgs not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    int n = io->argc < 0 ? 0 : io->argc;
+    arr = caml_alloc_tuple(n);   /* string array: n boxed string fields */
+    for (int i = 0; i < n; i++) {
+        s = caml_copy_string(io->argv[i] ? io->argv[i] : "");
+        Store_field(arr, i, s);
+    }
+    bool raised = false;
+    (void)bridge_call1_exn(fn, arr, &raised);
+    io->status = raised ? UNISON_BRIDGE_ERR_EXN : UNISON_BRIDGE_OK;
+    CAMLreturn0;
+}
+
+int unison_bridge_set_session_args(int argc, const char *const argv[]) {
+    struct set_session_args_io io = { .argc = argc, .argv = argv,
+                                      .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_set_session_args, &io);
+    return io.status;
+}
+
 /* === Credential loop ===
  *
  * All four operate on g_preconn. Same dispatch-to-OCaml-worker pattern as

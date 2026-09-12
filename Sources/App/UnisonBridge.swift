@@ -74,6 +74,13 @@ enum UnisonBridge {
     /// operation (typically by calling `profileSelected` again).
     nonisolated(unsafe) static var fatalDismissedHandler: ((_ msg: String, _ shouldRetry: Bool) -> Void)?
 
+    /// Test-only: when true, the fatal trampoline skips its modal `NSAlert`
+    /// (which would block a hosted XCTest's main runloop forever) and delivers
+    /// the message straight to `fatalDismissedHandler` with `shouldRetry=false`.
+    /// This exercises the real engine→`fatalError`→bridge fatal path without a
+    /// human to click OK; it changes nothing in production, where it stays false.
+    nonisolated(unsafe) static var testFatalModalSuppressed = false
+
     /// Invoked (main queue) when the user picks "Retry Ignoring Archives"
     /// on an archive-inconsistency fatal. The handler is expected to close
     /// the broken reconcile state and re-run the profile with a one-shot
@@ -178,6 +185,26 @@ enum UnisonBridge {
     static func installFatalHandler(onDismiss: @escaping (String, Bool) -> Void) {
         fatalDismissedHandler = onDismiss
         unison_bridge_set_fatal_handler(_swiftFatalTrampoline)
+    }
+
+    /// Store the current session's command-line overrides in the engine, to be
+    /// applied by the next `init1`. Must be called before every `init1` (with an
+    /// empty array when the session has no overrides), because the engine
+    /// re-applies the stored vector on every profile (re)load — so a stale
+    /// vector would otherwise leak into a later session. Storing touches no
+    /// preference; the mutation happens only inside `init1`. Returns the bridge
+    /// status (OK, or ERR_MISSING on a stale blob without the callback).
+    @discardableResult
+    static func setSessionArgs(_ args: [String]) -> Int32 {
+        // Arguments are copied into OCaml by the callback, so the C strings are
+        // only needed for the duration of the call — strdup then free.
+        let argv = UnsafeMutablePointer<UnsafePointer<CChar>?>.allocate(capacity: max(args.count, 1))
+        defer { argv.deallocate() }
+        var dups: [UnsafeMutablePointer<CChar>?] = []
+        dups.reserveCapacity(args.count)
+        for (i, a) in args.enumerated() { let d = strdup(a); dups.append(d); argv[i] = UnsafePointer(d) }
+        defer { for d in dups { free(d) } }
+        return unison_bridge_set_session_args(Int32(args.count), argv)
     }
 }
 
@@ -348,6 +375,12 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
     let recovery = ArchiveRecovery.parse(message: text, unisonDirectory: unisonDir)
 
     DispatchQueue.main.async {
+        // Test seam: bypass the blocking modal so a hosted XCTest can observe the
+        // real fatal path (message + delivery) without hanging on runModal.
+        if UnisonBridge.testFatalModalSuppressed {
+            UnisonBridge.fatalDismissedHandler?(text, false)
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Unison error"

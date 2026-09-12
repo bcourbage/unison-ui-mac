@@ -14,7 +14,7 @@ final class EngineSessionCoordinatorTests: XCTestCase {
     // MARK: effect extractors
 
     private func beginConnect(_ e: [Effect]) -> (C.SessionID, C.OperationID)? {
-        for x in e { if case let .beginConnect(s, op, _) = x { return (s, op) } }; return nil
+        for x in e { if case let .beginConnect(s, op, _, _) = x { return (s, op) } }; return nil
     }
     private func beginScan(_ e: [Effect]) -> (C.SessionID, C.OperationID)? {
         for x in e { if case let .beginScan(s, op) = x { return (s, op) } }; return nil
