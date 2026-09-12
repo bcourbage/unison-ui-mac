@@ -1,50 +1,69 @@
 import Foundation
 
-/// Routes the transitional launch-command-line inheritance to the FIRST
-/// launch-origin profile session that actually opens, matching the #162
-/// contract: a graphical launch that supplies options belongs to its first
-/// opened profile — the profile named on the command line, or, when none was
-/// named and the picker is shown, the first profile the user successfully opens.
-/// Every later picker selection is explicitly unscoped, and a handoff request
-/// from another process never inherits (it does not consult the router).
+/// What to do with the result of extracting the launch's session args
+/// (`UnisonBridge.commandLineSessionArgs`). A failure must STOP the launch:
+/// opening a session unscoped would silently ignore the options the command line
+/// asked for (for example, scanning the whole profile when `-path Documents` was
+/// given). Fail closed — finding P1. Pure + testable; the delegate performs the
+/// effect (proceed with the args, or write the message and exit).
+enum LaunchExtraction {
+    enum Decision: Equatable {
+        case proceed([String])
+        case refuse(message: String)
+    }
+
+    static func decide(status: Int32, args: [String]) -> Decision {
+        if status == UNISON_BRIDGE_OK { return .proceed(args) }
+        return .refuse(message:
+            "unison-ui-mac: could not read this launch's command-line options (code \(status)); "
+            + "not opening a session that would silently ignore them. "
+            + "The app may need to be reinstalled.")
+    }
+}
+
+/// Delivers a graphical launch's own command-line options (extracted by the
+/// engine, patch 0009) to the FIRST launch-origin profile session that actually
+/// opens, matching the #162 contract: a launch that supplies options belongs to
+/// its first opened profile — the profile named on the command line, or, when
+/// none was named and the picker is shown, the first profile the user
+/// successfully opens. Every later picker selection is explicitly unscoped, and
+/// a handoff request from another process never consults the router.
 ///
-/// Choosing the override is separate from consuming inheritance: an open that is
-/// REFUSED before it is accepted (for example, an outstanding archive-recovery
-/// block) must leave inheritance pending, so the user's retry after recovery
-/// still inherits. Callers therefore do:
+/// Choosing the args is separate from consuming them: an open that is REFUSED
+/// before it is accepted (for example, an outstanding archive-recovery block)
+/// must leave the launch args pending, so the user's retry after recovery still
+/// receives them. Callers do:
 ///
-///     let overrides = router.overrideForNextOpen()
-///     let accepted  = profileSelected(name, overrides: overrides)
-///     router.didOpen(overrides, accepted: accepted)
+///     let args = router.argsForNextOpen()
+///     let accepted = profileSelected(name, args: args)
+///     router.didOpen(accepted: accepted)
 ///
-/// This is a transitional bridge for the engine's first-load parse of the
-/// process argv; it does NOT preserve launch options across a reconnect (see
-/// SessionOverrides.inheritLaunch), and is retired once launch options are
-/// delivered as explicit args (a later PR). Extracted from AppDelegate so the
-/// launch → picker sequence, including a refused-then-retried selection, is
-/// testable without AppKit.
+/// Unlike the transitional `.inheritLaunch` it replaces, the launch options are
+/// delivered as EXPLICIT session args, so they are re-applied on every (re)load
+/// and survive a reconnect (retiring the earlier reconnect limitation).
+/// Extracted from AppDelegate so the launch → picker sequence, including a
+/// refused-then-retried selection, is testable without AppKit.
 struct LaunchOverrideRouter {
-    private var inheritancePending: Bool
+    /// The launch session's own args, until claimed by the first accepted open.
+    /// `nil` means nothing to deliver (no graphical launch options, or already
+    /// claimed); an empty array is treated the same for delivery.
+    private var pendingLaunchArgs: [String]?
 
-    /// `launchCanInherit` is false only when the process had no graphical launch
-    /// session to inherit from (nothing to route). Defaults true.
-    init(launchCanInherit: Bool = true) {
-        inheritancePending = launchCanInherit
+    init(launchArgs: [String]? = nil) {
+        pendingLaunchArgs = launchArgs
     }
 
-    /// The override source for the next launch-origin open (named launch profile
-    /// or picker selection). Does NOT consume inheritance — call `didOpen` with
-    /// the outcome.
-    func overrideForNextOpen() -> SessionOverrides {
-        inheritancePending ? .inheritLaunch : .explicit([])
+    /// The args for the next launch-origin open (named launch profile or picker
+    /// selection). Does NOT consume — call `didOpen` with the outcome.
+    func argsForNextOpen() -> [String] {
+        pendingLaunchArgs ?? []
     }
 
-    /// Record the outcome of an open that received `overrides`. Inheritance is
-    /// consumed only when an `.inheritLaunch` open was actually accepted (entered
-    /// opening or was queued); a refusal leaves it pending for the retry.
-    mutating func didOpen(_ overrides: SessionOverrides, accepted: Bool) {
-        if accepted, case .inheritLaunch = overrides {
-            inheritancePending = false
-        }
+    /// Record the outcome of a launch-origin open. The pending launch args are
+    /// consumed once an open is accepted (entered opening or was queued); a
+    /// refusal leaves them pending for the retry. Later opens (nothing pending)
+    /// are unaffected.
+    mutating func didOpen(accepted: Bool) {
+        if accepted { pendingLaunchArgs = nil }
     }
 }

@@ -206,6 +206,25 @@ enum UnisonBridge {
         defer { for d in dups { free(d) } }
         return unison_bridge_set_session_args(Int32(args.count), argv)
     }
+
+    /// Extract the launch command line's session-scoped options (patch 0009),
+    /// to deliver to the launch session as its explicit overrides. Returns the
+    /// bridge status and the args; on any non-OK status the args are empty. The
+    /// caller decides how to treat a non-OK status (a parse error should refuse,
+    /// not silently proceed unscoped).
+    static func commandLineSessionArgs() -> (status: Int32, args: [String]) {
+        var argc: Int32 = 0
+        var argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? = nil
+        let status = unison_bridge_command_line_session_args(&argc, &argv)
+        var out: [String] = []
+        if status == UNISON_BRIDGE_OK, let base = argv {
+            for i in 0..<Int(argc) {
+                if let s = base[i] { out.append(String(cString: s)); free(s) }
+            }
+        }
+        if let base = argv { free(base) }   // free the array itself (elements freed above)
+        return (status, out)
+    }
 }
 
 /* Trampolines: called from the OCaml worker thread. Hop to the main queue

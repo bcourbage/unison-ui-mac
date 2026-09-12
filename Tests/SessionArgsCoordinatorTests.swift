@@ -2,25 +2,18 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Session-scoped CLI options at the coordinator layer (the production reducer,
-/// not a model of it). These prove the control-flow guarantees the engine
-/// integration rests on:
-///  - a session's own overrides travel with its `.beginConnect` (the only effect
-///    that drives `unison_bridge_set_session_args` + `init1`);
-///  - an ordinary picker selection carries none;
-///  - a request that must wait STORES its overrides and produces NO
-///    `.beginConnect` — hence no preference-touching bridge call — until the
-///    active session's operation AND its cleanup have finished;
-///  - a reconnect re-applies exactly the SAME session's overrides (so the scope
-///    survives a reconnect and does not accumulate or leak).
+/// not a model of it): overrides travel with the open, a queued request applies
+/// nothing while a session is active and then only its own args, and a reconnect
+/// re-applies the same args.
 @MainActor
 final class SessionArgsCoordinatorTests: XCTestCase {
 
     private typealias C = EngineSessionCoordinator
     private typealias Effect = EngineSessionCoordinator.Effect
 
-    /// Full `.beginConnect` payload, including the session's override source.
-    private func connect(_ e: [Effect]) -> (C.SessionID, C.OperationID, String, SessionOverrides)? {
-        for x in e { if case let .beginConnect(s, op, p, ov) = x { return (s, op, p, ov) } }
+    /// Full `.beginConnect` payload, including the session's args.
+    private func connect(_ e: [Effect]) -> (C.SessionID, C.OperationID, String, [String])? {
+        for x in e { if case let .beginConnect(s, op, p, a) = x { return (s, op, p, a) } }
         return nil
     }
     private func scanOp(_ e: [Effect]) -> C.OperationID? {
@@ -33,68 +26,48 @@ final class SessionArgsCoordinatorTests: XCTestCase {
         e.contains { if case .showWaiting = $0 { return true }; return false }
     }
 
-    // MARK: - Overrides travel with the open
-
-    func test_open_carriesItsOwnArgs_pickerCarriesExplicitEmpty() {
+    func test_open_carriesItsOwnArgs_pickerCarriesEmpty() {
         let c = C()
-        let a = connect(c.requestOpen(profile: "A", overrides: .explicit(["-path", "Documents"])))
+        let a = connect(c.requestOpen(profile: "A", args: ["-path", "Documents"]))
         XCTAssertEqual(a?.2, "A")
-        XCTAssertEqual(a?.3, .explicit(["-path", "Documents"]),
-                       "a CLI open must hand its overrides to the driver on the first connect")
-
-        // A fresh coordinator: an ordinary picker selection is an explicit empty
-        // request (which the driver applies as Some [], suppressing inheritance),
-        // NOT legacy launch inheritance.
+        XCTAssertEqual(a?.3, ["-path", "Documents"],
+                       "a CLI open hands its overrides to the driver on the first connect")
         let d = C()
         let o = connect(d.requestOpen(profile: "P"))
-        XCTAssertEqual(o?.3, .explicit([]), "a picker selection is explicitly unscoped")
+        XCTAssertEqual(o?.3, [], "a picker selection carries no overrides")
     }
-
-    // MARK: - A queued request cannot alter an active session
 
     func test_queuedRequest_appliesNothingWhileActive_thenOnlyItsOwnArgs() {
         let c = C()
-        // A opens with its own scope and becomes active (scanning, then ready).
-        let a = connect(c.requestOpen(profile: "A", overrides: .explicit(["-path", "Documents"])))!
-        XCTAssertEqual(a.3, .explicit(["-path", "Documents"]))
+        let a = connect(c.requestOpen(profile: "A", args: ["-path", "Documents"]))!
+        XCTAssertEqual(a.3, ["-path", "Documents"])
         let e1 = c.connectFinished(a.0, a.1, result: .remote(interactive: false))
         let aScan = scanOp(e1)!
 
-        // B requested while A is active: it must WAIT and drive no connect. No
-        // `.beginConnect(B)` means the driver issues no set_session_args / init1
-        // for B — A's engine preferences cannot be touched by B.
-        let bWhileScanning = c.requestOpen(profile: "B", overrides: .explicit(["-path", "Other"]))
+        let bWhileScanning = c.requestOpen(profile: "B", args: ["-path", "Other"])
         XCTAssertTrue(hasWaiting(bWhileScanning), "B queues behind active A")
         XCTAssertNil(connect(bWhileScanning), "no connect for B while A is scanning")
 
-        // A finishes scanning → ready. B still must not start (A still owns the
-        // engine and its connection is not yet cleaned up).
         let ready = c.scanCompleted(a.0, aScan)
         XCTAssertNil(connect(ready), "no connect for B while A sits ready")
 
-        // A is left (leave → close). Only after the close COMPLETES (cleanup
-        // done) does B start — and it carries ONLY its own overrides.
         let closing = c.abandon(reason: "user left A")
         let aClose = closeOp(closing)!
         XCTAssertNil(connect(closing), "B does not start until A's close completes")
         let bStart = c.closeCompleted(a.0, aClose, status: 0)
         let b = connect(bStart)
         XCTAssertEqual(b?.2, "B")
-        XCTAssertEqual(b?.3, .explicit(["-path", "Other"]),
+        XCTAssertEqual(b?.3, ["-path", "Other"],
                        "B opens with only its own overrides, none inherited from A")
         XCTAssertNotEqual(b?.0, a.0, "B is a new session")
     }
 
-    // MARK: - Reconnect re-applies the same session's overrides
-
     func test_reconnectAfterSyncEndClose_reappliesSameArgs_noAccumulation() {
         let c = C()
-        let a = connect(c.requestOpen(profile: "A", overrides: .explicit(["-path", "Documents"])))!
+        let a = connect(c.requestOpen(profile: "A", args: ["-path", "Documents"]))!
         let e1 = c.connectFinished(a.0, a.1, result: .remote(interactive: false))
         _ = c.scanCompleted(a.0, scanOp(e1)!)                 // ready, connection open
 
-        // A non-interactive sync ends: the coordinator presents results and
-        // begins a back-to-ready close (the connection is torn down).
         let sync = c.requestSync()
         let syncO = { () -> C.OperationID in
             for x in sync { if case let .beginSync(_, op) = x { return op } }
@@ -104,74 +77,44 @@ final class SessionArgsCoordinatorTests: XCTestCase {
         let close = closeOp(ended)!
         _ = c.closeCompleted(a.0, close, status: 0)          // now .ready + .disconnected
 
-        // A rescan must reconnect (init1 again) and re-apply THIS session's own
-        // overrides — the same vector, so the scope persists across the reconnect
-        // and is not appended to or dropped.
         let rescan = c.requestRescan()
         let re = connect(rescan)
         XCTAssertEqual(re?.0, a.0, "same session across the reconnect")
         XCTAssertEqual(re?.2, "A")
-        XCTAssertEqual(re?.3, .explicit(["-path", "Documents"]),
+        XCTAssertEqual(re?.3, ["-path", "Documents"],
                        "reconnect re-applies exactly the session's own overrides")
     }
 }
 
 /// The driver's apply-or-fail decision (the exact function `driveBeginConnect`
-/// calls). Only `.inheritLaunch` skips the setter; an `.explicit` vector always
-/// calls it (even when empty), so an explicitly unscoped session suppresses the
-/// process argv rather than inheriting it — the finding this round. A failed
-/// setter must STOP the open before init1 (finding P1).
+/// calls). Every session carries an explicit vector, so the setter is ALWAYS
+/// called (even empty); a failed setter must STOP the open before init1 (P1).
 final class SessionArgsApplyTests: XCTestCase {
 
-    func test_inheritLaunch_doesNotCallSetter_proceeds() {
+    func test_emptyArgs_callsSetterWithEmpty_proceeds() {
         var calls: [[String]] = []
-        let d = SessionArgsApply.decide(.inheritLaunch,
-                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
+        let d = SessionArgsApply.decide([], setter: { calls.append($0); return UNISON_BRIDGE_OK })
         XCTAssertEqual(d, .proceed)
-        XCTAssertTrue(calls.isEmpty,
-                      ".inheritLaunch must leave sessionArgs unset so the engine parses the launch argv")
+        XCTAssertEqual(calls, [[]], "an unscoped session still sets (suppresses any inherited scope)")
     }
 
-    func test_explicitEmpty_callsSetterWithEmpty_proceeds() {
-        // The crux of the finding: an EXPLICIT empty vector must still call the
-        // setter (Some []), so the process argv is suppressed — it must NOT be
-        // conflated with legacy inheritance.
+    func test_vector_callsSetterWithVector_proceeds() {
         var calls: [[String]] = []
-        let d = SessionArgsApply.decide(.explicit([]),
-                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
-        XCTAssertEqual(d, .proceed)
-        XCTAssertEqual(calls, [[]],
-                       "an explicit empty request must set (suppressing any inherited scope)")
-    }
-
-    func test_explicitVector_callsSetterWithVector_proceeds() {
-        var calls: [[String]] = []
-        let d = SessionArgsApply.decide(.explicit(["-path", "X"]),
-                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
+        let d = SessionArgsApply.decide(["-path", "X"], setter: { calls.append($0); return UNISON_BRIDGE_OK })
         XCTAssertEqual(d, .proceed)
         XCTAssertEqual(calls, [["-path", "X"]])
     }
 
-    func test_explicitEmpty_setterFailure_stopsTheOpen() {
-        // A non-OK setter result → .fail, so the driver never reaches init1.
+    func test_setterFailure_stopsTheOpen() {
         var called = false
-        let d = SessionArgsApply.decide(.explicit([]),
-                                        setter: { _ in called = true; return UNISON_BRIDGE_ERR_MISSING })
+        let d = SessionArgsApply.decide([], setter: { _ in called = true; return UNISON_BRIDGE_ERR_MISSING })
         XCTAssertTrue(called)
         XCTAssertEqual(d, .fail(status: UNISON_BRIDGE_ERR_MISSING),
                        "a failed setter must stop the open (no init1 with a stale/omitted scope)")
     }
 
-    func test_explicitVector_setterFailure_stopsTheOpen() {
-        let d = SessionArgsApply.decide(.explicit(["-path", "X"]),
-                                        setter: { _ in UNISON_BRIDGE_ERR_EXN })
+    func test_vector_setterFailure_stopsTheOpen() {
+        let d = SessionArgsApply.decide(["-path", "X"], setter: { _ in UNISON_BRIDGE_ERR_EXN })
         XCTAssertEqual(d, .fail(status: UNISON_BRIDGE_ERR_EXN))
-    }
-
-    func test_inheritLaunch_setterNotCalled_soCannotFail() {
-        // .inheritLaunch never calls the setter, so a setter that WOULD fail is
-        // irrelevant — the open proceeds (legacy parse), no failure surfaced.
-        let d = SessionArgsApply.decide(.inheritLaunch, setter: { _ in UNISON_BRIDGE_ERR_MISSING })
-        XCTAssertEqual(d, .proceed)
     }
 }

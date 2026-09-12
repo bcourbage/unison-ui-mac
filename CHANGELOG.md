@@ -20,8 +20,11 @@ across releases per Apple's bundle-version rules.
   to the launch's **first opened profile** only: the profile it names, or the first
   one you pick if it names none. Every profile you open from the picker after that
   first load is a fresh, unscoped open. No refusal, and nothing to reopen the app
-  for. (A remote profile that closes its connection when a sync ends also reloads
-  on its next Rescan, so that Rescan is unscoped too.)
+  for. A command-line option now **persists across that session's rescans and
+  reconnects** (including a remote profile that reconnects after a sync ends), and
+  applies exactly as it would on the `unison` command line (order, repeated
+  options such as `-path`, and profile precedence all preserved); process-role
+  options like `-ui` are not treated as profile overrides.
 
 ## [0.9.0] — 2026-09-11
 
