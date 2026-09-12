@@ -2,61 +2,49 @@ import XCTest
 @testable import unison_ui_mac
 
 /// The launch → picker routing sequence (the exact logic AppDelegate uses at the
-/// named-launch site and the picker callback). Inheritance is CHOSEN separately
-/// from being CONSUMED, so a selection refused before it opens leaves inheritance
-/// pending for the retry.
+/// named-launch site and the picker callback). The launch's own options are
+/// delivered to the first ACCEPTED launch-origin open; a selection refused before
+/// it opens leaves them pending for the retry; later selections are unscoped.
 final class LaunchOverrideRouterTests: XCTestCase {
 
     /// `unison -ui graphic -path Documents` (no profile) → picker: the first
-    /// ACCEPTED open inherits, later ones are explicit.
-    func test_firstAcceptedOpen_inherits_restExplicit() {
-        var r = LaunchOverrideRouter()
-        let a = r.overrideForNextOpen()
-        XCTAssertEqual(a, .inheritLaunch, "first launch-origin open inherits the launch argv")
-        r.didOpen(a, accepted: true)
-        let b = r.overrideForNextOpen()
-        XCTAssertEqual(b, .explicit([]), "second selection is explicitly unscoped")
-        r.didOpen(b, accepted: true)
-        XCTAssertEqual(r.overrideForNextOpen(), .explicit([]))
+    /// accepted open receives the launch args, later ones are unscoped.
+    func test_firstAcceptedOpen_getsLaunchArgs_restEmpty() {
+        var r = LaunchOverrideRouter(launchArgs: ["-path", "Documents"])
+        let a = r.argsForNextOpen()
+        XCTAssertEqual(a, ["-path", "Documents"], "first launch-origin open gets the launch args")
+        r.didOpen(accepted: true)
+        XCTAssertEqual(r.argsForNextOpen(), [], "later selection is unscoped")
+        r.didOpen(accepted: true)
+        XCTAssertEqual(r.argsForNextOpen(), [])
     }
 
-    /// The reported regression: a first selection refused by an archive-recovery
-    /// block must NOT consume inheritance, so the retry after recovery still
-    /// inherits; only then does a subsequent selection become unscoped.
-    func test_refusedFirstSelection_keepsPending_retryInherits_thenExplicit() {
-        var r = LaunchOverrideRouter()
-        let refused = r.overrideForNextOpen()
-        XCTAssertEqual(refused, .inheritLaunch)
-        r.didOpen(refused, accepted: false)          // refused before opening
+    /// A first selection refused (e.g. an archive-recovery block) must NOT consume
+    /// the launch args, so the retry after recovery still receives them; only then
+    /// does a subsequent selection become unscoped.
+    func test_refusedFirstSelection_keepsPending_retryGetsArgs_thenEmpty() {
+        var r = LaunchOverrideRouter(launchArgs: ["-path", "Documents"])
+        let refused = r.argsForNextOpen()
+        XCTAssertEqual(refused, ["-path", "Documents"])
+        r.didOpen(accepted: false)                       // refused before opening
 
-        let retry = r.overrideForNextOpen()
-        XCTAssertEqual(retry, .inheritLaunch,
-                       "a refused first selection must leave inheritance pending for the retry")
-        r.didOpen(retry, accepted: true)             // recovery cleared → accepted
+        let retry = r.argsForNextOpen()
+        XCTAssertEqual(retry, ["-path", "Documents"],
+                       "a refused first selection must leave the launch args pending for the retry")
+        r.didOpen(accepted: true)                        // recovery cleared → accepted
 
-        let next = r.overrideForNextOpen()
-        XCTAssertEqual(next, .explicit([]),
-                       "after the retry claims inheritance, later selections are unscoped")
-        r.didOpen(next, accepted: true)
+        XCTAssertEqual(r.argsForNextOpen(), [], "after the retry claims them, later selections are unscoped")
     }
 
-    /// A refusal of a later (already-explicit) selection changes nothing.
-    func test_refusedLaterSelection_staysExplicit() {
-        var r = LaunchOverrideRouter()
-        let first = r.overrideForNextOpen(); r.didOpen(first, accepted: true)   // inherit consumed
-        let refused = r.overrideForNextOpen()
-        XCTAssertEqual(refused, .explicit([]))
-        r.didOpen(refused, accepted: false)
-        XCTAssertEqual(r.overrideForNextOpen(), .explicit([]))
-    }
+    /// Nothing to deliver (Finder launch, or a launch with no session options):
+    /// every selection is unscoped.
+    func test_noLaunchArgs_everyOpenEmpty() {
+        var r = LaunchOverrideRouter(launchArgs: nil)
+        XCTAssertEqual(r.argsForNextOpen(), [])
+        r.didOpen(accepted: true)
+        XCTAssertEqual(r.argsForNextOpen(), [])
 
-    /// Nothing to inherit (no graphical launch session): every selection is
-    /// explicitly unscoped from the start.
-    func test_noInheritableLaunch_everyOpenExplicit() {
-        var r = LaunchOverrideRouter(launchCanInherit: false)
-        let a = r.overrideForNextOpen()
-        XCTAssertEqual(a, .explicit([]))
-        r.didOpen(a, accepted: true)
-        XCTAssertEqual(r.overrideForNextOpen(), .explicit([]))
+        var r2 = LaunchOverrideRouter()   // default init
+        XCTAssertEqual(r2.argsForNextOpen(), [])
     }
 }

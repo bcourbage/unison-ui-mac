@@ -1792,6 +1792,43 @@ int unison_bridge_set_session_args(int argc, const char *const argv[]) {
     return io.status;
 }
 
+/* Extract the launch command line's session-scoped options (patch 0009). Calls
+ * the OCaml extractor (which re-parses Sys.argv read-only), then copies the
+ * resulting string array out to a malloc'd char** the caller owns. */
+struct cmdline_args_io { int argc; char **argv; int status; };
+
+static void _ocaml_command_line_session_args(void *user) {
+    CAMLparam0();
+    CAMLlocal1(arr);
+    struct cmdline_args_io *io = user;
+    io->argc = 0; io->argv = NULL; io->status = UNISON_BRIDGE_ERR_MISSING;
+    const value *fn = caml_named_value("unisonCommandLineSessionArgs");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonCommandLineSessionArgs not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    bool raised = false;
+    arr = bridge_call1_exn(fn, Val_unit, &raised);
+    if (raised) { io->status = UNISON_BRIDGE_ERR_EXN; CAMLreturn0; }
+    int n = (int)Wosize_val(arr);          /* string array: boxed block, one field per element */
+    char **out = NULL;
+    if (n > 0) {
+        out = (char **)calloc((size_t)n, sizeof(char *));
+        if (out == NULL) { io->status = UNISON_BRIDGE_ERR_EXN; CAMLreturn0; }
+        for (int i = 0; i < n; i++) out[i] = strdup(String_val(Field(arr, i)));
+    }
+    io->argc = n; io->argv = out; io->status = UNISON_BRIDGE_OK;
+    CAMLreturn0;
+}
+
+int unison_bridge_command_line_session_args(int *out_argc, char ***out_argv) {
+    struct cmdline_args_io io = { .argc = 0, .argv = NULL, .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_command_line_session_args, &io);
+    if (out_argc) *out_argc = io.argc;
+    if (out_argv) *out_argv = io.argv;
+    return io.status;
+}
+
 /* === Credential loop ===
  *
  * All four operate on g_preconn. Same dispatch-to-OCaml-worker pattern as
