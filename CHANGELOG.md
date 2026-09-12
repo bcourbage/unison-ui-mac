@@ -25,6 +25,12 @@ across releases per Apple's bundle-version rules.
   applies exactly as it would on the `unison` command line (order, repeated
   options such as `-path`, and profile precedence all preserved); process-role
   options like `-ui` are not treated as profile overrides.
+- **A command-line request to an already-running app now applies its options.**
+  `unison <profile> -path <dir>` handed to a running instance opens that profile
+  scoped to `<dir>`, the same as a fresh launch, instead of being refused with
+  "cannot apply the extra command-line options". `-include`/`-source` are carried
+  too. (A running instance that was itself started with options still declines
+  such a request for now; run it against an app started without options.)
 
 ## [0.9.0] — 2026-09-11
 

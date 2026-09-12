@@ -13,7 +13,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
     private func req(_ name: String = "work") -> Req {
         Req(given: name, rootsSet: 0, unisonDirectory: "/tmp/u",
-            installationPath: "/Applications/unison-ui-mac.app", plainRequest: true)
+            installationPath: "/Applications/unison-ui-mac.app", sessionArgs: [])
     }
 
     /// Thread-safe capture (handlers and helpers run off-main).

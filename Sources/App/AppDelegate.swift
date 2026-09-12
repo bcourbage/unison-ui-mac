@@ -1929,14 +1929,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             refuseUncoordinatedRequestOrRunPlain(hasRequest: given != nil)
             return
         }
-        let request = given.map { profile in
-            CommandLineHandoff.Request(
-                given: profile,
-                rootsSet: Int(unison_bridge_command_line_roots_set()),
-                unisonDirectory: unisonDirectory,
-                installationPath: Bundle.main.bundlePath,
-                plainRequest: CommandLineHandoff.isCleanGraphicalLaunch(
-                    arguments: CommandLine.arguments, launchProfile: profile))
+        let request: CommandLineHandoff.Request?
+        if let profile = given {
+            // Extract this invocation's own session options to carry to the
+            // running instance, which applies them to the opened session. Fail
+            // closed: on an extraction failure, do not hand off a request that
+            // would silently drop the options (write the message and exit).
+            let (extractStatus, sessionArgs) = UnisonBridge.commandLineSessionArgs()
+            switch LaunchExtraction.decide(status: extractStatus, args: sessionArgs) {
+            case .refuse(let message):
+                CommandLineEngineLaunch.writeStderr(message)
+                exit(1)
+            case .proceed(let args):
+                request = CommandLineHandoff.Request(
+                    given: profile,
+                    rootsSet: Int(unison_bridge_command_line_roots_set()),
+                    unisonDirectory: unisonDirectory,
+                    installationPath: Bundle.main.bundlePath,
+                    sessionArgs: args)
+            }
+        } else {
+            request = nil
         }
         let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
             -> CommandLineHandoff.Response = { [weak self] req, deadline in
@@ -2057,9 +2070,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // here and the caller's timeout may start a scan it was told did not
             // start (finding 1, round 3).
             if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: name) }
-            log.write("handoff: opening '\(name)' for a command-line request")
+            log.write("handoff: opening '\(name)' for a command-line request"
+                      + (request.sessionArgs.isEmpty ? "" : " with \(request.sessionArgs.count) session option token(s)"))
             NSApp.activate(ignoringOtherApps: true)
-            let entered = profileSelected(name)   // idle → opening synchronously; stops at reconcile results
+            // Deliver the caller's own session options to this session, exactly
+            // as a fresh launch of the same command line would (they are applied
+            // through the engine's parser, and re-applied on reconnect).
+            let entered = profileSelected(name, args: request.sessionArgs)
             return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
         }
     }
