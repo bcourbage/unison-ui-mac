@@ -203,6 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// completion callback. Never "whatever op is active now". Not cleared
     /// on abandon — the terminal callback still owns the lease.
     private var pendingConnect: (SessionID, OperationID)?
+    /// True once the first engine connect of the process has been driven. Before
+    /// that, a session with no explicit overrides leaves the engine to parse the
+    /// launch command line (patch 0008 first-load contract); afterward every
+    /// connect sets the session's args explicitly (empty resets) so no scope
+    /// leaks between sessions.
+    private var didFirstConnect = false
     /// Assigning/clearing this slot is the single choke point for the init2/scan
     /// stall detector (issue #24): assigning a scan op arms it (remote scans
     /// only); clearing it — on success, failure, take-in-flight, or stall fire —
@@ -509,16 +515,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         pendingConnect = (s, op)
         sheetShownThisConnect = false
         retryNotice.reset()
-        // Apply this session's own command-line overrides before init1, on both
-        // the first connect and every reconnect. Always called (with an empty
-        // vector when there are none) so a previous session's overrides can
-        // never leak into this one — the engine re-applies whatever is stored on
-        // each profile (re)load. Storing touches no preference; the mutation
-        // happens inside init1 (patch 0008), where a bad option raises before the
-        // connection opens.
-        let argStatus = UnisonBridge.setSessionArgs(args)
-        if argStatus != UNISON_BRIDGE_OK {
-            log.write("set_session_args (\(s)/\(op)) status \(argStatus) (args=\(args))")
+        // Apply this session's own command-line overrides before init1 (patch
+        // 0008 contract). On the first connect of the process with no explicit
+        // overrides, leave the engine to parse the launch command line; otherwise
+        // set the vector (empty resets, so a prior session's scope cannot leak).
+        // A failed setter must STOP the open — opening with a stale or omitted
+        // scope would be wrong — so fail the op (engine quiescent: nothing
+        // started) instead of falling through to init1.
+        switch SessionArgsApply.decide(args: args, isFirstConnect: !didFirstConnect,
+                                       setter: { UnisonBridge.setSessionArgs($0) }) {
+        case .proceed:
+            didFirstConnect = true
+        case .fail(let status):
+            pendingConnect = nil
+            log.write("set_session_args (\(s)/\(op)) failed status \(status) — failing the open before init1")
+            run(engine.operationFailed(
+                s, op, reason: "session arguments could not be applied (status \(status))",
+                engineIsQuiescent: true))
+            return
         }
         // Show the scanning spinner for a reconnect (a rescan after we closed
         // a non-interactive connection on sync-end). The first open already

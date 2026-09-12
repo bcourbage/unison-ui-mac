@@ -71,6 +71,11 @@ bool unison_bridge_test_root_survives_gc(const char *in, char *out, size_t outle
 void unison_bridge_test_set_fake_preconn(bool on);
 /* Test-only (Blocker 1): the currently-published per-row root count. */
 int unison_bridge_test_ri_count(void);
+
+/* Test-only (patch 0008): count of entries to do_unisonInit1's post-arguments
+ * connection-setup boundary. Read before/after an op to prove a failed session-
+ * argument apply started no connection or scan. -1 if the callback is missing. */
+int unison_bridge_test_connect_setup_count(void);
 /* Test-only: force the Kth bridge_strdup in emit_state_items to return NULL,
  * exercising the allocation-failure rollback (single-shot, 1-based). */
 void unison_bridge_test_fail_strdup_at(int k);

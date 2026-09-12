@@ -131,6 +131,15 @@ final class SessionArgsBridgeTests: XCTestCase {
         }
         UnisonBridge.installFatalHandler { msg, _ in fatalMessage = msg; fatal.fulfill() }
 
+        // Observe the actual connection-setup boundary: this counter advances only
+        // when do_unisonInit1 reaches root validation + openConnectionStart, which
+        // is strictly AFTER session arguments are applied. A failed apply must
+        // leave it unchanged — proving no connection or scan started, not merely
+        // that init1 "did not complete".
+        let setupBefore = unison_bridge_test_connect_setup_count()
+        XCTAssertGreaterThanOrEqual(setupBefore, 0,
+                       "connect-setup counter must be available (rebuilt blob with patch 0008)")
+
         // A valid override (-path sub) followed by an invalid one (-maxerrors
         // notanint). The parser applies -path, then raises on the bad int —
         // before root validation and openConnectionStart.
@@ -139,6 +148,8 @@ final class SessionArgsBridgeTests: XCTestCase {
         f.profileName.withCString { _ = unison_bridge_init1($0) }
         wait(for: [fatal], timeout: 20)
 
+        XCTAssertEqual(unison_bridge_test_connect_setup_count(), setupBefore,
+                       "a failed argument apply must reach NO connection/scan setup")
         XCTAssertFalse(init1CompleteFired,
                        "the connect never completed → no connection or scan began")
         let m = fatalMessage.lowercased()
@@ -152,5 +163,10 @@ final class SessionArgsBridgeTests: XCTestCase {
         XCTAssertTrue(clean.contains("top.txt"),
                       "the next session's preferences are clean (full scope restored)")
         XCTAssertTrue(clean.contains { $0.hasSuffix("only-a.txt") })
+        // The clean load DID reach connection setup — so the unchanged count
+        // above genuinely reflects the failed load stopping early, not a dead
+        // counter.
+        XCTAssertGreaterThan(unison_bridge_test_connect_setup_count(), setupBefore,
+                       "a normal load advances the connect-setup counter")
     }
 }

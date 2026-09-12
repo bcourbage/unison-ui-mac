@@ -113,3 +113,52 @@ final class SessionArgsCoordinatorTests: XCTestCase {
                        "reconnect re-applies exactly the session's own overrides")
     }
 }
+
+/// The driver's apply-or-fail decision (the exact function `driveBeginConnect`
+/// calls). A failed setter must STOP the open before init1 (finding P1); the
+/// first connect with no overrides must NOT call the setter (so the engine's
+/// legacy launch-argv parse is preserved); every other case sets the vector.
+final class SessionArgsApplyTests: XCTestCase {
+
+    private typealias D = SessionArgsApply.Decision
+
+    func test_firstConnect_noArgs_doesNotCallSetter_proceeds() {
+        var calls: [[String]] = []
+        let d = SessionArgsApply.decide(args: [], isFirstConnect: true,
+                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
+        XCTAssertEqual(d, .proceed)
+        XCTAssertTrue(calls.isEmpty, "first connect with no overrides must leave sessionArgs unset (legacy parse)")
+    }
+
+    func test_firstConnect_withArgs_callsSetter_proceedsOnOK() {
+        var calls: [[String]] = []
+        let d = SessionArgsApply.decide(args: ["-path", "X"], isFirstConnect: true,
+                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
+        XCTAssertEqual(d, .proceed)
+        XCTAssertEqual(calls, [["-path", "X"]])
+    }
+
+    func test_laterConnect_noArgs_stillResetsViaSetter() {
+        var calls: [[String]] = []
+        let d = SessionArgsApply.decide(args: [], isFirstConnect: false,
+                                        setter: { calls.append($0); return UNISON_BRIDGE_OK })
+        XCTAssertEqual(d, .proceed)
+        XCTAssertEqual(calls, [[]], "a later connect always sets (empty) to reset any prior scope")
+    }
+
+    func test_setterFailure_stopsTheOpen() {
+        // A non-OK setter result → .fail, so the driver never reaches init1.
+        var called = false
+        let d = SessionArgsApply.decide(args: [], isFirstConnect: false,
+                                        setter: { _ in called = true; return UNISON_BRIDGE_ERR_MISSING })
+        XCTAssertTrue(called)
+        XCTAssertEqual(d, .fail(status: UNISON_BRIDGE_ERR_MISSING),
+                       "a failed setter must stop the open (no init1 with a stale/omitted scope)")
+    }
+
+    func test_setterFailure_onFirstConnectWithArgs_stopsTheOpen() {
+        let d = SessionArgsApply.decide(args: ["-path", "X"], isFirstConnect: true,
+                                        setter: { _ in UNISON_BRIDGE_ERR_EXN })
+        XCTAssertEqual(d, .fail(status: UNISON_BRIDGE_ERR_EXN))
+    }
+}

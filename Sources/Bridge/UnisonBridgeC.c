@@ -1203,6 +1203,29 @@ int unison_bridge_test_ri_count(void) {
     return (int)g_ri_count;
 }
 
+/* Test-only (patch 0008): the engine's connection-setup entry count — how many
+ * times do_unisonInit1 reached the post-arguments connection-setup boundary
+ * (root validation + openConnectionStart). Session arguments are applied
+ * strictly before that point, so a test reads this across an operation to prove
+ * a failed/partial argument apply started NO connection or scan (count
+ * unchanged), while a normal load advances it. Returns -1 if the callback is
+ * missing (a stale blob). */
+struct connect_setup_io { int count; };
+static void _ocaml_connect_setup_count(void *user) {
+    struct connect_setup_io *io = user;
+    io->count = -1;
+    const value *fn = caml_named_value("unisonTestConnectSetupCount");
+    if (fn == NULL) return;
+    bool raised = false;
+    value r = bridge_call1_exn(fn, Val_unit, &raised);
+    if (!raised) io->count = Int_val(r);
+}
+int unison_bridge_test_connect_setup_count(void) {
+    struct connect_setup_io io = { .count = -1 };
+    run_on_ocaml_thread(_ocaml_connect_setup_count, &io);
+    return io.count;
+}
+
 /* Finding #1 GC-rooting probe. Faithfully reproduces reloadTable's rooting
  * pattern against the REAL registered progress/bytes callbacks on a live
  * g_ri_roots[row], but injects the exact adversarial condition reloadTable
