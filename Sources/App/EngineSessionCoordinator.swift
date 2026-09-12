@@ -112,6 +112,10 @@ final class EngineSessionCoordinator {
         case closeConnection(SessionID, OperationID)         // off-main close → closeCompleted
         case abortSync(SessionID, OperationID)               // cooperative Abort.all on the running sync
         case showWaiting(OpenRequestID, profile: String)     // queued behind a busy op
+        /// A picker selection was rejected because a command-line request is
+        /// already pending. The driver surfaces this visibly; the pending
+        /// command-line request is preserved and continues to its open.
+        case pickBlockedByCommandLineRequest(profile: String)
         case presentScanResults(SessionID)
         /// Sync completed and its per-row snapshot marshalled — present results.
         case presentSyncResults(SessionID, [SyncSnapshotRow])
@@ -139,13 +143,20 @@ final class EngineSessionCoordinator {
     private(set) var restartRequiredWhileConnecting = false
     private(set) var connection: ConnectionState = .disconnected
 
+    /// Who asked for a queued open. A command-line request is an external caller
+    /// that has been told the app took responsibility; an ordinary picker action
+    /// must never silently replace one (design: "Any cancellation or replacement
+    /// must be explicit and visible"), and at most one command-line request may be
+    /// pending at a time.
+    enum OpenOrigin: Equatable { case picker, commandLine }
+
     private var abandoned = false
     private var currentProfile: String?
     /// The current session's own command-line overrides, retained for the life
     /// of the session so a reconnect (which re-runs init1) re-applies exactly the
     /// same scope. Empty for an unscoped session. Reset with the session.
     private var currentArgs: [String] = []
-    private var queued: (id: OpenRequestID, profile: String, args: [String])?
+    private var queued: (id: OpenRequestID, profile: String, args: [String], origin: OpenOrigin)?
 
     /// A rescan requested while a non-interactive sync-end close is still in
     /// flight (`.closing(..., .backToReady)`). It cannot start until the close
@@ -195,6 +206,16 @@ final class EngineSessionCoordinator {
 
     var isIdle: Bool { phase == .idle }
 
+    /// True when any open request (picker or command-line) is already queued
+    /// behind the current work. The running-instance handoff refuses a new
+    /// command-line request while one is pending: at most one external request
+    /// may be waiting, and it never replaces an already-acknowledged one.
+    var openRequestPending: Bool { queued != nil }
+
+    /// True when the pending queued open is a command-line request specifically.
+    /// An ordinary picker selection must not overwrite one.
+    var commandLineRequestPending: Bool { queued?.origin == .commandLine }
+
     /// The single coordinator-owned policy for destructive engine/archive
     /// maintenance (Clean Stale Archives, Reset Archives, deleting a
     /// profile's archives, or anything else that moves/deletes/rewrites
@@ -237,6 +258,13 @@ final class EngineSessionCoordinator {
     /// (`startFreshOpen` → `.beginConnect`), so a queued request can never mutate
     /// an active session's preferences.
     func requestOpen(profile: String, args: [String] = []) -> [Effect] {
+        // A pending command-line request has been acknowledged to an external
+        // caller; an ordinary picker pick must not silently replace it. Reject
+        // this pick and let the driver surface why (the command-line request
+        // stays visible and continues to its open).
+        if commandLineRequestPending {
+            return [.pickBlockedByCommandLineRequest(profile: profile)]
+        }
         switch phase {
         case .idle:
             return startFreshOpen(profile: profile, args: args)
@@ -248,14 +276,48 @@ final class EngineSessionCoordinator {
             // end, not return to its results window — upgrade the outcome so
             // the close idles and the queued open then starts.
             let id = mintRequest()
-            queued = (id, profile, args)
+            queued = (id, profile, args, origin: .picker)
             phase = .closing(s, op, .toIdle)
             return [.showWaiting(id, profile: profile)]
         default:
             let id = mintRequest()
-            queued = (id, profile, args)        // last pick wins
+            queued = (id, profile, args, origin: .picker)   // last pick wins
             return [.showWaiting(id, profile: profile)]
         }
+    }
+
+    /// A running-instance command-line request that the app has decided to accept
+    /// while it is busy with work that can be left safely (a scan, a diff, a
+    /// reconcile-results view, or a close already in flight). It abandons the
+    /// visible session using the ordinary abandonment behavior and queues this
+    /// request as command-line-origin, so the existing terminal-event → close →
+    /// `finishToIdle` path drains it and opens the requested profile once the
+    /// prior operation and its cleanup finish.
+    ///
+    /// Returns whether the requested profile started opening immediately (the
+    /// current session needed no asynchronous close, so the queue drained in this
+    /// same call) alongside the effects. When it did not start immediately the
+    /// request is "accepted and waiting": the waiting window is shown and the
+    /// drain happens on a later terminal event.
+    ///
+    /// Precondition: called only for the busy-but-leavable phases above, with no
+    /// request already pending. Idle opens go through `requestOpen`; synchronizing,
+    /// the profile editor, restart-required, and an already-pending request are
+    /// refused by the caller before reaching here.
+    func admitCommandLineOpen(profile: String, args: [String]) -> (started: Bool, effects: [Effect]) {
+        let id = mintRequest()
+        queued = (id, profile, args, origin: .commandLine)
+        // Leave the current view exactly as any abandonment does; the deferred
+        // close (or immediate close, when there is no live connection) drains the
+        // queue we just set.
+        let abandonEffects = abandon(reason: "command-line request to open \(profile)")
+        // `abandon` → `beginClose(.toIdle)` → `finishToIdle` drains the queue and
+        // starts the fresh open synchronously when the session had no live
+        // connection to tear down; the slot is then already consumed.
+        if queued == nil {
+            return (started: true, effects: abandonEffects)
+        }
+        return (started: false, effects: [.showWaiting(id, profile: profile)] + abandonEffects)
     }
 
     /// The user closed a queued waiting window before it started.

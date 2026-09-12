@@ -19,10 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
     private var commandLineHandoffServer: CommandLineHandoffServer?
-    /// Whether this instance's own launch was a clean profile open. When false
-    /// (it was launched with options), it must not serve handoffs, because
-    /// upstream reparses the command line on every profile load.
-    private var commandLineLaunchWasClean = true
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -310,6 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             driveAbortSync(s, op)
         case .showWaiting(let id, let profile):
             driveShowWaiting(id, profile: profile)
+        case .pickBlockedByCommandLineRequest(let profile):
+            drivePickBlockedByCommandLineRequest(profile: profile)
         case .presentScanResults:
             // Handled by the init2 completion handler, which holds the items
             // (see `runScanEffects(_:items:)`). No session-global work here.
@@ -361,36 +359,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             profile: profile,
             mergeConfigured: mergeConfigured,
             onClose: { [weak self] in self?.handleWindowClosed(session: s, profile: profile) },
-            onRescanRequested: { [weak self] in
-                guard let self else { return }
-                // Defensive (not solely AppKit validation): never authorize a
-                // rescan while THIS session's Ignore publication is still in
-                // flight — its new roots are installed but its rows haven't
-                // landed, and a rescan would race the pending completion.
-                guard self.pendingIgnore != s else {
-                    self.log.write("deferring rescan — ignore completion pending for \(s)")
-                    return
-                }
-                self.run(self.engine.requestRescan())
-            },
+            onRescanRequested: { [weak self] in self?.windowRequestedRescan(s) },
             onWindowShouldClose: { [weak self] in self?.windowShouldCloseSession(s) ?? true },
             onProfilesRequested: { [weak self] in self?.profilesRequested(s) ?? false },
-            onSyncStart: { [weak self] in
-                guard let self else { return }
-                // Defensive: never authorize a sync while THIS session's Ignore
-                // publication is still in flight (see onRescanRequested).
-                guard self.pendingIgnore != s else {
-                    self.log.write("deferring sync — ignore completion pending for \(s)")
-                    return
-                }
-                self.run(self.engine.requestSync())
-            },
-            onSyncExit: { [weak self] intent in self?.run(self?.engine.requestSyncExit(intent) ?? []) },
-            onEngineUncertain: { [weak self] reason in
-                self?.run(self?.engine.engineBecameUncertain(reason: reason) ?? [])
-            },
+            onSyncStart: { [weak self] in self?.windowRequestedSync(s) },
+            onSyncExit: { [weak self] intent in self?.windowRequestedSyncExit(s, intent: intent) },
+            onEngineUncertain: { [weak self] reason in self?.windowReportedEngineUncertain(s, reason: reason) },
             onIgnore: { [weak self] action, row in
-                self?.performIgnore(session: s, action: action, row: row) ?? UNISON_OP_INVALID
+                self?.windowRequestedIgnore(s, action: action, row: row) ?? UNISON_OP_INVALID
             },
             onDiffRequest: { [weak self] row in
                 self?.requestDiff(session: s, row: row) ?? .refused
@@ -403,6 +379,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return w
     }
 
+    /// A reconcile window may drive the engine only while its session is the
+    /// engine's current session. After a command-line request takes over (its
+    /// session replaces the visible one, P1), a lingering older window must be
+    /// inert: its Go / Rescan / Diff / sync-exit must not operate on the
+    /// replacement session, even if a control fires before the window is gone.
+    private func windowMayDriveEngine(_ s: SessionID) -> Bool {
+        guard engine.currentSession == s else {
+            log.write("ignoring an engine intent from a non-current session \(s) (current: \(String(describing: engine.currentSession)))")
+            return false
+        }
+        return true
+    }
+
+    private func windowRequestedRescan(_ s: SessionID) {
+        guard windowMayDriveEngine(s) else { return }
+        // Defensive (not solely AppKit validation): never authorize a rescan while
+        // THIS session's Ignore publication is still in flight — its new roots are
+        // installed but its rows haven't landed, and a rescan would race the
+        // pending completion.
+        guard pendingIgnore != s else {
+            log.write("deferring rescan — ignore completion pending for \(s)")
+            return
+        }
+        run(engine.requestRescan())
+    }
+
+    private func windowRequestedSync(_ s: SessionID) {
+        guard windowMayDriveEngine(s) else { return }
+        // Defensive: never authorize a sync while THIS session's Ignore publication
+        // is still in flight (see windowRequestedRescan).
+        guard pendingIgnore != s else {
+            log.write("deferring sync — ignore completion pending for \(s)")
+            return
+        }
+        run(engine.requestSync())
+    }
+
+    private func windowRequestedSyncExit(_ s: SessionID, intent: EngineSessionCoordinator.SyncExitIntent) {
+        guard windowMayDriveEngine(s) else { return }
+        run(engine.requestSyncExit(intent))
+    }
+
+    private func windowReportedEngineUncertain(_ s: SessionID, reason: String) {
+        guard windowMayDriveEngine(s) else { return }
+        run(engine.engineBecameUncertain(reason: reason))
+    }
+
+    private func windowRequestedIgnore(_ s: SessionID, action: IgnoreAction, row: Int) -> unison_op_result_t {
+        guard windowMayDriveEngine(s) else { return UNISON_OP_INVALID }
+        return performIgnore(session: s, action: action, row: row)
+    }
+
     /// Issue a diff for `row` on behalf of `session`. Engine ownership is taken
     /// through the coordinator (`.diffing`) so a diff can neither overlap nor be
     /// misordered against scan/sync/rescan/mutation (PR-4); the app-global broker
@@ -410,6 +438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// abandoned one. The bridge call runs OFF the main thread (`driveBeginDiff`),
     /// so a slow/wedged remote transfer never beachballs the app.
     private func requestDiff(session s: SessionID, row: Int) -> DiffRequestResult {
+        // A stale window (its session replaced by a command-line takeover, P1) must
+        // not start a diff against the replacement session.
+        guard windowMayDriveEngine(s) else { return .refused }
         // Broker first (cheap, revertible): sets up result routing for this owner.
         guard diffLifecycle.request(owner: s.raw) else { return .refused }
         // Coordinator gate: a diff runs only from `.ready`. If the engine is busy
@@ -492,23 +523,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Idempotent via the `windowBySession[s]` guard: a second call for an
     /// already-torn-down session is a no-op.
     private func leaveSession(_ s: SessionID, profile: String, reason: String) {
-        guard let w = windowBySession[s] else { return }
-        // Cancel THIS session's in-flight version probe here, in the session-leave
-        // path, so a probe started during a connect/scan can't leak when the user
-        // leaves before it lands.
+        guard detachSessionPresentation(s, closeWindow: false) != nil else { return }
+        run(engine.abandon(reason: reason))
+        showProfilePicker(select: profile)
+    }
+
+    /// Tear down a session's PRESENTATION without touching the engine: cancel its
+    /// version probe, drain its diff, detach its window delegate (so closing it
+    /// can't re-enter `handleWindowClosed`), drop its window/profile mappings, and
+    /// optionally close the window. Returns the controller it removed, or nil when
+    /// the session had none (idempotent).
+    ///
+    /// Shared by the ordinary leave (`leaveSession`, which then abandons the engine
+    /// and shows the picker) and the command-line takeover (which abandons the
+    /// session through `admitCommandLineOpen` and opens the replacement instead).
+    /// `closeWindow` is false on the leave path (the window is already closing via
+    /// `windowWillClose`) and true on the takeover path (the old window is still on
+    /// screen and must be dismissed so its controls can no longer drive the engine).
+    @discardableResult
+    private func detachSessionPresentation(_ s: SessionID, closeWindow: Bool) -> ReconcileWindowController? {
+        guard let w = windowBySession[s] else { return nil }
+        // Cancel THIS session's in-flight version probe so a probe started during a
+        // connect/scan can't leak when the session goes away before it lands.
         if versionProbeSession == s {
             activeVersionProbe?.cancel()
             activeVersionProbe = nil
             versionProbeSession = nil
         }
-        // If this session owns an outstanding diff, drain it so its late result
-        // is discarded and can never be accepted as a replacement session's.
+        // If this session owns an outstanding diff, drain it so its late result is
+        // discarded and can never be accepted as a replacement session's.
         abandonDiff(session: s)
         w.window?.delegate = nil            // prevent windowWillClose → re-entry
         windowBySession[s] = nil
         profileBySession[s] = nil
-        run(engine.abandon(reason: reason))
-        showProfilePicker(select: profile)
+        if closeWindow { w.close() }
+        return w
     }
 
     private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String, args: [String]) {
@@ -702,6 +751,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         controller.beginInitialScan()
         controller.updateScanStatus("Waiting for the previous operation to finish…")
         profileWindowController?.close()
+    }
+
+    /// A picker selection arrived while a command-line request was already waiting
+    /// to open. The coordinator kept the pending request rather than replacing it;
+    /// make the reason visible instead of silently dropping the click.
+    /// Set by hosted tests to skip the modal (its `runModal` would block the
+    /// suite). Default false in production. Mirrors the existing fatal-modal seam.
+    static var testPickBlockedModalSuppressed = false
+
+    private func drivePickBlockedByCommandLineRequest(profile: String) {
+        log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
+        if Self.testPickBlockedModalSuppressed { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "A command-line request is already waiting to open."
+        alert.informativeText =
+            "unison-ui-mac is waiting to open a profile requested from the command line. "
+            + "Let it finish, or cancel it in the waiting window, before choosing \(profile)."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func driveRestartRequired(reason: String) {
@@ -1660,7 +1730,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Finder and profile-less launches only start the listener.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
             && ProcessInfo.processInfo.environment["UNISON_UI_SMOKE"] == nil {
-            classifyCommandLineLaunch()
             routeCommandLineHandoff()
         }
 
@@ -1893,27 +1962,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 context: "This profile's archives are being recovered from an interrupted maintenance operation.")
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
-                run(engine.requestOpen(profile: profile, args: args))
-                return true
+                return runPickerOpen(profile: profile, args: args)
             }
             return false
         }
-        run(engine.requestOpen(profile: profile, args: args))
-        return true
+        return runPickerOpen(profile: profile, args: args)
+    }
+
+    /// Run a picker-origin open and report whether it was admitted. A selection is
+    /// NOT admitted when a command-line request is already pending: the coordinator
+    /// preserves that request rather than replacing it (`.pickBlockedByCommandLineRequest`),
+    /// and returning `false` is what keeps the caller from consuming a launch's
+    /// pending options on a refused pick (P2) — `launchOverrides.didOpen(accepted:)`
+    /// then leaves them for the retry.
+    private func runPickerOpen(profile: String, args: [String]) -> Bool {
+        let effects = engine.requestOpen(profile: profile, args: args)
+        run(effects)
+        let blocked = effects.contains {
+            if case .pickBlockedByCommandLineRequest = $0 { return true }; return false
+        }
+        return !blocked
     }
 
     // MARK: - Running-instance handoff (req 5 of #122)
-
-    /// Classify this launch once, independently of any routing: whether it was a
-    /// clean profile open, with no command-line options besides the profile name.
-    /// The running-instance handoff policy reads the result: a primary launched
-    /// with options refuses handoffs (see `contextCheck`), so a handed-off request
-    /// is never served by an instance whose launch options it cannot reproduce.
-    private func classifyCommandLineLaunch() {
-        let given = unison_bridge_command_line_profile().map { String(cString: $0) }
-        commandLineLaunchWasClean = CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: CommandLine.arguments, launchProfile: given)
-    }
 
     /// Hand a graphical profile request to an already-running instance and exit
     /// with its verdict, or become the primary and start the listener. Called
@@ -1967,9 +2038,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             case .reply(let response):
                 actOnHandoffReply(response)
             case .lostReply:
+                // Outcome unconfirmed: the reply was lost, but the request may
+                // already have been accepted. Do not retry automatically, and do not
+                // suggest starting another process while the outcome is uncertain;
+                // ask the caller to check the app first (design: caller-result
+                // outcomes).
                 CommandLineEngineLaunch.writeStderr(
-                    "unison-ui-mac: could not confirm the request with the running app. "
-                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                    "unison-ui-mac: could not confirm whether the running app accepted the request; "
+                    + "it may already be opening. Check the app before running the command again.")
                 exit(1)
             case .noPrimary:
                 break   // become the primary below
@@ -2026,24 +2102,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         exit(response.isSuccess ? 0 : 1)
     }
 
-    /// The primary's decision for an incoming request, on the main thread. A
-    /// valid profile opens only when idle at the picker; otherwise the existing
-    /// work is preserved and the request is refused. Opening goes through the
-    /// same path a user's pick uses and stops at the reconciliation results.
+    /// The primary's decision for an incoming request, on the main thread. A valid
+    /// profile opens now when idle, is accepted to open after cleanup when the app
+    /// is busy with leavable work, and is otherwise refused with a specific reason
+    /// (a running sync, an open editor, a recovery restriction, or another pending
+    /// request). Opening goes through the same path a user's pick uses and stops at
+    /// the reconciliation results.
     private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request,
                                           deadline: CommandLineHandoffSocket.Deadline)
         -> CommandLineHandoff.Response {
         // Reaching the main thread past the deadline means the caller already timed
         // out; do not accept or open anything (finding 1, round 3).
         if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: request.given) }
-        // Refuse when the request cannot be faithfully transferred: this instance
-        // was launched with contaminating options, a different app copy or Unison
-        // directory, or extra options the running instance cannot reproduce.
+        // Refuse when the request cannot be faithfully transferred: a different app
+        // copy or Unison directory. The receiver's own launch options are no longer
+        // a reason to refuse — sessions are option-scoped, so the request is scoped
+        // solely by its own options (refusal redesign).
         if let refusal = CommandLineHandoff.contextCheck(
             request: request,
             localUnisonDirectory: unisonDirectory,
-            localInstallationPath: Bundle.main.bundlePath,
-            receiverLaunchWasClean: commandLineLaunchWasClean) {
+            localInstallationPath: Bundle.main.bundlePath) {
             return refusal
         }
         let dir = unisonDirectory
@@ -2052,47 +2130,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             profile: request.given,
             fileExists: { FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0)) },
             isListed: { [weak self] name in self?.listedProfiles().contains(name) ?? false })
-        switch CommandLineHandoff.decide(launch: launch, activity: currentHandoffActivity()) {
+        let activity = currentHandoffActivity()
+        switch CommandLineHandoff.decide(launch: launch, activity: activity) {
         case .reply(let response):
             return response
-        case .open(let name):
-            // A profile whose archives are held by an interrupted mutation is not
-            // opened from a background request (no modal to a caller at the
-            // terminal); refuse and point them to the app.
-            if abandonedStagingBlocking(name) != nil {
-                // Do NOT offer -ui text here: running another Unison before the
-                // archives are recovered is exactly what the safety block prevents.
-                return .refused(message:
-                    "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
-                    + "operation. Complete that recovery in the running app, then run the command again.")
+        case .openNow(let name):
+            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
+                log.write("handoff: opening '\(name)' now for a command-line request"
+                          + sessionArgsSuffix(request.sessionArgs))
+                NSApp.activate(ignoringOtherApps: true)
+                // Deliver the caller's own session options to this session, exactly
+                // as a fresh launch of the same command line would (applied through
+                // the engine's parser, and re-applied on reconnect).
+                let entered = profileSelected(name, args: request.sessionArgs)
+                return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
             }
-            // Final deadline check immediately before the open: nothing between
-            // here and the caller's timeout may start a scan it was told did not
-            // start (finding 1, round 3).
-            if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: name) }
-            log.write("handoff: opening '\(name)' for a command-line request"
-                      + (request.sessionArgs.isEmpty ? "" : " with \(request.sessionArgs.count) session option token(s)"))
-            NSApp.activate(ignoringOtherApps: true)
-            // Deliver the caller's own session options to this session, exactly
-            // as a fresh launch of the same command line would (they are applied
-            // through the engine's parser, and re-applied on reconnect).
-            let entered = profileSelected(name, args: request.sessionArgs)
-            return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
+            return response
+        case .acceptWaiting(let name):
+            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
+                // The app is busy with work that can be left safely. Take
+                // responsibility for the request: abandon the current view and
+                // queue this open so the existing cleanup path opens it once the
+                // engine is free.
+                guard case .busyWillWait(let reason) = activity else {
+                    // Not reachable: `.acceptWaiting` is only returned for
+                    // `.busyWillWait`. Refuse rather than open in an unexpected state.
+                    return CommandLineHandoff.responseForOpenAttempt(enteredOpening: false, name: name)
+                }
+                log.write("handoff: accepting '\(name)' to open after current work"
+                          + sessionArgsSuffix(request.sessionArgs))
+                NSApp.activate(ignoringOtherApps: true)
+                // The session being left (captured BEFORE admit, which advances the
+                // coordinator's current session). Its presentation must be torn down
+                // so its window can no longer drive the engine against the
+                // replacement session (P1).
+                let outgoing = engine.currentSession
+                let (started, effects) = engine.admitCommandLineOpen(profile: name, args: request.sessionArgs)
+                if let outgoing { detachSessionPresentation(outgoing, closeWindow: true) }
+                run(effects)
+                return started
+                    ? .started
+                    : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason)
+            }
+            return response
         }
     }
 
-    /// Whether the app is idle at the picker, or the work a handoff must not
-    /// disturb. An open profile-edit form counts as work to preserve, named so the
-    /// caller knows what to close.
+    /// The `-path`/`-ignore`/… token-count suffix for a handoff log line.
+    private func sessionArgsSuffix(_ args: [String]) -> String {
+        args.isEmpty ? "" : " with \(args.count) session option token(s)"
+    }
+
+    /// A refusal that must precede any open attempt (interrupted-archive recovery,
+    /// or the caller's deadline having elapsed), or nil when the open may proceed.
+    private func refusalForStagingOrDeadline(name: String,
+                                             deadline: CommandLineHandoffSocket.Deadline)
+        -> CommandLineHandoff.Response? {
+        // A profile whose archives are held by an interrupted mutation is not
+        // opened from a background request (no modal to a caller at the terminal).
+        if abandonedStagingBlocking(name) != nil {
+            // Do NOT offer -ui text here: running another Unison before the archives
+            // are recovered is exactly what the safety block prevents.
+            return .refused(message:
+                "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
+                + "operation. Complete that recovery in the running app, then run the command again.")
+        }
+        // Final deadline check immediately before the open: nothing between here and
+        // the caller's timeout may start a scan it was told did not start.
+        if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: name) }
+        return nil
+    }
+
+    /// The live state a handoff decision reads, mapped to the design's state table.
+    /// An open profile-edit form and a restart-required recovery restriction are
+    /// preserved; a busy-but-leavable engine accepts the request to open after
+    /// cleanup; a running sync is refused in this slice (the sync decision is made
+    /// in the app). A request already pending is refused so it cannot be replaced.
     private func currentHandoffActivity() -> CommandLineHandoff.Activity {
-        if !engine.isIdle {
-            return .busy(reason: Self.handoffBusyReason(engine.phase), resolution: .waitForCompletion)
-        }
+        // The editor is modal to option handling: it holds unsaved edits and the
+        // engine sits idle behind it. Preserve it (checked before the pending/idle
+        // states, which would otherwise read as "idle at picker").
         if isEditProfileFormOpen {
-            let reason = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
-            return .busy(reason: reason, resolution: .closeEditor)
+            let desc = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
+            return .editing(profileDescription: desc)
         }
-        return .idleAtPicker
+        // One external request at a time: a second must not replace the first.
+        if engine.openRequestPending {
+            return .requestAlreadyPending
+        }
+        switch engine.phase {
+        case .idle:
+            return .idleAtPicker
+        case .syncing:
+            return .synchronizing(reason: Self.handoffBusyReason(engine.phase))
+        case .restartRequired:
+            return .restartRequired(reason: Self.handoffBusyReason(engine.phase))
+        case .opening, .scanning, .ready, .diffing, .closing:
+            return .busyWillWait(reason: Self.handoffBusyReason(engine.phase))
+        }
     }
 
     /// The profile name shown in the open edit form, or nil for an unsaved new
@@ -2106,16 +2241,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return nil
     }
 
+    /// A phase described so it reads correctly in the handoff messages. The busy
+    /// phases follow "unison-ui-mac is <reason>" (accepted-and-waiting and the
+    /// sync refusal); restart-required follows "unison-ui-mac <reason>" (it takes
+    /// no "is"). `.idle` is never passed here.
     private static func handoffBusyReason(_ phase: EngineSessionCoordinator.Phase) -> String {
         switch phase {
-        case .idle: return "busy"   // not reached: guarded by isIdle
+        case .idle: return "busy"   // not reached: guarded by the activity mapping
         case .opening: return "connecting to the remote"
         case .scanning: return "scanning for changes"
         case .ready: return "showing reconciliation results"
         case .diffing: return "showing a file difference"
         case .syncing: return "synchronizing"
         case .closing: return "finishing the previous run"
-        case .restartRequired: return "waiting to be quit and reopened after a connection problem"
+        case .restartRequired: return "needs to be quit and reopened after a connection problem"
         }
     }
 
@@ -3225,3 +3364,35 @@ extension AppDelegate: DiffLifecycleSink {
         run(engine.diffCompleted(session: SessionID(raw: owner), op: OperationID(raw: op)))
     }
 }
+
+#if DEBUG
+// MARK: - Test seams (command-line running-instance takeover)
+//
+// Internal-only accessors so the hosted takeover tests can drive the PRODUCTION
+// coordinator and exercise the real guarded window-intent path (P1) and the
+// picker → launch-options propagation (P2). Same-file extension, so it reaches
+// the private members; compiled out of Release. Not used in production code.
+extension AppDelegate {
+    var engineForTesting: EngineSessionCoordinator { engine }
+    var launchOverridesForTesting: LaunchOverrideRouter {
+        get { launchOverrides }
+        set { launchOverrides = newValue }
+    }
+    func setUnisonDirectoryForTesting(_ dir: String) { unisonDirectory = dir }
+    func installWindowForTesting(_ s: EngineSessionCoordinator.SessionID, _ w: ReconcileWindowController) {
+        windowBySession[s] = w
+    }
+    func hasWindowForTesting(_ s: EngineSessionCoordinator.SessionID) -> Bool { windowBySession[s] != nil }
+    /// The real guarded Go handler a reconcile window calls.
+    func windowRequestedSyncForTesting(_ s: EngineSessionCoordinator.SessionID) { windowRequestedSync(s) }
+    /// The real takeover teardown (window teardown without touching the engine).
+    @discardableResult
+    func detachSessionPresentationForTesting(_ s: EngineSessionCoordinator.SessionID) -> Bool {
+        detachSessionPresentation(s, closeWindow: true) != nil
+    }
+    /// The real picker-open path, returning whether the selection was admitted.
+    func profileSelectedForTesting(_ profile: String, args: [String]) -> Bool {
+        profileSelected(profile, args: args)
+    }
+}
+#endif

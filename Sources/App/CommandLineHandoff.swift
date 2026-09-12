@@ -11,7 +11,7 @@ import Foundation
 /// always detectable (no terminating newline means a lost or truncated reply):
 ///
 ///   request:   `open\t<rootsSet>\t<sessionArgs>\t<unisonDir b64>\t<install b64>\t<given b64>\n`
-///   response:  `ok\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
+///   response:  `ok\n` | `waiting\t<message>\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
 ///
 /// The variable-length fields are base64, so a directory, path or profile name
 /// with a tab or other whitespace round-trips unambiguously. They carry supported
@@ -139,8 +139,14 @@ enum CommandLineHandoff {
     enum Response: Equatable {
         /// Accepted: the primary is opening the profile and starting its scan.
         case started
-        /// The instance is busy (a scan, reconciliation, sync, or an open
-        /// profile edit); the existing work is preserved and this request is not.
+        /// Accepted and waiting: the primary took responsibility for the request
+        /// but the profile is not opening yet — it opens once the current work and
+        /// its connection cleanup finish. The message tells the caller the app now
+        /// owns the request and where to watch it.
+        case acceptedWaiting(message: String)
+        /// The instance is busy in a way the request must not disturb (an active
+        /// synchronization, an open profile edit) or another request is already
+        /// waiting; the existing work is preserved and this request is not.
         case refused(message: String)
         /// The request itself is not valid or transferable here (roots, a hidden
         /// or ambiguous profile, or a different app installation / Unison
@@ -150,6 +156,7 @@ enum CommandLineHandoff {
         func encoded() -> String {
             switch self {
             case .started: return "ok\n"
+            case .acceptedWaiting(let m): return "waiting\t\(m)\n"
             case .refused(let m): return "refuse\t\(m)\n"
             case .invalid(let m): return "invalid\t\(m)\n"
             }
@@ -164,72 +171,80 @@ enum CommandLineHandoff {
             let parts = body.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { return nil }
             switch parts[0] {
+            case "waiting": self = .acceptedWaiting(message: String(parts[1]))
             case "refuse": self = .refused(message: String(parts[1]))
             case "invalid": self = .invalid(message: String(parts[1]))
             default: return nil
             }
         }
 
-        /// Success maps to exit 0; both refusals map to a non-zero exit.
-        var isSuccess: Bool { if case .started = self { return true }; return false }
+        /// Both accepted outcomes (opening now, or accepted and waiting) map to
+        /// exit 0: the app took the request. Refusals map to a non-zero exit.
+        var isSuccess: Bool {
+            switch self {
+            case .started, .acceptedWaiting: return true
+            case .refused, .invalid: return false
+            }
+        }
 
-        /// What the client writes to stderr (nothing extra on success — the app
-        /// window is the feedback).
+        /// What the client writes to stderr. `.started` prints nothing (the app
+        /// window is the feedback); accepted-and-waiting prints an informational
+        /// line so the caller knows the app owns the request.
         var clientMessage: String? {
             switch self {
             case .started: return nil
-            case .refused(let m), .invalid(let m): return m
+            case .acceptedWaiting(let m), .refused(let m), .invalid(let m): return m
             }
         }
     }
 
-    /// How the caller can let a refused request proceed. `waitForCompletion` for
-    /// engine work that will finish on its own; `closeEditor` for an open profile
-    /// edit, which the user resolves by closing the editor.
-    enum Resolution: Equatable {
-        case waitForCompletion
-        case closeEditor
-    }
-
-    /// The running instance's activity, as the primary reports it at the moment
-    /// a request arrives. Idle means idle at the picker; every busy variant
-    /// carries the reason shown to the caller and how to let the request proceed.
+    /// The running instance's activity, as the primary reports it at the moment a
+    /// request arrives. It maps directly to the design's state table:
+    ///  - `idleAtPicker`      → open the requested session now.
+    ///  - `busyWillWait`      → accept the request and open it after the current
+    ///                          operation and cleanup finish.
+    ///  - `synchronizing`     → (this slice) refuse and point the caller at the
+    ///                          app's sync decision; the dialog interaction is a
+    ///                          separate follow-up.
+    ///  - `editing`           → refuse; the profile editor is open and its edits
+    ///                          are preserved.
+    ///  - `restartRequired`   → refuse; a recovery restriction is in effect.
+    ///  - `requestAlreadyPending` → refuse; one external request is already
+    ///                          waiting and must not be replaced.
     enum Activity: Equatable {
         case idleAtPicker
-        case busy(reason: String, resolution: Resolution)
+        case busyWillWait(reason: String)
+        case synchronizing(reason: String)
+        case editing(profileDescription: String)
+        case restartRequired(reason: String)
+        case requestAlreadyPending
     }
 
-    /// What the primary should do with a request: reply only, or open a profile
-    /// (which the caller then attempts) and report the outcome.
+    /// What the primary should do with a request: reply only, open a profile now
+    /// (which the caller then attempts) and report the outcome, or accept it to
+    /// open after the current work finishes.
     enum Outcome: Equatable {
         case reply(Response)
-        case open(name: String)
+        case openNow(name: String)
+        case acceptWaiting(name: String)
     }
 
     /// Whether the request can be faithfully transferred to this instance. Returns
     /// a refusal when it cannot, or nil when the request is safe to act on.
     ///
-    /// The caller's own options are no longer a reason to refuse: the primary
-    /// applies them to the opened session as explicit overrides (patch 0009 +
-    /// session-args delivery), exactly as a fresh launch would. Remaining reasons
-    /// a handoff would not be faithful:
+    /// The caller's own options are not a reason to refuse: the primary applies
+    /// them to the opened session as explicit overrides (patch 0009 + session-args
+    /// delivery), exactly as a fresh launch would. Nor is the receiving instance's
+    /// own launch a reason: a launch's options scope only that launch's first
+    /// session and are never re-parsed for a later session, so a request delivered
+    /// here is scoped solely by its own options regardless of how the app started.
+    /// The only remaining reasons a handoff would not be faithful:
     ///
-    /// - The receiving instance was itself launched with options. This refusal is
-    ///   now CONSERVATIVE rather than required: a launch's options are delivered
-    ///   only to that launch's first session and are not re-parsed for later
-    ///   sessions, so a handoff would not inherit them. It is kept for this slice
-    ///   (delivery mechanism) and slated for removal in the refusal redesign.
     /// - The caller came from a different app installation.
     /// - The caller uses a different Unison directory.
     static func contextCheck(request: Request,
                              localUnisonDirectory: String,
-                             localInstallationPath: String,
-                             receiverLaunchWasClean: Bool) -> Response? {
-        if !receiverLaunchWasClean {
-            return .invalid(message:
-                "unison-ui-mac is already running with command-line options that would affect other profiles. "
-                + "Quit it and run again, or add -ui text to run it in the terminal.")
-        }
+                             localInstallationPath: String) -> Response? {
         if request.installationPath != localInstallationPath {
             return .invalid(message:
                 "unison-ui-mac is already running from a different copy of the app (\(localInstallationPath)); "
@@ -248,8 +263,10 @@ enum CommandLineHandoff {
     /// The pure decision. `launch` is the same disposition a fresh graphical
     /// launch computes (so roots and hidden/ambiguous profiles refuse
     /// identically, preserving the validation safeguards of req 6); `activity`
-    /// is the live state. A valid profile opens only when idle; otherwise the
-    /// existing work is preserved and the request is refused with a clear reason.
+    /// is the live state. A valid profile opens now when idle, is accepted to
+    /// open after cleanup when the app is busy with leavable work, and is refused
+    /// (existing work preserved) when a synchronization, an open editor, a
+    /// recovery restriction, or another pending request stands in the way.
     static func decide(launch: CommandLineGraphicalLaunch, activity: Activity) -> Outcome {
         switch launch {
         case .refuse(let message):
@@ -261,18 +278,34 @@ enum CommandLineHandoff {
         case .openProfile(let name):
             switch activity {
             case .idleAtPicker:
-                return .open(name: name)
-            case .busy(let reason, let resolution):
-                let howToProceed: String
-                switch resolution {
-                case .waitForCompletion:
-                    howToProceed = "Wait for it to finish and choose \(name) in the app"
-                case .closeEditor:
-                    howToProceed = "Close the profile editor, then run the command again"
-                }
+                return .openNow(name: name)
+            case .busyWillWait:
+                return .acceptWaiting(name: name)
+            case .synchronizing(let reason):
+                // This slice does not drive the sync decision from a request; the
+                // user makes it in the app. Refuse clearly and do not disturb the
+                // running synchronization. No "-ui text" alternative here: starting
+                // another process against these roots mid-sync is exactly what must
+                // not be suggested while active work is unresolved.
                 return .reply(.refused(message:
                     "unison-ui-mac is \(reason), so it did not start \(name). "
-                    + "\(howToProceed), or add -ui text to run it in the terminal."))
+                    + "Choose how to handle the current sync in the app, then run the command again."))
+            case .editing(let profileDescription):
+                return .reply(.refused(message:
+                    "unison-ui-mac is \(profileDescription), so it did not start \(name). "
+                    + "Close the profile editor, then run the command again, "
+                    + "or add -ui text to run it in the terminal."))
+            case .restartRequired(let reason):
+                // No "-ui text" alternative: the runtime is in an uncertain state a
+                // restart must clear first; starting another process is not the fix.
+                return .reply(.refused(message:
+                    "unison-ui-mac \(reason), so it did not start \(name). "
+                    + "Quit and reopen it, then run the command again."))
+            case .requestAlreadyPending:
+                return .reply(.refused(message:
+                    "unison-ui-mac is already handling another command-line request, so it did not start \(name). "
+                    + "Wait for that one to open, then run the command again, "
+                    + "or add -ui text to run it in the terminal."))
             }
         }
     }
@@ -296,25 +329,12 @@ enum CommandLineHandoff {
                 + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
     }
 
-    /// Whether a graphical launch was a clean profile open — nothing beyond a
-    /// `-ui` selector and, at most, the profile name. Anything else (roots,
-    /// `-path`, `-batch`, `-servercmd`, …) is not clean, because upstream reparses
-    /// the command line on every profile load: a fresh launch would honor those,
-    /// but they must not leak into a handoff (as the caller's request, or as the
-    /// receiving instance's own launch context). `arguments` is
-    /// `CommandLine.arguments` (argv[0] included); `launchProfile` is the profile
-    /// the launch named, or nil (e.g. a Finder launch).
-    static func isCleanGraphicalLaunch(arguments: [String], launchProfile: String?) -> Bool {
-        let tokens = CommandLineInvocationPolicy.withoutHostInjected(Array(arguments.dropFirst()))
-        var pruned: [String] = []
-        var i = 0
-        while i < tokens.count {
-            let t = tokens[i]
-            if t == "-ui" { i += 2; continue }        // flag plus its value
-            if t.hasPrefix("-ui=") { i += 1; continue }
-            pruned.append(t); i += 1
-        }
-        if let launchProfile { return pruned == [launchProfile] }
-        return pruned.isEmpty
+    /// The reply when the primary accepted the request but the profile will open
+    /// only after the current work finishes. The app now owns the request and
+    /// shows it waiting; the caller is not opening it and does not retry.
+    static func acceptedWaitingResponse(name: String, reason: String) -> Response {
+        .acceptedWaiting(message:
+            "unison-ui-mac is \(reason). It will open \(name) once that finishes; "
+            + "the request is waiting in the app.")
     }
 }
