@@ -3,8 +3,8 @@
 # See docs/cli-session-parser-report.md.
 #
 # Isolation: this script never builds in, patches, or cleans the caller's
-# working tree. It creates two DISPOSABLE git worktrees pinned to a documented
-# upstream revision (PINNED_REV below), builds each entirely inside its own
+# working tree. It creates two DISPOSABLE git worktrees pinned to the DOCUMENTED
+# vendored revision (vendor/README.md), builds each entirely inside its own
 # worktree, and removes both at the end (and on any error, via a trap). Cleanup
 # failures are reported, not ignored.
 #
@@ -20,15 +20,16 @@
 #
 # The engine objects are built on the repository's own OCaml path
 # (unison/src/Makefile.OCaml, the same path `make vendor-blob` uses; no
-# opam/dune). Exits non-zero if any assertion or comparison fails.
-#
-# Usage:  UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-parser-prototype.sh
+# opam/dune). Exits non-zero if any assertion or comparison fails. The guard used
+# for successful-parse comparisons is itself unit-tested (section 0) to prove it
+# rejects a nonzero exit, a missing state record, and a mismatch.
 set -euo pipefail
 
-# Documented reproduction context. Pin to the vendored base so the comparison is
-# against a known upstream, independent of any local working-tree modifications.
-PINNED_REV="${PINNED_REV:-4f6e8c78b80c21d45b02807071f5dc2715a7eac4}"   # v2.54.0-25-g4f6e8c7
-EXPECTED_OCAML="5.5.0"
+# Documented reproduction context: the SAME upstream commit and OCaml toolchain
+# the app vendors (vendor/README.md, Makefile OCAML_PINNED_VERSION). The
+# comparison must run against what ships, not a newer upstream.
+PINNED_REV="${PINNED_REV:-91421d0617b0fb543c0eee51bcb4d4791d8b0631}"   # v2.54.0-19-g91421d0
+PINNED_OCAML="5.5.0"
 
 UNISON_SRC="${UNISON_SRC:-$HOME/Documents/Sources/unison/src}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -41,12 +42,16 @@ done
 [ -d "$UNISON_SRC" ] || { echo "UNISON_SRC not found: $UNISON_SRC"; exit 2; }
 
 OCAML_VER="$(ocamlopt -version)"
-[ "$OCAML_VER" = "$EXPECTED_OCAML" ] || echo "NOTE: ocaml $OCAML_VER, documented $EXPECTED_OCAML (proceeding)"
+if [ "$OCAML_VER" != "$PINNED_OCAML" ]; then
+  echo "ERROR: OCaml $OCAML_VER != pinned $PINNED_OCAML (the vendored blob is ABI-locked to $PINNED_OCAML)." >&2
+  exit 2
+fi
 
 REPO="$(cd "$UNISON_SRC" && git rev-parse --show-toplevel)"
 W_REF="$(mktemp -d "${TMPDIR:-/tmp}/unison-ref.XXXXXX")"
 W_VAR="$(mktemp -d "${TMPDIR:-/tmp}/unison-var.XXXXXX")"
 U="$(mktemp -d "${TMPDIR:-/tmp}/unison-prf.XXXXXX")"
+T="$(mktemp -d "${TMPDIR:-/tmp}/unison-io.XXXXXX")"
 cleanup_rc=0
 cleanup() {
   cd "$REPO"
@@ -59,12 +64,12 @@ cleanup() {
       rm -f /tmp/wtrm.$$
     fi
   done
-  rm -rf "$U"
+  rm -rf "$U" "$T"
   git worktree prune
 }
 trap cleanup EXIT
 
-echo "== pinned rev: $PINNED_REV  ocaml: $OCAML_VER =="
+echo "== documented pin: $PINNED_REV  ocaml: $OCAML_VER =="
 cd "$REPO"
 git worktree add --detach "$W_REF" "$PINNED_REV" >/dev/null
 git worktree add --detach "$W_VAR" "$PINNED_REV" >/dev/null
@@ -116,7 +121,7 @@ rc=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1"; rc=1; }
 
-OUTF="$(mktemp)"; ERRF="$(mktemp)"
+OUTF="$T/out"; ERRF="$T/err"
 run() { # dir bin [env NAME=val ...] -- args...  (env pairs before --)
   local dir="$1" bin="$2"; shift 2
   local -a envs=()
@@ -130,15 +135,40 @@ run() { # dir bin [env NAME=val ...] -- args...  (env pairs before --)
   set -e
 }
 
+# --- successful-parse guard, evaluated as a pure function so it can be unit
+# --- tested. Inputs via globals PRC/PVC (exit codes) and PREF/PVAR (stdout).
+# --- Echoes "pass :: <state>" or "fail: <reason>".
+guard() {
+  if [ "$PRC" -ne 0 ] || [ "$PVC" -ne 0 ]; then echo "fail: nonzero exit (ref=$PRC var=$PVC)"; return; fi
+  case "$PREF" in path=*) ;; *) echo "fail: no state record in reference output"; return;; esac
+  case "$PVAR" in path=*) ;; *) echo "fail: no state record in variant output"; return;; esac
+  if [ "$PREF" = "$PVAR" ]; then echo "pass :: $PREF"; else echo "fail: state mismatch"; fi
+}
+
+echo
+echo "### 0. Guard self-test (prove the successful-parse check rejects false passes)"
+gtest() { # desc expect(pass|fail) PRC PVC PREF PVAR
+  local desc="$1" exp="$2"; PRC="$3"; PVC="$4"; PREF="$5"; PVAR="$6"
+  local g got=fail; g="$(guard)"; case "$g" in pass*) got=pass;; esac
+  if [ "$got" = "$exp" ]; then pass "self-test: $desc -> $got"
+  else fail "self-test: $desc expected $exp got $got ($g)"; fi
+}
+gtest "reference process failed"        fail 1 0 ""          ""
+gtest "variant process failed"          fail 0 1 ""          ""
+gtest "exit 0 but empty output"         fail 0 0 ""          ""
+gtest "exit 0 but no state record"      fail 0 0 "usage..."  "usage..."
+gtest "state mismatch"                  fail 0 0 "path=[a]"  "path=[b]"
+gtest "clean match passes"              pass 0 0 "path=[a]"  "path=[a]"
+
 echo
 echo "### 1. Successful parses: variant (patched parseCmdLineArgs) vs INDEPENDENT"
-echo "###    unpatched reference (parseCmdLine). Compares resulting pref state."
+echo "###    unpatched reference (parseCmdLine). Requires exit 0 + a state record."
 parity() { # label  profile  -- args...
   local label="$1" prof="$2"; shift 2
-  run "$REFP" parserbin "UPROFILE=$prof" -- "$@"; local ref="$(cat "$OUTF")"
-  run "$VARQ" varbin "EXPECT=dump" "UPROFILE=$prof" -- "$@"; local var="$(cat "$OUTF")"
-  if [ "$ref" = "$var" ]; then pass "$label :: $ref"
-  else fail "$label"; echo "      ref: $ref"; echo "      var: $var"; fi
+  run "$REFP" parserbin "UPROFILE=$prof" -- "$@"; PRC=$RC; PREF="$(cat "$OUTF")"
+  run "$VARQ" varbin "EXPECT=dump" "UPROFILE=$prof" -- "$@"; PVC=$RC; PVAR="$(cat "$OUTF")"
+  local g; g="$(guard)"
+  case "$g" in pass*) pass "$label ${g#pass }";; *) fail "$label ($g); ref=[$PREF] var=[$PVAR]";; esac
 }
 parity "scalar/bool/alias/BOOLDEF" "" -batch -confirmbigdeletes=false -maxerrors 5 -fastcheck default
 parity "-path (CUSTOM)"            "" -path Documents
@@ -149,24 +179,27 @@ parity "CLI + profile precedence"  "Pprec" -path CliX
 
 echo
 echo "### 2. Historical parser fidelity: refactored parse (patched) vs unmodified"
-echo "###    parse (pristine). Compares exit status, stdout, and stderr."
-fidelity() { # label -- args...
-  local label="$1"; shift 2
-  run "$REFP" parserbin -- "$@"; local rc1=$RC o1="$(cat "$OUTF")" e1="$(cat "$ERRF")"
-  run "$REFQ" parserbin -- "$@"; local rc2=$RC o2="$(cat "$OUTF")" e2="$(cat "$ERRF")"
-  if [ "$rc1" = "$rc2" ] && [ "$o1" = "$o2" ] && [ "$e1" = "$e2" ]; then
-    pass "$label :: exit=$rc1 identical; msg=[$(echo "$e1" | head -1)]"
+echo "###    parse (pristine). Requires exit 2 + a case-specific diagnostic, and"
+echo "###    compares the COMPLETE stdout and stderr streams (file compare)."
+fidelity() { # label  diag_substr  where(err|out)  -- args...
+  local label="$1" sub="$2" where="$3"; shift 3; shift   # drop label,sub,where and the --
+  run "$REFP" parserbin -- "$@"; local rc1=$RC; cp "$OUTF" "$T/o1"; cp "$ERRF" "$T/e1"
+  run "$REFQ" parserbin -- "$@"; local rc2=$RC; cp "$OUTF" "$T/o2"; cp "$ERRF" "$T/e2"
+  local diag; [ "$where" = err ] && diag="$T/e1" || diag="$T/o1"
+  if [ "$rc1" != 2 ] || [ "$rc2" != 2 ]; then
+    fail "$label (expected exit 2, got ref=$rc1 patched=$rc2)"
+  elif ! grep -qF "$sub" "$diag"; then
+    fail "$label (missing case-specific diagnostic: '$sub')"
+  elif cmp -s "$T/o1" "$T/o2" && cmp -s "$T/e1" "$T/e2"; then
+    pass "$label :: exit 2, diagnostic present, full streams identical"
   else
-    fail "$label"
-    echo "      pristine: exit=$rc1 err=[$(echo "$e1" | head -1)]"
-    echo "      patched : exit=$rc2 err=[$(echo "$e2" | head -1)]"
-    [ "$o1" = "$o2" ] || echo "      (stdout differs)"
+    fail "$label (streams differ between pristine and patched parse)"
   fi
 }
-fidelity "unknown option"   -- -nosuchopt
-fidelity "missing argument" -- -maxerrors
-fidelity "malformed value"  -- -maxerrors notanint
-fidelity "help"             -- -help
+fidelity "unknown option"   "unknown option"        err -- -nosuchopt
+fidelity "missing argument" "needs an argument"     err -- -maxerrors
+fidelity "malformed value"  "wrong argument"        err -- -maxerrors notanint
+fidelity "help"             "Basic options:"        out -- -help
 
 echo
 echo "### 3. Variant raises (does not exit) on invalid input, recovery clean"
@@ -176,7 +209,6 @@ echo
 echo "### 4. Session matrix (reload same overrides, later request, precedence, partial apply)"
 run "$VARQ" varbin "EXPECT=matrix" --; cat "$OUTF"; [ $RC -eq 0 ] || rc=1
 
-rm -f "$OUTF" "$ERRF"
 echo
 echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
 # Run cleanup now (not only via the trap) so its status is in the exit code.

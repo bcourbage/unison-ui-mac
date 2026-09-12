@@ -16,8 +16,10 @@
 # Usage:  UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-prefs-prototype.sh
 set -euo pipefail
 
-PINNED_REV="${PINNED_REV:-4f6e8c78b80c21d45b02807071f5dc2715a7eac4}"   # v2.54.0-25-g4f6e8c7
-EXPECTED_OCAML="5.5.0"
+# Documented reproduction context: the SAME upstream commit and OCaml toolchain
+# the app vendors (vendor/README.md, Makefile OCAML_PINNED_VERSION).
+PINNED_REV="${PINNED_REV:-91421d0617b0fb543c0eee51bcb4d4791d8b0631}"   # v2.54.0-19-g91421d0
+PINNED_OCAML="5.5.0"
 
 UNISON_SRC="${UNISON_SRC:-$HOME/Documents/Sources/unison/src}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +28,10 @@ PROTO="$HERE/cli-session-prefs-prototype.ml"
 [ -d "$UNISON_SRC" ] || { echo "UNISON_SRC not found: $UNISON_SRC"; exit 2; }
 
 OCAML_VER="$(ocamlopt -version)"
-[ "$OCAML_VER" = "$EXPECTED_OCAML" ] || echo "NOTE: ocaml $OCAML_VER, documented $EXPECTED_OCAML (proceeding)"
+if [ "$OCAML_VER" != "$PINNED_OCAML" ]; then
+  echo "ERROR: OCaml $OCAML_VER != pinned $PINNED_OCAML (the vendored blob is ABI-locked to $PINNED_OCAML)." >&2
+  exit 2
+fi
 
 REPO="$(cd "$UNISON_SRC" && git rev-parse --show-toplevel)"
 W="$(mktemp -d "${TMPDIR:-/tmp}/unison-adapter.XXXXXX")"
@@ -46,7 +51,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "== pinned rev: $PINNED_REV  ocaml: $OCAML_VER =="
+echo "== documented pin: $PINNED_REV  ocaml: $OCAML_VER =="
 cd "$REPO"
 git worktree add --detach "$W" "$PINNED_REV" >/dev/null
 

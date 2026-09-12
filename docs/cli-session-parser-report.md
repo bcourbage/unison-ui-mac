@@ -77,8 +77,10 @@ tree:
 UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-parser-prototype.sh
 ```
 
-- It pins a **documented upstream revision** (`4f6e8c7`, `v2.54.0-25-g4f6e8c7`)
-  and records the OCaml version (`5.5.0`).
+- It pins the **documented vendored revision** the app ships (`91421d0`,
+  `v2.54.0-19-g91421d0`, from `vendor/README.md`), not a newer upstream, and
+  **fails** if the OCaml compiler is not the pinned `5.5.0` the vendored blob is
+  ABI-locked to, rather than proceeding with a warning.
 - It creates **two disposable `git worktree`s** at that revision, one pristine
   and one with the patch applied, builds each engine entirely inside its own
   worktree on the repository's own OCaml path (`unison/src/Makefile.OCaml`, the
@@ -91,16 +93,30 @@ UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-parser-prototype.sh
   `parseCmdLineArgs`). Both reference binaries share the program name so
   upstream's error messages carry an identical program-name token.
 
-Section 1 compares the patched variant against the **pristine** reference.
-Section 2 compares the two reference binaries (refactored vs unmodified `parse`).
-Because `parseCmdLine` reads a fixed `Sys.argv`, each argument vector is
-exercised in its own process.
+Section 1 compares the patched variant against the **pristine** reference. Its
+comparison is guarded: a case counts only if **both processes exit 0** and each
+prints a **state record** (a `path=` line); the guard itself is unit-tested in
+section 0 to prove it rejects a nonzero exit, an empty or record-less output, and
+a mismatch, so two failing runs cannot pass as agreement. Section 2 compares the
+two reference binaries (refactored vs unmodified `parse`): each case requires
+**exit 2** and a **case-specific diagnostic**, and compares the **complete
+stdout and stderr streams** as files (not through command substitution, which
+would drop trailing newlines). Because `parseCmdLine` reads a fixed `Sys.argv`,
+each argument vector is exercised in its own process.
 
 ## Result (verbatim run)
 
 ```
+### 0. Guard self-test (prove the successful-parse check rejects false passes)
+  PASS  self-test: reference process failed -> fail
+  PASS  self-test: variant process failed -> fail
+  PASS  self-test: exit 0 but empty output -> fail
+  PASS  self-test: exit 0 but no state record -> fail
+  PASS  self-test: state mismatch -> fail
+  PASS  self-test: clean match passes -> pass
+
 ### 1. Successful parses: variant (patched parseCmdLineArgs) vs INDEPENDENT
-###    unpatched reference (parseCmdLine). Compares resulting pref state.
+###    unpatched reference (parseCmdLine). Requires exit 0 + a state record.
   PASS  scalar/bool/alias/BOOLDEF :: path=[] batch=true confirmBigDeletes=false maxerrors=5 fastcheck=default
   PASS  -path (CUSTOM) :: path=[Documents] batch=false confirmBigDeletes=true maxerrors=1 fastcheck=default
   PASS  repeated -path :: path=[A;B] batch=false confirmBigDeletes=true maxerrors=1 fastcheck=default
@@ -109,11 +125,12 @@ exercised in its own process.
   PASS  CLI + profile precedence :: path=[ProfA;ProfB;CliX] batch=false confirmBigDeletes=true maxerrors=1 fastcheck=default
 
 ### 2. Historical parser fidelity: refactored parse (patched) vs unmodified
-###    parse (pristine). Compares exit status, stdout, and stderr.
-  PASS  unknown option :: exit=2 identical; msg=[./parserbin: unknown option `-nosuchopt'.]
-  PASS  missing argument :: exit=2 identical; msg=[./parserbin: option `-maxerrors' needs an argument.]
-  PASS  malformed value :: exit=2 identical; msg=[./parserbin: wrong argument `notanint'; option `-maxerrors' expects an integer.]
-  PASS  help :: exit=2 identical; msg=[]
+###    parse (pristine). Requires exit 2 + a case-specific diagnostic, and
+###    compares the COMPLETE stdout and stderr streams (file compare).
+  PASS  unknown option :: exit 2, diagnostic present, full streams identical
+  PASS  missing argument :: exit 2, diagnostic present, full streams identical
+  PASS  malformed value :: exit 2, diagnostic present, full streams identical
+  PASS  help :: exit 2, diagnostic present, full streams identical
 
 ### 3. Variant raises (does not exit) on invalid input, recovery clean
   PASS  invalid argument raises Util.Fatal, no exit          (-maxerrors notanint)
