@@ -1,21 +1,56 @@
 #!/usr/bin/env bash
-# Reproduce the session-scoped CLI options engine prototype and its evidence.
-# See docs/cli-session-prefs-prototype-report.md.
+# Reproduce the session-scoped CLI options engine prototype (Prefs.loadStrings
+# adapter) and its evidence. See docs/cli-session-prefs-prototype-report.md.
 #
-# Builds the vendored Unison engine objects on the repository's own OCaml path
+# Isolation: this script never builds in or cleans the caller's working tree. It
+# creates a DISPOSABLE git worktree pinned to a documented upstream revision,
+# builds the vendored engine objects there on the repository's own OCaml path
 # (unison/src/Makefile.OCaml, same as `make vendor-blob`; no opam/dune), links
-# the prototype against them, runs every asserted case, then restores the tree.
+# the prototype there, runs every asserted case, and removes the worktree at the
+# end (and on any error, via a trap). Cleanup failures are reported, not ignored.
+# This half needs no engine source patch (loadStrings already exists), so the
+# worktree stays pristine.
+#
 # Exits non-zero if any assertion fails.
 #
 # Usage:  UNISON_SRC=/path/to/unison/src docs/spikes/run-cli-session-prefs-prototype.sh
 set -euo pipefail
 
+PINNED_REV="${PINNED_REV:-4f6e8c78b80c21d45b02807071f5dc2715a7eac4}"   # v2.54.0-25-g4f6e8c7
+EXPECTED_OCAML="5.5.0"
+
 UNISON_SRC="${UNISON_SRC:-$HOME/Documents/Sources/unison/src}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROTO="$HERE/cli-session-prefs-prototype.ml"
+[ -f "$PROTO" ] || { echo "missing: $PROTO"; exit 2; }
 [ -d "$UNISON_SRC" ] || { echo "UNISON_SRC not found: $UNISON_SRC"; exit 2; }
 
-cd "$UNISON_SRC"
+OCAML_VER="$(ocamlopt -version)"
+[ "$OCAML_VER" = "$EXPECTED_OCAML" ] || echo "NOTE: ocaml $OCAML_VER, documented $EXPECTED_OCAML (proceeding)"
+
+REPO="$(cd "$UNISON_SRC" && git rev-parse --show-toplevel)"
+W="$(mktemp -d "${TMPDIR:-/tmp}/unison-adapter.XXXXXX")"
+U="$(mktemp -d "${TMPDIR:-/tmp}/unison-prf.XXXXXX")"
+cleanup_rc=0
+cleanup() {
+  cd "$REPO"
+  if [ -d "$W" ]; then
+    if ! git worktree remove --force "$W" 2>/tmp/wtrm.$$; then
+      echo "CLEANUP WARNING: could not remove worktree $W:"; cat /tmp/wtrm.$$ || true
+      cleanup_rc=1
+    fi
+    rm -f /tmp/wtrm.$$
+  fi
+  rm -rf "$U"
+  git worktree prune
+}
+trap cleanup EXIT
+
+echo "== pinned rev: $PINNED_REV  ocaml: $OCAML_VER =="
+cd "$REPO"
+git worktree add --detach "$W" "$PINNED_REV" >/dev/null
+
+cd "$W/src"
 echo "== building engine objects (make -f Makefile.OCaml tui) =="
 make Makefile.cfg >/dev/null
 make -f Makefile.OCaml tui >/dev/null
@@ -24,8 +59,8 @@ cp "$PROTO" prototype2.ml
 inc=(-I lwt -I ubase -I system -I system/generic -I lwt/generic -I +unix -I +str)
 echo "== compiling + linking the prototype =="
 ocamlopt -g "${inc[@]}" -c prototype2.ml
-# Same native objects the `unison` tui links (see the tui build's `-o unison`
-# line), with main.cmx / linktext.cmx (the UI entry) replaced by prototype2.cmx.
+# Same native objects the `unison` tui links (its `-o unison` line), with
+# main.cmx / linktext.cmx (the UI entry) replaced by prototype2.cmx.
 CMX=(unix.cmxa str.cmxa ubase/umarshal.cmx ubase/rx.cmx unicode_tables.cmx unicode.cmx bytearray.cmx \
   system/system_generic.cmx system/generic/system_impl.cmx system.cmx ubase/projectInfo.cmx ubase/myMap.cmx \
   ubase/safelist.cmx ubase/util.cmx ubase/uarg.cmx ubase/prefs.cmx ubase/trace.cmx ubase/proplist.cmx \
@@ -38,24 +73,21 @@ CMX=(unix.cmxa str.cmxa ubase/umarshal.cmx ubase/rx.cmx unicode_tables.cmx unico
 COBJ=(osxsupport.o pty.o bytearray_stubs.o hash_compat.o props_xattr.o props_acl.o copy_stubs.o)
 ocamlopt -g "${inc[@]}" -o prototype2 "${CMX[@]}" "${COBJ[@]}"
 
-U="$(mktemp -d)"
 printf '# session A: no path configured\n' > "$U/A.prf"
 printf 'path = Preset\n' > "$U/B.prf"
 
 rc=0
 echo "##### match (bool, alias-opposite-default, int, BOOLDEF) #####"
-EXPECT=match        UNISON="$U" ./prototype2 -batch -confirmbigdeletes=false -maxerrors 5 -fastcheck default || rc=1
+EXPECT=match         UNISON="$U" ./prototype2 -batch -confirmbigdeletes=false -maxerrors 5 -fastcheck default || rc=1
 echo "##### repeated-list #####"
 EXPECT=repeated-list UNISON="$U" ./prototype2 -path A -path B || rc=1
 echo "##### path-custom #####"
-EXPECT=path-custom  UNISON="$U" ./prototype2 -path Documents || rc=1
+EXPECT=path-custom   UNISON="$U" ./prototype2 -path Documents || rc=1
 echo "##### whitespace #####"
-EXPECT=whitespace   UNISON="$U" ./prototype2 -path '  ws  ' || rc=1
+EXPECT=whitespace    UNISON="$U" ./prototype2 -path '  ws  ' || rc=1
 
-echo "== cleanup (restore the unison tree) =="
-rm -rf "$U"
-rm -f prototype2 prototype2.ml prototype2.cmi prototype2.cmx prototype2.o
-make clean >/dev/null
-
-echo "== overall: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
-exit $rc
+echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
+cleanup; trap - EXIT
+[ $cleanup_rc -eq 0 ] || echo "== cleanup reported problems =="
+echo "== overall: $([ $(( rc | cleanup_rc )) -eq 0 ] && echo PASS || echo FAIL) =="
+exit $(( rc | cleanup_rc ))
