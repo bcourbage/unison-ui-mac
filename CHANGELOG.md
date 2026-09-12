@@ -11,6 +11,18 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Changed
+- **The profile picker opens any profile after a command-line launch.** When the
+  app was started with a command-line option (for example
+  `unison <profile> -path <dir>`), returning to the picker and choosing a profile
+  now opens it normally, the same as a plain app launch. Earlier versions refused
+  to open a *different* profile in that situation. A command-line option is applied
+  to the launch's **first opened profile** only: the profile it names, or the first
+  one you pick if it names none. Every profile you open from the picker after that
+  first load is a fresh, unscoped open. No refusal, and nothing to reopen the app
+  for. (A remote profile that closes its connection when a sync ends also reloads
+  on its next Rescan, so that Rescan is unscoped too.)
+
 ## [0.9.0] — 2026-09-11
 
 ### Added

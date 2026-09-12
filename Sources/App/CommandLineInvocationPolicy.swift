@@ -177,20 +177,6 @@ enum CommandLineGraphicalLaunch: Equatable {
     /// A message to write to stderr before exiting non-zero.
     case refuse(message: String)
 
-    /// Whether opening `requested` through the GUI is safe given how this instance
-    /// was launched. Upstream reparses the process command line on every profile
-    /// load, so command-line option overrides from a launch (e.g. `-path`) apply
-    /// to whatever profile is opened next. A launch that carried such options may
-    /// therefore only open the profile it was launched for; any other profile is
-    /// refused, so the overrides never silently reshape it. A clean launch (no
-    /// options) may open anything.
-    static func mayOpenAfterOptionLaunch(launchWasClean: Bool,
-                                         launchProfile: String?,
-                                         requested: String) -> Bool {
-        if launchWasClean { return true }
-        return launchProfile == requested
-    }
-
     /// - `rootsSet`: `unison_bridge_command_line_roots_set()` — 0 none, 1 roots
     ///   present, anything else undetermined.
     /// - `profile`: `unison_bridge_command_line_profile()`, already validated by

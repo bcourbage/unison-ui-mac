@@ -117,17 +117,18 @@ gate; they do not authorize skipping it.
       are pre-publication gates in the job; inspecting the finished artifact
       happens after it is published.)
 
-### Command-line option isolation (#122), first release that ships it
+### Command-line option scope (#122)
 
 - [ ] **(pre-publication gate, live on the signed RC)** **TC14**
-      (`docs/manual-test-step2b.md`) — CLI option isolation across profile opens
-      and rescans: `unison first -path Documents` scans only `Documents`, opening
-      `second` is refused with the reopen message, a rescan of `first` keeps the
-      restriction, and after a normal relaunch `second` scans its full root
-      without the override. Uses disposable roots with distinguishable changes
-      inside and outside `Documents`; no synchronization is applied. Record the RC
-      version/build, macOS version, exact launcher path, and pass/fail evidence.
-      Required before publication. The unit tests cover only the decision gate.
+      (`docs/manual-test-step2b.md`) — CLI option scope, first-load-only contract:
+      `unison first -path Documents` scans only `Documents`; an in-place local
+      rescan of `first` stays limited to `Documents`; returning to the picker opens
+      both `second` and `first` in full (unscoped, no refusal); a no-profile
+      `-path` launch scopes only the first selection; and a key/remote profile's
+      reconnecting Rescan after a sync is unscoped. Uses disposable roots with
+      changes inside and outside `Documents`. Record the RC version/build, macOS
+      version, exact launcher path, and pass/fail evidence. Required before
+      publication.
 
 ## 0.6.0
 
