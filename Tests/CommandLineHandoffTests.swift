@@ -107,7 +107,8 @@ final class CommandLineHandoffTests: XCTestCase {
     // MARK: response codec
 
     func test_response_roundTrip() {
-        for r: Resp in [.started, .refused(message: "busy: scanning"), .invalid(message: "no such profile")] {
+        for r: Resp in [.started, .acceptedWaiting(message: "waiting to open work"),
+                        .refused(message: "busy: scanning"), .invalid(message: "no such profile")] {
             XCTAssertEqual(Resp(line: r.encoded()), r)
         }
     }
@@ -115,6 +116,7 @@ final class CommandLineHandoffTests: XCTestCase {
     func test_response_truncatedOrUnknown_isNil() {
         XCTAssertNil(Resp(line: "ok"))                  // no newline = truncated
         XCTAssertNil(Resp(line: "refuse\tbusy"))        // no newline
+        XCTAssertNil(Resp(line: "waiting\tsoon"))       // no newline
         XCTAssertNil(Resp(line: "weird\tthing\n"))      // unknown verb
         XCTAssertNil(Resp(line: ""))
     }
@@ -122,6 +124,10 @@ final class CommandLineHandoffTests: XCTestCase {
     func test_response_successAndClientMessage() {
         XCTAssertTrue(Resp.started.isSuccess)
         XCTAssertNil(Resp.started.clientMessage)
+        // Accepted-and-waiting is a success (the app took the request), but it
+        // carries an informational message for the caller.
+        XCTAssertTrue(Resp.acceptedWaiting(message: "w").isSuccess)
+        XCTAssertEqual(Resp.acceptedWaiting(message: "w").clientMessage, "w")
         XCTAssertFalse(Resp.refused(message: "x").isSuccess)
         XCTAssertEqual(Resp.refused(message: "x").clientMessage, "x")
         XCTAssertFalse(Resp.invalid(message: "y").isSuccess)
@@ -130,37 +136,34 @@ final class CommandLineHandoffTests: XCTestCase {
 
     // MARK: context check (finding 1: faithful transfer)
 
-    private func check(_ r: Req, dir: String = "/u", install: String = "/A/app",
-                       receiverClean: Bool = true) -> Resp? {
+    private func check(_ r: Req, dir: String = "/u", install: String = "/A/app") -> Resp? {
         CommandLineHandoff.contextCheck(request: r, localUnisonDirectory: dir,
-                                        localInstallationPath: install, receiverLaunchWasClean: receiverClean)
+                                        localInstallationPath: install)
     }
 
     func test_context_compatible_isAccepted() {
-        XCTAssertNil(check(req(dir: "/u", install: "/A/app"),
-                           dir: "/u", install: "/A/app", receiverClean: true))
+        XCTAssertNil(check(req(dir: "/u", install: "/A/app"), dir: "/u", install: "/A/app"))
     }
 
     func test_context_normalizesUnisonPathsBeforeComparing() {
         XCTAssertNil(check(req(dir: "/u/./sub/..//", install: "/A/app"), dir: "/u", install: "/A/app"))
     }
 
-    func test_context_receiverLaunchedWithOptions_isInvalid() {
-        // Upstream reparses the process command line on every profile load, so a
-        // primary launched with options cannot faithfully serve any handoff.
-        guard case .invalid(let m)? = check(req(), receiverClean: false) else {
-            return XCTFail("expected invalid when the receiver's own launch was not clean")
-        }
-        XCTAssertTrue(m.contains("command-line options that would affect other profiles"))
-    }
-
     func test_context_optionsAreDelivered_notRefused() {
-        // The caller's own options are no longer a reason to refuse: the primary
+        // The caller's own options are not a reason to refuse: the primary
         // delivers them to the opened session. With a matching installation and
         // Unison directory, a request carrying options is accepted.
         XCTAssertNil(check(req(dir: "/u", install: "/A/app", args: ["-path", "Documents", "-ignore", "Name x"]),
-                           dir: "/u", install: "/A/app", receiverClean: true),
+                           dir: "/u", install: "/A/app"),
                      "a request carrying session options must be accepted, not refused")
+    }
+
+    func test_context_receiverOwnLaunchIsNotAReason_isAccepted() {
+        // The refusal redesign removed the "receiver was launched with options"
+        // refusal: sessions are option-scoped, so how the app started does not
+        // affect a delivered request. A compatible request is simply accepted.
+        XCTAssertNil(check(req(dir: "/u", install: "/A/app"), dir: "/u", install: "/A/app"),
+                     "the receiver's own launch is no longer a reason to refuse")
     }
 
     func test_context_differentInstallation_isInvalid() {
@@ -197,30 +200,58 @@ final class CommandLineHandoffTests: XCTestCase {
         }
     }
 
-    func test_decide_idle_opensTheProfile() {
+    func test_decide_idle_opensTheProfileNow() {
         XCTAssertEqual(CommandLineHandoff.decide(launch: .openProfile(name: "work"), activity: .idleAtPicker),
-                       .open(name: "work"))
+                       .openNow(name: "work"))
     }
 
-    func test_decide_busyEngine_refuses_withWaitGuidance() {
+    func test_decide_busyWillWait_acceptsToOpenAfterCleanup() {
+        // A scan / reconcile / diff / close in flight can be left safely: the
+        // request is accepted to open once the current work finishes.
+        XCTAssertEqual(
+            CommandLineHandoff.decide(launch: .openProfile(name: "work"),
+                                      activity: .busyWillWait(reason: "scanning for changes")),
+            .acceptWaiting(name: "work"))
+    }
+
+    func test_decide_synchronizing_refuses_pointingToTheApp() {
         let out = CommandLineHandoff.decide(
             launch: .openProfile(name: "work"),
-            activity: .busy(reason: "scanning for changes", resolution: .waitForCompletion))
-        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
-        XCTAssertTrue(m.contains("scanning for changes"))
+            activity: .synchronizing(reason: "synchronizing"))
+        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal during sync") }
+        XCTAssertTrue(m.contains("synchronizing"))
         XCTAssertTrue(m.contains("work"))
-        XCTAssertTrue(m.contains("Wait for it to finish"))
+        XCTAssertTrue(m.contains("handle the current sync in the app"))
         XCTAssertTrue(m.contains("-ui text"))
     }
 
-    func test_decide_busyEditor_refuses_withCloseEditorGuidance() {
+    func test_decide_editing_refuses_withCloseEditorGuidance() {
         let out = CommandLineHandoff.decide(
             launch: .openProfile(name: "other"),
-            activity: .busy(reason: "editing the profile home", resolution: .closeEditor))
+            activity: .editing(profileDescription: "editing the profile home"))
         guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
         XCTAssertTrue(m.contains("editing the profile home"))  // names the edited profile
         XCTAssertTrue(m.contains("other"))                     // names the request
         XCTAssertTrue(m.contains("Close the profile editor, then run the command again"))
+    }
+
+    func test_decide_restartRequired_refuses_withRecoveryGuidance() {
+        let out = CommandLineHandoff.decide(
+            launch: .openProfile(name: "work"),
+            activity: .restartRequired(reason: "needs to be quit and reopened after a connection problem"))
+        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
+        XCTAssertTrue(m.contains("needs to be quit and reopened"))
+        XCTAssertTrue(m.contains("work"))
+        XCTAssertTrue(m.contains("Quit and reopen it"))
+    }
+
+    func test_decide_requestAlreadyPending_refuses() {
+        let out = CommandLineHandoff.decide(
+            launch: .openProfile(name: "work"),
+            activity: .requestAlreadyPending)
+        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
+        XCTAssertTrue(m.contains("already handling another command-line request"))
+        XCTAssertTrue(m.contains("work"))
     }
 
     // MARK: open outcome (finding 4)
@@ -234,40 +265,13 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertTrue(m.contains("-ui text"))
     }
 
-    // MARK: clean-launch detection (finding 1: only faithfully transferable opens)
-
-    func test_isClean_bareProfile() {
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(arguments: ["exe", "work"], launchProfile: "work"))
-    }
-
-    func test_isClean_uiSelectorRemoved() {
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-ui", "graphic", "work"], launchProfile: "work"))
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-ui=graphic", "work"], launchProfile: "work"))
-    }
-
-    func test_isClean_hostInjectedFlagsIgnored() {
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-NSDocumentRevisionsDebugMode", "YES", "work"], launchProfile: "work"))
-    }
-
-    func test_isClean_noProfile_finderLaunchIsClean() {
-        // A Finder launch (no profile, only host-injected flags) is clean.
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(arguments: ["exe"], launchProfile: nil))
-        XCTAssertTrue(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-psn_0_1", "-NSFoo", "bar"], launchProfile: nil))
-    }
-
-    func test_isClean_extraOptions_isNotClean() {
-        XCTAssertFalse(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "work", "-batch"], launchProfile: "work"))
-        XCTAssertFalse(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-path", "sub", "work"], launchProfile: "work"))
-        XCTAssertFalse(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-servercmd", "/x/unison", "work"], launchProfile: "work"))
-        // Options with no profile (the receiver's own launch context) are not clean.
-        XCTAssertFalse(CommandLineHandoff.isCleanGraphicalLaunch(
-            arguments: ["exe", "-path", "sub"], launchProfile: nil))
+    func test_acceptedWaitingResponse_namesProfileAndReason() {
+        guard case .acceptedWaiting(let m) =
+                CommandLineHandoff.acceptedWaitingResponse(name: "work", reason: "scanning for changes") else {
+            return XCTFail("expected an accepted-and-waiting response")
+        }
+        XCTAssertTrue(m.contains("scanning for changes"))
+        XCTAssertTrue(m.contains("work"))
+        XCTAssertTrue(m.contains("waiting in the app"))
     }
 }

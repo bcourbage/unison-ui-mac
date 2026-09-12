@@ -27,10 +27,21 @@ across releases per Apple's bundle-version rules.
   options like `-ui` are not treated as profile overrides.
 - **A command-line request to an already-running app now applies its options.**
   `unison <profile> -path <dir>` handed to a running instance opens that profile
-  scoped to `<dir>`, the same as a fresh launch, instead of being refused with
-  "cannot apply the extra command-line options". `-include`/`-source` are carried
-  too. (A running instance that was itself started with options still declines
-  such a request for now; run it against an app started without options.)
+  scoped to `<dir>`, the same as a fresh launch. `-include`/`-source` are carried
+  too. How the running app itself was started no longer matters: each request is
+  scoped only by its own options, so a request is served whether or not the app
+  was launched with options.
+- **A command-line request waits for the app instead of being turned away when it
+  is busy.** If the app is scanning, showing reconciliation results, or finishing
+  a previous run when the request arrives, it accepts the request and opens the
+  profile once that work and its connection cleanup finish; the command reports
+  that it was accepted and is waiting, and the app shows it waiting. A request is
+  still declined, with a specific reason, while a synchronization is running
+  (make that choice in the app), while the profile editor is open (close it first,
+  your edits are kept), and when the app needs to be quit and reopened after a
+  connection problem. Only one command-line request waits at a time; a second is
+  declined rather than replacing the first, and choosing a profile in the app
+  never silently replaces a waiting command-line request.
 
 ## [0.9.0] — 2026-09-11
 
