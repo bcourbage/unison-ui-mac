@@ -203,12 +203,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// completion callback. Never "whatever op is active now". Not cleared
     /// on abandon — the terminal callback still owns the lease.
     private var pendingConnect: (SessionID, OperationID)?
-    /// True once the first engine connect of the process has been driven. Before
-    /// that, a session with no explicit overrides leaves the engine to parse the
-    /// launch command line (patch 0008 first-load contract); afterward every
-    /// connect sets the session's args explicitly (empty resets) so no scope
-    /// leaks between sessions.
-    private var didFirstConnect = false
     /// Assigning/clearing this slot is the single choke point for the init2/scan
     /// stall detector (issue #24): assigning a scan op arms it (remote scans
     /// only); clearing it — on success, failure, take-in-flight, or stall fire —
@@ -296,8 +290,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         switch effect {
         case .showSession(let s, let profile):
             driveShowSession(s, profile: profile)
-        case .beginConnect(let s, let op, let profile, let args):
-            driveBeginConnect(s, op, profile: profile, args: args)
+        case .beginConnect(let s, let op, let profile, let overrides):
+            driveBeginConnect(s, op, profile: profile, overrides: overrides)
         case .beginScan(let s, let op):
             driveBeginScan(s, op)
         case .beginSync(let s, let op):
@@ -511,21 +505,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         showProfilePicker(select: profile)
     }
 
-    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String, args: [String]) {
+    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String, overrides: SessionOverrides) {
         pendingConnect = (s, op)
         sheetShownThisConnect = false
         retryNotice.reset()
-        // Apply this session's own command-line overrides before init1 (patch
-        // 0008 contract). On the first connect of the process with no explicit
-        // overrides, leave the engine to parse the launch command line; otherwise
-        // set the vector (empty resets, so a prior session's scope cannot leak).
-        // A failed setter must STOP the open — opening with a stale or omitted
+        // Apply this session's overrides before init1 (patch 0008 contract).
+        // `.inheritLaunch` leaves the engine to parse the launch command line;
+        // `.explicit(v)` sets the vector (even empty), so an unscoped session
+        // drops any inherited scope and a prior session's scope cannot leak. A
+        // failed setter must STOP the open — opening with a stale or omitted
         // scope would be wrong — so fail the op (engine quiescent: nothing
         // started) instead of falling through to init1.
-        switch SessionArgsApply.decide(args: args, isFirstConnect: !didFirstConnect,
-                                       setter: { UnisonBridge.setSessionArgs($0) }) {
+        switch SessionArgsApply.decide(overrides, setter: { UnisonBridge.setSessionArgs($0) }) {
         case .proceed:
-            didFirstConnect = true
+            break
         case .fail(let status):
             pendingConnect = nil
             log.write("set_session_args (\(s)/\(op)) failed status \(status) — failing the open before init1")
@@ -1729,7 +1722,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // profile's own staging block and stops at the reconciliation results.
             if let name = self?.pendingLaunchProfile {
                 self?.pendingLaunchProfile = nil
-                self?.profileSelected(name)
+                // The launch session inherits the process command line (the
+                // engine parses it on the first load); every later open is an
+                // explicit session. This transitional inheritance is superseded
+                // once launch options are delivered as explicit args (later PR).
+                self?.profileSelected(name, overrides: .inheritLaunch)
             }
         }
 
@@ -1844,7 +1841,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// in the picker (abandoned-staging recovery was offered and not cleared), so
     /// a caller such as the handoff never reports a scan that did not start.
     @discardableResult
-    private func profileSelected(_ profile: String) -> Bool {
+    private func profileSelected(_ profile: String,
+                                 overrides: SessionOverrides = .explicit([])) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
         // No option-isolation gate is needed here. A launch's command-line options
         // are consumed by the engine's FIRST profile load only: upstream's
@@ -1862,12 +1860,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 context: "This profile's archives are being recovered from an interrupted maintenance operation.")
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
-                run(engine.requestOpen(profile: profile))
+                run(engine.requestOpen(profile: profile, overrides: overrides))
                 return true
             }
             return false
         }
-        run(engine.requestOpen(profile: profile))
+        run(engine.requestOpen(profile: profile, overrides: overrides))
         return true
     }
 
