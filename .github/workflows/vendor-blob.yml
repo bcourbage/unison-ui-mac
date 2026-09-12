@@ -213,7 +213,9 @@ jobs:
       - name: Install pinned + SHA-256-verified XcodeGen (after upload)
         # Single authority for the pinned version + checksum (shared with ci.yml
         # and release.yml). Fetched AFTER the blob upload — see the header note.
-        run: ./scripts/install-xcodegen.sh
+        # The repo is checked out under gui/ (see the checkout step's `path`), so
+        # run from there — the smoke-test step below does the same.
+        run: cd gui && ./scripts/install-xcodegen.sh
 
       - name: Smoke-test — build + test the app against the freshly built blob
         # SF7: `make build` runs verify-runtime-minos (the OCaml runtime built by
