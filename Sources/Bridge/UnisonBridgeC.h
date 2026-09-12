@@ -71,6 +71,11 @@ bool unison_bridge_test_root_survives_gc(const char *in, char *out, size_t outle
 void unison_bridge_test_set_fake_preconn(bool on);
 /* Test-only (Blocker 1): the currently-published per-row root count. */
 int unison_bridge_test_ri_count(void);
+
+/* Test-only (patch 0008): count of entries to do_unisonInit1's post-arguments
+ * connection-setup boundary. Read before/after an op to prove a failed session-
+ * argument apply started no connection or scan. -1 if the callback is missing. */
+int unison_bridge_test_connect_setup_count(void);
 /* Test-only: force the Kth bridge_strdup in emit_state_items to return NULL,
  * exercising the allocation-failure rollback (single-shot, 1-based). */
 void unison_bridge_test_fail_strdup_at(int k);
@@ -230,6 +235,20 @@ int unison_bridge_command_line_roots_set(void);
 typedef void (*unison_init1_complete_handler_t)(bool needs_prompt);
 void unison_bridge_set_init1_complete_handler(unison_init1_complete_handler_t h);
 int unison_bridge_init1(const char *profile_name);
+
+/* === Per-session command-line overrides ===
+ *
+ * Stores the current graphical session's own command-line option arguments
+ * (for example {"-path", "Documents"}) in the engine, to be applied by the
+ * next unison_bridge_init1 through the engine's own parser. The caller MUST
+ * call this before every unison_bridge_init1 (with an empty vector when the
+ * session has no overrides), because the engine re-applies the stored vector
+ * on every profile (re)load: a stale vector would otherwise leak into a later
+ * session. Storing does NOT touch any preference — application happens only
+ * inside init1 — so this can never mutate an active session's preferences.
+ * Synchronous and fast. Returns UNISON_BRIDGE_OK, UNISON_BRIDGE_ERR_MISSING
+ * (callback not registered — a stale blob), or UNISON_BRIDGE_ERR_EXN. */
+int unison_bridge_set_session_args(int argc, const char *const argv[]);
 
 /* === Credential prompts ===
  *

@@ -1,5 +1,21 @@
 import Foundation
 
+/// Where a session's engine options come from. This is deliberately NOT just a
+/// `[String]`: an explicit empty vector (a session that requests no overrides)
+/// must be distinguished from "inherit the process launch command line", because
+/// they drive the engine differently (patch 0008's first-load contract):
+///  - `.inheritLaunch` — a transitional case for the initial launch open only:
+///    do NOT set session args, so the engine parses the process argv itself on
+///    the first load (legacy behavior). Superseded once launch options are
+///    delivered as explicit args (a later PR).
+///  - `.explicit(v)` — this session owns its options. The driver always sets the
+///    vector (even empty), so the engine suppresses the process argv and applies
+///    exactly `v`. An empty `v` is a genuinely unscoped session.
+enum SessionOverrides: Equatable {
+    case inheritLaunch
+    case explicit([String])
+}
+
 /// Single authority for the Unison engine's per-profile lifecycle
 /// (issue #6). Replaces the ad-hoc booleans with one explicit state
 /// machine whose contract is designed to *reject* incorrect wiring, not
@@ -101,7 +117,11 @@ final class EngineSessionCoordinator {
     /// per session and never has to guess whether to create or reuse it.
     enum Effect: Equatable {
         case showSession(SessionID, profile: String)         // create/retain the window
-        case beginConnect(SessionID, OperationID, profile: String)  // init1
+        // init1. `overrides` is this session's override source (see
+        // SessionOverrides); the driver applies it before init1, on both the
+        // first connect and every reconnect, so the session's scope persists
+        // across a reconnect and never leaks into another session.
+        case beginConnect(SessionID, OperationID, profile: String, overrides: SessionOverrides)
         case beginScan(SessionID, OperationID)               // init2 over live connection
         case beginSync(SessionID, OperationID)               // synchronize
         case beginDiff(SessionID, OperationID, row: Int)     // off-main diff → diffCompleted (PR-4)
@@ -137,7 +157,11 @@ final class EngineSessionCoordinator {
 
     private var abandoned = false
     private var currentProfile: String?
-    private var queued: (id: OpenRequestID, profile: String)?
+    /// The current session's override source, retained for the life of the
+    /// session so a reconnect (which re-runs init1) re-applies exactly the same
+    /// scope. Reset with the session.
+    private var currentOverrides: SessionOverrides = .explicit([])
+    private var queued: (id: OpenRequestID, profile: String, overrides: SessionOverrides)?
 
     /// A rescan requested while a non-interactive sync-end close is still in
     /// flight (`.closing(..., .backToReady)`). It cannot start until the close
@@ -222,10 +246,16 @@ final class EngineSessionCoordinator {
 
     /// User picked a profile. Starts immediately if idle, else queues
     /// behind the in-flight (possibly abandoned) op.
-    func requestOpen(profile: String) -> [Effect] {
+    /// `overrides` is this request's override source (an explicit vector, or
+    /// legacy launch inheritance). It travels with the request and, when it
+    /// eventually opens, scopes only that session. A request that must wait only
+    /// STORES it here; nothing is applied to the engine until the request
+    /// actually starts (`startFreshOpen` → `.beginConnect`), so a queued request
+    /// can never mutate an active session's preferences.
+    func requestOpen(profile: String, overrides: SessionOverrides = .explicit([])) -> [Effect] {
         switch phase {
         case .idle:
-            return startFreshOpen(profile: profile)
+            return startFreshOpen(profile: profile, overrides: overrides)
         case .restartRequired(let reason):
             return [.restartRequired(reason: reason)]
         case .closing(let s, let op, .backToReady):
@@ -234,12 +264,12 @@ final class EngineSessionCoordinator {
             // end, not return to its results window — upgrade the outcome so
             // the close idles and the queued open then starts.
             let id = mintRequest()
-            queued = (id, profile)
+            queued = (id, profile, overrides)
             phase = .closing(s, op, .toIdle)
             return [.showWaiting(id, profile: profile)]
         default:
             let id = mintRequest()
-            queued = (id, profile)          // last pick wins
+            queued = (id, profile, overrides)   // last pick wins
             return [.showWaiting(id, profile: profile)]
         }
     }
@@ -275,7 +305,12 @@ final class EngineSessionCoordinator {
             }
             let op = mintOp()
             phase = .opening(s, op)
-            return [.beginConnect(s, op, profile: profile)]
+            // Reconnect re-runs init1, which resets prefs; re-apply this session's
+            // same override source. For `.explicit(v)` the scope survives the
+            // reconnect; `.inheritLaunch` does NOT re-apply the launch options
+            // (the engine's first-load parse is spent) — a transitional limit to
+            // be retired by explicit launch-argument delivery.
+            return [.beginConnect(s, op, profile: profile, overrides: currentOverrides)]
         case .failed(let r):
             return enterRestartRequired("previous close failed: \(r)")
         }
@@ -439,7 +474,9 @@ final class EngineSessionCoordinator {
                     }
                     let op2 = mintOp()
                     phase = .opening(session, op2)
-                    return [.beginConnect(session, op2, profile: profile)]
+                    // Reconnect after the sync-end close re-runs init1; re-apply
+                    // this session's overrides so its scope persists.
+                    return [.beginConnect(session, op2, profile: profile, overrides: currentOverrides)]
                 }
                 phase = .ready(session)
                 return []
@@ -492,14 +529,15 @@ final class EngineSessionCoordinator {
 
     // MARK: - Internal transitions (mutate, then return effects)
 
-    private func startFreshOpen(profile: String) -> [Effect] {
+    private func startFreshOpen(profile: String, overrides: SessionOverrides = .explicit([])) -> [Effect] {
         let s = mintSession()
         let op = mintOp()
         phase = .opening(s, op)
         abandoned = false
         connection = .disconnected
         currentProfile = profile
-        return [.showSession(s, profile: profile), .beginConnect(s, op, profile: profile)]
+        currentOverrides = overrides
+        return [.showSession(s, profile: profile), .beginConnect(s, op, profile: profile, overrides: overrides)]
     }
 
     private func beginClose(_ session: SessionID, outcome: CloseOutcome) -> [Effect] {
@@ -524,10 +562,11 @@ final class EngineSessionCoordinator {
         abandoned = false
         connection = .disconnected
         currentProfile = nil
+        currentOverrides = .explicit([])
         rescanAfterClose = nil
         if let q = queued {
             queued = nil
-            return startFreshOpen(profile: q.profile)
+            return startFreshOpen(profile: q.profile, overrides: q.overrides)
         }
         return []
     }

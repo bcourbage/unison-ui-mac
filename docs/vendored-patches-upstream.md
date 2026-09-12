@@ -24,9 +24,13 @@ review.
 | 0004 transport-child reaper | `remote.ml` (+41/−0), `remote.mli` (+11/−0), `uimacbridge.ml` (+10/−0) | **Yes** | general hooks + macUI policy | Medium (hooks half) |
 | 0005 sync-completion snapshot | `uimacbridge.ml` (+11/−2) | **No** | macUI bridge | Low (macUI perf) |
 | 0006 register-lock | `uimacbridge.ml` (+59/−0) | **Yes** | macUI bridge | Low (macUI-only) |
+| 0007 session-argv parser | `ubase/uarg.ml` (+82/−21), `ubase/uarg.mli` (+11/−0), `ubase/prefs.ml` (+28/−0), `ubase/prefs.mli` (+9/−0) | **No** | general engine (CLI parser) | Medium (backward-compatible, general) |
+| 0008 session-argv bridge | `uimacbridge.ml` (additive + first-load contract) | **No** | macUI bridge | Low (macUI-only) |
 
-Three of the five are strictly additive (0002, 0004, 0006). The two non-additive
-ones each change a small, well-scoped piece of existing code (see below).
+Three of the seven are strictly additive (0002, 0004, 0006). The four
+non-additive ones each change a small, well-scoped piece of existing code (see
+below); 0007's `uarg.ml` change is a behavior-preserving refactor, and 0008's
+non-additive part is the first-load parse contract (both documented below).
 
 ---
 
@@ -108,6 +112,64 @@ ones each change a small, well-scoped piece of existing code (see below).
 - **Upstream relevance: LOW.** macUI-bridge-only surface; matters upstream only
   if the native macUI is to coordinate with the engine's per-archive locks. The
   underlying `Lock` module it wraps is already upstream.
+
+## 0007 — `uarg-prefs-session-argv`
+
+- **Additive only: NO** — `ubase/uarg.ml` +82/−21, `ubase/uarg.mli` +11/−0,
+  `ubase/prefs.ml` +28/−0, `ubase/prefs.mli` +9/−0. The `uarg.ml` hunk factors the
+  existing `parse` loop into a shared `parseCore` that raises `ParseError` instead
+  of exiting; `parse` keeps its old behavior by catching that and doing the same
+  print-and-exit (the removed lines reappear verbatim inside the new `parse`), so
+  it is a **behavior-preserving refactor plus two additions**. Everything else is
+  additive.
+- **What:** adds `Uarg.parseArgv` (parse an explicit per-session argument vector,
+  raising `Uarg.Bad` instead of exiting, leaving `Uarg.current` untouched) and
+  `Prefs.parseCmdLineArgs` (the session-request counterpart of `parseCmdLine`:
+  the engine's own option specs, arity, list accumulation, and precedence, fed a
+  request's argument vector, raising `Util.Fatal` on bad input). This is what lets
+  a graphical session apply its own `-path`/scalar/boolean/alias options without
+  reproducing the option semantics in Swift and without exiting the process on a
+  bad argument.
+- **Evidence:** the parser variant was prototyped and compared against unmodified
+  upstream (independent reference build) on `-path` (`CUSTOM`), repeated-list,
+  CLI-versus-profile precedence, whitespace, and error exit/stdout/stderr; see
+  `docs/cli-session-parser-report.md` and `docs/spikes/`.
+- **Upstream relevance: MEDIUM.** General, non-GUI engine code; fully
+  backward-compatible (existing `parse`/`parseCmdLine` unchanged). A raising,
+  vector-taking parse entry point is plausibly useful upstream, though it is
+  motivated here by the macUI session model.
+
+## 0008 — `uimacbridge-session-argv`
+
+- **Additive only: NO** — `src/uimacbridge.ml`. Adds a `sessionArgs` option ref,
+  the store-only `unisonSetSessionArgs` callback, a test-only `connectSetupCount`
+  and its read callback, and inside `do_unisonInit1` both a `Prefs.parseCmdLineArgs`
+  apply and a counter bump. It also **changes the existing first-load parse
+  block** so the legacy `Prefs.parseCmdLine` runs only when no explicit session
+  arguments were supplied (see the contract below), so the two override sources
+  cannot compete.
+- **What:** gives the app a per-session option channel. Swift stores the current
+  session's argument vector via the callback (which touches no preference), and
+  `do_unisonInit1` applies it through 0007's parser on **every** (re)load — so a
+  reconnecting rescan re-applies the session's scope, and a queued request cannot
+  mutate an active session (storing is separate from applying). A bad argument
+  raises before `openConnectionStart`, so a failed apply never begins a connection
+  or scan; the next load resets clean.
+- **First-load contract (why it is not additive):** `sessionArgs` is an OPTION.
+  `None` means no explicit session arguments were supplied, so the legacy
+  process-argv parse is preserved (first load only). `Some v` (even empty) means
+  the caller owns this session's options: the process argv is **not** also parsed
+  (avoiding double-counted list prefs and leaked launch options), and `v` is
+  applied. The driver leaves it `None` only on the very first connect of the
+  process when the session has no explicit overrides (so a launch command line is
+  still honored); every later load sets `Some` (an empty vector resets), so no
+  scope leaks between sessions.
+- **`connectSetupCount`** is a monotonic counter bumped where `do_unisonInit1`
+  reaches root validation + connection setup, i.e. strictly after session
+  arguments are applied. It is read only through a test bridge accessor
+  (`unison_bridge_test_connect_setup_count`) to prove a failed argument apply
+  started no connection or scan.
+- **Upstream relevance: LOW.** macUI-bridge-only surface; depends on 0007.
 
 ---
 

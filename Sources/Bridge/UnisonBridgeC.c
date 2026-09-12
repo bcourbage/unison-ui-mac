@@ -1203,6 +1203,29 @@ int unison_bridge_test_ri_count(void) {
     return (int)g_ri_count;
 }
 
+/* Test-only (patch 0008): the engine's connection-setup entry count — how many
+ * times do_unisonInit1 reached the post-arguments connection-setup boundary
+ * (root validation + openConnectionStart). Session arguments are applied
+ * strictly before that point, so a test reads this across an operation to prove
+ * a failed/partial argument apply started NO connection or scan (count
+ * unchanged), while a normal load advances it. Returns -1 if the callback is
+ * missing (a stale blob). */
+struct connect_setup_io { int count; };
+static void _ocaml_connect_setup_count(void *user) {
+    struct connect_setup_io *io = user;
+    io->count = -1;
+    const value *fn = caml_named_value("unisonTestConnectSetupCount");
+    if (fn == NULL) return;
+    bool raised = false;
+    value r = bridge_call1_exn(fn, Val_unit, &raised);
+    if (!raised) io->count = Int_val(r);
+}
+int unison_bridge_test_connect_setup_count(void) {
+    struct connect_setup_io io = { .count = -1 };
+    run_on_ocaml_thread(_ocaml_connect_setup_count, &io);
+    return io.count;
+}
+
 /* Finding #1 GC-rooting probe. Faithfully reproduces reloadTable's rooting
  * pattern against the REAL registered progress/bytes callbacks on a live
  * g_ri_roots[row], but injects the exact adversarial condition reloadTable
@@ -1731,6 +1754,41 @@ static void _ocaml_init1(void *user) {
 int unison_bridge_init1(const char *profile_name) {
     struct init1_io io = { .profile_name = profile_name, .status = UNISON_BRIDGE_ERR_MISSING };
     run_on_ocaml_thread(_ocaml_init1, &io);
+    return io.status;
+}
+
+/* Per-session command-line overrides: store the caller's argument vector in the
+ * engine (patch 0008's unisonSetSessionArgs), to be applied by the next init1.
+ * Store-only: builds an OCaml string array and hands it to the setter, which
+ * merely records it — no preference is touched here. */
+struct set_session_args_io { int argc; const char *const *argv; int status; };
+
+static void _ocaml_set_session_args(void *user) {
+    CAMLparam0();
+    CAMLlocal2(arr, s);
+    struct set_session_args_io *io = user;
+    io->status = UNISON_BRIDGE_ERR_MISSING;
+    const value *fn = caml_named_value("unisonSetSessionArgs");
+    if (fn == NULL) {
+        fprintf(stderr, "unison-mac: unisonSetSessionArgs not registered (stale blob)\n");
+        CAMLreturn0;
+    }
+    int n = io->argc < 0 ? 0 : io->argc;
+    arr = caml_alloc_tuple(n);   /* string array: n boxed string fields */
+    for (int i = 0; i < n; i++) {
+        s = caml_copy_string(io->argv[i] ? io->argv[i] : "");
+        Store_field(arr, i, s);
+    }
+    bool raised = false;
+    (void)bridge_call1_exn(fn, arr, &raised);
+    io->status = raised ? UNISON_BRIDGE_ERR_EXN : UNISON_BRIDGE_OK;
+    CAMLreturn0;
+}
+
+int unison_bridge_set_session_args(int argc, const char *const argv[]) {
+    struct set_session_args_io io = { .argc = argc, .argv = argv,
+                                      .status = UNISON_BRIDGE_ERR_MISSING };
+    run_on_ocaml_thread(_ocaml_set_session_args, &io);
     return io.status;
 }
 

@@ -1,0 +1,94 @@
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index 99704a7..e80a234 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -234,6 +234,46 @@ let firstTime = ref(true)
+ (* After figuring out the profile name. If the profileName is the empty
+    string, it means that only the roots were specified on the command
+    line *)
++(* unison-ui-mac extension (patch 0008): per-session command-line overrides.
++ * A graphical session may carry its own command-line option arguments (for
++ * example [-path Documents]) that scope only that session and are independent of
++ * the app's original process arguments. Swift stores the current session's
++ * argument vector here (via [unisonSetSessionArgs]) BEFORE calling [unisonInit1];
++ * [do_unisonInit1] then applies it through the engine's own parser
++ * ([Prefs.parseCmdLineArgs], patch 0007), after the profile is loaded and before
++ * the roots are validated and the connection is opened.
++ *
++ * The value is an OPTION so the engine can tell "no explicit session arguments
++ * supplied" (None -> parse the process command line on the first load, the
++ * legacy behavior) apart from "explicit session arguments, possibly empty"
++ * (Some v -> the caller owns this session's options; the process-launch argv is
++ * NOT also parsed, so list prefs cannot double up and unrequested launch options
++ * cannot leak in; an empty vector deliberately suppresses them and adds none).
++ *
++ * Storing is deliberately separate from applying: this setter ONLY records the
++ * vector -- it touches no preference -- so a queued request cannot mutate an
++ * active session's preferences. Application happens solely inside
++ * [do_unisonInit1], which the app reaches only when the engine is available for
++ * a fresh (re)load. Because [do_unisonInit1] runs [resetToDefaults] +
++ * [loadTheFile] on every re-entry (and [parseCmdLine] only on [firstTime]), the
++ * overrides are re-applied on every load, including a reconnecting rescan.
++ * NOT in upstream uimac -- local patch in this fork (patch 0008). *)
++let sessionArgs = ref (None : string array option)
++let unisonSetSessionArgs (args : string array) = sessionArgs := Some args
++;;
++Callback.register "unisonSetSessionArgs" unisonSetSessionArgs;;
++
++(* Test-only observability (patch 0008): a monotonic count of entries to the
++ * post-arguments connection-setup boundary in [do_unisonInit1] (root validation
++ * + [openConnectionStart]). Session arguments are applied strictly BEFORE this
++ * point, so a failed apply raises without advancing it, and a load that reaches
++ * connection setup does advance it. A test reads it across an operation to prove
++ * that a partial/failed argument apply started no connection or scan. Harmless
++ * in production (a plain counter, read only through a test bridge accessor). *)
++let connectSetupCount = ref 0
++;;
++Callback.register "unisonTestConnectSetupCount" (fun () -> !connectSetupCount);;
++
+ let do_unisonInit1 profileName =
+   (* Load the profile and command-line arguments *)
+   (* Restore prefs to their default values, if necessary *)
+@@ -255,20 +295,38 @@ let do_unisonInit1 profileName =
+     Prefs.loadTheFile())
+   end;
+ 
+-  (* Parse the command line.  This will temporarily override
+-     settings from the profile. *)
++  (* Parse the command line.  This will temporarily override settings from the
++     profile.  unison-ui-mac patch 0008: the legacy first-load parse of the
++     process argv runs ONLY when no explicit session arguments were supplied
++     (sessionArgs = None).  An explicit vector -- even empty -- means the caller
++     owns this session's options, so the process argv must not also be parsed
++     (it would double up list prefs or leak unrequested launch options). *)
+   if !firstTime then begin
+-    Trace.debug "" (fun() -> Util.msg "about to parse command line");
+-    Prefs.parseCmdLine Uicommon.usageMsg;
++    (match !sessionArgs with
++       None ->
++         Trace.debug "" (fun() -> Util.msg "about to parse command line");
++         Prefs.parseCmdLine Uicommon.usageMsg
++     | Some _ -> ())
+   end;
+ 
+   firstTime := false;
+ 
++  (* Apply this session's explicit command-line overrides (patch 0008) through
++     the engine's own parser, after the profile (and any legacy first-load parse)
++     and before root validation / connection setup read the values.  Re-applied
++     on every (re)load.  A bad option raises here, before the connection-setup
++     boundary below, so a failed apply never begins a connection or scan; the
++     next load resets clean. *)
++  (match !sessionArgs with
++     Some v when Array.length v > 0 -> Prefs.parseCmdLineArgs Uicommon.usageMsg v
++   | _ -> ());
++
+   (* Print the preference settings *)
+   Trace.debug "" (fun() -> Prefs.dumpPrefsToStderr() );
+ 
+   (* FIX: if no roots, ask the user *)
+ 
++  incr connectSetupCount;   (* patch 0008: reached connection setup; session args already applied *)
+   Recon.checkThatPreferredRootIsValid();
+ 
+   let localRoots,remoteRoots =

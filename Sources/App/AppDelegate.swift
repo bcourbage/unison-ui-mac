@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// once the launch-time checks (crash report, abandoned staging, setup offer)
     /// have run — the same order a user's pick would follow. Cleared when opened.
     private var pendingLaunchProfile: String?
+    /// Routes the transitional launch-command-line inheritance to the first
+    /// launch-origin profile session (named launch profile, or the first picker
+    /// selection when none was named); later selections are explicitly unscoped.
+    private var launchOverrides = LaunchOverrideRouter()
     /// The running-instance handoff listener (req 5 of #122). Present only when
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
@@ -290,8 +294,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         switch effect {
         case .showSession(let s, let profile):
             driveShowSession(s, profile: profile)
-        case .beginConnect(let s, let op, let profile):
-            driveBeginConnect(s, op, profile: profile)
+        case .beginConnect(let s, let op, let profile, let overrides):
+            driveBeginConnect(s, op, profile: profile, overrides: overrides)
         case .beginScan(let s, let op):
             driveBeginScan(s, op)
         case .beginSync(let s, let op):
@@ -505,10 +509,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         showProfilePicker(select: profile)
     }
 
-    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String) {
+    private func driveBeginConnect(_ s: SessionID, _ op: OperationID, profile: String, overrides: SessionOverrides) {
         pendingConnect = (s, op)
         sheetShownThisConnect = false
         retryNotice.reset()
+        // Apply this session's overrides before init1 (patch 0008 contract).
+        // `.inheritLaunch` leaves the engine to parse the launch command line;
+        // `.explicit(v)` sets the vector (even empty), so an unscoped session
+        // drops any inherited scope and a prior session's scope cannot leak. A
+        // failed setter must STOP the open — opening with a stale or omitted
+        // scope would be wrong — so fail the op (engine quiescent: nothing
+        // started) instead of falling through to init1.
+        switch SessionArgsApply.decide(overrides, setter: { UnisonBridge.setSessionArgs($0) }) {
+        case .proceed:
+            break
+        case .fail(let status):
+            pendingConnect = nil
+            log.write("set_session_args (\(s)/\(op)) failed status \(status) — failing the open before init1")
+            run(engine.operationFailed(
+                s, op, reason: "session arguments could not be applied (status \(status))",
+                engineIsQuiescent: true))
+            return
+        }
         // Show the scanning spinner for a reconnect (a rescan after we closed
         // a non-interactive connection on sync-end). The first open already
         // shows it via `beginInitialScan` in driveShowSession, so guard on the
@@ -1702,9 +1724,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // A profile named on the command line opens after those checks, the
             // same order a user's pick follows. profileSelected re-checks this
             // profile's own staging block and stops at the reconciliation results.
-            if let name = self?.pendingLaunchProfile {
-                self?.pendingLaunchProfile = nil
-                self?.profileSelected(name)
+            if let self, let name = self.pendingLaunchProfile {
+                self.pendingLaunchProfile = nil
+                // A profile named on the command line is the launch session and
+                // claims the launch inheritance (the engine parses the process
+                // argv on the first load) — but only if it is actually accepted;
+                // a refusal leaves inheritance for a later selection. Transitional;
+                // superseded once launch options are delivered as explicit args.
+                let overrides = self.launchOverrides.overrideForNextOpen()
+                let accepted = self.profileSelected(name, overrides: overrides)
+                self.launchOverrides.didOpen(overrides, accepted: accepted)
             }
         }
 
@@ -1791,7 +1820,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // here — doing so was part of the old single-window authority.
         let controller = profileWindowController
             ?? ProfileWindowController(unisonDirectory: unisonDirectory) { [weak self] profile in
-                self?.profileSelected(profile)
+                guard let self else { return }
+                // The first picker selection after an option launch that named no
+                // profile inherits the launch command line; later selections are
+                // explicitly unscoped. Inheritance is consumed only if the open is
+                // accepted, so a selection refused by an archive-recovery block
+                // still inherits on the user's retry.
+                let overrides = self.launchOverrides.overrideForNextOpen()
+                let accepted = self.profileSelected(profile, overrides: overrides)
+                self.launchOverrides.didOpen(overrides, accepted: accepted)
             }
         controller.onRemoteCheckRequested = { [weak self] profile in
             self?.checkRemoteCommand(forProfile: profile)
@@ -1819,7 +1856,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// in the picker (abandoned-staging recovery was offered and not cleared), so
     /// a caller such as the handoff never reports a scan that did not start.
     @discardableResult
-    private func profileSelected(_ profile: String) -> Bool {
+    private func profileSelected(_ profile: String,
+                                 overrides: SessionOverrides = .explicit([])) -> Bool {
         log.write("AppDelegate: profile '\(profile)' picked")
         // No option-isolation gate is needed here. A launch's command-line options
         // are consumed by the engine's FIRST profile load only: upstream's
@@ -1837,12 +1875,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 context: "This profile's archives are being recovered from an interrupted maintenance operation.")
             // If recovery cleared the block, open now; otherwise stay in the picker.
             if abandonedStagingBlocking(profile) == nil {
-                run(engine.requestOpen(profile: profile))
+                run(engine.requestOpen(profile: profile, overrides: overrides))
                 return true
             }
             return false
         }
-        run(engine.requestOpen(profile: profile))
+        run(engine.requestOpen(profile: profile, overrides: overrides))
         return true
     }
 
