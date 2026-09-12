@@ -1,0 +1,97 @@
+diff --git a/src/ubase/prefs.ml b/src/ubase/prefs.ml
+index e68fb12..71d49ca 100644
+--- a/src/ubase/prefs.ml
++++ b/src/ubase/prefs.ml
+@@ -678,6 +678,50 @@ let scanCmdLine usage =
+        | _             -> assert false);
+   !m
+ 
++(* unison-ui-mac extension (patch 0009): extract a launch/request command line's
++   SESSION-scoped options -- the profile-settable ones, i.e. NOT cli_only -- as
++   an ordered argument vector, to be delivered to a graphical session via
++   [parseCmdLineArgs] (patch 0007).  This reuses the engine's OWN option
++   specifications and parser ([argspecs] + [Uarg.parseArgv]); it does not
++   reimplement option parsing or keep a separate arity table.  Each option's
++   registered spec both consumes its value and tells us how to re-emit the token.
++
++   - cli_only options (process roles such as -ui/-server/-doc) are consumed by
++     their real spec but NOT emitted.  (cli_only is the classifier; roots given
++     on the command line are refused separately by the graphical-launch policy,
++     so they do not reach a session here.)
++   - Anonymous arguments (the profile and any roots) are ignored by the anonfun,
++     so profile/root removal follows the engine's own parsing rules.
++   - Read-only: the recording specs never set a preference.
++   - Order, repeats, aliases (the name as given), whitespace, and values that
++     look like options are preserved, because a value-taking option re-emits the
++     raw value token unchanged.  A parse error (e.g. an unknown option) raises
++     [Util.Fatal] so the caller can refuse rather than silently drop input. *)
++let isCliOnly nm =
++  try (Util.StringMap.find (canonicalName nm) !prefs).cli_only
++  with Not_found -> false
++
++let commandLineSessionArgs argv =
++  let args =
++    if Array.length argv <= 1 then [||]
++    else Array.sub argv 1 (Array.length argv - 1) in
++  let acc = ref [] in
++  let emit toks = acc := !acc @ toks in
++  let hook name (spec : Uarg.spec) : Uarg.spec =
++    let keep = not (isCliOnly name) in
++    let opt = "-" ^ name in
++    match spec with
++      Uarg.Bool _   -> Uarg.Bool   (fun b -> if keep then emit (if b then [opt] else [opt ^ "=false"]))
++    | Uarg.Int _    -> Uarg.Int    (fun i -> if keep then emit [opt; string_of_int i])
++    | Uarg.String _ -> Uarg.String (fun s -> if keep then emit [opt; s])
++    | _             -> raise (Util.Fatal "session-args extraction: unexpected option spec")
++  in
++  let anonfun _ = () in   (* ignore the profile and any roots (engine's rules) *)
++  (try Uarg.parseArgv args (argspecs hook) anonfun
++   with IllegalValue str -> raise (Util.Fatal str)
++      | Uarg.Bad str     -> raise (Util.Fatal str));
++  Array.of_list !acc
++
+ (*****************************************************************************)
+ (*                            Printing                                       *)
+ (*****************************************************************************)
+diff --git a/src/ubase/prefs.mli b/src/ubase/prefs.mli
+index 31a1e8c..69c723d 100644
+--- a/src/ubase/prefs.mli
++++ b/src/ubase/prefs.mli
+@@ -149,6 +149,19 @@ val parseCmdLineArgs :
+   -> string array       (* Session option arguments (no leading program name) *)
+   -> unit
+ 
++(* Whether a preference (by name or alias) is command-line-only, i.e. not      *)
++(* settable in a profile. Used to tell session-scoped options apart from        *)
++(* process-role options. False for an unknown name.                             *)
++val isCliOnly : string -> bool
++
++(* Extract the session-scoped (non-cli_only) options from a command line, as an *)
++(* ordered argv suitable for parseCmdLineArgs. argv includes the program name   *)
++(* (argv.(0)), which is dropped. Reuses the engine's own specs and parser;      *)
++(* preserves order, repeats, aliases, whitespace, and option-like values;       *)
++(* ignores anonymous arguments (profile/roots); sets no preference; raises      *)
++(* Util.Fatal on a parse error.                                                 *)
++val commandLineSessionArgs : string array -> string array
++
+ (* Make a preliminary scan without setting any preferences                   *)
+ (* Note: Command line include options are not processed; they will appear in *)
+ (* the map.                                                                  *)
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index e80a234..b8ac6ab 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -263,6 +263,13 @@ let unisonSetSessionArgs (args : string array) = sessionArgs := Some args
+ ;;
+ Callback.register "unisonSetSessionArgs" unisonSetSessionArgs;;
+ 
++(* unison-ui-mac extension (patch 0009): expose the launch/request command
++ * line's session-scoped options (Prefs.commandLineSessionArgs over Sys.argv) so
++ * the app can deliver them to a session as explicit overrides. *)
++let unisonCommandLineSessionArgs () = Prefs.commandLineSessionArgs (System.argv ())
++;;
++Callback.register "unisonCommandLineSessionArgs" unisonCommandLineSessionArgs;;
++
+ (* Test-only observability (patch 0008): a monotonic count of entries to the
+  * post-arguments connection-setup boundary in [do_unisonInit1] (root validation
+  * + [openConnectionStart]). Session arguments are applied strictly BEFORE this

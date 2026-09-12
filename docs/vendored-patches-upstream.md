@@ -26,8 +26,9 @@ review.
 | 0006 register-lock | `uimacbridge.ml` (+59/−0) | **Yes** | macUI bridge | Low (macUI-only) |
 | 0007 session-argv parser | `ubase/uarg.ml` (+82/−21), `ubase/uarg.mli` (+11/−0), `ubase/prefs.ml` (+28/−0), `ubase/prefs.mli` (+9/−0) | **No** | general engine (CLI parser) | Medium (backward-compatible, general) |
 | 0008 session-argv bridge | `uimacbridge.ml` (additive + first-load contract) | **No** | macUI bridge | Low (macUI-only) |
+| 0009 session-args extraction | `ubase/prefs.ml` (+~35/−0), `ubase/prefs.mli` (+~15/−0), `uimacbridge.ml` (+~6/−0) | **Yes** | general engine + macUI bridge | Low–Medium |
 
-Three of the seven are strictly additive (0002, 0004, 0006). The four
+Four of the eight are strictly additive (0002, 0004, 0006, 0009). The four
 non-additive ones each change a small, well-scoped piece of existing code (see
 below); 0007's `uarg.ml` change is a behavior-preserving refactor, and 0008's
 non-additive part is the first-load parse contract (both documented below).
@@ -170,6 +171,34 @@ non-additive part is the first-load parse contract (both documented below).
   (`unison_bridge_test_connect_setup_count`) to prove a failed argument apply
   started no connection or scan.
 - **Upstream relevance: LOW.** macUI-bridge-only surface; depends on 0007.
+
+## 0009 — `cmdline-session-args-extraction`
+
+- **Additive only: YES.** `ubase/prefs.ml` adds `isCliOnly` and
+  `commandLineSessionArgs`; `ubase/prefs.mli` exposes them; `uimacbridge.ml`
+  registers `unisonCommandLineSessionArgs`. No existing line changes.
+- **What:** extracts a command line's SESSION-scoped options — the
+  profile-settable ones, i.e. **not `cli_only`** — as an ordered argv suitable
+  for `parseCmdLineArgs` (0007). The app delivers a launch's own options to its
+  first session this way, instead of relying on the engine's first-load parse of
+  the process argv.
+- **Reuses the engine's own machinery:** it drives `argspecs` + `Uarg.parseArgv`
+  (no separate arity table or argv parser). Each option's registered spec both
+  consumes its value and dictates how the token is re-emitted; `cli_only` options
+  are consumed but not emitted; anonymous arguments (the profile and any roots)
+  are ignored by the anonfun, so profile/root removal follows the parser's own
+  rules. It sets no preference (read-only) and raises `Util.Fatal` on a parse
+  error, so the caller refuses rather than silently dropping input.
+- **Classification note (`cli_only` as evidence):** the session/process-role
+  split uses `cli_only` (verified: `-ui`/`-server`/`-socket`/`-doc`/… are
+  `cli_only`; `-path`/`-ignore`/… are not). Roots given on the command line are a
+  separate case, refused for graphical launches by `CommandLineGraphicalLaunch`
+  before extraction is reached. The extraction is validated against the engine's
+  own parsing by the fresh-process harness (`docs/spikes/run-cli-session-firstload.sh`:
+  order, repeats, aliases, whitespace, option-like values, and
+  extraction→application with profile precedence + list accumulation).
+- **Upstream relevance: LOW–MEDIUM.** `isCliOnly` is a small general accessor;
+  the extractor is general engine code but motivated by the macUI session model.
 
 ---
 

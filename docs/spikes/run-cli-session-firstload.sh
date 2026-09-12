@@ -45,7 +45,7 @@ git worktree add --detach "$W" "$PINNED_REV" >/dev/null
 for p in 0002-uimacbridge-register-closeConnection 0003-remote-close-and-drain \
          0004-remote-transport-child-reaper 0005-uimacbridge-sync-completion-snapshot \
          0006-uimacbridge-register-lock 0007-uarg-prefs-session-argv \
-         0008-uimacbridge-session-argv; do
+         0008-uimacbridge-session-argv 0009-cmdline-session-args-extraction; do
   git -C "$W" apply --whitespace=nowarn -p1 "$PDIR/$p.patch"
 done
 
@@ -73,6 +73,7 @@ echo "== linking fresh-load harness =="
 ocamlopt -g "${inc[@]}" -o firstload "${CMX[@]}" "${COBJ[@]}"
 
 printf 'root = %s/r1\nroot = %s/r2\n' "$U" "$U" > "$U/firstload.prf"
+printf 'root = %s/r1\nroot = %s/r2\npath = ProfA\npath = ProfB\n' "$U" "$U" > "$U/Pprec.prf"
 mkdir -p "$U/r1" "$U/r2"
 
 rc=0
@@ -86,6 +87,24 @@ out_empty=$(SESS=empty        UPROFILE=firstload UNISON="$U" ./firstload -path A
 check "Some []: process argv suppressed, none added"   ""           "$out_empty"
 out_some=$(SESS="-path SessionPath" UPROFILE=firstload UNISON="$U" ./firstload -path ArgvPath)
 check "Some v: process argv suppressed, session applied" "SessionPath" "$out_some"
+
+echo "##### session-args extraction (patch 0009): non-cli_only options only, ordered #####"
+e1=$(SESS=extract UNISON="$U" ./firstload -ui graphic -path Documents home)
+check "excludes -ui (cli_only) + its value, excludes the profile" "[-path][Documents]" "$e1"
+e2=$(SESS=extract UNISON="$U" ./firstload -path A -path B)
+check "preserves repeats and order"                    "[-path][A][-path][B]"     "$e2"
+e3=$(SESS=extract UNISON="$U" ./firstload -path "  ws  ")
+check "preserves whitespace in values"                 "[-path][  ws  ]"          "$e3"
+e4=$(SESS=extract UNISON="$U" ./firstload -path -weird)
+check "preserves a value that looks like an option"    "[-path][-weird]"          "$e4"
+e5=$(SESS=extract UNISON="$U" ./firstload -confirmbigdeletes=false home)
+check "preserves the alias as given (non-canonical)"   "[-confirmbigdeletes=false]" "$e5"
+e6=$(SESS=extract UNISON="$U" ./firstload -ui graphic home)
+check "cli_only-only command line extracts nothing"    ""                          "$e6"
+
+echo "##### extraction -> application: profile precedence + list accumulation #####"
+a1=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -ui graphic -path CliX home)
+check "extracted -path accumulates onto the profile's paths" "[ProfA][ProfB][CliX]" "$a1"
 
 echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
 cleanup; trap - EXIT
