@@ -115,14 +115,8 @@ a2=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -include frag -path Cli
 check "-include fragment's path, then -path, accumulate onto profile" "[ProfA][ProfB][FragPath][CliX]" "$a2"
 a3=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -source srcfrag -path CliX home)
 check "-source file's path, then -path, accumulate onto profile" "[ProfA][ProfB][SrcPath][CliX]" "$a3"
-
-echo "##### independent baseline: extract+apply == original parseCmdLine (same argv, no profile/-ui) #####"
-b1=$(SESS=baseline UPROFILE=Pprec UNISON="$U" ./firstload -path A -path B)
-check "baseline: repeated -path matches upstream parser"  "REF=[ProfA][ProfB][A][B] NEW=[ProfA][ProfB][A][B] EQ=true" "$b1"
-b2=$(SESS=baseline UPROFILE=Pprec UNISON="$U" ./firstload -include frag -path CliX)
-check "baseline: -include + -path matches upstream parser" "REF=[ProfA][ProfB][FragPath][CliX] NEW=[ProfA][ProfB][FragPath][CliX] EQ=true" "$b2"
-b3=$(SESS=baseline UPROFILE=Pprec UNISON="$U" ./firstload -source srcfrag -path CliX)
-check "baseline: -source + -path matches upstream parser"  "REF=[ProfA][ProfB][SrcPath][CliX] NEW=[ProfA][ProfB][SrcPath][CliX] EQ=true" "$b3"
+# The INDEPENDENT baseline (vs the unmodified upstream parseCmdLine) is a
+# cross-binary comparison — see run-cli-session-baseline.sh.
 
 echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
 cleanup; trap - EXIT

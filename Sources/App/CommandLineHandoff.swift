@@ -14,10 +14,12 @@ import Foundation
 ///   response:  `ok\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
 ///
 /// The variable-length fields are base64, so a directory, path or profile name
-/// with a tab or any other byte round-trips unambiguously. `sessionArgs` is a
+/// with a tab or other whitespace round-trips unambiguously. They carry supported
+/// UTF-8 strings; a decoded field containing a NUL is rejected (it would truncate
+/// at the C string boundary the args and profile name cross). `sessionArgs` is a
 /// comma-separated list of base64-encoded tokens (empty when the request carried
 /// no session options); comma is not in the base64 alphabet, so each token
-/// round-trips unambiguously regardless of its bytes.
+/// round-trips unambiguously.
 enum CommandLineHandoff {
 
     /// A client's request to open a profile in the running instance. It carries
@@ -102,7 +104,14 @@ enum CommandLineHandoff {
         }
 
         private static func decodeBase64(_ s: String) -> String? {
-            Data(base64Encoded: s).flatMap { String(data: $0, encoding: .utf8) }
+            guard let data = Data(base64Encoded: s),
+                  let str = String(data: data, encoding: .utf8) else { return nil }
+            // An embedded NUL survives Swift decoding but truncates at the C
+            // string boundary (the engine args and profile name cross it), so the
+            // receiver would act on a different value than it accepted. Reject the
+            // whole line rather than open something the caller did not send.
+            if str.utf8.contains(0) { return nil }
+            return str
         }
     }
 

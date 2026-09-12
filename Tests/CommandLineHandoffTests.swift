@@ -69,6 +69,24 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertNil(Req(line: ""))
     }
 
+    func test_request_rejects_nulInDecodedFields() {
+        // A NUL survives base64/UTF-8 decoding but truncates at the C string
+        // boundary the args + profile name cross, so the receiver would act on a
+        // different value than it accepted. The whole line must be rejected.
+        func line(args: String, name: String) -> String {
+            let dir = Data("/u".utf8).base64EncodedString()
+            let inst = Data("/A".utf8).base64EncodedString()
+            return "open\t0\t\(args)\t\(dir)\t\(inst)\t\(name)\n"
+        }
+        let work = Data("work".utf8).base64EncodedString()
+        let nulArg = Data("Documents\u{0}Other".utf8).base64EncodedString()
+        XCTAssertNil(Req(line: line(args: nulArg, name: work)),
+                     "a session arg containing NUL must be rejected")
+        let nulName = Data("wo\u{0}rk".utf8).base64EncodedString()
+        XCTAssertNil(Req(line: line(args: "", name: nulName)),
+                     "a profile name containing NUL must be rejected")
+    }
+
     // MARK: envelope (round 4: the caller's deadline travels with the request)
 
     func test_envelope_roundTrip() {

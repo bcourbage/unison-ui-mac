@@ -34,22 +34,10 @@ let () =
        Prefs.parseCmdLineArgs "usage" a;
        Printf.printf "%s\n" (bracket (paths ()))
      with e -> Printf.printf "RAISED %s\n" (Printexc.to_string e); exit 3)
-  | "baseline" ->
-    (* Independent baseline: (loadTheFile + parseCmdLineArgs extracted) must equal
-       (loadTheFile + the ORIGINAL parseCmdLine over the same Sys.argv). Uses the
-       unmodified upstream parser as the reference, not asserted constants. The
-       argv here carries only session options (no profile/-ui), so parseCmdLine
-       sees no anonymous argument. *)
-    (try
-       Prefs.resetToDefaults (); Prefs.profileName := Some prof; Prefs.loadTheFile ();
-       Prefs.parseCmdLine "usage";
-       let refp = paths () in
-       let extracted = Prefs.commandLineSessionArgs (Sys.argv) in
-       Prefs.resetToDefaults (); Prefs.profileName := Some prof; Prefs.loadTheFile ();
-       Prefs.parseCmdLineArgs "usage" extracted;
-       let newp = paths () in
-       Printf.printf "REF=%s NEW=%s EQ=%b\n" (bracket refp) (bracket newp) (refp = newp)
-     with e -> Printf.printf "RAISED %s\n" (Printexc.to_string e); exit 3)
+  (* The independent baseline (extract+apply vs the UNMODIFIED upstream
+     parseCmdLine) is a CROSS-BINARY comparison — see
+     docs/spikes/run-cli-session-baseline.sh — because an in-binary check would
+     run both sides through the patched parser. *)
   | sess ->
     (match sess with
      | "none" -> ()
