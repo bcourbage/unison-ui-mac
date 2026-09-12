@@ -19,16 +19,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
     private var commandLineHandoffServer: CommandLineHandoffServer?
-    /// A command-line request received while a synchronization is running: the
-    /// app raised the three-way sync decision and holds the request until the user
-    /// chooses, bounded by `deadline`. It occupies the single external-request slot
-    /// (a second request is refused while it is set), and a choice to leave the
-    /// sync opens it only when the deadline has not elapsed (design: an expired
-    /// request cannot be started by a later dialog response).
-    private var pendingSyncDecision: (request: CommandLineHandoff.Request, deadline: Date)?
+    /// A command-line request received while a synchronization is running: the app
+    /// raised the three-way sync decision and holds the request until the user
+    /// chooses, bounded by a monotonic admission deadline. It occupies the single
+    /// external-request slot (a second request is refused while it is set); a choice
+    /// to leave the sync opens it only within the deadline; and the caller waits on
+    /// its socket for the final verdict, which is delivered through `ticket`.
+    private final class PendingSyncDecision {
+        let request: CommandLineHandoff.Request
+        /// The syncing session the decision was raised for. Revalidated before any
+        /// admission so a phase change (recovery, session change) is not overrun.
+        let session: EngineSessionCoordinator.SessionID
+        let ticket: HandoffDecisionTicket
+        /// Monotonic admission deadline (not wall-clock), so a clock change cannot
+        /// extend or shorten it.
+        let deadline: DispatchTime
+        var timer: DispatchSourceTimer?
+        /// The parent window and sheet, so the timer can actively dismiss the sheet
+        /// when the request expires (correcting its "will open" promise).
+        weak var sheetParent: NSWindow?
+        weak var sheetAlert: NSAlert?
+        init(request: CommandLineHandoff.Request, session: EngineSessionCoordinator.SessionID,
+             ticket: HandoffDecisionTicket, deadline: DispatchTime) {
+            self.request = request; self.session = session
+            self.ticket = ticket; self.deadline = deadline
+        }
+    }
+    private var pendingSyncDecision: PendingSyncDecision?
     /// How long a sync-decision request stays admissible while awaiting the user's
     /// choice. Bounded so a decision made long after the request was sent cannot
-    /// start a now-stale open.
+    /// start a now-stale open. The caller is told this timeout in the interim.
     private static let syncDecisionAdmissionWindow: TimeInterval = 120
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
@@ -2038,18 +2058,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             request = nil
         }
         let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
-            -> CommandLineHandoff.Response = { [weak self] req, deadline in
+            -> HandoffServe = { [weak self] req, deadline in
             DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     self?.handleCommandLineHandoff(req, deadline: deadline)
-                        ?? .refused(message: "unison-ui-mac is shutting down.")
+                        ?? .reply(.refused(message: "unison-ui-mac is shutting down."))
                 }
             }
         }
 
         // 1. A graphical profile request tries to hand off to an existing primary.
         if let request {
-            switch CommandLineHandoffClient.handOff(request, path: path) {
+            // When the running app is synchronizing it needs a decision before it
+            // can act; print that immediately, then keep waiting for the verdict.
+            let onPending: (CommandLineHandoff.Interim) -> Void = { interim in
+                CommandLineEngineLaunch.writeStderr(interim.message)
+            }
+            switch CommandLineHandoffClient.handOff(request, path: path, onPending: onPending) {
             case .reply(let response):
                 actOnHandoffReply(response)
             case .lostReply:
@@ -2125,10 +2150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// the reconciliation results.
     private func handleCommandLineHandoff(_ request: CommandLineHandoff.Request,
                                           deadline: CommandLineHandoffSocket.Deadline)
-        -> CommandLineHandoff.Response {
+        -> HandoffServe {
         // Reaching the main thread past the deadline means the caller already timed
         // out; do not accept or open anything (finding 1, round 3).
-        if deadline.hasExpired { return CommandLineHandoff.expiredResponse(name: request.given) }
+        if deadline.hasExpired { return .reply(CommandLineHandoff.expiredResponse(name: request.given)) }
         // Refuse when the request cannot be faithfully transferred: a different app
         // copy or Unison directory. The receiver's own launch options are no longer
         // a reason to refuse — sessions are option-scoped, so the request is scoped
@@ -2137,7 +2162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             request: request,
             localUnisonDirectory: unisonDirectory,
             localInstallationPath: Bundle.main.bundlePath) {
-            return refusal
+            return .reply(refusal)
         }
         let dir = unisonDirectory
         let launch = CommandLineGraphicalLaunch.resolve(
@@ -2148,49 +2173,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let activity = currentHandoffActivity()
         switch CommandLineHandoff.decide(launch: launch, activity: activity) {
         case .reply(let response):
-            return response
+            return .reply(response)
         case .openNow(let name):
-            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
-                log.write("handoff: opening '\(name)' now for a command-line request"
-                          + sessionArgsSuffix(request.sessionArgs))
-                NSApp.activate(ignoringOtherApps: true)
-                // Deliver the caller's own session options to this session, exactly
-                // as a fresh launch of the same command line would (applied through
-                // the engine's parser, and re-applied on reconnect).
-                let entered = profileSelected(name, args: request.sessionArgs)
-                return CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name)
+            if let response = refusalForStagingOrDeadline(name: name, deadline: deadline) {
+                return .reply(response)
             }
-            return response
+            log.write("handoff: opening '\(name)' now for a command-line request"
+                      + sessionArgsSuffix(request.sessionArgs))
+            NSApp.activate(ignoringOtherApps: true)
+            // Deliver the caller's own session options to this session, exactly as
+            // a fresh launch of the same command line would (applied through the
+            // engine's parser, and re-applied on reconnect).
+            let entered = profileSelected(name, args: request.sessionArgs)
+            return .reply(CommandLineHandoff.responseForOpenAttempt(enteredOpening: entered, name: name))
         case .acceptWaiting(let name):
-            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
-                // The app is busy with work that can be left safely. Take
-                // responsibility for the request: abandon the current view and
-                // queue this open so the existing cleanup path opens it once the
-                // engine is free.
-                guard case .busyWillWait(let reason) = activity else {
-                    // Not reachable: `.acceptWaiting` is only returned for
-                    // `.busyWillWait`. Refuse rather than open in an unexpected state.
-                    return CommandLineHandoff.responseForOpenAttempt(enteredOpening: false, name: name)
-                }
-                log.write("handoff: accepting '\(name)' to open after current work"
-                          + sessionArgsSuffix(request.sessionArgs))
-                NSApp.activate(ignoringOtherApps: true)
-                let started = commandLineTakeover(name: name, args: request.sessionArgs)
-                return started
-                    ? .started
-                    : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason)
+            if let response = refusalForStagingOrDeadline(name: name, deadline: deadline) {
+                return .reply(response)
             }
-            return response
+            // The app is busy with work that can be left safely. Take responsibility
+            // for the request: abandon the current view and queue this open so the
+            // existing cleanup path opens it once the engine is free.
+            guard case .busyWillWait(let reason) = activity else {
+                // Not reachable: `.acceptWaiting` is only for `.busyWillWait`.
+                return .reply(CommandLineHandoff.responseForOpenAttempt(enteredOpening: false, name: name))
+            }
+            log.write("handoff: accepting '\(name)' to open after current work"
+                      + sessionArgsSuffix(request.sessionArgs))
+            NSApp.activate(ignoringOtherApps: true)
+            let started = commandLineTakeover(name: name, args: request.sessionArgs)
+            return .reply(started
+                ? .started
+                : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason))
         case .presentSyncDecision(let name):
-            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
-                // A synchronization is running. Raise the app's three-way decision
-                // and let the user's choice govern this request, holding it to a
-                // bounded admission deadline. The caller is told the request is not
-                // accepted yet (it may open depending on the choice).
-                armSyncDecision(request: request)
-                return CommandLineHandoff.syncDecisionPendingResponse(name: name)
+            if let response = refusalForStagingOrDeadline(name: name, deadline: deadline) {
+                return .reply(response)
             }
-            return response
+            // A synchronization is running with a visible window. Raise the app's
+            // three-way decision and hold the request to a bounded admission
+            // deadline; the caller waits (two-phase) for the outcome the user's
+            // choice produces.
+            guard case .syncing(let session, _) = engine.phase else {
+                // Phase changed between building the activity and here; refuse.
+                return .reply(CommandLineHandoff.syncDecisionUnavailableResponse(name: name))
+            }
+            return armSyncDecision(request: request, session: session)
         }
     }
 
@@ -2211,35 +2237,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return started
     }
 
-    /// Hold a command-line request that arrived during a synchronization, and raise
-    /// the app's three-way decision for it. The request occupies the single
-    /// external-request slot and is admissible until `deadline`. The sheet is
-    /// presented on the next runloop turn so the caller's reply is sent first (the
-    /// handler runs synchronously on the main thread).
-    private func armSyncDecision(request: CommandLineHandoff.Request) {
-        pendingSyncDecision = (request, Date().addingTimeInterval(Self.syncDecisionAdmissionWindow))
-        log.write("handoff: '\(request.given)' arrived during a sync; raising the sync decision")
+    /// How a pending sync decision was resolved.
+    private enum SyncDecisionOutcome { case keepSyncing, abortAndClose, closeAndLetRun, expired, unavailable }
+
+    /// Hold a command-line request that arrived during an active (windowed) sync,
+    /// arm its monotonic admission deadline, and raise the three-way decision. The
+    /// caller waits (two-phase): this returns `.awaitDecision`, and the outcome the
+    /// user's choice (or the deadline timer) produces is delivered through the
+    /// ticket. The sheet is presented on the next runloop turn so the interim reply
+    /// is sent first (this runs synchronously on the main thread inside the handler).
+    private func armSyncDecision(request: CommandLineHandoff.Request,
+                                 session: EngineSessionCoordinator.SessionID) -> HandoffServe {
+        let ticket = HandoffDecisionTicket()
+        let windowSecs = Self.syncDecisionAdmissionWindow
+        let deadline = DispatchTime.now() + windowSecs
+        let pending = PendingSyncDecision(request: request, session: session,
+                                          ticket: ticket, deadline: deadline)
+        pendingSyncDecision = pending
+        // Monotonic expiry: at the deadline the request is no longer admissible, the
+        // slot is released, and the sheet is dismissed.
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: deadline)
+        timer.setEventHandler { [weak self] in self?.finishSyncDecision(.expired) }
+        pending.timer = timer
+        timer.resume()
+        log.write("handoff: '\(request.given)' arrived during a sync; raising the decision (\(Int(windowSecs))s)")
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in self?.presentSyncDecisionSheet() }
+        return .awaitDecision(
+            interim: CommandLineHandoff.syncDecisionInterim(name: request.given, timeoutSeconds: Int(windowSecs)),
+            ticket: ticket,
+            waitSeconds: windowSecs + 10)   // server safety net past the app's own deadline
     }
 
-    /// Present the Keep Syncing / Abort & Close / Close (let it run) decision for a
-    /// pending sync-decision request, as a window-modal sheet on the syncing
-    /// session's window (non-blocking, so a second request is still refused rather
-    /// than stalling the main thread). If the sync already ended before we could
-    /// present, the request is dropped (the user never chose; they can run the
-    /// command again).
+    /// Present the Keep Syncing / Abort & Close / Close (let it run) decision as a
+    /// window-modal sheet on the syncing session's window (non-blocking, so a second
+    /// request is still refused rather than stalling the main thread). If the sync
+    /// state changed before we could present, resolve the request as unavailable.
     private func presentSyncDecisionSheet() {
-        guard let pending = pendingSyncDecision else { return }
-        guard case .syncing = engine.phase,
-              let s = engine.currentSession,
-              let window = windowBySession[s]?.window else {
-            log.write("handoff: sync ended before its decision was shown; dropping '\(pending.request.given)'")
-            pendingSyncDecision = nil
+        guard let p = pendingSyncDecision else { return }
+        guard case .syncing(let s, _) = engine.phase, s == p.session,
+              let window = windowBySession[p.session]?.window else {
+            log.write("handoff: sync state changed before its decision was shown; refusing '\(p.request.given)'")
+            finishSyncDecision(.unavailable)
             return
         }
         if Self.testSyncDecisionSheetSuppressed { return }
-        let name = pending.request.given
+        let name = p.request.given
         let alert = NSAlert()
         alert.messageText = "Synchronization is still running"
         alert.informativeText =
@@ -2253,39 +2297,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         abortClose.hasDestructiveAction = true
         alert.addButton(withTitle: "Close (let it run)")
         alert.alertStyle = .warning
+        p.sheetParent = window
+        p.sheetAlert = alert
         alert.beginSheetModal(for: window) { [weak self] response in
-            let decision: CommandLineHandoff.SyncDecision
             switch response {
-            case .alertSecondButtonReturn: decision = .abortAndClose
-            case .alertThirdButtonReturn:  decision = .closeAndLetRun
-            default:                       decision = .keepSyncing   // Keep Syncing / dismissed
+            case .alertSecondButtonReturn: self?.applySyncDecision(.abortAndClose)
+            case .alertThirdButtonReturn:  self?.applySyncDecision(.closeAndLetRun)
+            default:                       self?.applySyncDecision(.keepSyncing)   // Keep Syncing / dismissed
             }
-            self?.applySyncDecision(decision)
         }
     }
 
-    /// Apply the user's sync decision to the pending request. Keep Syncing drops
-    /// it; the other choices leave the sync (honoured whenever a sync is still
-    /// running) and open the request only when it has not passed its admission
-    /// deadline (design: an expired request cannot be started by a later choice).
+    /// Map a user choice to the resolution (also the test entry point).
     private func applySyncDecision(_ decision: CommandLineHandoff.SyncDecision) {
-        guard let pending = pendingSyncDecision else { return }
-        pendingSyncDecision = nil
-        let expired = Date() >= pending.deadline
-        let resolution = CommandLineHandoff.resolveSyncDecision(decision, requestExpired: expired)
-        let name = pending.request.given
-        switch resolution {
-        case .keepSyncing:
-            log.write("sync decision: keep syncing — dropping command-line request for '\(name)'")
-        case .abortAndClose(let admit):
-            log.write("sync decision: abort & close (open \(name): \(admit))")
-            if case .syncing = engine.phase { run(engine.requestSyncExit(.abortAndClose)) }
-            if admit { commandLineTakeover(name: name, args: pending.request.sessionArgs) }
-        case .closeAndLetRun(let admit):
-            log.write("sync decision: close & let run (open \(name): \(admit))")
-            if case .syncing = engine.phase { run(engine.requestSyncExit(.closeAndLetRun)) }
-            if admit { commandLineTakeover(name: name, args: pending.request.sessionArgs) }
+        switch decision {
+        case .keepSyncing:    finishSyncDecision(.keepSyncing)
+        case .abortAndClose:  finishSyncDecision(.abortAndClose)
+        case .closeAndLetRun: finishSyncDecision(.closeAndLetRun)
         }
+    }
+
+    /// The single, idempotent resolution point for a pending sync decision — reached
+    /// from the user's sheet choice, the expiry timer, or a state change. The first
+    /// caller wins; the rest are no-ops. Cancels the timer, releases the slot,
+    /// dismisses the sheet if it is still up, computes the final verdict, and
+    /// completes the ticket the waiting caller reads.
+    private func finishSyncDecision(_ outcome: SyncDecisionOutcome) {
+        guard let p = pendingSyncDecision else { return }
+        pendingSyncDecision = nil
+        p.timer?.cancel()
+        // Dismiss the request-specific sheet if still up (the expiry / state-change
+        // paths). On the user-choice path it has already closed, so this is a no-op.
+        // The user's normal sync controls (the window's own close) are unaffected.
+        if let parent = p.sheetParent, let sheetWindow = p.sheetAlert?.window {
+            parent.endSheet(sheetWindow)
+        }
+        let name = p.request.given
+        let response: CommandLineHandoff.Response
+        switch outcome {
+        case .keepSyncing:
+            log.write("sync decision: keep syncing — did not start '\(name)'")
+            response = CommandLineHandoff.syncKeptResponse(name: name)
+        case .expired:
+            log.write("sync decision: expired — did not start '\(name)'")
+            response = CommandLineHandoff.syncDecisionExpiredResponse(name: name)
+        case .unavailable:
+            response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
+        case .abortAndClose, .closeAndLetRun:
+            response = resolveSyncLeaveChoice(outcome, pending: p)
+        }
+        p.ticket.complete(response)
+    }
+
+    /// Apply a "leave the sync" choice: revalidate that the ORIGINATING session is
+    /// still syncing (a phase change gets an explicit refusal, never an
+    /// unconditional takeover into a phase that cannot drain, #3), honour the sync
+    /// exit, and open the request only when it has not passed its admission deadline.
+    private func resolveSyncLeaveChoice(_ outcome: SyncDecisionOutcome,
+                                        pending p: PendingSyncDecision) -> CommandLineHandoff.Response {
+        let name = p.request.given
+        guard case .syncing(let s, _) = engine.phase, s == p.session else {
+            log.write("sync decision: state changed before the choice; refusing '\(name)'")
+            return CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
+        }
+        let expired = DispatchTime.now() >= p.deadline
+        let intent: EngineSessionCoordinator.SyncExitIntent =
+            (outcome == .abortAndClose) ? .abortAndClose : .closeAndLetRun
+        // Honour the user's sync choice regardless of the request's admission.
+        run(engine.requestSyncExit(intent))
+        guard !expired else {
+            log.write("sync decision: leave chosen but the request expired — not opening '\(name)'")
+            return CommandLineHandoff.syncDecisionExpiredResponse(name: name)
+        }
+        let started = commandLineTakeover(name: name, args: p.request.sessionArgs)
+        return started
+            ? .started
+            : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: "finishing the current synchronization")
     }
 
     /// The `-path`/`-ignore`/… token-count suffix for a handoff log line.
@@ -2334,8 +2421,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         switch engine.phase {
         case .idle:
             return .idleAtPicker
-        case .syncing:
-            return .synchronizing(reason: Self.handoffBusyReason(engine.phase))
+        case .syncing(let s, _):
+            // Only an active sync the user is watching (its window is on screen)
+            // raises the three-way decision. A background sync the user already
+            // sent to run (Close let it run → its window is gone) has no decision
+            // surface and needs none: the session is already abandoned, so the
+            // request simply waits and opens when the sync finishes (#4).
+            return windowBySession[s] != nil
+                ? .synchronizing(reason: Self.handoffBusyReason(engine.phase))
+                : .busyWillWait(reason: Self.handoffBusyReason(engine.phase))
         case .restartRequired:
             return .restartRequired(reason: Self.handoffBusyReason(engine.phase))
         case .opening, .scanning, .ready, .diffing, .closing:
@@ -3508,18 +3602,29 @@ extension AppDelegate {
         profileSelected(profile, args: args)
     }
     /// The real running-instance handler (P1 wiring: it must invoke the takeover
-    /// teardown; PR-B: it arms the sync decision).
+    /// teardown; PR-B: it arms the sync decision and returns `.awaitDecision`).
     func handleCommandLineHandoffForTesting(_ request: CommandLineHandoff.Request,
                                             deadline: CommandLineHandoffSocket.Deadline)
-        -> CommandLineHandoff.Response {
+        -> HandoffServe {
         handleCommandLineHandoff(request, deadline: deadline)
     }
     /// The real sync-decision application (PR-B), bypassing the sheet.
     func applySyncDecisionForTesting(_ decision: CommandLineHandoff.SyncDecision) {
         applySyncDecision(decision)
     }
-    func setPendingSyncDecisionForTesting(request: CommandLineHandoff.Request, deadline: Date) {
-        pendingSyncDecision = (request, deadline)
+    /// Expire the pending decision as the timer would.
+    func expireSyncDecisionForTesting() { finishSyncDecision(.expired) }
+    /// Arm a pending sync decision directly (no sheet), returning the ticket the
+    /// caller would wait on. `expired` seeds a deadline already in the past.
+    @discardableResult
+    func setPendingSyncDecisionForTesting(request: CommandLineHandoff.Request,
+                                          session: EngineSessionCoordinator.SessionID,
+                                          expired: Bool) -> HandoffDecisionTicket {
+        let ticket = HandoffDecisionTicket()
+        let deadline = DispatchTime.now() + (expired ? -1.0 : Self.syncDecisionAdmissionWindow)
+        pendingSyncDecision = PendingSyncDecision(request: request, session: session,
+                                                  ticket: ticket, deadline: deadline)
+        return ticket
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
 }

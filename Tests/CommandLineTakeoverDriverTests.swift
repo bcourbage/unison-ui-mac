@@ -118,7 +118,7 @@ final class CommandLineTakeoverDriverTests: XCTestCase {
         let resp = d.handleCommandLineHandoffForTesting(
             req(given: "B", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
 
-        guard case .acceptedWaiting = resp else {
+        guard case .reply(.acceptedWaiting) = resp else {
             return XCTFail("expected accepted-and-waiting through the handler, got \(resp)")
         }
         XCTAssertFalse(d.hasWindowForTesting(aS),
@@ -138,7 +138,17 @@ final class CommandLineTakeoverDriverTests: XCTestCase {
         return s
     }
 
-    func test_syncDecision_armsRequest_andSecondRequestIsRefused() {
+    /// Install a real window for `session` (so an active sync has a decision surface).
+    private func installWindow(_ d: AppDelegate, _ session: C.SessionID, profile: String) {
+        let w = ReconcileWindowController(
+            profile: profile, mergeConfigured: false,
+            onClose: {}, onRescanRequested: {}, onSyncStart: {}, onSyncExit: { _ in },
+            onEngineUncertain: { _ in }, onIgnore: { _, _ in UNISON_OP_INVALID },
+            onDiffRequest: { _ in .refused }, onDiffAbandon: {})
+        d.installWindowForTesting(session, w)
+    }
+
+    func test_syncDecision_armsDecision_andSecondRequestIsRefused() {
         let d = AppDelegate()
         AppDelegate.testSyncDecisionSheetSuppressed = true
         defer { AppDelegate.testSyncDecisionSheetSuppressed = false }
@@ -147,66 +157,105 @@ final class CommandLineTakeoverDriverTests: XCTestCase {
                                        contents: Data("root = \(dir)/r1\nroot = \(dir)/r2\n".utf8))
         d.setUnisonDirectoryForTesting(dir)
         let e = d.engineForTesting
-        driveToSyncing(e, profile: "A")
+        let aS = driveToSyncing(e, profile: "A")
+        installWindow(d, aS, profile: "A")   // an active sync the user is watching
 
-        // A request during the sync arms the decision and is told (refused) that
-        // the decision is pending in the app.
+        // A request during an active sync defers (two-phase): the handler returns
+        // an interim, keeping the caller waiting for the decision.
         let resp = d.handleCommandLineHandoffForTesting(
             req(given: "B", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
-        guard case .refused(let m) = resp else { return XCTFail("expected a refusal while awaiting the decision") }
-        XCTAssertTrue(m.contains("synchronizing"))
+        guard case .awaitDecision(let interim, _, _) = resp else {
+            return XCTFail("expected a deferred (await-decision) serve, got \(resp)")
+        }
+        XCTAssertTrue(interim.message.contains("synchronizing"))
         XCTAssertTrue(d.hasPendingSyncDecisionForTesting)
 
-        // A second request while one is awaiting the decision is refused as
-        // already-pending; it does not arm a second decision.
+        // A second request while one is awaiting the decision replies immediately,
+        // refused as already-pending; it does not arm a second decision.
         let resp2 = d.handleCommandLineHandoffForTesting(
             req(given: "C", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
-        guard case .refused(let m2) = resp2 else { return XCTFail("expected already-pending refusal") }
+        guard case .reply(.refused(let m2)) = resp2 else { return XCTFail("expected already-pending refusal") }
         XCTAssertTrue(m2.contains("already handling another command-line request"))
     }
 
-    func test_syncDecision_keepSyncing_dropsRequest() {
+    func test_backgroundSyncWithoutWindow_acceptsAndWaits_noDecision() {
+        // After Close (let it run), the syncing session has no window; a new request
+        // must accept-and-wait (drains when the sync finishes), not claim a decision.
         let d = AppDelegate()
-        d.setPendingSyncDecisionForTesting(request: req(given: "B", dir: "/x"),
-                                           deadline: Date().addingTimeInterval(120))
+        let dir = makeUnisonDir(profile: "B")
+        d.setUnisonDirectoryForTesting(dir)
+        let e = d.engineForTesting
+        driveToSyncing(e, profile: "A")   // syncing, but NO window installed
+
+        let resp = d.handleCommandLineHandoffForTesting(
+            req(given: "B", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+        guard case .reply(.acceptedWaiting) = resp else {
+            return XCTFail("a windowless background sync should accept-and-wait, got \(resp)")
+        }
+        XCTAssertFalse(d.hasPendingSyncDecisionForTesting, "no sync decision is raised without a window")
+        XCTAssertTrue(e.commandLineRequestPending)
+    }
+
+    func test_syncDecision_keepSyncing_refusesCaller_opensNothing() {
+        let d = AppDelegate()
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x"), session: C.SessionID(raw: 1), expired: false)
         d.applySyncDecisionForTesting(.keepSyncing)
         XCTAssertFalse(d.hasPendingSyncDecisionForTesting)
         XCTAssertFalse(d.engineForTesting.openRequestPending, "Keep Syncing opens nothing")
+        guard case .refused = ticket.wait(seconds: 1) else { return XCTFail("caller should be refused") }
     }
 
     func test_syncDecision_expired_doesNotAdmit_evenOnLeave() {
+        // Engine actually syncing the originating session; the request is expired.
         let d = AppDelegate()
-        // Deadline already elapsed; engine idle (the sync ended).
-        d.setPendingSyncDecisionForTesting(request: req(given: "B", dir: "/x"),
-                                           deadline: Date().addingTimeInterval(-1))
-        d.applySyncDecisionForTesting(.abortAndClose)
+        AppDelegate.testSyncDecisionSheetSuppressed = true
+        defer { AppDelegate.testSyncDecisionSheetSuppressed = false }
+        let e = d.engineForTesting
+        let aS = driveToSyncing(e, profile: "A")
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x"), session: aS, expired: true)
+        // Close (let it run) issues no bridge abort, so this is engine-safe in a test.
+        d.applySyncDecisionForTesting(.closeAndLetRun)
         XCTAssertFalse(d.hasPendingSyncDecisionForTesting)
-        XCTAssertFalse(d.engineForTesting.openRequestPending,
+        XCTAssertFalse(e.commandLineRequestPending,
                        "an expired request must not open, even when the user chooses to leave the sync")
+        guard case .refused = ticket.wait(seconds: 1) else { return XCTFail("expired caller should be refused") }
     }
 
     func test_syncDecision_leave_admitsRequest_andTearsDownOutgoing() {
-        // Exercise the admit branch of applySyncDecision without a live sync/bridge:
-        // the engine is busy (scanning) rather than syncing, so requestSyncExit is
-        // skipped, but the not-expired request is admitted via the takeover.
+        // Engine syncing the originating session, with its window on screen.
+        // Close (let it run): no bridge abort, so engine-safe; the not-expired
+        // request is admitted via the takeover and the syncing window is torn down.
         let d = AppDelegate()
         let e = d.engineForTesting
-        let (aS, aOp) = connect(e.requestOpen(profile: "A"))!
-        _ = e.connectFinished(aS, aOp, result: .remote(interactive: false))   // .scanning(A)
-        let aWindow = ReconcileWindowController(
-            profile: "A", mergeConfigured: false,
-            onClose: {}, onRescanRequested: {}, onSyncStart: {}, onSyncExit: { _ in },
-            onEngineUncertain: { _ in }, onIgnore: { _, _ in UNISON_OP_INVALID },
-            onDiffRequest: { _ in .refused }, onDiffAbandon: {})
-        d.installWindowForTesting(aS, aWindow)
-
-        d.setPendingSyncDecisionForTesting(request: req(given: "B", dir: "/x", args: ["-path", "B"]),
-                                           deadline: Date().addingTimeInterval(120))
+        let aS = driveToSyncing(e, profile: "A")
+        installWindow(d, aS, profile: "A")
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x", args: ["-path", "B"]), session: aS, expired: false)
         d.applySyncDecisionForTesting(.closeAndLetRun)
 
         XCTAssertFalse(d.hasPendingSyncDecisionForTesting)
         XCTAssertTrue(e.commandLineRequestPending, "the request is admitted as a pending command-line open")
         XCTAssertFalse(d.hasWindowForTesting(aS), "the outgoing session's window is torn down")
+        guard case .acceptedWaiting = ticket.wait(seconds: 1) else {
+            return XCTFail("admitted caller should get accepted-and-waiting")
+        }
+    }
+
+    func test_syncDecision_phaseChanged_refusesInsteadOfTakeover() {
+        // The sync failed/ended (or the session changed) while the sheet was open:
+        // a leave choice must not queue a takeover into a phase that cannot drain.
+        let d = AppDelegate()
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x"),
+            session: C.SessionID(raw: 99),   // not the engine's current (idle) session
+            expired: false)
+        d.applySyncDecisionForTesting(.closeAndLetRun)
+        XCTAssertFalse(d.hasPendingSyncDecisionForTesting)
+        XCTAssertFalse(d.engineForTesting.openRequestPending,
+                       "a phase change must yield an explicit refusal, never a stuck takeover")
+        guard case .refused = ticket.wait(seconds: 1) else { return XCTFail("expected refusal on a phase change") }
     }
 
     // MARK: P2 — a blocked picker selection keeps the launch's pending options

@@ -206,9 +206,17 @@ enum CommandLineHandoffClient {
         case unavailable
     }
 
+    /// Hand the request over and read the verdict. When the primary needs a user
+    /// decision (a request arriving during an active sync), it first sends an
+    /// interim notice; `onPending` is called with it (so the caller can print an
+    /// immediate message) and the client then waits, on the same connection, up to
+    /// the interim's own timeout for the final verdict (two-phase reply). A lost
+    /// final reply is reported as `.lostReply` (outcome unconfirmed) and never
+    /// retried.
     static func handOff(_ request: CommandLineHandoff.Request,
                         path: String,
-                        timeout: TimeInterval = 5) -> Result {
+                        timeout: TimeInterval = 5,
+                        onPending: (CommandLineHandoff.Interim) -> Void = { _ in }) -> Result {
         let deadline = CommandLineHandoffSocket.Deadline(seconds: timeout)
         // Stamp the caller's absolute expiry into the line so the primary honors
         // it even if the request waits before being accepted (round 4).
@@ -223,13 +231,64 @@ enum CommandLineHandoffClient {
         }
         defer { close(fd) }
         guard CommandLineHandoffSocket.writeAll(fd, line, deadline: deadline) else { return .lostReply }
-        shutdown(fd, SHUT_WR)
-        guard let replyLine = CommandLineHandoffSocket.readLine(fd, deadline: deadline),
-              let response = CommandLineHandoff.Response(line: replyLine) else {
+        // NOTE: do not shutdown(SHUT_WR) — the request is one line and the primary
+        // has it; keeping the write half open avoids any interaction with the
+        // two-phase reply on stacks that surface a peer half-close as an error.
+        guard let firstLine = CommandLineHandoffSocket.readLine(fd, deadline: deadline) else {
             return .lostReply
         }
+        // A leading interim means: a decision is pending in the app. Surface it,
+        // then wait up to the interim's own timeout for the final verdict.
+        if let interim = CommandLineHandoff.Interim(line: firstLine) {
+            onPending(interim)
+            let waitDeadline = CommandLineHandoffSocket.Deadline(
+                seconds: Double(interim.timeoutSeconds) + 5)   // small margin past the app's deadline
+            guard let finalLine = CommandLineHandoffSocket.readLine(fd, deadline: waitDeadline),
+                  let response = CommandLineHandoff.Response(line: finalLine) else {
+                return .lostReply
+            }
+            return .reply(response)
+        }
+        guard let response = CommandLineHandoff.Response(line: firstLine) else { return .lostReply }
         return .reply(response)
     }
+}
+
+/// A one-shot slot the primary completes with the final verdict for a two-phase
+/// (deferred) reply. The connection-serving thread waits on it while the main
+/// thread drives the user's decision; whichever of the user's choice or the
+/// admission-deadline timer resolves first wins (the rest are no-ops).
+final class HandoffDecisionTicket: @unchecked Sendable {
+    private let sem = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var value: CommandLineHandoff.Response?
+
+    func complete(_ response: CommandLineHandoff.Response) {
+        lock.lock()
+        let first = value == nil
+        if first { value = response }
+        lock.unlock()
+        if first { sem.signal() }
+    }
+
+    /// Wait up to `seconds` for completion; nil on timeout (a server-side safety
+    /// net — the primary's own deadline should complete the ticket first).
+    func wait(seconds: TimeInterval) -> CommandLineHandoff.Response? {
+        guard sem.wait(timeout: .now() + seconds) == .success else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+}
+
+/// What the primary decides to do with one connection's request.
+enum HandoffServe {
+    /// Reply now with this verdict (the ordinary case).
+    case reply(CommandLineHandoff.Response)
+    /// Send `interim` now, then wait up to `waitSeconds` for `ticket` and send its
+    /// final verdict (a request that arrived during an active sync).
+    case awaitDecision(interim: CommandLineHandoff.Interim,
+                       ticket: HandoffDecisionTicket,
+                       waitSeconds: TimeInterval)
 }
 
 /// The server half: bind the per-user socket, win or lose the election against
@@ -274,11 +333,18 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     private let ownDevice: dev_t
     private let ownInode: ino_t
     /// The handler is given the connection's deadline so it can decline to act on a
-    /// request whose budget already elapsed while the main thread was busy.
+    /// request whose budget already elapsed while the main thread was busy. It may
+    /// reply immediately or defer (two-phase) while the app resolves a user
+    /// decision — see `HandoffServe`.
     private let handler: @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
-        -> CommandLineHandoff.Response
+        -> HandoffServe
     private let connectionTimeout: TimeInterval
     private let queue = DispatchQueue(label: "net.courbage.unison-ui-mac.handoff")
+    /// Connections are served concurrently so a request that must wait for a user
+    /// decision does not block the accept loop — a second request is still read and
+    /// answered (e.g. refused as already-pending) while the first waits.
+    private let serveQueue = DispatchQueue(label: "net.courbage.unison-ui-mac.handoff.serve",
+                                           attributes: .concurrent)
     /// Makes stop() idempotent; the accept loop owns and closes `listenFD`.
     private let lifecycle = NSLock()
     private var stopped = false
@@ -286,7 +352,7 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     private init(listenFD: Int32, wakeReadFD: Int32, wakeWriteFD: Int32, path: String,
                  device: dev_t, inode: ino_t, connectionTimeout: TimeInterval,
                  handler: @escaping @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
-                     -> CommandLineHandoff.Response) {
+                     -> HandoffServe) {
         self.listenFD = listenFD
         self.wakeWriteFD = wakeWriteFD
         self.path = path
@@ -312,7 +378,7 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     /// bind. `afterBind` is a test seam to force a pause between bind and listen.
     static func start(path: String,
                       handler: @escaping @Sendable (CommandLineHandoff.Request, CommandLineHandoffSocket.Deadline)
-                          -> CommandLineHandoff.Response,
+                          -> HandoffServe,
                       lockTimeout: TimeInterval = electionLockTimeout,
                       connectionTimeout: TimeInterval = connectionTimeout,
                       afterBind: () -> Void = {},
@@ -365,9 +431,7 @@ final class CommandLineHandoffServer: @unchecked Sendable {
     /// never has to close a descriptor the loop is about to use: the loop owns
     /// `listenFD` and `wakeReadFD` and closes them itself on exit (finding 4).
     private func startAccepting(listenFD: Int32, wakeReadFD: Int32) {
-        let handler = self.handler
-        let connectionTimeout = self.connectionTimeout
-        queue.async {
+        queue.async { [weak self] in
             defer { close(listenFD); close(wakeReadFD) }
             while true {
                 var fds = [pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0),
@@ -379,23 +443,40 @@ final class CommandLineHandoffServer: @unchecked Sendable {
                 let conn = accept(listenFD, nil, nil)
                 if conn < 0 { if errno == EINTR || errno == ECONNABORTED { continue }; break }
                 CommandLineHandoffSocket.setNonBlocking(conn)
-                // The server keeps its OWN I/O bound so a slow peer cannot hold the
-                // accept loop; the handler is given the CALLER's deadline (from the
-                // envelope) so a request that already expired while waiting to be
-                // accepted, or while the main thread was busy, is not started
-                // (findings, rounds 3 & 4).
-                let ioDeadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
-                // A probe connection (election race detection) sends nothing and
-                // closes; readLine returns nil within the deadline and we drop it.
-                if let line = CommandLineHandoffSocket.readLine(conn, deadline: ioDeadline),
-                   let envelope = CommandLineHandoff.decodeEnvelope(line) {
-                    let callerDeadline = CommandLineHandoffSocket.Deadline(
-                        uptimeNanos: envelope.deadlineUptimeNanos)
-                    let response = handler(envelope.request, callerDeadline)
-                    _ = CommandLineHandoffSocket.writeAll(conn, response.encoded(), deadline: ioDeadline)
-                }
-                close(conn)
+                guard let self else { close(conn); continue }
+                // Serve concurrently: a request that must wait for a user decision
+                // holds only its own connection, never the accept loop, so a second
+                // request is still read and answered while the first waits.
+                self.serveQueue.async { self.serveConnection(conn) }
             }
+        }
+    }
+
+    /// Read one request and reply. The server keeps its OWN I/O bound (a slow peer
+    /// cannot hold a serving thread indefinitely); the handler gets the CALLER's
+    /// deadline (from the envelope) so a request that already expired while waiting
+    /// to be accepted, or while the main thread was busy, is not started. A deferred
+    /// (two-phase) verdict sends the interim first, then waits for the ticket.
+    private func serveConnection(_ conn: Int32) {
+        defer { close(conn) }
+        let ioDeadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
+        // A probe connection (election race detection) sends nothing and closes;
+        // readLine returns nil within the deadline and we drop it.
+        guard let line = CommandLineHandoffSocket.readLine(conn, deadline: ioDeadline),
+              let envelope = CommandLineHandoff.decodeEnvelope(line) else { return }
+        let callerDeadline = CommandLineHandoffSocket.Deadline(uptimeNanos: envelope.deadlineUptimeNanos)
+        switch handler(envelope.request, callerDeadline) {
+        case .reply(let response):
+            _ = CommandLineHandoffSocket.writeAll(conn, response.encoded(), deadline: ioDeadline)
+        case .awaitDecision(let interim, let ticket, let waitSeconds):
+            // Interim first (bounded by the ordinary I/O budget), then wait for the
+            // user's decision (bounded by the admission window), then the verdict.
+            guard CommandLineHandoffSocket.writeAll(conn, interim.encoded(), deadline: ioDeadline) else { return }
+            let final = ticket.wait(seconds: waitSeconds)
+                ?? CommandLineHandoff.syncDecisionExpiredResponse(name: envelope.request.given)
+            _ = CommandLineHandoffSocket.writeAll(
+                conn, final.encoded(),
+                deadline: CommandLineHandoffSocket.Deadline(seconds: connectionTimeout))
         }
     }
 

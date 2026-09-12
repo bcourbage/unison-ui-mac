@@ -370,16 +370,63 @@ enum CommandLineHandoff {
             + "the request is waiting in the app.")
     }
 
-    /// The reply when a synchronization is running and the app has raised the
-    /// three-way decision for it. The request is NOT accepted (the user has not
-    /// chosen yet); it opens only if the user chooses to stop the sync or let it
-    /// finish in the background, and only within its bounded admission deadline. No
-    /// "-ui text" alternative: starting another process against these roots while a
-    /// sync is unresolved must not be suggested.
-    static func syncDecisionPendingResponse(name: String) -> Response {
+    /// The interim message the primary sends FIRST when a request arrives during an
+    /// active synchronization: it tells the caller a decision is required in the app
+    /// and how long the caller will wait for it, then the caller waits on the same
+    /// connection for the final verdict (two-phase reply). Wire line:
+    /// `pending\t<timeoutSeconds>\t<message>\n` — the message is single-line text.
+    struct Interim: Equatable {
+        var timeoutSeconds: Int
+        var message: String
+
+        static let verb = "pending"
+
+        func encoded() -> String { "\(Interim.verb)\t\(timeoutSeconds)\t\(message)\n" }
+
+        init(timeoutSeconds: Int, message: String) {
+            self.timeoutSeconds = timeoutSeconds
+            self.message = message
+        }
+
+        /// Parse an interim line, or nil when the line is not an interim (so the
+        /// client treats it as the final response instead).
+        init?(line: String) {
+            guard line.hasSuffix("\n") else { return nil }
+            let body = String(line.dropLast())
+            let parts = body.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == Interim.verb, let secs = Int(parts[1]) else { return nil }
+            self.timeoutSeconds = secs
+            self.message = String(parts[2])
+        }
+    }
+
+    /// The interim notice for a request that arrived during a synchronization.
+    static func syncDecisionInterim(name: String, timeoutSeconds: Int) -> Interim {
+        Interim(timeoutSeconds: timeoutSeconds, message:
+            "unison-ui-mac is synchronizing; it needs a decision in the app before it can start \(name). "
+            + "Waiting up to \(timeoutSeconds)s for you to choose Keep Syncing, Abort & Close, or Close (let it run)…")
+    }
+
+    /// Final verdict: the user kept syncing, so the request was not started.
+    static func syncKeptResponse(name: String) -> Response {
         .refused(message:
-            "unison-ui-mac is synchronizing, so it did not start \(name) yet. "
-            + "Choose in the app how to handle the sync: if you stop it or let it finish in the "
-            + "background, \(name) opens then; if you keep syncing, run the command again later.")
+            "unison-ui-mac kept synchronizing, so it did not start \(name). "
+            + "Run the command again when you're ready to open it.")
+    }
+
+    /// Final verdict: no choice was made before the admission deadline elapsed, so
+    /// the request was not started and can no longer be started by a later choice.
+    static func syncDecisionExpiredResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac did not start \(name): no choice was made in time. Run the command again.")
+    }
+
+    /// Final verdict: by the time the user chose, the app was no longer able to open
+    /// the request (the sync ended or the app entered recovery). An explicit refusal
+    /// rather than opening into an unexpected state.
+    static func syncDecisionUnavailableResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac could not start \(name): the app's state changed while the decision was open. "
+            + "Run the command again.")
     }
 }

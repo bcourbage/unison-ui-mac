@@ -221,15 +221,28 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertEqual(out, .presentSyncDecision(name: "work"))
     }
 
-    func test_syncDecisionPendingResponse_refusesWithSyncContext() {
-        guard case .refused(let m) = CommandLineHandoff.syncDecisionPendingResponse(name: "work") else {
-            return XCTFail("expected a refusal while the sync decision is pending")
+    func test_syncDecisionInterim_roundTripsAndCarriesTimeout() {
+        let interim = CommandLineHandoff.syncDecisionInterim(name: "work", timeoutSeconds: 120)
+        XCTAssertEqual(interim.timeoutSeconds, 120)
+        XCTAssertTrue(interim.message.contains("synchronizing"))
+        XCTAssertTrue(interim.message.contains("120"))
+        XCTAssertTrue(interim.message.contains("work"))
+        // The interim round-trips on the wire and is distinguishable from a final
+        // response (which begins ok/waiting/refuse/invalid, not "pending").
+        XCTAssertEqual(CommandLineHandoff.Interim(line: interim.encoded()), interim)
+        XCTAssertNil(CommandLineHandoff.Interim(line: "ok\n"))
+        XCTAssertNil(CommandLineHandoff.Response(line: interim.encoded()),
+                     "an interim line is not a final response")
+    }
+
+    func test_syncFinalResponses_refuseWithoutUiTextAndNameTheProfile() {
+        for r in [CommandLineHandoff.syncKeptResponse(name: "work"),
+                  CommandLineHandoff.syncDecisionExpiredResponse(name: "work"),
+                  CommandLineHandoff.syncDecisionUnavailableResponse(name: "work")] {
+            guard case .refused(let m) = r else { return XCTFail("sync final verdicts are refusals") }
+            XCTAssertTrue(m.contains("work"))
+            XCTAssertFalse(m.contains("-ui text"), "no -ui text alternative while a sync is unresolved")
         }
-        XCTAssertTrue(m.contains("synchronizing"))
-        XCTAssertTrue(m.contains("work"))
-        XCTAssertTrue(m.contains("stop it or let it finish in the background"))
-        // No "-ui text" alternative while a sync is unresolved.
-        XCTAssertFalse(m.contains("-ui text"))
     }
 
     func test_resolveSyncDecision_matrix() {
