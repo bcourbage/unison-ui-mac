@@ -1,0 +1,52 @@
+diff --git a/src/uimacbridge.ml b/src/uimacbridge.ml
+index 99704a7..259d425 100644
+--- a/src/uimacbridge.ml
++++ b/src/uimacbridge.ml
+@@ -234,6 +234,29 @@ let firstTime = ref(true)
+ (* After figuring out the profile name. If the profileName is the empty
+    string, it means that only the roots were specified on the command
+    line *)
++(* unison-ui-mac extension (patch 0008): per-session command-line overrides.
++ * A graphical session may carry its own command-line option arguments (for
++ * example [-path Documents]) that scope only that session and are independent of
++ * the app's original process arguments. Swift stores the current session's
++ * argument vector here (via the [unisonSetSessionArgs] callback) BEFORE calling
++ * [unisonInit1]; [do_unisonInit1] then applies it through the engine's own parser
++ * ([Prefs.parseCmdLineArgs], patch 0007), after the profile is loaded and before
++ * the roots are validated and the connection is opened.
++ *
++ * Storing is deliberately separate from applying: this setter ONLY records the
++ * vector -- it touches no preference -- so a queued request cannot mutate an
++ * active session's preferences. The mutation happens solely inside
++ * [do_unisonInit1], which the app reaches only when the engine is available for a
++ * fresh (re)load. Because [do_unisonInit1] runs [resetToDefaults] + [loadTheFile]
++ * on every re-entry (and [parseCmdLine] only on [firstTime]), the overrides are
++ * re-applied on every load, including a reconnecting rescan, so the session's
++ * scope persists across a reconnect.
++ * NOT in upstream uimac -- local patch in this fork (patch 0008). *)
++let sessionArgs = ref [||]
++let unisonSetSessionArgs (args : string array) = sessionArgs := args
++;;
++Callback.register "unisonSetSessionArgs" unisonSetSessionArgs;;
++
+ let do_unisonInit1 profileName =
+   (* Load the profile and command-line arguments *)
+   (* Restore prefs to their default values, if necessary *)
+@@ -264,6 +287,17 @@ let do_unisonInit1 profileName =
+ 
+   firstTime := false;
+ 
++  (* Apply this session's command-line overrides (unison-ui-mac patch 0008)
++     through the engine's own parser, now that the profile and any first-time
++     command line are loaded, and before root validation and connection setup
++     read the resulting values. Re-applied on every (re)load because the
++     [resetToDefaults]/[loadTheFile] above wipe them and [parseCmdLine] runs only
++     on [firstTime]. [parseCmdLineArgs] raises [Util.Fatal] on bad input, which
++     propagates out of [do_unisonInit1] BEFORE [openConnectionStart], so a failed
++     apply never begins a connection or a scan; the next load resets clean. *)
++  if Array.length !sessionArgs > 0 then
++    Prefs.parseCmdLineArgs Uicommon.usageMsg !sessionArgs;
++
+   (* Print the preference settings *)
+   Trace.debug "" (fun() -> Prefs.dumpPrefsToStderr() );
+ 

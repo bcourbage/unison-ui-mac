@@ -1,0 +1,178 @@
+diff --git a/src/ubase/prefs.ml b/src/ubase/prefs.ml
+index d631100..e68fb12 100644
+--- a/src/ubase/prefs.ml
++++ b/src/ubase/prefs.ml
+@@ -633,6 +633,34 @@ let processCmdLine usage hook =
+ let parseCmdLine usage =
+   processCmdLine usage (fun _ sp -> sp)
+ 
++(* Like [processCmdLine], but parse an explicit per-session argument vector
++   through the engine's own option specs, raising [Util.Fatal] on bad input
++   instead of exiting.  This is the session-request counterpart to
++   [parseCmdLine]: same parser, same arity, same list accumulation and
++   precedence, fed the request's arguments rather than [Sys.argv].  It does not
++   touch [Uarg.current]'s shared position. *)
++let processCmdLineArgs usage args hook =
++  let argspecs = argspecs hook in
++  let defaultanonfun _ =
++    raise (Util.Fatal "Anonymous arguments not allowed") in
++  let anonfun =
++    try
++      let {pspec = p; _} = Util.StringMap.find "rest" !prefs in
++      match hook "rest" p with
++        Uarg.String stringFunction -> stringFunction
++      | _                         -> defaultanonfun
++    with
++      Not_found -> defaultanonfun
++  in
++  try
++    Uarg.parseArgv args argspecs anonfun
++  with
++    IllegalValue str -> raise (Util.Fatal str)
++  | Uarg.Bad str     -> raise (Util.Fatal str)
++
++let parseCmdLineArgs usage args =
++  processCmdLineArgs usage args (fun _ sp -> sp)
++
+ (* Scan command line without actually setting any preferences; return a      *)
+ (* string map associating a list of strings with each option appearing on    *)
+ (* the command line.                                                         *)
+diff --git a/src/ubase/prefs.mli b/src/ubase/prefs.mli
+index c6759eb..31a1e8c 100644
+--- a/src/ubase/prefs.mli
++++ b/src/ubase/prefs.mli
+@@ -140,6 +140,15 @@ val parseCmdLine :
+      string             (* Usage message *)
+   -> unit
+ 
++(* Parse an explicit per-session argument vector through the same option specs *)
++(* as [parseCmdLine], raising [Util.Fatal] on bad input instead of exiting.    *)
++(* Same parser, arity, list accumulation and precedence, fed the request's     *)
++(* arguments rather than [Sys.argv].                                           *)
++val parseCmdLineArgs :
++     string             (* Usage message *)
++  -> string array       (* Session option arguments (no leading program name) *)
++  -> unit
++
+ (* Make a preliminary scan without setting any preferences                   *)
+ (* Note: Command line include options are not processed; they will appear in *)
+ (* the map.                                                                  *)
+diff --git a/src/ubase/uarg.ml b/src/ubase/uarg.ml
+index 03ee688..a478efe 100644
+--- a/src/ubase/uarg.ml
++++ b/src/ubase/uarg.ml
+@@ -50,27 +50,25 @@ let eprintf fmt =
+ let verify_stdout () =
+   if not (System.has_stdout ~info:"") then exit 37
+ 
+-let parse speclist anonfun errmsg =
+-  let argv = System.argv () in
+-  let initpos = !current in
+-  let stop error =
+-    let progname =
+-      if initpos < Array.length argv then argv.(initpos) else "(?)" in
+-    begin match error with
+-      | Unknown s when s = "-help" -> verify_stdout ()
+-      | Unknown s ->
+-          eprintf "%s: unknown option `%s'.\n" progname s
+-      | Missing s ->
+-          eprintf "%s: option `%s' needs an argument.\n" progname s
+-      | Wrong (opt, arg, expected) ->
+-          eprintf "%s: wrong argument `%s'; option `%s' expects %s.\n"
+-                  progname arg opt expected
+-      | Message s ->
+-          eprintf "%s: %s.\n" progname s
+-    end;
+-    usage speclist errmsg;
+-    exit 2;
+-  in
++(* Raised by [parseCore] on bad input in place of printing and exiting, so a
++   caller (interactive process vs. per-session request) picks the failure
++   behavior.  It carries the same structured [error] the exit path formats. *)
++exception ParseError of error
++
++let errorMessage error =
++  match error with
++  | Unknown s -> Printf.sprintf "unknown option `%s'" s
++  | Missing s -> Printf.sprintf "option `%s' needs an argument" s
++  | Wrong (opt, arg, expected) ->
++      Printf.sprintf "wrong argument `%s'; option `%s' expects %s" arg opt expected
++  | Message s -> s
++
++(* The parsing loop shared by [parse] and [parseArgv].  It drives [argv] from
++   [!current] and raises [ParseError] rather than printing usage and exiting;
++   the two public entry points wrap it with their own failure behavior.  The
++   body is unchanged from the historical [parse]. *)
++let parseCore argv speclist anonfun =
++  let stop error = raise (ParseError error) in
+   let l = Array.length argv in
+   incr current;
+   while !current < l do
+@@ -119,3 +117,45 @@ let parse speclist anonfun errmsg =
+     end;
+   done;
+ ;;
++
++(* Historical behavior: parse [Sys.argv], and on bad input print the message
++   and usage and [exit].  Byte-for-byte the same as before the [parseCore]
++   refactor. *)
++let parse speclist anonfun errmsg =
++  let argv = System.argv () in
++  let initpos = !current in
++  try parseCore argv speclist anonfun
++  with ParseError error ->
++    let progname =
++      if initpos < Array.length argv then argv.(initpos) else "(?)" in
++    begin match error with
++      | Unknown s when s = "-help" -> verify_stdout ()
++      | Unknown s ->
++          eprintf "%s: unknown option `%s'.\n" progname s
++      | Missing s ->
++          eprintf "%s: option `%s' needs an argument.\n" progname s
++      | Wrong (opt, arg, expected) ->
++          eprintf "%s: wrong argument `%s'; option `%s' expects %s.\n"
++                  progname arg opt expected
++      | Message s ->
++          eprintf "%s: %s.\n" progname s
++    end;
++    usage speclist errmsg;
++    exit 2
++;;
++
++(* Parse an explicit argument vector (a session request), not [Sys.argv],
++   raising [Bad] on any error instead of exiting.  [args] holds only the option
++   words; a placeholder is prepended so [current]/[Rest] indexing matches the
++   [Sys.argv] convention (element 0 is the program name).  [current] is saved
++   and restored, so a session parse leaves the shared [Sys.argv] position
++   untouched. *)
++let parseArgv args speclist anonfun =
++  let argv = Array.append [| "" |] args in
++  let saved = !current in
++  current := 0;
++  match parseCore argv speclist anonfun with
++  | () -> current := saved
++  | exception ParseError error -> current := saved; raise (Bad (errorMessage error))
++  | exception e -> current := saved; raise e
++;;
+diff --git a/src/ubase/uarg.mli b/src/ubase/uarg.mli
+index 86e51da..7b35b19 100644
+--- a/src/ubase/uarg.mli
++++ b/src/ubase/uarg.mli
+@@ -83,6 +83,17 @@ exception Bad of string
+      message to reject invalid arguments.
+ *)
+ 
++val parseArgv : string array -> (string * spec * string) list -> (string -> unit) -> unit
++(*
++    [Uarg.parseArgv args speclist anonfun] parses an explicit argument vector,
++    not [Sys.argv].  [args] holds only the option words (no leading program
++    name).  It is otherwise identical to [Uarg.parse], except that on any error
++    it raises [Uarg.Bad] with the reason instead of printing usage and exiting,
++    and it leaves [Uarg.current] unchanged.  This lets a caller parse a
++    per-request argument vector and recover from bad input without terminating
++    the program.
++*)
++
+ val usage: (string * spec * string) list -> string -> unit
+ (*
+     [Uarg.usage speclist usage_msg] prints an error message including
