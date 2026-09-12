@@ -1728,9 +1728,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.pendingLaunchProfile = nil
                 // A profile named on the command line is the launch session and
                 // claims the launch inheritance (the engine parses the process
-                // argv on the first load). Transitional; superseded once launch
-                // options are delivered as explicit args (later PR).
-                self.profileSelected(name, overrides: self.launchOverrides.forLaunchProfile())
+                // argv on the first load) — but only if it is actually accepted;
+                // a refusal leaves inheritance for a later selection. Transitional;
+                // superseded once launch options are delivered as explicit args.
+                let overrides = self.launchOverrides.overrideForNextOpen()
+                let accepted = self.profileSelected(name, overrides: overrides)
+                self.launchOverrides.didOpen(overrides, accepted: accepted)
             }
         }
 
@@ -1820,8 +1823,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 guard let self else { return }
                 // The first picker selection after an option launch that named no
                 // profile inherits the launch command line; later selections are
-                // explicitly unscoped.
-                self.profileSelected(profile, overrides: self.launchOverrides.forPickerSelection())
+                // explicitly unscoped. Inheritance is consumed only if the open is
+                // accepted, so a selection refused by an archive-recovery block
+                // still inherits on the user's retry.
+                let overrides = self.launchOverrides.overrideForNextOpen()
+                let accepted = self.profileSelected(profile, overrides: overrides)
+                self.launchOverrides.didOpen(overrides, accepted: accepted)
             }
         controller.onRemoteCheckRequested = { [weak self] profile in
             self?.checkRemoteCommand(forProfile: profile)
