@@ -36,12 +36,20 @@ across releases per Apple's bundle-version rules.
   a previous run when the request arrives, it accepts the request and opens the
   profile once that work and its connection cleanup finish; the command reports
   that it was accepted and is waiting, and the app shows it waiting. A request is
-  still declined, with a specific reason, while a synchronization is running
-  (make that choice in the app), while the profile editor is open (close it first,
-  your edits are kept), and when the app needs to be quit and reopened after a
-  connection problem. Only one command-line request waits at a time; a second is
-  declined rather than replacing the first, and choosing a profile in the app
-  never silently replaces a waiting command-line request.
+  still declined, with a specific reason, while the profile editor is open (close
+  it first, your edits are kept), and when the app needs to be quit and reopened
+  after a connection problem. Only one command-line request waits at a time; a
+  second is declined rather than replacing the first, and choosing a profile in
+  the app never silently replaces a waiting command-line request.
+- **A command-line request during a synchronization asks how to handle the sync.**
+  When a sync is running and a request arrives, the app raises its Keep Syncing /
+  Abort & Close / Close (let it run) prompt for the requested profile. Choosing to
+  stop the sync or let it finish in the background then opens the requested profile;
+  Keep Syncing leaves the sync untouched and does not open it. The command itself
+  reports that a decision is waiting in the app (it is not started until you
+  choose). The choice must be made within a short window; after that the request is
+  no longer opened and the command can be run again. No command-line request ever
+  aborts a sync or makes that choice on its own.
 
 ## [0.9.0] — 2026-09-11
 

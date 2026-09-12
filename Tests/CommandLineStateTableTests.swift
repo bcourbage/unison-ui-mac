@@ -76,6 +76,34 @@ final class CommandLineStateTableTests: XCTestCase {
         XCTAssertEqual(connect(bStart)?.2, "B")
     }
 
+    func test_admitDuringSyncing_waits_thenOpensAfterSyncCleanup() {
+        // The sync-decision path (PR-B) reaches admitCommandLineOpen while the
+        // session is syncing (after the user chooses Abort & Close / Close-let-run).
+        // The request must wait and then open once the sync unwinds and closes.
+        let c = C()
+        let a = openAndScan(c, profile: "A")
+        _ = c.scanCompleted(a.session, a.scanOp)               // .ready, connection open
+        let sync = c.requestSync()
+        let syncO = { () -> C.OperationID in
+            for x in sync { if case let .beginSync(_, op) = x { return op } }; fatalError("no beginSync")
+        }()
+
+        let (started, effects) = c.admitCommandLineOpen(profile: "B", args: ["-path", "B"])
+        XCTAssertFalse(started, "B cannot open while A is syncing")
+        XCTAssertTrue(hasWaiting(effects))
+        XCTAssertTrue(c.commandLineRequestPending)
+
+        // The sync completes (e.g. Close-let-run let it finish); the abandoned
+        // session closes and the queued request opens.
+        let ended = c.syncCompleted(a.session, syncO, results: .available([]))
+        let aClose = closeOp(ended)!
+        let bStart = c.closeCompleted(a.session, aClose, status: 0)
+        let b = connect(bStart)
+        XCTAssertEqual(b?.2, "B")
+        XCTAssertEqual(b?.3, ["-path", "B"], "B opens with only its own overrides")
+        XCTAssertNotEqual(b?.0, a.session)
+    }
+
     func test_admitDuringReady_localOnly_opensImmediately() {
         let c = C()
         let a = openAndScan(c, profile: "A", connection: .local)

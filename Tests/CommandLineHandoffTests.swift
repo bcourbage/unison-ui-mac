@@ -214,17 +214,33 @@ final class CommandLineHandoffTests: XCTestCase {
             .acceptWaiting(name: "work"))
     }
 
-    func test_decide_synchronizing_refuses_pointingToTheApp() {
+    func test_decide_synchronizing_raisesTheSyncDecision() {
         let out = CommandLineHandoff.decide(
             launch: .openProfile(name: "work"),
             activity: .synchronizing(reason: "synchronizing"))
-        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal during sync") }
+        XCTAssertEqual(out, .presentSyncDecision(name: "work"))
+    }
+
+    func test_syncDecisionPendingResponse_refusesWithSyncContext() {
+        guard case .refused(let m) = CommandLineHandoff.syncDecisionPendingResponse(name: "work") else {
+            return XCTFail("expected a refusal while the sync decision is pending")
+        }
         XCTAssertTrue(m.contains("synchronizing"))
         XCTAssertTrue(m.contains("work"))
-        XCTAssertTrue(m.contains("handle the current sync in the app"))
-        // No "-ui text" alternative during an active sync (must not suggest
-        // starting another process against these roots mid-sync).
+        XCTAssertTrue(m.contains("stop it or let it finish in the background"))
+        // No "-ui text" alternative while a sync is unresolved.
         XCTAssertFalse(m.contains("-ui text"))
+    }
+
+    func test_resolveSyncDecision_matrix() {
+        typealias H = CommandLineHandoff
+        XCTAssertEqual(H.resolveSyncDecision(.keepSyncing, requestExpired: false), .keepSyncing)
+        XCTAssertEqual(H.resolveSyncDecision(.keepSyncing, requestExpired: true), .keepSyncing)
+        XCTAssertEqual(H.resolveSyncDecision(.abortAndClose, requestExpired: false), .abortAndClose(admitRequest: true))
+        XCTAssertEqual(H.resolveSyncDecision(.closeAndLetRun, requestExpired: false), .closeAndLetRun(admitRequest: true))
+        // Expired: the sync choice is still honoured, but the request must not open.
+        XCTAssertEqual(H.resolveSyncDecision(.abortAndClose, requestExpired: true), .abortAndClose(admitRequest: false))
+        XCTAssertEqual(H.resolveSyncDecision(.closeAndLetRun, requestExpired: true), .closeAndLetRun(admitRequest: false))
     }
 
     func test_decide_editing_refuses_withCloseEditorGuidance() {

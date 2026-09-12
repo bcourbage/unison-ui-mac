@@ -19,6 +19,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// this instance won the election; a later graphical `unison <profile>` hands
     /// its request here instead of starting a second instance.
     private var commandLineHandoffServer: CommandLineHandoffServer?
+    /// A command-line request received while a synchronization is running: the
+    /// app raised the three-way sync decision and holds the request until the user
+    /// chooses, bounded by `deadline`. It occupies the single external-request slot
+    /// (a second request is refused while it is set), and a choice to leave the
+    /// sync opens it only when the deadline has not elapsed (design: an expired
+    /// request cannot be started by a later dialog response).
+    private var pendingSyncDecision: (request: CommandLineHandoff.Request, deadline: Date)?
+    /// How long a sync-decision request stays admissible while awaiting the user's
+    /// choice. Bounded so a decision made long after the request was sent cannot
+    /// start a now-stale open.
+    private static let syncDecisionAdmissionWindow: TimeInterval = 120
     /// "Profile Editor" manager window (lists every .prf, supports
     /// edit/duplicate/rename/delete/reorder/hide). One at a time;
     /// reopened = brought to front. The manager owns the single-profile
@@ -759,6 +770,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Set by hosted tests to skip the modal (its `runModal` would block the
     /// suite). Default false in production. Mirrors the existing fatal-modal seam.
     static var testPickBlockedModalSuppressed = false
+
+    /// Set by hosted tests to skip presenting the sync-decision sheet (the tests
+    /// drive `applySyncDecision` directly). Default false in production.
+    static var testSyncDecisionSheetSuppressed = false
 
     private func drivePickBlockedByCommandLineRequest(profile: String) {
         log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
@@ -2160,19 +2175,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 log.write("handoff: accepting '\(name)' to open after current work"
                           + sessionArgsSuffix(request.sessionArgs))
                 NSApp.activate(ignoringOtherApps: true)
-                // The session being left (captured BEFORE admit, which advances the
-                // coordinator's current session). Its presentation must be torn down
-                // so its window can no longer drive the engine against the
-                // replacement session (P1).
-                let outgoing = engine.currentSession
-                let (started, effects) = engine.admitCommandLineOpen(profile: name, args: request.sessionArgs)
-                if let outgoing { detachSessionPresentation(outgoing, closeWindow: true) }
-                run(effects)
+                let started = commandLineTakeover(name: name, args: request.sessionArgs)
                 return started
                     ? .started
                     : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason)
             }
             return response
+        case .presentSyncDecision(let name):
+            guard let response = refusalForStagingOrDeadline(name: name, deadline: deadline) else {
+                // A synchronization is running. Raise the app's three-way decision
+                // and let the user's choice govern this request, holding it to a
+                // bounded admission deadline. The caller is told the request is not
+                // accepted yet (it may open depending on the choice).
+                armSyncDecision(request: request)
+                return CommandLineHandoff.syncDecisionPendingResponse(name: name)
+            }
+            return response
+        }
+    }
+
+    /// Take over from the currently visible, safely-leavable session: abandon it in
+    /// the coordinator and queue this command-line request so the existing
+    /// terminal-event → close → drain path opens it, and tear down the outgoing
+    /// session's presentation so its window can no longer drive the engine against
+    /// the replacement (P1). Returns whether the requested profile started opening
+    /// immediately (no asynchronous cleanup was needed). Shared by the
+    /// accept-and-wait path and the sync decision's "leave the sync" choices.
+    @discardableResult
+    private func commandLineTakeover(name: String, args: [String]) -> Bool {
+        // Capture the outgoing session BEFORE admit advances the current session.
+        let outgoing = engine.currentSession
+        let (started, effects) = engine.admitCommandLineOpen(profile: name, args: args)
+        if let outgoing { detachSessionPresentation(outgoing, closeWindow: true) }
+        run(effects)
+        return started
+    }
+
+    /// Hold a command-line request that arrived during a synchronization, and raise
+    /// the app's three-way decision for it. The request occupies the single
+    /// external-request slot and is admissible until `deadline`. The sheet is
+    /// presented on the next runloop turn so the caller's reply is sent first (the
+    /// handler runs synchronously on the main thread).
+    private func armSyncDecision(request: CommandLineHandoff.Request) {
+        pendingSyncDecision = (request, Date().addingTimeInterval(Self.syncDecisionAdmissionWindow))
+        log.write("handoff: '\(request.given)' arrived during a sync; raising the sync decision")
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in self?.presentSyncDecisionSheet() }
+    }
+
+    /// Present the Keep Syncing / Abort & Close / Close (let it run) decision for a
+    /// pending sync-decision request, as a window-modal sheet on the syncing
+    /// session's window (non-blocking, so a second request is still refused rather
+    /// than stalling the main thread). If the sync already ended before we could
+    /// present, the request is dropped (the user never chose; they can run the
+    /// command again).
+    private func presentSyncDecisionSheet() {
+        guard let pending = pendingSyncDecision else { return }
+        guard case .syncing = engine.phase,
+              let s = engine.currentSession,
+              let window = windowBySession[s]?.window else {
+            log.write("handoff: sync ended before its decision was shown; dropping '\(pending.request.given)'")
+            pendingSyncDecision = nil
+            return
+        }
+        if Self.testSyncDecisionSheetSuppressed { return }
+        let name = pending.request.given
+        let alert = NSAlert()
+        alert.messageText = "Synchronization is still running"
+        alert.informativeText =
+            "A command-line request wants to open \(name). Choose how to handle the current sync:\n\n"
+            + "• Abort & Close: stop the sync, then open \(name). Already-in-progress transfers may "
+            + "complete before the abort takes effect; queued rows will fail.\n"
+            + "• Close (let it run): let the sync finish in the background, then open \(name).\n"
+            + "• Keep Syncing: don't open \(name); the sync continues."
+        alert.addButton(withTitle: "Keep Syncing")
+        let abortClose = alert.addButton(withTitle: "Abort & Close")
+        abortClose.hasDestructiveAction = true
+        alert.addButton(withTitle: "Close (let it run)")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            let decision: CommandLineHandoff.SyncDecision
+            switch response {
+            case .alertSecondButtonReturn: decision = .abortAndClose
+            case .alertThirdButtonReturn:  decision = .closeAndLetRun
+            default:                       decision = .keepSyncing   // Keep Syncing / dismissed
+            }
+            self?.applySyncDecision(decision)
+        }
+    }
+
+    /// Apply the user's sync decision to the pending request. Keep Syncing drops
+    /// it; the other choices leave the sync (honoured whenever a sync is still
+    /// running) and open the request only when it has not passed its admission
+    /// deadline (design: an expired request cannot be started by a later choice).
+    private func applySyncDecision(_ decision: CommandLineHandoff.SyncDecision) {
+        guard let pending = pendingSyncDecision else { return }
+        pendingSyncDecision = nil
+        let expired = Date() >= pending.deadline
+        let resolution = CommandLineHandoff.resolveSyncDecision(decision, requestExpired: expired)
+        let name = pending.request.given
+        switch resolution {
+        case .keepSyncing:
+            log.write("sync decision: keep syncing — dropping command-line request for '\(name)'")
+        case .abortAndClose(let admit):
+            log.write("sync decision: abort & close (open \(name): \(admit))")
+            if case .syncing = engine.phase { run(engine.requestSyncExit(.abortAndClose)) }
+            if admit { commandLineTakeover(name: name, args: pending.request.sessionArgs) }
+        case .closeAndLetRun(let admit):
+            log.write("sync decision: close & let run (open \(name): \(admit))")
+            if case .syncing = engine.phase { run(engine.requestSyncExit(.closeAndLetRun)) }
+            if admit { commandLineTakeover(name: name, args: pending.request.sessionArgs) }
         }
     }
 
@@ -2214,8 +2326,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             let desc = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
             return .editing(profileDescription: desc)
         }
-        // One external request at a time: a second must not replace the first.
-        if engine.openRequestPending {
+        // One external request at a time: a second must not replace the first,
+        // whether it is queued in the coordinator or awaiting the sync decision.
+        if engine.openRequestPending || pendingSyncDecision != nil {
             return .requestAlreadyPending
         }
         switch engine.phase {
@@ -3394,5 +3507,20 @@ extension AppDelegate {
     func profileSelectedForTesting(_ profile: String, args: [String]) -> Bool {
         profileSelected(profile, args: args)
     }
+    /// The real running-instance handler (P1 wiring: it must invoke the takeover
+    /// teardown; PR-B: it arms the sync decision).
+    func handleCommandLineHandoffForTesting(_ request: CommandLineHandoff.Request,
+                                            deadline: CommandLineHandoffSocket.Deadline)
+        -> CommandLineHandoff.Response {
+        handleCommandLineHandoff(request, deadline: deadline)
+    }
+    /// The real sync-decision application (PR-B), bypassing the sheet.
+    func applySyncDecisionForTesting(_ decision: CommandLineHandoff.SyncDecision) {
+        applySyncDecision(decision)
+    }
+    func setPendingSyncDecisionForTesting(request: CommandLineHandoff.Request, deadline: Date) {
+        pendingSyncDecision = (request, deadline)
+    }
+    var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
 }
 #endif
