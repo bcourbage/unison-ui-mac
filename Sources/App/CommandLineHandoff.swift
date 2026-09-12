@@ -10,11 +10,16 @@ import Foundation
 /// Wire format is one newline-terminated line each way, so a partial read is
 /// always detectable (no terminating newline means a lost or truncated reply):
 ///
-///   request:   `open\t<rootsSet>\t<plain 0|1>\t<unisonDir b64>\t<install b64>\t<given b64>\n`
+///   request:   `open\t<rootsSet>\t<sessionArgs>\t<unisonDir b64>\t<install b64>\t<given b64>\n`
 ///   response:  `ok\n` | `refuse\t<message>\n` | `invalid\t<message>\n`
 ///
 /// The variable-length fields are base64, so a directory, path or profile name
-/// with a tab or any other byte round-trips unambiguously.
+/// with a tab or other whitespace round-trips unambiguously. They carry supported
+/// UTF-8 strings; a decoded field containing a NUL is rejected (it would truncate
+/// at the C string boundary the args and profile name cross). `sessionArgs` is a
+/// comma-separated list of base64-encoded tokens (empty when the request carried
+/// no session options); comma is not in the base64 alphabet, so each token
+/// round-trips unambiguously.
 enum CommandLineHandoff {
 
     /// A client's request to open a profile in the running instance. It carries
@@ -39,19 +44,35 @@ enum CommandLineHandoff {
         /// its own, so a request from a separate copy of the app is not served by
         /// an unrelated installation.
         var installationPath: String
-        /// True when the caller's command line was a plain profile open. When
-        /// false, the invocation carried options (`-path`, `-ignore`,
-        /// `-servercmd`, …) that a fresh launch honors but the already-running
-        /// instance cannot reproduce, so the primary refuses.
-        var plainRequest: Bool
+        /// The caller's own session-scoped command-line options (`-path`,
+        /// `-ignore`, `-include`, …), extracted by the engine on the caller side
+        /// (patch 0009) in order. Empty for a plain profile open. The primary
+        /// applies these to the opened session as explicit overrides, exactly as
+        /// a fresh launch of the same command line would (they no longer force a
+        /// refusal).
+        var sessionArgs: [String]
 
         static let verb = "open"
+
+        private static func encodeArgs(_ args: [String]) -> String {
+            args.map { Data($0.utf8).base64EncodedString() }.joined(separator: ",")
+        }
+        private static func decodeArgs(_ field: String) -> [String]? {
+            if field.isEmpty { return [] }
+            var out: [String] = []
+            for tok in field.split(separator: ",", omittingEmptySubsequences: false) {
+                guard let s = decodeBase64(String(tok)) else { return nil }
+                out.append(s)
+            }
+            return out
+        }
 
         func encoded() -> String? {
             let dir = Data(unisonDirectory.utf8).base64EncodedString()
             let install = Data(installationPath.utf8).base64EncodedString()
             let name = Data(given.utf8).base64EncodedString()
-            return "\(Request.verb)\t\(rootsSet)\t\(plainRequest ? 1 : 0)\t\(dir)\t\(install)\t\(name)\n"
+            let args = Request.encodeArgs(sessionArgs)
+            return "\(Request.verb)\t\(rootsSet)\t\(args)\t\(dir)\t\(install)\t\(name)\n"
         }
 
         /// Parse a request line (with or without the trailing newline). nil on
@@ -60,7 +81,8 @@ enum CommandLineHandoff {
             let body = line.hasSuffix("\n") ? String(line.dropLast()) : line
             let parts = body.split(separator: "\t", omittingEmptySubsequences: false)
             guard parts.count == 6, parts[0] == Request.verb,
-                  let roots = Int(parts[1]), let plain = Int(parts[2]), plain == 0 || plain == 1,
+                  let roots = Int(parts[1]),
+                  let args = Self.decodeArgs(String(parts[2])),
                   let dir = Self.decodeBase64(String(parts[3])),
                   let install = Self.decodeBase64(String(parts[4])),
                   let name = Self.decodeBase64(String(parts[5]))
@@ -69,20 +91,27 @@ enum CommandLineHandoff {
             self.rootsSet = roots
             self.unisonDirectory = dir
             self.installationPath = install
-            self.plainRequest = plain == 1
+            self.sessionArgs = args
         }
 
         init(given: String, rootsSet: Int, unisonDirectory: String,
-             installationPath: String, plainRequest: Bool) {
+             installationPath: String, sessionArgs: [String]) {
             self.given = given
             self.rootsSet = rootsSet
             self.unisonDirectory = unisonDirectory
             self.installationPath = installationPath
-            self.plainRequest = plainRequest
+            self.sessionArgs = sessionArgs
         }
 
         private static func decodeBase64(_ s: String) -> String? {
-            Data(base64Encoded: s).flatMap { String(data: $0, encoding: .utf8) }
+            guard let data = Data(base64Encoded: s),
+                  let str = String(data: data, encoding: .utf8) else { return nil }
+            // An embedded NUL survives Swift decoding but truncates at the C
+            // string boundary (the engine args and profile name cross it), so the
+            // receiver would act on a different value than it accepted. Reject the
+            // whole line rather than open something the caller did not send.
+            if str.utf8.contains(0) { return nil }
+            return str
         }
     }
 
@@ -114,8 +143,8 @@ enum CommandLineHandoff {
         /// profile edit); the existing work is preserved and this request is not.
         case refused(message: String)
         /// The request itself is not valid or transferable here (roots, a hidden
-        /// or ambiguous profile, a different Unison directory, or extra options);
-        /// it would not start a different profile.
+        /// or ambiguous profile, or a different app installation / Unison
+        /// directory); it would not start a different profile.
         case invalid(message: String)
 
         func encoded() -> String {
@@ -178,14 +207,18 @@ enum CommandLineHandoff {
     }
 
     /// Whether the request can be faithfully transferred to this instance. Returns
-    /// a refusal when it cannot, or nil when the request is safe to act on. Four
-    /// ways a handoff would not be faithful (finding 1):
+    /// a refusal when it cannot, or nil when the request is safe to act on.
     ///
-    /// - The receiving instance was itself launched with options. Upstream
-    ///   reparses the process command line on every profile load, so the primary's
-    ///   own `-path …` would be applied to the handoff's profile. Only an instance
-    ///   whose own launch was a clean profile open can serve handoffs.
-    /// - The caller carried extra options the primary cannot reproduce.
+    /// The caller's own options are no longer a reason to refuse: the primary
+    /// applies them to the opened session as explicit overrides (patch 0009 +
+    /// session-args delivery), exactly as a fresh launch would. Remaining reasons
+    /// a handoff would not be faithful:
+    ///
+    /// - The receiving instance was itself launched with options. This refusal is
+    ///   now CONSERVATIVE rather than required: a launch's options are delivered
+    ///   only to that launch's first session and are not re-parsed for later
+    ///   sessions, so a handoff would not inherit them. It is kept for this slice
+    ///   (delivery mechanism) and slated for removal in the refusal redesign.
     /// - The caller came from a different app installation.
     /// - The caller uses a different Unison directory.
     static func contextCheck(request: Request,
@@ -195,11 +228,6 @@ enum CommandLineHandoff {
         if !receiverLaunchWasClean {
             return .invalid(message:
                 "unison-ui-mac is already running with command-line options that would affect other profiles. "
-                + "Quit it and run again, or add -ui text to run it in the terminal.")
-        }
-        if !request.plainRequest {
-            return .invalid(message:
-                "unison-ui-mac cannot apply the extra command-line options to the already-running app. "
                 + "Quit it and run again, or add -ui text to run it in the terminal.")
         }
         if request.installationPath != localInstallationPath {

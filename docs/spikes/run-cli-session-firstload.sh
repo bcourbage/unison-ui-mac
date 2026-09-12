@@ -74,7 +74,8 @@ ocamlopt -g "${inc[@]}" -o firstload "${CMX[@]}" "${COBJ[@]}"
 
 printf 'root = %s/r1\nroot = %s/r2\n' "$U" "$U" > "$U/firstload.prf"
 printf 'root = %s/r1\nroot = %s/r2\npath = ProfA\npath = ProfB\n' "$U" "$U" > "$U/Pprec.prf"
-printf 'path = FragPath\n' > "$U/frag.prf"    # a fragment included via -include
+printf 'path = FragPath\n' > "$U/frag.prf"    # a profile fragment, included via -include
+printf 'path = SrcPath\n' > "$U/srcfrag"      # a bare file (no .prf), included via -source
 mkdir -p "$U/r1" "$U/r2"
 
 rc=0
@@ -112,6 +113,10 @@ a1=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -ui graphic -path CliX 
 check "extracted -path accumulates onto the profile's paths" "[ProfA][ProfB][CliX]" "$a1"
 a2=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -include frag -path CliX home)
 check "-include fragment's path, then -path, accumulate onto profile" "[ProfA][ProfB][FragPath][CliX]" "$a2"
+a3=$(SESS=applyeq UPROFILE=Pprec UNISON="$U" ./firstload -source srcfrag -path CliX home)
+check "-source file's path, then -path, accumulate onto profile" "[ProfA][ProfB][SrcPath][CliX]" "$a3"
+# The INDEPENDENT baseline (vs the unmodified upstream parseCmdLine) is a
+# cross-binary comparison — see run-cli-session-baseline.sh.
 
 echo "== assertions: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =="
 cleanup; trap - EXIT

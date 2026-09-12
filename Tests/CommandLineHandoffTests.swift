@@ -12,26 +12,41 @@ final class CommandLineHandoffTests: XCTestCase {
     private func req(given: String = "work", rootsSet: Int = 0,
                      dir: String = "/Users/x/Library/Application Support/Unison",
                      install: String = "/Applications/unison-ui-mac.app",
-                     plain: Bool = true) -> Req {
+                     args: [String] = []) -> Req {
         Req(given: given, rootsSet: rootsSet, unisonDirectory: dir,
-            installationPath: install, plainRequest: plain)
+            installationPath: install, sessionArgs: args)
     }
 
     // MARK: request codec
 
     func test_request_roundTrip() {
-        let r = req(given: "work", rootsSet: 0, dir: "/u", install: "/A/app", plain: true)
+        let r = req(given: "work", rootsSet: 0, dir: "/u", install: "/A/app")
         XCTAssertEqual(Req(line: r.encoded()!), r)
     }
 
     func test_request_roundTrip_carriesAllFields() {
-        let r = req(given: "p", rootsSet: 2, dir: "/other/config", install: "/B/app", plain: false)
+        let r = req(given: "p", rootsSet: 2, dir: "/other/config", install: "/B/app",
+                    args: ["-path", "Documents"])
         let parsed = Req(line: r.encoded()!)
         XCTAssertEqual(parsed?.given, "p")
         XCTAssertEqual(parsed?.rootsSet, 2)
         XCTAssertEqual(parsed?.unisonDirectory, "/other/config")
         XCTAssertEqual(parsed?.installationPath, "/B/app")
-        XCTAssertEqual(parsed?.plainRequest, false)
+        XCTAssertEqual(parsed?.sessionArgs, ["-path", "Documents"])
+    }
+
+    func test_request_roundTrip_sessionArgs_preserveOrderRepeatsAndOddBytes() {
+        // base64-per-token, comma-joined: any bytes (tab, comma, newline, spaces,
+        // option-like values) and repeats/order round-trip exactly.
+        let r = req(args: ["-path", "a,b", "-path", "  ws\t", "-ignore", "Name -x", "-path", "-weird"])
+        XCTAssertEqual(Req(line: r.encoded()!)?.sessionArgs,
+                       ["-path", "a,b", "-path", "  ws\t", "-ignore", "Name -x", "-path", "-weird"])
+    }
+
+    func test_request_roundTrip_emptyArgsIsPlain() {
+        let r = req(args: [])
+        let parsed = Req(line: r.encoded()!)
+        XCTAssertEqual(parsed?.sessionArgs, [])
     }
 
     func test_request_base64_survivesTabsAndSpaces() {
@@ -46,12 +61,30 @@ final class CommandLineHandoffTests: XCTestCase {
     }
 
     func test_request_parse_rejectsMalformed() {
-        XCTAssertNil(Req(line: "nope\t0\t1\tL3U=\tL0E=\td29yaw==\n"))  // wrong verb
-        XCTAssertNil(Req(line: "open\t0\t1\tL3U=\td29yaw==\n"))         // too few fields (5)
-        XCTAssertNil(Req(line: "open\tx\t1\tL3U=\tL0E=\td29yaw==\n"))   // non-integer roots
-        XCTAssertNil(Req(line: "open\t0\t2\tL3U=\tL0E=\td29yaw==\n"))   // plain flag not 0/1
-        XCTAssertNil(Req(line: "open\t0\t1\t!!!\tL0E=\td29yaw==\n"))    // invalid base64
+        XCTAssertNil(Req(line: "nope\t0\t\tL3U=\tL0E=\td29yaw==\n"))    // wrong verb
+        XCTAssertNil(Req(line: "open\t0\tL3U=\tL0E=\td29yaw==\n"))       // too few fields (5)
+        XCTAssertNil(Req(line: "open\tx\t\tL3U=\tL0E=\td29yaw==\n"))     // non-integer roots
+        XCTAssertNil(Req(line: "open\t0\t!!!\tL3U=\tL0E=\td29yaw==\n"))  // invalid base64 in args
+        XCTAssertNil(Req(line: "open\t0\t\t!!!\tL0E=\td29yaw==\n"))      // invalid base64 in dir
         XCTAssertNil(Req(line: ""))
+    }
+
+    func test_request_rejects_nulInDecodedFields() {
+        // A NUL survives base64/UTF-8 decoding but truncates at the C string
+        // boundary the args + profile name cross, so the receiver would act on a
+        // different value than it accepted. The whole line must be rejected.
+        func line(args: String, name: String) -> String {
+            let dir = Data("/u".utf8).base64EncodedString()
+            let inst = Data("/A".utf8).base64EncodedString()
+            return "open\t0\t\(args)\t\(dir)\t\(inst)\t\(name)\n"
+        }
+        let work = Data("work".utf8).base64EncodedString()
+        let nulArg = Data("Documents\u{0}Other".utf8).base64EncodedString()
+        XCTAssertNil(Req(line: line(args: nulArg, name: work)),
+                     "a session arg containing NUL must be rejected")
+        let nulName = Data("wo\u{0}rk".utf8).base64EncodedString()
+        XCTAssertNil(Req(line: line(args: "", name: nulName)),
+                     "a profile name containing NUL must be rejected")
     }
 
     // MARK: envelope (round 4: the caller's deadline travels with the request)
@@ -104,7 +137,7 @@ final class CommandLineHandoffTests: XCTestCase {
     }
 
     func test_context_compatible_isAccepted() {
-        XCTAssertNil(check(req(dir: "/u", install: "/A/app", plain: true),
+        XCTAssertNil(check(req(dir: "/u", install: "/A/app"),
                            dir: "/u", install: "/A/app", receiverClean: true))
     }
 
@@ -121,11 +154,13 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertTrue(m.contains("command-line options that would affect other profiles"))
     }
 
-    func test_context_extraOptions_isInvalid() {
-        guard case .invalid(let m)? = check(req(plain: false)) else {
-            return XCTFail("expected invalid on extra options")
-        }
-        XCTAssertTrue(m.contains("extra command-line options"))
+    func test_context_optionsAreDelivered_notRefused() {
+        // The caller's own options are no longer a reason to refuse: the primary
+        // delivers them to the opened session. With a matching installation and
+        // Unison directory, a request carrying options is accepted.
+        XCTAssertNil(check(req(dir: "/u", install: "/A/app", args: ["-path", "Documents", "-ignore", "Name x"]),
+                           dir: "/u", install: "/A/app", receiverClean: true),
+                     "a request carrying session options must be accepted, not refused")
     }
 
     func test_context_differentInstallation_isInvalid() {

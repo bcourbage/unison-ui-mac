@@ -34,6 +34,10 @@ let () =
        Prefs.parseCmdLineArgs "usage" a;
        Printf.printf "%s\n" (bracket (paths ()))
      with e -> Printf.printf "RAISED %s\n" (Printexc.to_string e); exit 3)
+  (* The independent baseline (extract+apply vs the UNMODIFIED upstream
+     parseCmdLine) is a CROSS-BINARY comparison — see
+     docs/spikes/run-cli-session-baseline.sh — because an in-binary check would
+     run both sides through the patched parser. *)
   | sess ->
     (match sess with
      | "none" -> ()
