@@ -194,16 +194,24 @@ final class VersionProbeTests: XCTestCase {
     /// SIGTERM); (2) its pid was captured; (3) after return, that pid no longer
     /// resolves (`kill(pid,0) == ESRCH`), i.e. it was SIGKILLed and reaped.
     /// Defeat proof: remove the `kill(process.processIdentifier, SIGKILL)` line
-    /// in reapExactChild and the TERM-resistant child keeps running, so the pid
-    /// keeps resolving and (3) fails. A failure-path defer kills any survivor so
-    /// a defeated run leaks nothing.
+    /// in reapExactChild and the TERM-resistant child stays alive through the poll,
+    /// so its pid keeps resolving and (3) fails.
+    ///
+    /// The child is a SELF-LIMITING fixture: it loops for a bounded ~10s then
+    /// EXITS on its own. So the test never has to signal a saved pid to clean up —
+    /// which would be unsafe, since after reaping the pid is free for reuse. On
+    /// the pass path our SIGKILL ends it in well under a second; on a defeated
+    /// path it self-exits after the loop (Foundation reaps it), leaking nothing.
+    /// The existence probe below uses `kill(pid, 0)` (signal 0 sends nothing).
     func test_realExecutor_childIgnoringSIGTERM_escalatesToKillAndReapsChild() {
         let pidBox = PidBox()
         let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.5,
                                              onLaunch: { pidBox.set($0) })
         let box = ResultBox()
         let done = DispatchSemaphore(value: 0)
-        let cfg = sh("trap '' TERM; printf READY; while : ; do sleep 0.2; done")
+        // trap installs first, then READY, then a bounded self-limiting loop
+        // (~10s) that outlasts the reaping poll below but exits on its own.
+        let cfg = sh("trap '' TERM; printf READY; i=0; while [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done")
         DispatchQueue.global().async {
             box.value = exec.execute(cfg, deadline: 0.4, canceller: V.ProbeCanceller())
             done.signal()
@@ -211,9 +219,6 @@ final class VersionProbeTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 15), .success,
                        "the executor must return even though the child ignores SIGTERM")
         let pid = pidBox.get()
-        // Failure-path cleanup: if the escalation were defeated and the child is
-        // still running, do not leak it past the test.
-        defer { if pid > 0 { kill(pid, SIGKILL) } }
 
         guard case .timedOut(let stdout, _) = box.value else {
             return XCTFail("expected .timedOut, got \(box.value)")
@@ -224,9 +229,9 @@ final class VersionProbeTests: XCTestCase {
         // Termination + reaping: our SIGKILL ended it and Foundation reaped it,
         // so the pid no longer resolves. The reap that follows the kill is
         // asynchronous, so poll briefly. If SIGKILL is removed, the TERM-resistant
-        // child keeps running and this never becomes ESRCH.
+        // child stays alive across this whole poll and it never becomes ESRCH.
         var reaped = false
-        for _ in 0..<250 {   // up to ~5s
+        for _ in 0..<200 {   // up to ~4s, safely inside the child's ~10s self-limit
             if kill(pid, 0) == -1 && errno == ESRCH { reaped = true; break }
             usleep(20_000)
         }
