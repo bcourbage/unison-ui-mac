@@ -11,6 +11,8 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-13
+
 ### Changed
 - **The profile picker opens any profile after a command-line launch.** When the
   app was started with a command-line option (for example
