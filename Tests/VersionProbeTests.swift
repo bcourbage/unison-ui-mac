@@ -150,6 +150,63 @@ final class VersionProbeTests: XCTestCase {
         XCTAssertTrue(cfg.arguments.contains("h"))
     }
 
+    // MARK: - #149: real-executor exit observation via terminationHandler
+
+    private func sh(_ script: String) -> V.ProbeConfig {
+        V.ProbeConfig(executable: "/bin/sh", arguments: ["-c", script], host: "local")
+    }
+
+    /// A nonzero exit status must be carried out of the terminationHandler
+    /// unchanged. This exercises the ExitStatusBox path that replaced reading
+    /// `process.terminationStatus` from the executor thread: a wrong status
+    /// (e.g. 0, or a signal value) would fail here.
+    func test_realExecutor_nonzeroExitStatus_isCarried() {
+        let raw = V.SubprocessProbeExecutor().execute(
+            sh("printf out; printf err 1>&2; exit 7"), deadline: 10, canceller: V.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 7, "the child's own nonzero status is reported verbatim")
+        XCTAssertEqual(stdout, "out")
+        XCTAssertEqual(stderr, "err")
+    }
+
+    /// An immediate clean exit is observed and reported without waiting out the
+    /// deadline. The deadline is generous; a regression that failed to observe
+    /// the exit would instead time out. Bounded by the test host's own guard.
+    func test_realExecutor_immediateCleanExit_isObserved() {
+        let started = Date()
+        let raw = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02).execute(
+            sh("printf hi"), deadline: 30, canceller: V.ProbeCanceller())
+        guard case .exited(let status, let stdout, _) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(stdout, "hi")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10,
+                          "a child that exits in milliseconds must be observed promptly, not at the deadline")
+    }
+
+    /// A child that IGNORES SIGTERM must still be torn down: the executor
+    /// escalates to SIGKILL, and the terminationHandler that fires on the kill
+    /// unblocks the reap. The executor must return `.timedOut` and must not hang.
+    /// This is the teardown-escalation path with the new exit-signal source.
+    func test_realExecutor_childIgnoringSIGTERM_escalatesToKillAndReturns() {
+        let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.3)
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        // Traps and ignores TERM, prints so its pipe has data, then loops. Only
+        // SIGKILL can end it. `exec 2>&1` keeps it simple; the sleep loop yields.
+        let cfg = sh("trap '' TERM; printf READY; while : ; do sleep 0.2; done")
+        DispatchQueue.global().async {
+            box.value = exec.execute(cfg, deadline: 0.4, canceller: V.ProbeCanceller())
+            done.signal()
+        }
+        XCTAssertEqual(done.wait(timeout: .now() + 15), .success,
+                       "the executor must return (via SIGKILL) even though the child ignores SIGTERM")
+        guard case .timedOut = box.value else { return XCTFail("expected .timedOut, got \(box.value)") }
+    }
+
+    private final class ResultBox: @unchecked Sendable {
+        var value: V.RawExecResult = .cancelled
+    }
+
     // MARK: - Finding #8/#12: classifyRaw distinguishes failure kinds
 
     func test_classifyRaw_versionOnCleanExit() {

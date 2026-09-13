@@ -451,15 +451,15 @@ enum VersionCheck {
     /// (mach uptime) for the probe's lifecycle events.
     ///
     /// It writes a `phase=return` line when the executor returns. If that line
-    /// went out WITHOUT a `waitUntilExitReturn` (the executor gave up while the
-    /// background wait was still blocked), a second `phase=late-exit` line is
-    /// written when that wait finally completes, correlated by `id=`, so a
-    /// delayed exit report is preserved rather than lost. A `phase=return` line
-    /// with no matching `late-exit` line means only that NO LATE EXIT WAS
-    /// RECORDED BEFORE OBSERVATION ENDED; it does not prove the wait never
-    /// returned, since it may return after the process stops recording (for
-    /// example after the test bundle finishes). The normal path, where the exit
-    /// is observed before return, stays a single line.
+    /// went out WITHOUT a `terminationHandlerFired` (the executor gave up before
+    /// the Process terminationHandler had observed the exit), a second
+    /// `phase=late-exit` line is written when that handler finally fires,
+    /// correlated by `id=`, so a delayed exit report is preserved rather than
+    /// lost. A `phase=return` line with no matching `late-exit` line means only
+    /// that NO LATE EXIT WAS RECORDED BEFORE OBSERVATION ENDED; it does not prove
+    /// the handler never fired, since it may fire after the process stops
+    /// recording (for example after the test bundle finishes). The normal path,
+    /// where the exit is observed before return, stays a single line.
     ///
     /// It records an id, event names, elapsed milliseconds, and the result kind
     /// ONLY. It deliberately records no command arguments and no captured output,
@@ -511,18 +511,18 @@ enum VersionCheck {
             lock.lock()
             if primaryEmitted { lock.unlock(); return }
             primaryEmitted = true
-            primaryHadExit = events.contains { $0.0 == "waitUntilExitReturn" }
+            primaryHadExit = events.contains { $0.0 == "terminationHandlerFired" }
             let evs = events, l = label, r = resultKind
             lock.unlock()
             writeLine(phase: "return", events: evs, label: l, result: r)
         }
 
-        /// Called at the very end of the background waitUntilExit task. If the
-        /// executor already returned WITHOUT observing the exit, this task's late
-        /// marks (waitUntilExitReturn, exitedSemaphoreSignal) would otherwise be
-        /// lost, so emit a correlated late-exit line preserving them. If the exit
-        /// was observed before return, or the executor has not returned yet, do
-        /// nothing.
+        /// Called at the very end of the Process terminationHandler. If the
+        /// executor already returned WITHOUT observing the exit, the handler's
+        /// late marks (terminationHandlerFired, exitedSemaphoreSignal) would
+        /// otherwise be lost, so emit a correlated late-exit line preserving them.
+        /// If the exit was observed before return, or the executor has not
+        /// returned yet, do nothing.
         func noteWaitTaskComplete() {
             lock.lock()
             let emitLate = primaryEmitted && !primaryHadExit
@@ -566,15 +566,13 @@ enum VersionCheck {
         /// Called once with the child's pid right after a successful launch,
         /// so a caller can record which process the session owns.
         var onLaunch: (@Sendable (pid_t) -> Void)? = nil
-        /// Test-only seams, nil in production (no init parameter, so a normal
-        /// construction leaves them unset). `waitTaskEntryHook` runs at the very
-        /// start of the background wait task, before the `waitTaskEntry` mark;
-        /// `exitObservationHook` runs after `process.waitUntilExit()` returns,
-        /// before the `waitUntilExitReturn` mark. A test assigns one a small
-        /// sleep to delay wait-task entry or exit observation independently, so
-        /// the diagnostics can be checked against a known cause — without adding a
-        /// waitpid caller or changing any deadline or verdict.
-        var waitTaskEntryHook: (@Sendable () -> Void)? = nil
+        /// Test-only seam, nil in production (no init parameter, so a normal
+        /// construction leaves it unset). `exitObservationHook` runs INSIDE the
+        /// Process `terminationHandler`, before the `terminationHandlerFired`
+        /// mark and the `exited` signal. A test assigns it a block so exit
+        /// observation is delayed against a known cause, proving the executor's
+        /// deadline return is independent of when the exit is observed — without
+        /// adding a waitpid caller or changing any deadline or verdict.
         var exitObservationHook: (@Sendable () -> Void)? = nil
 
         init(deadlinePollInterval: TimeInterval = 0.05,
@@ -713,6 +711,19 @@ enum VersionCheck {
             var isStopped: Bool { source.isCancelled }
         }
 
+        /// Carries the child's termination status out of the
+        /// `terminationHandler` (which runs on Foundation's process-monitor
+        /// queue) to the executor thread. The `exited` semaphore provides the
+        /// happens-before: a status read after a successful `exited` wait is the
+        /// one the handler set before signalling. `@unchecked Sendable`: the one
+        /// field is lock-guarded.
+        final class ExitStatusBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: Int32 = 0
+            func set(_ v: Int32) { lock.lock(); value = v; lock.unlock() }
+            func get() -> Int32 { lock.lock(); defer { lock.unlock() }; return value }
+        }
+
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
                      canceller: ProbeCanceller) -> RawExecResult {
@@ -734,6 +745,31 @@ enum VersionCheck {
             process.standardOutput = outPipe
             process.standardError = errPipe
 
+            // Observe natural exit through the Process's own terminationHandler,
+            // registered BEFORE launch. Foundation invokes it exactly once, from
+            // its internal process-monitor source, after the child has terminated
+            // and its status is set — with no dependency on this executor pumping
+            // a run loop, which is what a background `waitUntilExit()` relied on
+            // and the suspected cause of #149's delayed exit observation. The
+            // handler records the status and signals `exited`; it never signals a
+            // pid, so a late fire after the executor has already returned (a
+            // timeout that outran the child) is harmless. Foundation reaps the
+            // child as it fires the handler, so we add no competing waitpid.
+            let exited = DispatchSemaphore(value: 0)
+            let exitStatus = ExitStatusBox()
+            let exitHook = exitObservationHook   // nil in production; local copy so the @Sendable closure need not capture self
+            process.terminationHandler = { proc in
+                exitHook?()
+                exitStatus.set(proc.terminationStatus)
+                timing?.mark("terminationHandlerFired")
+                exited.signal()
+                timing?.mark("exitedSemaphoreSignal")
+                // If the executor already returned WITHOUT observing this exit (a
+                // timeout that outran the child), emit a correlated late-exit line
+                // so the delayed exit is preserved rather than lost.
+                timing?.noteWaitTaskComplete()
+            }
+
             do { try process.run() } catch {
                 timing?.setResult("launchFailed")
                 return .launchFailed(error.localizedDescription)
@@ -747,26 +783,9 @@ enum VersionCheck {
                                     onFinish: timing.map { t -> @Sendable (Bool, Int32?) -> Void in
                                         { atEOF, _ in t.mark(atEOF ? "stderrEOF" : "stderrReadError") } })
 
-            // Wait for natural exit on a background thread; the main flow waits
-            // for exit / cancellation / deadline so it can never block forever.
-            // The two hooks are nil in production (a local copy so the @Sendable
-            // closure need not capture self).
-            let exited = DispatchSemaphore(value: 0)
-            let entryHook = waitTaskEntryHook, exitHook = exitObservationHook
-            DispatchQueue.global(qos: .userInitiated).async {
-                entryHook?()
-                timing?.mark("waitTaskEntry")
-                process.waitUntilExit()
-                exitHook?()
-                timing?.mark("waitUntilExitReturn")
-                exited.signal()
-                timing?.mark("exitedSemaphoreSignal")
-                // If the executor already returned without observing this exit
-                // (a timeout that outran the wait), emit a correlated late-exit
-                // line so the delayed return is not lost from the record.
-                timing?.noteWaitTaskComplete()
-            }
-
+            // The main flow below waits for exit (via the `exited` semaphore the
+            // terminationHandler signals) / cancellation / deadline, so it can
+            // never block forever.
             func reapExactChild() {
                 timing?.mark("teardownSIGTERM")
                 // SIGTERM, then SIGKILL after a grace period. We wait so the
@@ -828,8 +847,9 @@ enum VersionCheck {
                         out.stop(); err.stop(); timing?.setResult("cancelled"); return .cancelled
                     }
                     let (stdout, stderr) = collected()
-                    timing?.setResult("exited(\(process.terminationStatus))")
-                    return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+                    let status = exitStatus.get()
+                    timing?.setResult("exited(\(status))")
+                    return .exited(status: status, stdout: stdout, stderr: stderr)
                 }
                 if DispatchTime.now() >= deadlineAt {
                     timing?.mark("deadlineDetected")
