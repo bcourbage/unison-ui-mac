@@ -181,8 +181,9 @@ skipping it.
       as at a fresh launch; a busy-but-leavable request is accepted-and-waiting and
       opens after cleanup with the previous window torn down; the profile editor and
       restart-required states refuse with specific guidance; a request during an
-      active (windowed) sync raises the Keep Syncing / Abort & Close / Close
-      (let it run) decision with the caller waiting, reports Started /
+      active (windowed) sync raises the shared three-way sync decision (Keep
+      Syncing; Don't Open / Finish Sync, Then Open / Stop Sync, Then Open) as a
+      non-blocking sheet with the caller waiting, reports Started /
       Accepted-and-waiting / Refused accurately, honours the admission timeout, and
       never acts on the sync by itself; a windowless background sync
       accepts-and-waits; only one request is pending at a time and the picker cannot
