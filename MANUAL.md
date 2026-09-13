@@ -123,55 +123,62 @@ Unison with its usage text.
 
 When the graphical interface is already running and a `unison <profile>` request
 reaches it, the request goes to that instance rather than starting a second one.
-The request carries its session options (`-path`, `-include`, `-source`), so the
-profile opens scoped exactly as it would at a fresh launch, with order, repeated
-options, and profile precedence preserved; how the running app was itself started no
-longer matters. A `-path` is root-relative and adds to the profile's configured
-`path` preferences rather than replacing them, following Unison's usual precedence,
-so `unison home -path Documents` narrows the `home` profile to `Documents` on top of
-whatever it already restricts. These options apply for that session: the opened
-profile and any rescans or reconnects it makes. Choosing a different profile from the
-picker afterward uses that profile's saved configuration, not the earlier command
-line's options.
+The request carries its session-scoped options, so the profile opens scoped exactly
+as it would at a fresh launch, with order, repeated options, and profile precedence
+preserved; how the running app was itself started no longer matters. These are
+Unison's session preferences, with `-path`, `-include`, and `-source` as common
+examples rather than an exhaustive list. A `-path` is root-relative and adds to the
+profile's configured `path` preferences rather than replacing them, following
+Unison's usual precedence: with `path = Pictures` in the profile,
+`unison home -path Documents` syncs both `Pictures` and `Documents`; only a profile
+with no configured paths is then restricted to `Documents` alone. These options apply
+for that session: the opened profile and any rescans or reconnects it makes. Opening a
+profile from the picker afterward, the same profile or a different one, uses that
+profile's saved configuration, not the earlier command line's options.
 
 How the request is handled depends on what the app is doing:
 
-- Idle at the picker: it opens the profile and starts its scan. This is a *Started*
-  handoff.
+- Idle at the picker: it begins opening the profile. This is a *Started* handoff.
 - Busy (scanning, showing reconciliation results, or finishing a previous run): it
   accepts the request and opens the profile once that work and its cleanup finish.
-  The command reports that it was *accepted and is waiting*, which is distinct from
-  Started; the profile has not opened yet, and the app shows it waiting. Only one
-  command-line request waits at a time; a second while one is waiting is refused, and
-  choosing a profile in the app never silently replaces a waiting request.
-- Synchronizing: it raises a decision for the requested profile, keep syncing (the
-  sync is untouched and the profile is not opened), finish the sync first, or stop it
-  and then open. The command prints that a decision is required in the app and waits
-  for your choice within a short window. Stopping the sync or letting it finish opens
-  the requested profile; keeping the sync does not, and no command aborts a sync or
-  makes that choice on its own. If the window elapses with no choice, or the
-  synchronization finishes on its own before you choose, the request is not opened and
-  the command says so; run it again to open the profile.
+  Usually it reports that it was *accepted and is waiting*, and the app shows it
+  waiting; if that work has already cleared by the time the request lands, it can
+  open right away and report *Started* instead. Only one command-line request waits at
+  a time; a second while one is waiting is refused, and choosing a profile in the app
+  never silently replaces a waiting request.
+- Synchronizing in a visible window: it raises a decision for the requested profile,
+  keep syncing (the sync is untouched and the profile is not opened), finish the sync
+  first, or stop it and then open. The command prints that a decision is required in
+  the app and waits for your choice within a 120-second decision deadline. Stopping
+  the sync or letting it finish opens the requested profile; keeping the sync does
+  not, and no command aborts a sync or makes that choice on its own. If the deadline
+  passes with no choice, or the synchronization finishes on its own before you choose,
+  the request is not opened and the command says so; run it again to open the profile.
+- Synchronizing in the background (a window you already closed with *Continue in
+  Background*): there is no window to raise the decision on, so the request is instead
+  accepted and queued, and the profile opens once that background sync finishes.
 
 A request is still refused, with a reason, while the profile editor is open (close it
 first; your edits are kept) and when the app needs to be quit and reopened after a
 connection problem, as is one from a different copy of the app or one that uses a
 different Unison directory.
 
-A *Started* reply means the profile opened and its scan began; an *accepted and
-waiting* reply means the request was queued and will open when the app is free. In
-neither case has the scan or synchronization finished, and the command's exit status
-reflects which happened. If the reply is lost, because the running instance did not
-answer in time, the outcome is left unconfirmed: the command says so and asks you to
-check the app before running it again, since the original request may already have
-been accepted.
+A *Started* reply means the app began opening the profile; the open may still be
+connecting, and its scan has not necessarily begun. An *accepted and waiting* reply
+means the request was queued and will open when the app is free. The two are told
+apart by the reply message, not by exit status: both are successful and exit 0, and
+neither certifies that a scan or synchronization has finished. If the reply is lost,
+because the running instance did not answer in time, the outcome is left unconfirmed:
+the command says so and asks you to check the app before running it again, since the
+original request may already have been accepted.
 
 Three quick examples:
 
 - `unison home` opens the `home` profile in the app under the Graphical default, or
   runs its text interface if you have set **Default interface** to Text.
-- `unison home -path Documents` opens `home` scoped to the `Documents` subpath, added
-  to the profile's configured paths.
+- `unison home -path Documents` opens `home` with `Documents` added to its configured
+  paths, so both are synced (a profile with no configured paths would be restricted to
+  `Documents` alone).
 - `unison -ui text home` runs `home` in the terminal's text interface, for scripts and
   scheduled jobs, whatever the Default interface preference is.
 
@@ -1402,9 +1409,9 @@ and unwinds by raising the internal `Aborted by user request` transient.
   `bridgeThreadWait` ready for the next bridge call.
 
 If you close the reconcile window mid-sync via ⌘W (or the red close
-button), you get a three-option prompt: **Keep Syncing** /
-**Abort & Close** / **Close (let it run)**. The third option closes
-the window but lets the sync continue in the background until natural
+button), you get a three-option prompt: **Keep Window Open** /
+**Continue in Background** / **Stop Syncing & Close**. **Continue in
+Background** closes the window but lets the sync continue until natural
 completion, useful when you want to reclaim screen space but not
 interrupt the transfer.
 
@@ -1599,12 +1606,11 @@ override, or set `UNISONLOCALHOSTNAME=<your-hostname>` in the launch
 environment so both pick up the same value.
 
 **2. Command-line session options.** A `unison <profile>` request
-delivers its session options (`-path`, `-include`, `-source`) to the
-app, which opens the profile scoped by them exactly as a fresh launch
-would; see [The `unison` command](#the-unison-command). Preferences
-beyond those session options are still read from the `.prf`, not from
-arbitrary `-opt=val` flags, so put such an override in the `.prf` via
-the Advanced field of the Profile Form.
+delivers its session-scoped options to the app, which opens the
+profile scoped by them exactly as a fresh launch would. `-path`,
+`-include`, and `-source` are common examples; Unison's other session
+preferences are carried the same way. See
+[The `unison` command](#the-unison-command).
 
 **3. Session boundary for command-line options.** A request's session
 options apply to the session it opens, that profile and any rescans or
