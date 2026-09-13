@@ -45,18 +45,28 @@ replicas in sync and detecting conflicts. This app wraps that engine in a
 Swift and AppKit interface with a visual conflict-review step.</p>
 <h2 id="how-is-it-different-from-the-unison-command-line-tool">How is it different from the <code>unison</code> command-line tool?</h2>
 <p>It is the same engine with a different front end. The app embeds Unison's compiled
-core, so the <code>unison</code> CLI does not need to be installed for the app to run, and
-everything happens through the macOS interface instead of a terminal: choosing
-profiles, reviewing changes, and resolving conflicts.</p>
-<p>The app also provides the <code>unison</code> command itself. On your PATH, it opens the app
-for <code>unison -ui graphic</code>, runs Unison's text interface for <code>unison -ui text &lt;profile&gt;</code>,
-and serves <code>unison -server</code> for machines that sync to this Mac over ssh. A bare
-<code>unison &lt;profile&gt;</code>, with no <code>-ui</code>, follows the <strong>Default interface</strong> preference in
-Settings ▸ Command Line. You can set that preference to Graphical or Text; it is
-Graphical by default, so a bare <code>unison &lt;profile&gt;</code> opens the app on that profile.
-Pass <code>-ui text</code> for the terminal interface (this changed in 0.9.0, where a bare
-<code>unison &lt;profile&gt;</code> used to run text). Settings ▸ Command Line can add the command
-to your login-shell PATH for you, with no administrator password. See
+core, so the <code>unison</code> CLI does not need to be installed, and the usual workflow —
+choosing profiles, reviewing changes, and resolving conflicts — happens through the
+macOS interface. It is not graphical-only, though: the app also provides the
+<code>unison</code> command, so you can start a sync from Terminal or run the text interface in
+scripts. See <a href="#can-i-start-a-graphical-synchronization-from-terminal">Can I start a graphical synchronization from
+Terminal?</a> below.</p>
+<h2 id="can-i-start-a-graphical-synchronization-from-terminal">Can I start a graphical synchronization from Terminal?</h2>
+<p>Yes. A bare <code>unison home</code> follows your <strong>Default interface</strong> preference in
+Settings ▸ Command Line, which is Graphical unless you select Text, so by default it
+opens the app on the <code>home</code> profile and starts its scan, stopping at the
+reconciliation results so nothing is applied until you act. Session options come
+along and stay in effect for that session, including its rescans and reconnects:
+<code>unison home -path Documents</code> opens the profile scoped to <code>Documents</code> (a <code>-path</code> is
+root-relative and adds to the profile's own configured paths rather than replacing
+them), and <code>-include</code> and <code>-source</code> are carried too. If the app is already running,
+the request goes to that instance: it opens the profile when it can, waits if the app
+is busy with a scan or cleanup, or asks how to handle a synchronization that is in
+progress, and a few requests are refused with a reason. See the
+<a href="../manual/#the-unison-command">manual</a> for exactly how each case is handled. For
+scripts and scheduled jobs, pass <code>-ui text</code> explicitly to run Unison's text interface
+in the terminal instead of opening the app. <strong>Settings ▸ Command Line</strong> adds the
+command to your PATH, with no administrator password; see
 <a href="../install/#the-unison-command">Install</a>.</p>
 <h2 id="how-does-it-compare-to-the-macos-app-included-with-unison">How does it compare to the macOS app included with Unison?</h2>
 <p>Upstream Unison ships its own front ends, including a native macOS Cocoa app (built

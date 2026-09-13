@@ -76,8 +76,13 @@ or set the preference to Text, to keep that. For scripts and scheduled jobs, pas
 <code>-ui text</code> explicitly, since a graphical launch with no available session (over
 ssh, from cron, or from launchd) is refused with a message rather than run in the
 terminal. When the app is already running, a <code>unison &lt;profile&gt;</code> request goes to
-that instance: it opens the profile if the app is idle at the picker, and otherwise
-keeps the work in progress and tells you it did not start the new one.</p>
+that instance and carries its options (<code>-path</code>, <code>-include</code>, <code>-source</code>), so the
+profile opens scoped just as it would at a fresh launch. If the app is busy —
+scanning, showing results, or finishing a run — an accepted request waits and opens
+the profile once that work finishes, rather than being turned away; a
+synchronization in progress raises a decision, and some requests are still refused.
+The <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md#the-unison-command">manual</a> covers the exact
+handling.</p>
 <p>Homebrew installs create the <code>unison</code> link automatically — unless the <code>unison</code>
 formula already owns that name, in which case Homebrew installs the app but keeps
 the formula's command; the <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md#the-unison-command">manual</a>
