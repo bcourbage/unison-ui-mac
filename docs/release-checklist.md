@@ -26,14 +26,23 @@ reviewers (an unconfigured environment has no protection):
   launches cleanly on a macOS 15 runner (`smoke-macos15`); then Developer ID
   signing, notarization + stapling, appcast **seed-authentication**,
   **build-monotonicity**, and the in-job `verify-appcast.py`.
-- **Post-publication canaries** (require the built, signed, notarized artifact,
-  which exists only as the job's **output** — by the time you can inspect it, the
-  Release and live feed are already public): every manual check against the
-  artifact — version/signature/notarization inspection, the symbol/string
-  assertions, the TC9b/TC11/TC13 lifecycle runs, and the installed previous-
-  version update test. A failure here is an **incident handled by rollback**, not a blocked
-  publication. Making any of these a true gate would require splitting the
-  workflow with a protected manual-promotion stage.
+- **Pre-promotion requirements** (on the **unpublished** signed RC that `sign-rc`
+  uploads, before approving `release-publish`): inspect the signed artifact —
+  `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, Developer ID
+  signature + hardened runtime, stapled notarization ticket, no Debug/autotest
+  symbols — and run the applicable TC cases on those exact bytes (the
+  signed-artifact lifecycle cases such as TC9b/TC11/TC13, and the command-line
+  cases TC14/TC15). A failure here **blocks promotion** — the RC is simply not
+  approved and nothing is published; it is not a rollback. This is possible because
+  the split hands off the signed RC before publication (it no longer "exists only
+  as the job's output"); these were formerly post-publication canaries.
+- **Post-publication canaries** (require the artifact/feed to actually be public,
+  so they can only run after promotion): the live product-site tree; the served
+  `appcast.xml` is byte-identical to the generated feed and its signature verifies;
+  the client-facing feed (`SUFeedURL`) serves the new release; and the installed
+  previous-version Sparkle auto-update from the published feed. A failure here is an
+  **incident handled by rollback**, not a blocked publication — these run after the
+  release is live by nature, not because acceptance was skipped.
 
 The mechanical cut (version bump, CHANGELOG, `release-notes/<version>.md`, tag →
 workflow → Homebrew cask bump) is in the release runbook.
@@ -120,21 +129,25 @@ skipping it.
 - [ ] **(pre-publication gate — in-job)** The release build (`release.yml`,
       Release configuration) is built from the exact tagged commit. (Cannot be
       confirmed before the tag exists; it is the job's checkout/build guarantee.)
-- [ ] **(post-publication canary — manual, Gatekeeper)** On a Mac that has never
-      run this version: download the published `.app.zip` from the GitHub release
-      (not the unsigned CI artifact), unzip, move to `/Applications`, launch once
-      from Finder and accept nothing but the standard first-open dialog. Then
+- [ ] **(pre-promotion — manual, Gatekeeper, on the signed RC)** On a Mac that has
+      never run this version: download the **`sign-rc` artifact**
+      (`unison-ui-mac-signed-<version>`, the signed + notarized + stapled RC — not
+      the unsigned build artifact), unzip, move to `/Applications`, launch once from
+      Finder and accept nothing but the standard first-open dialog. Then
       `ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /tmp/unison`
-      and run `/tmp/unison -version`: it prints the engine version, exit 0. This
-      is the only check that exercises Gatekeeper acceptance of the quarantined,
-      notarized distribution and its embedded launcher; `smoke-macos15` runs the
-      unsigned artifact before signing and cannot stand in for it.
-- [ ] **(post-publication canary)** The built artifact reports the right
-      `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer ID
-      signature with a hardened runtime, a stapled notarization ticket, and no
-      Debug/autotest symbols. (The signing/notarization steps that PRODUCE this
-      are pre-publication gates in the job; inspecting the finished artifact
-      happens after it is published.)
+      and run `/tmp/unison -version`: it prints the engine version, exit 0. This is
+      the only check that exercises Gatekeeper acceptance of the quarantined,
+      notarized distribution and its embedded launcher (an Actions-downloaded zip is
+      quarantined like a browser download); `smoke-macos15` runs the unsigned
+      artifact before signing and cannot stand in for it. Run this before approving
+      `release-publish`; a failure blocks promotion.
+- [ ] **(pre-promotion — on the signed RC)** The `sign-rc` artifact reports the
+      right `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer
+      ID signature with a hardened runtime, a stapled notarization ticket, and no
+      Debug/autotest symbols. Inspect it on the unpublished RC before approving
+      `release-publish` (the signing/notarization steps that PRODUCE these are in-job
+      gates in `sign-rc`; this inspection confirms the finished bytes before they
+      ship).
 
 ### Command-line option scope (#122)
 
