@@ -487,15 +487,28 @@ RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher pa
 **A blocking modal on the app's main thread will make the NEXT request time out.**
 The handoff handler runs on the main thread, so while any app-modal alert is up the
 running instance cannot answer a request, and the caller reports the outcome as
-unconfirmed (a lost reply) after its timeout. Two common cases to avoid confusing
-with a defect: the first synchronization of a fresh profile shows Unison's "no
-archive files were found / first synchronization" warning as a modal, and a killed
-(not cleanly quit) prior instance can leave a stale archive lock whose next open is
-a "the archives are locked" modal. Before exercising the busy/takeover sub-cases,
-make sure no such modal is open: use profiles that have been synchronized at least
-once (so there is no first-sync warning), quit the app cleanly between runs rather
-than killing it, and clear any stale `lk*` files in the Unison directory. This is
-expected modal-vs-main behavior, not a running-instance defect.
+unconfirmed (a lost reply) after its timeout. This is expected modal-vs-main
+behavior, and it interacts with two **normal** modals you will legitimately see:
+
+- The first synchronization of a profile with no prior archive shows Unison's "no
+  archive files were found / first synchronization" warning. This is correct
+  product behavior, not a test artifact. To isolate the running-instance sub-cases
+  from it, use profiles that have been synchronized at least once so the archive
+  already exists; do not treat the warning as something to suppress in the product.
+- A prior instance that was force-killed rather than quit cleanly can leave an
+  archive lock, whose next open shows "the archives are locked". Quit the app
+  cleanly between runs. If a lock must be removed, delete `lk*` **only inside the
+  disposable test Unison directory for this case, and only after confirming that
+  every unison / unison-ui-mac process using it has exited** — never as a general
+  acceptance step and never against a real configuration.
+
+Because a request can arrive while such a modal is up, TC15 must also verify the
+timeout is honoured: a request that times out behind a first-sync warning (or any
+modal) must **not** open later when the modal is finally dismissed. Send the
+request while the warning is up, let the caller time out (unconfirmed), then
+dismiss the warning and confirm the requested profile does **not** open on its own
+(the caller's admission deadline has passed). This is the running-instance property;
+the warning itself is ordinary behavior.
 
 Record pass/fail evidence per sub-case with the RC version/build, macOS version,
 and launcher path.
