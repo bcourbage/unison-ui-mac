@@ -333,7 +333,7 @@ jobs:
         run: |
           if [ -s "$UUM_PROBE_TIMING_FILE" ]; then
             echo "Exit observed more than 10s after launch (the former deadline):"
-            awk '{for(i=1;i<=NF;i++) if($i ~ /^waitUntilExitReturn=/){split($i,a,"="); if(a[2]+0>10000) print}}' "$UUM_PROBE_TIMING_FILE" || true
+            awk '{for(i=1;i<=NF;i++) if($i ~ /^procExitObserved=/){split($i,a,"="); if(a[2]+0>10000) print}}' "$UUM_PROBE_TIMING_FILE" || true
             echo "Late-exit lines (exit reported only after the executor returned):"
             grep -a "phase=late-exit" "$UUM_PROBE_TIMING_FILE" || echo "  (none)"
             echo "---- full probe timeline ($(grep -c UUM-PROBE-TIMING "$UUM_PROBE_TIMING_FILE") lines) ----"

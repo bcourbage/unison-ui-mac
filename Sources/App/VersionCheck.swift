@@ -1,4 +1,5 @@
 import Foundation
+import Darwin   // posix_spawn, waitpid/WNOHANG, kill — for the owned child process
 
 /// Probes the Unison version on the remote machine of an `ssh://…`
 /// profile and reports whether it matches the locally-embedded
@@ -451,15 +452,15 @@ enum VersionCheck {
     /// (mach uptime) for the probe's lifecycle events.
     ///
     /// It writes a `phase=return` line when the executor returns. If that line
-    /// went out WITHOUT a `waitUntilExitReturn` (the executor gave up while the
-    /// background wait was still blocked), a second `phase=late-exit` line is
-    /// written when that wait finally completes, correlated by `id=`, so a
-    /// delayed exit report is preserved rather than lost. A `phase=return` line
-    /// with no matching `late-exit` line means only that NO LATE EXIT WAS
-    /// RECORDED BEFORE OBSERVATION ENDED; it does not prove the wait never
-    /// returned, since it may return after the process stops recording (for
-    /// example after the test bundle finishes). The normal path, where the exit
-    /// is observed before return, stays a single line.
+    /// went out WITHOUT a `procExitObserved` (the executor gave up before the
+    /// child's exit was observed/reaped), a second `phase=late-exit` line is
+    /// written when that reap finally happens, correlated by `id=`, so a delayed
+    /// exit report is preserved rather than lost. A `phase=return` line with no
+    /// matching `late-exit` line means only that NO LATE EXIT WAS RECORDED BEFORE
+    /// OBSERVATION ENDED; it does not prove the reap never happened, since it may
+    /// happen after the process stops recording (for example after the test
+    /// bundle finishes). The normal path, where the exit is observed before
+    /// return, stays a single line.
     ///
     /// It records an id, event names, elapsed milliseconds, and the result kind
     /// ONLY. It deliberately records no command arguments and no captured output,
@@ -499,7 +500,8 @@ enum VersionCheck {
             lock.lock(); label = "\(name) deadline=\(deadline)s"; lock.unlock()
         }
         /// Records the monotonic offset of one event. Safe to call from any
-        /// thread (the wait task, a collector's read queue, the executor loop).
+        /// thread (the child's reap handler, a collector's read queue, the
+        /// executor loop).
         func mark(_ event: String) {
             let ns = DispatchTime.now().uptimeNanoseconds &- start
             lock.lock(); events.append((event, ns)); lock.unlock()
@@ -511,17 +513,17 @@ enum VersionCheck {
             lock.lock()
             if primaryEmitted { lock.unlock(); return }
             primaryEmitted = true
-            primaryHadExit = events.contains { $0.0 == "waitUntilExitReturn" }
+            primaryHadExit = events.contains { $0.0 == "procExitObserved" }
             let evs = events, l = label, r = resultKind
             lock.unlock()
             writeLine(phase: "return", events: evs, label: l, result: r)
         }
 
-        /// Called at the very end of the background waitUntilExit task. If the
-        /// executor already returned WITHOUT observing the exit, this task's late
-        /// marks (waitUntilExitReturn, exitedSemaphoreSignal) would otherwise be
-        /// lost, so emit a correlated late-exit line preserving them. If the exit
-        /// was observed before return, or the executor has not returned yet, do
+        /// Called at the very end of the child's reap handler. If the executor
+        /// already returned WITHOUT observing the exit, the reap's late marks
+        /// (procExitObserved, exitedSemaphoreSignal) would otherwise be lost, so
+        /// emit a correlated late-exit line preserving them. If the exit was
+        /// observed before return, or the executor has not returned yet, do
         /// nothing.
         func noteWaitTaskComplete() {
             lock.lock()
@@ -548,9 +550,13 @@ enum VersionCheck {
         }
     }
 
-    /// The real executor: a `Process` with a TRUE wall-clock deadline and a
-    /// terminate-then-kill teardown that reaps the exact child so a wedged
-    /// probe can't leave a lingering `ssh`/ProxyCommand behind.
+    /// The real executor: an OWNED child process (see `OwnedChildProcess`) with a
+    /// TRUE wall-clock deadline and a terminate-then-kill teardown that reaps the
+    /// exact child so a wedged probe can't leave a lingering `ssh`/ProxyCommand
+    /// behind. It spawns and reaps the child itself so signalling and reaping are
+    /// coordinated — no teardown signal can land on a PID the kernel has reused,
+    /// which `Foundation.Process` (reaping on its own schedule) could not
+    /// guarantee.
     struct SubprocessProbeExecutor: VersionProbeExecutor {
         var deadlinePollInterval: TimeInterval = 0.05
         var grace: TimeInterval = VersionCheck.terminateGrace
@@ -567,15 +573,35 @@ enum VersionCheck {
         /// so a caller can record which process the session owns.
         var onLaunch: (@Sendable (pid_t) -> Void)? = nil
         /// Test-only seams, nil in production (no init parameter, so a normal
-        /// construction leaves them unset). `waitTaskEntryHook` runs at the very
-        /// start of the background wait task, before the `waitTaskEntry` mark;
-        /// `exitObservationHook` runs after `process.waitUntilExit()` returns,
-        /// before the `waitUntilExitReturn` mark. A test assigns one a small
-        /// sleep to delay wait-task entry or exit observation independently, so
-        /// the diagnostics can be checked against a known cause — without adding a
-        /// waitpid caller or changing any deadline or verdict.
-        var waitTaskEntryHook: (@Sendable () -> Void)? = nil
+        /// construction leaves them unset).
+        ///
+        /// `exitObservationHook` runs INSIDE the child's reap, AFTER the child has
+        /// been reaped (so `reaped` is already set and any teardown signal is
+        /// correctly skipped) and BEFORE the `procExitObserved` mark and the
+        /// `exited` signal. A test blocks here to hold exit observation open,
+        /// proving both that the executor's deadline return is independent of when
+        /// the exit is observed and that no signal is sent to an already-reaped
+        /// PID.
+        ///
+        /// `killFn` replaces the raw `kill(2)` the owned child uses to signal, so
+        /// a test can count or intercept the signals the teardown issues (and
+        /// prove none are issued after ownership is released). It must still
+        /// deliver the signal for behavioral tests, so the default is a real
+        /// `kill`.
         var exitObservationHook: (@Sendable () -> Void)? = nil
+        var killFn: (@Sendable (pid_t, Int32) -> Int32)? = nil
+        /// The queue the exit source / reap runs on; a test supplies a serial
+        /// queue it can block to hold the reaper until after the executor returns
+        /// (proving ownership survives and the child is still reaped). Defaults to
+        /// a global queue.
+        var reaperQueue: DispatchQueue? = nil
+        /// Duplicates argv strings; a test makes it fail to prove no child is
+        /// launched with truncated arguments. Defaults to `strdup`.
+        var dupForTesting: (@Sendable (String) -> UnsafeMutablePointer<CChar>?)? = nil
+        /// Reaps the child; a test injects one that reaps for real but reports
+        /// ECHILD, to exercise the unknown-status failure path. Defaults to
+        /// `waitpid`.
+        var waitpidForTesting: (@Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t)? = nil
 
         init(deadlinePollInterval: TimeInterval = 0.05,
              grace: TimeInterval = VersionCheck.terminateGrace,
@@ -713,6 +739,205 @@ enum VersionCheck {
             var isStopped: Bool { source.isCancelled }
         }
 
+        /// A child process we SPAWN and OWN: we reap it ourselves (`waitpid`),
+        /// and every signal we send is coordinated with the reap under one lock,
+        /// so no signal can ever target a PID after we have released ownership by
+        /// reaping it (after which the kernel may reuse the number). This is the
+        /// guarantee `Foundation.Process` could not give us — it reaps on its own
+        /// schedule, so our teardown signals raced its reaper and could land on a
+        /// reused PID.
+        ///
+        /// COORDINATION INVARIANT. `reap` (the `waitpid` that frees the PID) and
+        /// `signalIfOwned` (the `kill`) both run under `lock`, and `signalIfOwned`
+        /// signals only while `reaped == false`. So a signal either happens-before
+        /// the reap — while the PID still names our live, not-yet-reaped child (a
+        /// zombie still pins the number; it is not reusable until we reap) — or
+        /// after it, when it is skipped. The reap is triggered by a process-exit
+        /// dispatch source and performed with `WNOHANG` inside the lock; we never
+        /// hold the lock across a blocking wait.
+        final class OwnedChildProcess: @unchecked Sendable {
+            let pid: pid_t
+            private let lock = NSLock()
+            private var reaped = false
+            private var rawStatus: Int32 = 0
+            /// False until `waitpid` yields a real status. If the child is gone
+            /// but `waitpid` could not return a status (ECHILD or an unexpected
+            /// error), we mark it reaped (to suppress further signalling) but
+            /// leave this false so the executor reports a failure, never a clean
+            /// exit with a fabricated status of 0.
+            private var statusKnown = false
+            private let exited = DispatchSemaphore(value: 0)
+            private let killFn: @Sendable (pid_t, Int32) -> Int32
+            private let waitpidFn: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t
+            private let timing: ProbeTiming?
+            private let exitObservationHook: (@Sendable () -> Void)?
+            private let reaperQueue: DispatchQueue
+            private var source: DispatchSourceProcess?
+            /// A strong self-reference held from launch until the child is reaped,
+            /// so ownership survives the executor returning and dropping its own
+            /// reference. Without it the exit callbacks (which hold `self` weakly)
+            /// could find `self` gone before the reap runs, leaving the child
+            /// unreaped. Cleared at the end of the reap, so the object then
+            /// deallocates normally.
+            private var selfRetain: OwnedChildProcess?
+
+            /// Spawn outcome: the launched child, or a failure message.
+            enum SpawnOutcome { case launched(OwnedChildProcess); case failed(String) }
+
+            /// Spawn `executable` with `arguments`, wiring the child's stdout/stderr
+            /// to the given pipe WRITE-end fds and giving it `/dev/null` for stdin.
+            /// EVERY preparation step is checked: if any file action, attribute, or
+            /// argv duplication fails, no child is launched and a failure is
+            /// returned — so a child never runs with truncated arguments or missing
+            /// redirection. `dup` duplicates argv strings (injectable for testing
+            /// an allocation failure); `reaperQueue` runs the exit source/reap.
+            static func spawn(executable: String, arguments: [String],
+                              stdoutWrite: Int32, stderrWrite: Int32,
+                              killFn: @escaping @Sendable (pid_t, Int32) -> Int32,
+                              waitpidFn: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
+                              timing: ProbeTiming?,
+                              exitObservationHook: (@Sendable () -> Void)?,
+                              reaperQueue: DispatchQueue,
+                              dup: (String) -> UnsafeMutablePointer<CChar>?)
+                -> SpawnOutcome {
+                var fileActions: posix_spawn_file_actions_t?
+                guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+                    return .failed("posix_spawn_file_actions_init failed")
+                }
+                defer { posix_spawn_file_actions_destroy(&fileActions) }
+                // No inherited stdin; child stdout/stderr are the pipe write ends.
+                guard posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0) == 0,
+                      posix_spawn_file_actions_adddup2(&fileActions, stdoutWrite, 1) == 0,
+                      posix_spawn_file_actions_adddup2(&fileActions, stderrWrite, 2) == 0 else {
+                    return .failed("posix_spawn_file_actions setup failed")
+                }
+
+                var attr: posix_spawnattr_t?
+                guard posix_spawnattr_init(&attr) == 0 else {
+                    return .failed("posix_spawnattr_init failed")
+                }
+                defer { posix_spawnattr_destroy(&attr) }
+                // Close every inherited fd in the child except the ones the file
+                // actions establish (0/1/2). This keeps the pipe write ends off
+                // any inherited high fd, so EOF is delivered when the child and
+                // its descendants close fd 1/2. POSIX_SPAWN_CLOEXEC_DEFAULT is an
+                // Apple extension (0x4000).
+                guard posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else {
+                    return .failed("posix_spawnattr_setflags failed")
+                }
+
+                // argv: [executable, arguments…, NULL]. A failed duplication frees
+                // what was allocated and fails BEFORE spawning, so argv can never
+                // carry a premature null that truncates the command.
+                var argv: [UnsafeMutablePointer<CChar>?] = []
+                for s in [executable] + arguments {
+                    guard let d = dup(s) else {
+                        for p in argv { free(p) }
+                        return .failed("argument duplication failed (out of memory)")
+                    }
+                    argv.append(d)
+                }
+                argv.append(nil)
+                defer { for p in argv where p != nil { free(p) } }
+
+                var pid: pid_t = 0
+                let rc = posix_spawn(&pid, executable, &fileActions, &attr, argv, environ)
+                if rc != 0 { return .failed(String(cString: strerror(rc))) }
+
+                let child = OwnedChildProcess(pid: pid, killFn: killFn, waitpidFn: waitpidFn,
+                                              timing: timing, exitObservationHook: exitObservationHook,
+                                              reaperQueue: reaperQueue)
+                child.armExitSource()
+                return .launched(child)
+            }
+
+            private init(pid: pid_t, killFn: @escaping @Sendable (pid_t, Int32) -> Int32,
+                         waitpidFn: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
+                         timing: ProbeTiming?, exitObservationHook: (@Sendable () -> Void)?,
+                         reaperQueue: DispatchQueue) {
+                self.pid = pid; self.killFn = killFn; self.waitpidFn = waitpidFn
+                self.timing = timing; self.exitObservationHook = exitObservationHook
+                self.reaperQueue = reaperQueue
+            }
+
+            private func armExitSource() {
+                // Retain ourselves until reaping finishes, so ownership does not
+                // vanish if the executor returns and drops its reference first.
+                lock.lock(); selfRetain = self; lock.unlock()
+                let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: reaperQueue)
+                src.setEventHandler { [weak self] in self?.handleExit() }
+                source = src
+                src.resume()
+                // Belt-and-suspenders for a child that exited before the source
+                // armed: probe once on the reaper queue (never synchronously on the
+                // caller's thread, so a blocking test hook cannot stall it).
+                reaperQueue.async { [weak self] in self?.handleExit() }
+            }
+
+            /// Reap under the lock (mutually exclusive with `signalIfOwned`), then —
+            /// only for the caller that actually performed the reap — run the
+            /// observation hook, record the exit, signal `exited`, and release the
+            /// self-retain so the object can deallocate.
+            private func handleExit() {
+                lock.lock()
+                if reaped { lock.unlock(); return }
+                var st: Int32 = 0
+                var r: pid_t
+                repeat { r = waitpidFn(pid, &st, WNOHANG) } while r == -1 && errno == EINTR
+                if r == pid {
+                    rawStatus = st; statusKnown = true; reaped = true
+                } else if r == 0 {
+                    lock.unlock(); return                 // not exited yet (spurious early probe)
+                } else {
+                    // r == -1 with ECHILD (no child to reap) or an unexpected
+                    // error: the child is gone but we have no status. Mark reaped
+                    // to suppress any further signalling (the PID may be reused);
+                    // statusKnown stays false so the executor reports a failure.
+                    reaped = true
+                }
+                lock.unlock()
+
+                source?.cancel()
+                // The child is reaped: `reaped` is set, so any concurrent teardown
+                // signal is already skipped. A test blocks here to hold observation
+                // open; production is nil.
+                exitObservationHook?()
+                timing?.mark("procExitObserved")
+                exited.signal()
+                timing?.mark("exitedSemaphoreSignal")
+                // If the executor already returned WITHOUT observing this exit (a
+                // timeout that outran the reap), emit a correlated late-exit line.
+                timing?.noteWaitTaskComplete()
+                // Ownership is discharged; drop the self-retain. `self` stays alive
+                // for the rest of this call via the stack frame.
+                lock.lock(); selfRetain = nil; lock.unlock()
+            }
+
+            /// Send `sig` only while we still own the PID. Returns whether it was
+            /// sent (false once reaped). Runs under the same lock as the reap, so
+            /// it can never signal a PID the kernel may have reused.
+            @discardableResult
+            func signalIfOwned(_ sig: Int32) -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                if reaped { return false }
+                _ = killFn(pid, sig)
+                return true
+            }
+
+            func waitExit(timeout: DispatchTime) -> DispatchTimeoutResult { exited.wait(timeout: timeout) }
+
+            /// The child's exit status as a conventional code (exit code, or
+            /// 128 + signal for a signalled child), or nil if the status is not
+            /// known (the child is gone but `waitpid` yielded no status). Meaningful
+            /// only after a successful `waitExit`.
+            func exitStatus() -> Int32? {
+                lock.lock(); defer { lock.unlock() }
+                guard statusKnown else { return nil }
+                let low = rawStatus & 0x7f
+                return low == 0 ? (rawStatus >> 8) & 0xff : 128 + low
+            }
+        }
+
         func execute(_ config: ProbeConfig,
                      deadline: TimeInterval,
                      canceller: ProbeCanceller) -> RawExecResult {
@@ -727,19 +952,29 @@ enum VersionCheck {
             // been told to abandon.
             if canceller.isCancelled { timing?.setResult("cancelledBeforeLaunch"); return .cancelled }
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: config.executable)
-            process.arguments = config.arguments
             let outPipe = Pipe(); let errPipe = Pipe()
-            process.standardOutput = outPipe
-            process.standardError = errPipe
-
-            do { try process.run() } catch {
-                timing?.setResult("launchFailed")
-                return .launchFailed(error.localizedDescription)
+            let kfn: @Sendable (pid_t, Int32) -> Int32 = killFn ?? { Darwin.kill($0, $1) }
+            let wfn: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t =
+                waitpidForTesting ?? { Darwin.waitpid($0, $1, $2) }
+            let dup: (String) -> UnsafeMutablePointer<CChar>? = dupForTesting ?? { strdup($0) }
+            let spawned = OwnedChildProcess.spawn(
+                executable: config.executable, arguments: config.arguments,
+                stdoutWrite: outPipe.fileHandleForWriting.fileDescriptor,
+                stderrWrite: errPipe.fileHandleForWriting.fileDescriptor,
+                killFn: kfn, waitpidFn: wfn, timing: timing, exitObservationHook: exitObservationHook,
+                reaperQueue: reaperQueue ?? DispatchQueue.global(qos: .userInitiated),
+                dup: dup)
+            let child: OwnedChildProcess
+            switch spawned {
+            case .failed(let message): timing?.setResult("launchFailed"); return .launchFailed(message)
+            case .launched(let c): child = c
             }
+            // Close the parent's write ends so EOF is delivered once the child
+            // (and any descendant that inherited fd 1/2) closes them.
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
             timing?.mark("launch")
-            onLaunch?(process.processIdentifier)
+            onLaunch?(child.pid)
             let out = PipeCollector(outPipe.fileHandleForReading,
                                     onFinish: timing.map { t -> @Sendable (Bool, Int32?) -> Void in
                                         { atEOF, _ in t.mark(atEOF ? "stdoutEOF" : "stdoutReadError") } })
@@ -747,41 +982,24 @@ enum VersionCheck {
                                     onFinish: timing.map { t -> @Sendable (Bool, Int32?) -> Void in
                                         { atEOF, _ in t.mark(atEOF ? "stderrEOF" : "stderrReadError") } })
 
-            // Wait for natural exit on a background thread; the main flow waits
-            // for exit / cancellation / deadline so it can never block forever.
-            // The two hooks are nil in production (a local copy so the @Sendable
-            // closure need not capture self).
-            let exited = DispatchSemaphore(value: 0)
-            let entryHook = waitTaskEntryHook, exitHook = exitObservationHook
-            DispatchQueue.global(qos: .userInitiated).async {
-                entryHook?()
-                timing?.mark("waitTaskEntry")
-                process.waitUntilExit()
-                exitHook?()
-                timing?.mark("waitUntilExitReturn")
-                exited.signal()
-                timing?.mark("exitedSemaphoreSignal")
-                // If the executor already returned without observing this exit
-                // (a timeout that outran the wait), emit a correlated late-exit
-                // line so the delayed return is not lost from the record.
-                timing?.noteWaitTaskComplete()
-            }
-
+            // The main flow waits for exit (via `child.waitExit`, signalled by the
+            // child's reap) / cancellation / deadline, so it never blocks forever.
             func reapExactChild() {
                 timing?.mark("teardownSIGTERM")
-                // SIGTERM, then SIGKILL after a grace period. We wait so the
-                // ssh child itself is best-effort reaped (no zombie). NOTE: this
-                // reaps ONLY the direct ssh child; a ProxyCommand or the remote
-                // `servercmd` are ssh's own descendants and are not guaranteed
-                // reaped here (ssh forwards the signal, but we don't wait on
-                // them). The final SIGKILL wait result is intentionally not
-                // asserted: if even SIGKILL+grace hasn't reaped, we return
-                // rather than block forever.
-                process.terminate()
-                if exited.wait(timeout: .now() + grace) == .timedOut {
+                // SIGTERM, then SIGKILL after a grace period, each sent only while
+                // we still own the child (signalIfOwned skips once reaped, so no
+                // reused PID can be hit). We wait so the child is best-effort
+                // reaped (no zombie). NOTE: this reaps ONLY the direct child; a
+                // ProxyCommand or the remote `servercmd` are its descendants and
+                // are not guaranteed reaped here. The final SIGKILL wait result is
+                // intentionally not asserted: if even SIGKILL+grace hasn't reaped,
+                // we return rather than block forever.
+                child.signalIfOwned(SIGTERM)
+                if child.waitExit(timeout: .now() + grace) == .timedOut {
                     timing?.mark("teardownSIGKILL")
-                    kill(process.processIdentifier, SIGKILL)
-                    _ = exited.wait(timeout: .now() + grace)
+                    if child.signalIfOwned(SIGKILL) {
+                        _ = child.waitExit(timeout: .now() + grace)
+                    }
                 }
             }
             func collected() -> (String, String) {
@@ -794,11 +1012,11 @@ enum VersionCheck {
             // Register a DETERMINISTIC teardown: the instant cancel() runs
             // (including on the main thread from applicationWillTerminate), the
             // child is SIGTERM'd synchronously — not on a later poll tick. If a
-            // cancel raced Process.run(), registerTeardown fires it right now.
+            // cancel raced the spawn, registerTeardown fires it right now.
             // Mark this cancellation-triggered SIGTERM separately from the reap's
             // own, so an EOF that a cancel caused is not read as natural
             // completion that preceded any intervention.
-            canceller.registerTeardown { timing?.mark("cancelSIGTERM"); process.terminate() }
+            canceller.registerTeardown { timing?.mark("cancelSIGTERM"); child.signalIfOwned(SIGTERM) }
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
@@ -818,7 +1036,7 @@ enum VersionCheck {
                     reapExactChild(); canceller.clearTeardown(); out.stop(); err.stop()
                     timing?.setResult("cancelled"); return .cancelled
                 }
-                if exited.wait(timeout: .now() + deadlinePollInterval) == .success {
+                if child.waitExit(timeout: .now() + deadlinePollInterval) == .success {
                     timing?.mark("exitObservedInLoop")
                     canceller.clearTeardown()
                     // The exit may be the result of a cancel that fired during
@@ -828,8 +1046,15 @@ enum VersionCheck {
                         out.stop(); err.stop(); timing?.setResult("cancelled"); return .cancelled
                     }
                     let (stdout, stderr) = collected()
-                    timing?.setResult("exited(\(process.terminationStatus))")
-                    return .exited(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+                    guard let status = child.exitStatus() else {
+                        // The child is gone but we could not obtain its status
+                        // (ECHILD or an unexpected waitpid error). Never report a
+                        // clean/verified exit on a fabricated status; fail instead.
+                        timing?.setResult("exitStatusUnavailable")
+                        return .launchFailed("subprocess exit status unavailable")
+                    }
+                    timing?.setResult("exited(\(status))")
+                    return .exited(status: status, stdout: stdout, stderr: stderr)
                 }
                 if DispatchTime.now() >= deadlineAt {
                     timing?.mark("deadlineDetected")
