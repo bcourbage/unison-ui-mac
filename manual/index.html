@@ -176,17 +176,62 @@ dash (<code>--ui</code> is an unknown option to Unison). Unknown options are rep
 Unison with its usage text.</p>
 <p>When the graphical interface is already running and a <code>unison &lt;profile&gt;</code> request
 reaches it, the request goes to that instance rather than starting a second one.
-If it is idle at the picker, it opens the profile and starts its scan. If a scan,
-reconciliation, sync, or a profile edit is already in progress, it keeps that work
-and reports that it did not start the new profile, so nothing in progress is
-disturbed. The running instance also refuses a request it cannot carry faithfully,
-saying why: one that carries options beyond the profile name (on the request, or
-on the running instance's own launch, since those options would otherwise affect
-it), one from a different copy of the app, or one that uses a different Unison
-directory. A successful handoff means the profile was accepted and began opening,
-not that its scan or synchronization finished; the command returns an exit status
-that reflects that. If the reply is lost, because the running instance did not
-answer in time, the outcome is left unconfirmed and the command says so.</p>
+The request carries its session-scoped options, so the profile opens scoped exactly
+as it would at a fresh launch, with order, repeated options, and profile precedence
+preserved; how the running app was itself started no longer matters. These are
+Unison's session preferences, with <code>-path</code>, <code>-include</code>, and <code>-source</code> as common
+examples rather than an exhaustive list. A <code>-path</code> is root-relative and adds to the
+profile's configured <code>path</code> preferences rather than replacing them, following
+Unison's usual precedence: with <code>path = Pictures</code> in the profile,
+<code>unison home -path Documents</code> syncs both <code>Pictures</code> and <code>Documents</code>; only a profile
+with no configured paths is then restricted to <code>Documents</code> alone. These options apply
+for that session: the opened profile and any rescans or reconnects it makes. Opening a
+profile from the picker afterward, the same profile or a different one, uses that
+profile's saved configuration, not the earlier command line's options.</p>
+<p>How the request is handled depends on what the app is doing:</p>
+<ul>
+<li>Idle at the picker: it begins opening the profile. This is a <em>Started</em> handoff.</li>
+<li>Busy (scanning, showing reconciliation results, or finishing a previous run): it
+  accepts the request and opens the profile once that work and its cleanup finish.
+  Usually it reports that it was <em>accepted and is waiting</em>, and the app shows it
+  waiting; if that work has already cleared by the time the request lands, it can
+  open right away and report <em>Started</em> instead. Only one command-line request waits at
+  a time; a second while one is waiting is refused, and choosing a profile in the app
+  never silently replaces a waiting request.</li>
+<li>Synchronizing in a visible window: it raises a decision for the requested profile,
+  keep syncing (the sync is untouched and the profile is not opened), finish the sync
+  first, or stop it and then open. The command prints that a decision is required in
+  the app and waits for your choice within a 120-second decision deadline. Stopping
+  the sync or letting it finish opens the requested profile; keeping the sync does
+  not, and no command aborts a sync or makes that choice on its own. If the deadline
+  passes with no choice, or the synchronization finishes on its own before you choose,
+  the request is not opened and the command says so; run it again to open the profile.</li>
+<li>Synchronizing in the background (a window you already closed with <em>Continue in
+  Background</em>): there is no window to raise the decision on, so the request is instead
+  accepted and queued, and the profile opens once that background sync finishes.</li>
+</ul>
+<p>A request is still refused, with a reason, while the profile editor is open (close it
+first; your edits are kept) and when the app needs to be quit and reopened after a
+connection problem, as is one from a different copy of the app or one that uses a
+different Unison directory.</p>
+<p>A <em>Started</em> reply means the app began opening the profile; the open may still be
+connecting, and its scan has not necessarily begun. An <em>accepted and waiting</em> reply
+means the request was queued and will open when the app is free. The two are told
+apart by the reply message, not by exit status: both are successful and exit 0, and
+neither certifies that a scan or synchronization has finished. If the reply is lost,
+because the running instance did not answer in time, the outcome is left unconfirmed:
+the command says so and asks you to check the app before running it again, since the
+original request may already have been accepted.</p>
+<p>Three quick examples:</p>
+<ul>
+<li><code>unison home</code> opens the <code>home</code> profile in the app under the Graphical default, or
+  runs its text interface if you have set <strong>Default interface</strong> to Text.</li>
+<li><code>unison home -path Documents</code> opens <code>home</code> with <code>Documents</code> added to its configured
+  paths, so both are synced (a profile with no configured paths would be restricted to
+  <code>Documents</code> alone).</li>
+<li><code>unison -ui text home</code> runs <code>home</code> in the terminal's text interface, for scripts and
+  scheduled jobs, whatever the Default interface preference is.</li>
+</ul>
 <p>For scripts and scheduled jobs, pass <code>-ui text</code> explicitly rather than relying on
 the default. A script that omits it runs the graphical interface wherever the
 preference is Graphical, and a <code>unison &lt;profile&gt;</code> with no graphical session (over
@@ -298,7 +343,7 @@ verified.</p>
    - it is installed and already current: <code>brew reinstall --cask unison-ui</code>.
      An upgrade with nothing newer to install does not recreate the link.
    Homebrew records the installed version in
-   <code>/opt/homebrew/Caskroom/unison-ui-mac/</code> (also shown by
+   <code>/opt/homebrew/Caskroom/unison-ui/</code> (also shown by
    <code>brew info --cask unison-ui</code>); check it and pick the matching case.
    Check afterwards that the link exists and points into this app:
    <code>readlink /opt/homebrew/bin/unison</code>.</li>
@@ -322,7 +367,7 @@ for later, with a recovery ready: recreate the link with
 and re-verify.</p>
 <p><strong>Sparkle and Homebrew.</strong> Sparkle updates the app bundle in place; Homebrew's
 receipt keeps the version Homebrew itself installed. A later
-<code>brew upgrade --cask --greedy unison-ui-mac</code> reinstalls the current version and
+<code>brew upgrade --cask --greedy unison-ui</code> reinstalls the current version and
 brings the receipt up to date; when the receipt already matches the current
 version, <code>brew reinstall --cask unison-ui</code> is the command that reruns the
 artifacts. If the formula owns the command at that time,
@@ -1453,9 +1498,9 @@ and unwinds by raising the internal <code>Aborted by user request</code> transie
   exits its current task cooperatively, then idles in
   <code>bridgeThreadWait</code> ready for the next bridge call.</p>
 <p>If you close the reconcile window mid-sync via ⌘W (or the red close
-button), you get a three-option prompt: <strong>Keep Syncing</strong> /
-<strong>Abort &amp; Close</strong> / <strong>Close (let it run)</strong>. The third option closes
-the window but lets the sync continue in the background until natural
+button), you get a three-option prompt: <strong>Keep Window Open</strong> /
+<strong>Continue in Background</strong> / <strong>Stop Syncing &amp; Close</strong>. <strong>Continue in
+Background</strong> closes the window but lets the sync continue until natural
 completion, useful when you want to reclaim screen space but not
 interrupt the transfer.</p>
 <h3 id="sync-complete-notification-doesnt-pop-up">Sync-complete notification doesn't pop up</h3>
@@ -1627,25 +1672,18 @@ app release) if a remote is stuck below 2.52.0 and cannot be upgraded.</p>
 diverge between CLI and GUI. Either remove the <code>clientHostName</code>
 override, or set <code>UNISONLOCALHOSTNAME=&lt;your-hostname&gt;</code> in the launch
 environment so both pick up the same value.</p>
-<p><strong>2. Command-line argument overrides.</strong> This app launches OCaml with
-<code>argv = [program_name]</code>, no CLI args propagate from your shell to
-Unison. So if you typically run <code>unison -opt=val &lt;profile&gt;</code> to
-override a preference at the command line, the GUI won't apply that
-override (it only sees the <code>.prf</code> content). Put the override in the
-<code>.prf</code> itself via the Advanced field of the Profile Form to bring
-the GUI into parity.</p>
-<p><strong>3. Multi-profile session quirk.</strong> If you switch profiles within
-one GUI session (via the picker), the GUI doesn't re-parse the
-command line for the new profile, only on first launch. The CLI
-re-parses on every profile open. For our app this is moot (we
-don't accept user CLI args anyway), but it's a documented
-divergence from upstream's <code>Uicommon.initPrefs</code> that matters if
-we ever start accepting CLI overrides at the app's launch
-arguments. See the audit comment near
-<code>Prefs.parseCmdLine</code> in <code>unison/src/uimacbridge.ml</code>:
-<code>do_unisonInit1</code> runs <code>parseCmdLine</code> only on <code>firstTime</code>, while
-upstream <code>Uicommon.initPrefs</code> runs it unconditionally (per the
-"JV (6/09): always reparse the command line" note in that file).</p>
+<p><strong>2. Command-line session options.</strong> A <code>unison &lt;profile&gt;</code> request
+delivers its session-scoped options to the app, which opens the
+profile scoped by them exactly as a fresh launch would. <code>-path</code>,
+<code>-include</code>, and <code>-source</code> are common examples; Unison's other session
+preferences are carried the same way. See
+<a href="#the-unison-command">The <code>unison</code> command</a>.</p>
+<p><strong>3. Session boundary for command-line options.</strong> A request's session
+options apply to the session it opens, that profile and any rescans or
+reconnects it makes. Choosing a different profile from the picker
+afterward uses that profile's saved configuration; the app does not
+re-apply the earlier command line's options to a picker selection, so
+each request is scoped only by its own options.</p>
 <hr>
 <h2 id="what-this-app-does-not-do">What this app does NOT do</h2>
 <ul>
