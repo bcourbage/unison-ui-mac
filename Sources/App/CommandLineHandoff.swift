@@ -404,7 +404,7 @@ enum CommandLineHandoff {
     static func syncDecisionInterim(name: String, timeoutSeconds: Int) -> Interim {
         Interim(timeoutSeconds: timeoutSeconds, message:
             "unison-ui-mac is synchronizing; it needs a decision in the app before it can start \(name). "
-            + "Waiting up to \(timeoutSeconds)s for you to choose Keep Syncing, Abort & Close, or Close (let it run)…")
+            + "Waiting up to \(timeoutSeconds)s for you to keep syncing, finish the sync first, or stop it…")
     }
 
     /// Final verdict: the user kept syncing, so the request was not started.
@@ -428,5 +428,30 @@ enum CommandLineHandoff {
         .refused(message:
             "unison-ui-mac could not start \(name): the app's state changed while the decision was open. "
             + "Run the command again.")
+    }
+
+    /// Final verdict: the synchronization FINISHED (results are shown) before a
+    /// choice was made, so the request was not opened. A clean completion, not a
+    /// failure.
+    static func syncDecisionCompletedResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac finished the synchronization before a choice was made, so it did not open \(name). "
+            + "Run the command again.")
+    }
+
+    /// Final verdict: the synchronization failed, or the app needs to be quit and
+    /// reopened, before a choice was made — distinct from a clean completion.
+    static func syncDecisionRestartResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac did not open \(name): the synchronization ended in a problem and the app needs to "
+            + "be quit and reopened. Quit and reopen it, then run the command again.")
+    }
+
+    /// Refusal: a sync decision is already open in the app (an ordinary window
+    /// close), so a command-line request cannot raise a second one.
+    static func syncDecisionBusyResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac already has a sync decision open in its window, so it did not start \(name). "
+            + "Resolve that in the app, then run the command again.")
     }
 }

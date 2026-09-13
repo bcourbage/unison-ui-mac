@@ -57,7 +57,7 @@ The transition follows the existing **Profiles → select profile** interaction,
 | Idle at the picker | Open the requested session and start scanning. |
 | Scanning | Leave the current view using the existing abandonment behavior. Show the requested session waiting until the prior operation and required connection cleanup finish, then open and scan it. |
 | Reconciliation results, before synchronization | Leave the current session, complete required cleanup, then open and scan the requested session. |
-| Synchronizing | Present the existing Keep Syncing / Abort & Close / Close (let it run) decision. |
+| Synchronizing | Present the shared three-way sync decision (Keep Syncing; Don't Open / Finish Sync, Then Open / Stop Sync, Then Open) as a non-blocking sheet. |
 | Results after synchronization | Leave the current session and open the requested session after any outstanding cleanup. |
 | Profile editor open | Refuse the request, name the profile being edited, and ask the user to close the editor and run the command again. Preserve all edits. |
 | Restart required or unresolved recovery | Refuse with the applicable recovery instruction. Do not bypass the recovery restriction. |
@@ -66,13 +66,15 @@ Leaving a scan does not forcibly interrupt the engine. The new session waits for
 
 ### During synchronization
 
-The dialog's choices have explicit consequences for the incoming request:
+The sheet is the same shared presentation used for an ordinary window close during
+a sync; only the wording differs. Its choices have explicit consequences for the
+incoming request:
 
-- **Keep Syncing:** preserve the current session and reject the incoming request.
-- **Abort & Close:** request the existing supported abort behavior; open the incoming session only after the engine finishes aborting and cleanup completes.
-- **Close (let it run):** let the existing synchronization finish in the background; keep the incoming session waiting until the engine is available.
+- **Keep Syncing; Don't Open:** preserve the current session and reject the incoming request. (The default; a dismissal resolves here.)
+- **Finish Sync, Then Open:** let the existing synchronization finish in the background; keep the incoming session waiting until the engine is available.
+- **Stop Sync, Then Open:** stop the current synchronization; open the incoming session only after the engine finishes stopping and cleanup completes.
 
-No incoming CLI request silently aborts a synchronization or chooses a dialog response.
+No incoming CLI request silently stops a synchronization or chooses a sheet response.
 
 The three-way decision is raised only for an active synchronization the user is watching — one whose window is on screen. A synchronization the user already sent to the background (via Close let it run, so its window is gone) offers no decision surface and needs none: that session is already leaving, so a request there is simply accepted-and-waiting and opens when the background synchronization finishes.
 
