@@ -256,14 +256,21 @@ final class VersionProbeTests: XCTestCase {
     /// leaks) but reports ECHILD to the executor.
     func test_realExecutor_missingExitStatus_isReportedAsFailure() {
         var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.3)
+        // Fabricate the "gone but no status" (ECHILD) case ONLY after waitpid has
+        // actually reaped this child (r == pid). While the child is still running
+        // the owner makes an early probe that returns 0; pass that (and any real
+        // error) through unchanged, so we neither drop ownership early nor leave
+        // the child unreaped — the real reap still happens via this same call.
         exec.waitpidForTesting = { pid, st, opt in
-            _ = Darwin.waitpid(pid, st, opt)   // really reap so no zombie leaks
-            errno = ECHILD                       // …but report "no child / no status"
-            return -1
+            let r = Darwin.waitpid(pid, st, opt)
+            if r == pid { errno = ECHILD; return -1 }   // reaped for real → now report no-status
+            return r                                      // 0 (still running) or -1/errno passed through
         }
-        // A child that prints a valid version and exits 0 — which, with a fabricated
-        // status of 0, would otherwise be misclassified as verified.
-        let raw = exec.execute(sh("echo unison version 2.54.0"), deadline: 10, canceller: V.ProbeCanceller())
+        // A child whose exit is DELAYED, so the early-probe (waitpid == 0) path is
+        // exercised before the real exit. It prints a valid version and exits 0 —
+        // which, with a fabricated status of 0, would otherwise be misclassified as
+        // verified.
+        let raw = exec.execute(sh("sleep 0.5; echo unison version 2.54.0"), deadline: 10, canceller: V.ProbeCanceller())
         guard case .launchFailed(let message) = raw else {
             return XCTFail("expected .launchFailed for unknown status, got \(raw)")
         }
