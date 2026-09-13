@@ -184,27 +184,64 @@ final class VersionProbeTests: XCTestCase {
     }
 
     /// A child that IGNORES SIGTERM must still be torn down: the executor
-    /// escalates to SIGKILL, and the terminationHandler that fires on the kill
-    /// unblocks the reap. The executor must return `.timedOut` and must not hang.
-    /// This is the teardown-escalation path with the new exit-signal source.
-    func test_realExecutor_childIgnoringSIGTERM_escalatesToKillAndReturns() {
-        let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.3)
+    /// escalates to SIGKILL (gated on Foundation still owning the child), the
+    /// terminationHandler that fires on the kill unblocks the reap, and the child
+    /// is actually terminated AND reaped — not merely a bounded `.timedOut`
+    /// return, which the executor produces even when teardown fails.
+    ///
+    /// This establishes: (1) the child installed its TERM-ignoring trap (READY is
+    /// printed only after `trap`, so READY in the output proves it resisted
+    /// SIGTERM); (2) its pid was captured; (3) after return, that pid no longer
+    /// resolves (`kill(pid,0) == ESRCH`), i.e. it was SIGKILLed and reaped.
+    /// Defeat proof: remove the `kill(process.processIdentifier, SIGKILL)` line
+    /// in reapExactChild and the TERM-resistant child keeps running, so the pid
+    /// keeps resolving and (3) fails. A failure-path defer kills any survivor so
+    /// a defeated run leaks nothing.
+    func test_realExecutor_childIgnoringSIGTERM_escalatesToKillAndReapsChild() {
+        let pidBox = PidBox()
+        let exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.5,
+                                             onLaunch: { pidBox.set($0) })
         let box = ResultBox()
         let done = DispatchSemaphore(value: 0)
-        // Traps and ignores TERM, prints so its pipe has data, then loops. Only
-        // SIGKILL can end it. `exec 2>&1` keeps it simple; the sleep loop yields.
         let cfg = sh("trap '' TERM; printf READY; while : ; do sleep 0.2; done")
         DispatchQueue.global().async {
             box.value = exec.execute(cfg, deadline: 0.4, canceller: V.ProbeCanceller())
             done.signal()
         }
         XCTAssertEqual(done.wait(timeout: .now() + 15), .success,
-                       "the executor must return (via SIGKILL) even though the child ignores SIGTERM")
-        guard case .timedOut = box.value else { return XCTFail("expected .timedOut, got \(box.value)") }
+                       "the executor must return even though the child ignores SIGTERM")
+        let pid = pidBox.get()
+        // Failure-path cleanup: if the escalation were defeated and the child is
+        // still running, do not leak it past the test.
+        defer { if pid > 0 { kill(pid, SIGKILL) } }
+
+        guard case .timedOut(let stdout, _) = box.value else {
+            return XCTFail("expected .timedOut, got \(box.value)")
+        }
+        XCTAssertGreaterThan(pid, 0, "the child's pid was captured at launch")
+        XCTAssertTrue(stdout.contains("READY"),
+                      "the child installed its TERM-ignoring trap and ran on (it resisted SIGTERM)")
+        // Termination + reaping: our SIGKILL ended it and Foundation reaped it,
+        // so the pid no longer resolves. The reap that follows the kill is
+        // asynchronous, so poll briefly. If SIGKILL is removed, the TERM-resistant
+        // child keeps running and this never becomes ESRCH.
+        var reaped = false
+        for _ in 0..<250 {   // up to ~5s
+            if kill(pid, 0) == -1 && errno == ESRCH { reaped = true; break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(reaped, "the TERM-resistant child was SIGKILLed and reaped (its pid no longer resolves)")
     }
 
     private final class ResultBox: @unchecked Sendable {
         var value: V.RawExecResult = .cancelled
+    }
+
+    private final class PidBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: pid_t = 0
+        func set(_ v: pid_t) { lock.lock(); value = v; lock.unlock() }
+        func get() -> pid_t { lock.lock(); defer { lock.unlock() }; return value }
     }
 
     // MARK: - Finding #8/#12: classifyRaw distinguishes failure kinds

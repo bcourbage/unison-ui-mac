@@ -786,6 +786,24 @@ enum VersionCheck {
             // The main flow below waits for exit (via the `exited` semaphore the
             // terminationHandler signals) / cancellation / deadline, so it can
             // never block forever.
+            //
+            // PID-OWNERSHIP GATE. Every signal we send is gated on
+            // `process.isRunning`, Foundation's ownership state — NOT on whether
+            // the terminationHandler has fired. Foundation reaps the child (the
+            // waitpid that frees the PID) as part of observing its exit, and only
+            // then delivers `terminationHandler`; delivery can lag the reap. So
+            // "the `exited` semaphore is unsignalled" does NOT mean the child is
+            // still ours: it may already be reaped, its PID reusable. Once
+            // `isRunning` is false the child has been reaped and we must never
+            // signal that PID. We therefore signal only while `isRunning` is
+            // true, when the PID is still bound to our un-reaped child. The one
+            // path that reaches SIGKILL is a child that ignored SIGTERM for a
+            // whole grace period: such a child is genuinely alive and does not
+            // reap itself out from under the check (had it exited, `exited` would
+            // have been signalled and this path skipped). macOS offers no
+            // reuse-atomic force-kill, so this ownership gate — not the callback —
+            // is the safe strategy.
+            func terminateIfOwned() { if process.isRunning { process.terminate() } }
             func reapExactChild() {
                 timing?.mark("teardownSIGTERM")
                 // SIGTERM, then SIGKILL after a grace period. We wait so the
@@ -796,11 +814,19 @@ enum VersionCheck {
                 // them). The final SIGKILL wait result is intentionally not
                 // asserted: if even SIGKILL+grace hasn't reaped, we return
                 // rather than block forever.
-                process.terminate()
+                terminateIfOwned()
                 if exited.wait(timeout: .now() + grace) == .timedOut {
-                    timing?.mark("teardownSIGKILL")
-                    kill(process.processIdentifier, SIGKILL)
-                    _ = exited.wait(timeout: .now() + grace)
+                    // Escalate only while Foundation still owns the child. If it
+                    // is no longer running it has been reaped (its PID may be
+                    // reused), so we do not SIGKILL — there is nothing of ours
+                    // left to kill.
+                    if process.isRunning {
+                        timing?.mark("teardownSIGKILL")
+                        kill(process.processIdentifier, SIGKILL)
+                        _ = exited.wait(timeout: .now() + grace)
+                    } else {
+                        timing?.mark("teardownSkippedReaped")
+                    }
                 }
             }
             func collected() -> (String, String) {
@@ -816,8 +842,11 @@ enum VersionCheck {
             // cancel raced Process.run(), registerTeardown fires it right now.
             // Mark this cancellation-triggered SIGTERM separately from the reap's
             // own, so an EOF that a cancel caused is not read as natural
-            // completion that preceded any intervention.
-            canceller.registerTeardown { timing?.mark("cancelSIGTERM"); process.terminate() }
+            // completion that preceded any intervention. Gated on ownership like
+            // every other signal (see the reap comment): a cancel that arrives
+            // after Foundation already reaped the child must not signal its
+            // possibly-reused PID.
+            canceller.registerTeardown { timing?.mark("cancelSIGTERM"); terminateIfOwned() }
 
             // Cancellation that arrived DURING/just-after launch: tear down now.
             if canceller.isCancelled {
