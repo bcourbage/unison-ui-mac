@@ -74,6 +74,10 @@ The dialog's choices have explicit consequences for the incoming request:
 
 No incoming CLI request silently aborts a synchronization or chooses a dialog response.
 
+The three-way decision is raised only for an active synchronization the user is watching — one whose window is on screen. A synchronization the user already sent to the background (via Close let it run, so its window is gone) offers no decision surface and needs none: that session is already leaving, so a request there is simply accepted-and-waiting and opens when the background synchronization finishes.
+
+**Caller experience (decided).** While the decision is open the caller waits, within the admission deadline, rather than being told a terminal result prematurely. The primary first sends an immediate notice — a synchronization is running and a decision is required in the app, including the timeout — and the caller keeps waiting on the same connection while the app and server stay responsive. After the choice it reports the accurate outcome: Started, Accepted and waiting, or Refused. The admission deadline is enforced: on expiry the request can no longer be started by a later choice and its pending slot is released. Once a request is accepted, it may wait for engine cleanup beyond the admission deadline (that later wait is the app's, not the caller's). A lost final reply is Outcome unconfirmed and is never retried automatically.
+
 ## Pending requests and caller results
 
 At most one external request may be pending, including one awaiting a dialog decision or engine availability. Further CLI requests are refused clearly; they never replace an acknowledged request.

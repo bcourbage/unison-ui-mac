@@ -221,12 +221,45 @@ enum CommandLineHandoff {
     }
 
     /// What the primary should do with a request: reply only, open a profile now
-    /// (which the caller then attempts) and report the outcome, or accept it to
-    /// open after the current work finishes.
+    /// (which the caller then attempts) and report the outcome, accept it to open
+    /// after the current work finishes, or (during a synchronization) present the
+    /// three-way sync decision to the user and let that decision govern the request.
     enum Outcome: Equatable {
         case reply(Response)
         case openNow(name: String)
         case acceptWaiting(name: String)
+        case presentSyncDecision(name: String)
+    }
+
+    /// The user's choice in the three-way decision an incoming request raises while
+    /// a synchronization is running (the app's existing Keep Syncing / Abort &
+    /// Close / Close (let it run) prompt).
+    enum SyncDecision: Equatable {
+        case keepSyncing
+        case abortAndClose
+        case closeAndLetRun
+    }
+
+    /// What to do with the running sync and the waiting request after the user
+    /// chooses. `admitRequest` is false when the request's bounded admission
+    /// deadline already elapsed: the user's sync choice is still honored, but the
+    /// expired request must not open (design: once a request expires, a later
+    /// dialog response cannot start it).
+    enum SyncDecisionResolution: Equatable {
+        case keepSyncing
+        case abortAndClose(admitRequest: Bool)
+        case closeAndLetRun(admitRequest: Bool)
+    }
+
+    /// Map the user's choice + the request's expiry to the resolution. Keep Syncing
+    /// preserves the sync and drops the request; the other two leave the sync and
+    /// open the request only when it has not expired.
+    static func resolveSyncDecision(_ decision: SyncDecision, requestExpired: Bool) -> SyncDecisionResolution {
+        switch decision {
+        case .keepSyncing:    return .keepSyncing
+        case .abortAndClose:  return .abortAndClose(admitRequest: !requestExpired)
+        case .closeAndLetRun: return .closeAndLetRun(admitRequest: !requestExpired)
+        }
     }
 
     /// Whether the request can be faithfully transferred to this instance. Returns
@@ -281,15 +314,14 @@ enum CommandLineHandoff {
                 return .openNow(name: name)
             case .busyWillWait:
                 return .acceptWaiting(name: name)
-            case .synchronizing(let reason):
-                // This slice does not drive the sync decision from a request; the
-                // user makes it in the app. Refuse clearly and do not disturb the
-                // running synchronization. No "-ui text" alternative here: starting
-                // another process against these roots mid-sync is exactly what must
-                // not be suggested while active work is unresolved.
-                return .reply(.refused(message:
-                    "unison-ui-mac is \(reason), so it did not start \(name). "
-                    + "Choose how to handle the current sync in the app, then run the command again."))
+            case .synchronizing:
+                // A synchronization is running: raise the app's three-way decision
+                // (Keep Syncing / Abort & Close / Close (let it run)) and let the
+                // user's choice govern this request. The reply to the caller is a
+                // refusal (the request is NOT accepted while a decision is pending),
+                // but the request is held to a bounded admission deadline so a
+                // choice to leave the sync opens it (design).
+                return .presentSyncDecision(name: name)
             case .editing(let profileDescription):
                 return .reply(.refused(message:
                     "unison-ui-mac is \(profileDescription), so it did not start \(name). "
@@ -336,5 +368,65 @@ enum CommandLineHandoff {
         .acceptedWaiting(message:
             "unison-ui-mac is \(reason). It will open \(name) once that finishes; "
             + "the request is waiting in the app.")
+    }
+
+    /// The interim message the primary sends FIRST when a request arrives during an
+    /// active synchronization: it tells the caller a decision is required in the app
+    /// and how long the caller will wait for it, then the caller waits on the same
+    /// connection for the final verdict (two-phase reply). Wire line:
+    /// `pending\t<timeoutSeconds>\t<message>\n` — the message is single-line text.
+    struct Interim: Equatable {
+        var timeoutSeconds: Int
+        var message: String
+
+        static let verb = "pending"
+
+        func encoded() -> String { "\(Interim.verb)\t\(timeoutSeconds)\t\(message)\n" }
+
+        init(timeoutSeconds: Int, message: String) {
+            self.timeoutSeconds = timeoutSeconds
+            self.message = message
+        }
+
+        /// Parse an interim line, or nil when the line is not an interim (so the
+        /// client treats it as the final response instead).
+        init?(line: String) {
+            guard line.hasSuffix("\n") else { return nil }
+            let body = String(line.dropLast())
+            let parts = body.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == Interim.verb, let secs = Int(parts[1]) else { return nil }
+            self.timeoutSeconds = secs
+            self.message = String(parts[2])
+        }
+    }
+
+    /// The interim notice for a request that arrived during a synchronization.
+    static func syncDecisionInterim(name: String, timeoutSeconds: Int) -> Interim {
+        Interim(timeoutSeconds: timeoutSeconds, message:
+            "unison-ui-mac is synchronizing; it needs a decision in the app before it can start \(name). "
+            + "Waiting up to \(timeoutSeconds)s for you to choose Keep Syncing, Abort & Close, or Close (let it run)…")
+    }
+
+    /// Final verdict: the user kept syncing, so the request was not started.
+    static func syncKeptResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac kept synchronizing, so it did not start \(name). "
+            + "Run the command again when you're ready to open it.")
+    }
+
+    /// Final verdict: no choice was made before the admission deadline elapsed, so
+    /// the request was not started and can no longer be started by a later choice.
+    static func syncDecisionExpiredResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac did not start \(name): no choice was made in time. Run the command again.")
+    }
+
+    /// Final verdict: by the time the user chose, the app was no longer able to open
+    /// the request (the sync ended or the app entered recovery). An explicit refusal
+    /// rather than opening into an unexpected state.
+    static func syncDecisionUnavailableResponse(name: String) -> Response {
+        .refused(message:
+            "unison-ui-mac could not start \(name): the app's state changed while the decision was open. "
+            + "Run the command again.")
     }
 }

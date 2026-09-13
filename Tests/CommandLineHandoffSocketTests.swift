@@ -43,13 +43,114 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
     private typealias Deadline = CommandLineHandoffSocket.Deadline
 
+    /// Wrap an immediate-reply handler as a `HandoffServe` handler, so the existing
+    /// tests keep returning a plain `Response`.
     @discardableResult
     private func startServer(_ handler: @escaping @Sendable (Req, Deadline) -> Resp) -> CommandLineHandoffServer {
+        guard case .listening(let server) = CommandLineHandoffServer.start(
+            path: path, handler: { req, dl in .reply(handler(req, dl)) }) else {
+            fatalError("server did not start")
+        }
+        servers.append(server)
+        return server
+    }
+
+    /// Start a server with a full `HandoffServe` handler (for the two-phase cases).
+    @discardableResult
+    private func startServeServer(_ handler: @escaping @Sendable (Req, Deadline) -> HandoffServe) -> CommandLineHandoffServer {
         guard case .listening(let server) = CommandLineHandoffServer.start(path: path, handler: handler) else {
             fatalError("server did not start")
         }
         servers.append(server)
         return server
+    }
+
+    // MARK: two-phase (deferred) reply — a decision pending in the app
+
+    func test_twoPhase_interimThenFinalVerdict() {
+        let ticket = HandoffDecisionTicket()
+        startServeServer { r, _ in
+            r.given == "defer"
+                ? .awaitDecision(interim: CommandLineHandoff.Interim(timeoutSeconds: 30, message: "decide in app"),
+                                 ticket: ticket, waitSeconds: 30)
+                : .reply(.refused(message: "unexpected"))
+        }
+        // The app resolves the decision shortly after the interim is sent.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            ticket.complete(.acceptedWaiting(message: "will open work"))
+        }
+        let interim = Box<CommandLineHandoff.Interim?>(nil)
+        let result = CommandLineHandoffClient.handOff(
+            req("defer"), path: path, timeout: 3, onPending: { interim.set($0) })
+        XCTAssertEqual(interim.value?.message, "decide in app", "the caller sees the interim notice")
+        XCTAssertEqual(result, .reply(.acceptedWaiting(message: "will open work")),
+                       "the caller then receives the final verdict on the same connection")
+    }
+
+    func test_twoPhase_interimAndFinalArrivingTogether_bothDelivered() {
+        // With the ticket already completed, the server writes the interim and the
+        // final back-to-back; they can arrive in one packet. The buffered reader must
+        // still return the final line (finding 1) instead of losing it.
+        let ticket = HandoffDecisionTicket()
+        ticket.complete(.acceptedWaiting(message: "will open work"))
+        startServeServer { _, _ in
+            .awaitDecision(interim: CommandLineHandoff.Interim(timeoutSeconds: 30, message: "decide"),
+                           ticket: ticket, waitSeconds: 30)
+        }
+        let interim = Box<CommandLineHandoff.Interim?>(nil)
+        let result = CommandLineHandoffClient.handOff(
+            req("defer"), path: path, timeout: 3, onPending: { interim.set($0) })
+        XCTAssertEqual(interim.value?.message, "decide")
+        XCTAssertEqual(result, .reply(.acceptedWaiting(message: "will open work")),
+                       "the final verdict must survive arriving in the same packet as the interim")
+    }
+
+    func test_twoPhase_secondRequestIsServedWhileTheFirstWaits() {
+        let ticket = HandoffDecisionTicket()
+        startServeServer { r, _ in
+            r.given == "defer"
+                ? .awaitDecision(interim: CommandLineHandoff.Interim(timeoutSeconds: 30, message: "decide"),
+                                 ticket: ticket, waitSeconds: 30)
+                : .reply(.refused(message: "already pending"))
+        }
+        // Fire the deferred request and wait until it has actually reached its
+        // waiting state (its interim arrived) before sending the second — otherwise
+        // the test could pass with the opposite ordering.
+        let firstWaiting = DispatchSemaphore(value: 0)
+        let firstDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { [path] in
+            _ = CommandLineHandoffClient.handOff(self.req("defer"), path: path, timeout: 30,
+                                                 onPending: { _ in firstWaiting.signal() })
+            firstDone.signal()
+        }
+        XCTAssertEqual(firstWaiting.wait(timeout: .now() + 3), .success, "first request never reached waiting")
+
+        // Now the first is provably awaiting its decision; a second must still be
+        // served promptly (concurrent serving), not blocked behind it.
+        let second = CommandLineHandoffClient.handOff(req("other"), path: path, timeout: 2)
+        XCTAssertEqual(second, .reply(.refused(message: "already pending")),
+                       "a second request is served while the first is still awaiting its decision")
+        ticket.complete(.started)   // release the first
+        XCTAssertEqual(firstDone.wait(timeout: .now() + 3), .success)
+    }
+
+    func test_decisionTicket_abandonAfterCompleteIsNoOp() {
+        let ticket = HandoffDecisionTicket()
+        let abandoned = Box(false)
+        ticket.setAbandonHandler { abandoned.set(true) }
+        ticket.complete(.started)
+        ticket.abandon()   // completed already → abandon must not fire
+        XCTAssertFalse(abandoned.value)
+        XCTAssertEqual(ticket.wait(seconds: 0.1), .started)
+    }
+
+    func test_decisionTicket_abandonBeforeCompleteFiresOnce() {
+        let ticket = HandoffDecisionTicket()
+        let count = Box(0)
+        ticket.setAbandonHandler { count.set(count.value + 1) }
+        ticket.abandon()
+        ticket.abandon()   // once only
+        XCTAssertEqual(count.value, 1)
     }
 
     private func fileExists(_ p: String) -> Bool { access(p, F_OK) == 0 }
@@ -101,7 +202,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
     func test_secondServer_losesTheElection() {
         startServer { _, _ in .started }
-        guard case .lostElection = CommandLineHandoffServer.start(path: path, handler: { _, _ in .started }) else {
+        guard case .lostElection = CommandLineHandoffServer.start(path: path, handler: { _, _ in .reply(.started) }) else {
             return XCTFail("second server should lose the election")
         }
     }
@@ -123,7 +224,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
         Thread.detachNewThread { [path] in
             let result = CommandLineHandoffServer.start(
-                path: path, handler: { _, _ in .started },
+                path: path, handler: { _, _ in .reply(.started) },
                 afterBind: { entered.signal(); _ = release.wait(timeout: .now() + 3) })
             if case .listening(let s) = result { serverA.set(s) }
             doneA.signal()
@@ -133,7 +234,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
 
         Thread.detachNewThread { [path] in
             let r = CommandLineHandoffServer.start(
-                path: path, handler: { _, _ in .started }, lockTimeout: 5,
+                path: path, handler: { _, _ in .reply(.started) }, lockTimeout: 5,
                 onContended: { bContending.signal() })
             resultB.set(r); doneB.signal()
         }
@@ -169,7 +270,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         XCTAssertEqual(flock(held, LOCK_EX), 0)
         defer { close(held); unlink(path + ".lock") }
         guard case .couldNotElect = CommandLineHandoffServer.start(
-            path: path, handler: { _, _ in .started }, lockTimeout: 0.3) else {
+            path: path, handler: { _, _ in .reply(.started) }, lockTimeout: 0.3) else {
             return XCTFail("a held election lock must report couldNotElect, not start a second instance")
         }
     }
@@ -189,7 +290,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
                 Thread.sleep(forTimeInterval: 0.5)   // main thread busy past the caller's deadline
                 opened.set(!callerDeadline.hasExpired)
                 handled.signal()
-                return callerDeadline.hasExpired ? .refused(message: "expired") : .started
+                return .reply(callerDeadline.hasExpired ? .refused(message: "expired") : .started)
             }, connectionTimeout: 10) else { return XCTFail("server did not start") }
         servers.append(server)
         Thread.detachNewThread { [path] in
@@ -214,7 +315,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
             handler: { _, callerDeadline in
                 sawExpired.set(callerDeadline.hasExpired)
                 handled.signal()
-                return callerDeadline.hasExpired ? .refused(message: "expired") : .started
+                return .reply(callerDeadline.hasExpired ? .refused(message: "expired") : .started)
             }, connectionTimeout: 10) else { return XCTFail("server did not start") }
         servers.append(server)
 
@@ -290,7 +391,7 @@ final class CommandLineHandoffSocketTests: XCTestCase {
         a.stop()
         let recorder = Box<Req?>(nil)
         guard case .listening(let b) = CommandLineHandoffServer.start(
-            path: path, handler: { r, _ in recorder.set(r); return .started }) else {
+            path: path, handler: { r, _ in recorder.set(r); return .reply(.started) }) else {
             return XCTFail("a fresh instance should bind after the old one stopped")
         }
         servers.append(b)

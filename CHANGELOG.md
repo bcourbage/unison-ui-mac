@@ -36,12 +36,24 @@ across releases per Apple's bundle-version rules.
   a previous run when the request arrives, it accepts the request and opens the
   profile once that work and its connection cleanup finish; the command reports
   that it was accepted and is waiting, and the app shows it waiting. A request is
-  still declined, with a specific reason, while a synchronization is running
-  (make that choice in the app), while the profile editor is open (close it first,
-  your edits are kept), and when the app needs to be quit and reopened after a
-  connection problem. Only one command-line request waits at a time; a second is
-  declined rather than replacing the first, and choosing a profile in the app
-  never silently replaces a waiting command-line request.
+  still declined, with a specific reason, while the profile editor is open (close
+  it first, your edits are kept), and when the app needs to be quit and reopened
+  after a connection problem. Only one command-line request waits at a time; a
+  second is declined rather than replacing the first, and choosing a profile in
+  the app never silently replaces a waiting command-line request.
+- **A command-line request during a synchronization asks how to handle the sync.**
+  When a sync is running and a request arrives, the app raises its Keep Syncing /
+  Abort & Close / Close (let it run) prompt for the requested profile. The command
+  prints that a synchronization is running and a decision is required in the app
+  (with the timeout), and then waits for your choice: choosing to stop the sync or
+  let it finish in the background opens the requested profile and the command
+  reports it as started or waiting; Keep Syncing leaves the sync untouched and the
+  command reports that it did not open. The choice must be made within a short
+  window; after that the request is no longer opened and the command can be run
+  again. Only one command-line request waits at a time, and no command-line request
+  ever aborts a sync or makes that choice on its own. A sync you have already sent
+  to the background (Close let it run) needs no prompt: a request simply waits and
+  opens when that sync finishes.
 
 ## [0.9.0] — 2026-09-11
 

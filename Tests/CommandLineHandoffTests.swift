@@ -214,17 +214,46 @@ final class CommandLineHandoffTests: XCTestCase {
             .acceptWaiting(name: "work"))
     }
 
-    func test_decide_synchronizing_refuses_pointingToTheApp() {
+    func test_decide_synchronizing_raisesTheSyncDecision() {
         let out = CommandLineHandoff.decide(
             launch: .openProfile(name: "work"),
             activity: .synchronizing(reason: "synchronizing"))
-        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal during sync") }
-        XCTAssertTrue(m.contains("synchronizing"))
-        XCTAssertTrue(m.contains("work"))
-        XCTAssertTrue(m.contains("handle the current sync in the app"))
-        // No "-ui text" alternative during an active sync (must not suggest
-        // starting another process against these roots mid-sync).
-        XCTAssertFalse(m.contains("-ui text"))
+        XCTAssertEqual(out, .presentSyncDecision(name: "work"))
+    }
+
+    func test_syncDecisionInterim_roundTripsAndCarriesTimeout() {
+        let interim = CommandLineHandoff.syncDecisionInterim(name: "work", timeoutSeconds: 120)
+        XCTAssertEqual(interim.timeoutSeconds, 120)
+        XCTAssertTrue(interim.message.contains("synchronizing"))
+        XCTAssertTrue(interim.message.contains("120"))
+        XCTAssertTrue(interim.message.contains("work"))
+        // The interim round-trips on the wire and is distinguishable from a final
+        // response (which begins ok/waiting/refuse/invalid, not "pending").
+        XCTAssertEqual(CommandLineHandoff.Interim(line: interim.encoded()), interim)
+        XCTAssertNil(CommandLineHandoff.Interim(line: "ok\n"))
+        XCTAssertNil(CommandLineHandoff.Response(line: interim.encoded()),
+                     "an interim line is not a final response")
+    }
+
+    func test_syncFinalResponses_refuseWithoutUiTextAndNameTheProfile() {
+        for r in [CommandLineHandoff.syncKeptResponse(name: "work"),
+                  CommandLineHandoff.syncDecisionExpiredResponse(name: "work"),
+                  CommandLineHandoff.syncDecisionUnavailableResponse(name: "work")] {
+            guard case .refused(let m) = r else { return XCTFail("sync final verdicts are refusals") }
+            XCTAssertTrue(m.contains("work"))
+            XCTAssertFalse(m.contains("-ui text"), "no -ui text alternative while a sync is unresolved")
+        }
+    }
+
+    func test_resolveSyncDecision_matrix() {
+        typealias H = CommandLineHandoff
+        XCTAssertEqual(H.resolveSyncDecision(.keepSyncing, requestExpired: false), .keepSyncing)
+        XCTAssertEqual(H.resolveSyncDecision(.keepSyncing, requestExpired: true), .keepSyncing)
+        XCTAssertEqual(H.resolveSyncDecision(.abortAndClose, requestExpired: false), .abortAndClose(admitRequest: true))
+        XCTAssertEqual(H.resolveSyncDecision(.closeAndLetRun, requestExpired: false), .closeAndLetRun(admitRequest: true))
+        // Expired: the sync choice is still honoured, but the request must not open.
+        XCTAssertEqual(H.resolveSyncDecision(.abortAndClose, requestExpired: true), .abortAndClose(admitRequest: false))
+        XCTAssertEqual(H.resolveSyncDecision(.closeAndLetRun, requestExpired: true), .closeAndLetRun(admitRequest: false))
     }
 
     func test_decide_editing_refuses_withCloseEditorGuidance() {
