@@ -2379,7 +2379,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let outcome: SyncDecisionOutcome
         switch engine.phase {
         case .ready(let s) where s == p.session:
+            // Interactive: the completed sync rests here. Non-interactive: it lands
+            // here once the post-sync connection cleanup has finished.
             outcome = .completed          // the sync finished; results are shown
+        case .closing(let s, _, .backToReady) where s == p.session:
+            // A non-interactive remote sync completes and IMMEDIATELY closes its
+            // connection for cleanup (`.backToReady` is entered only after a
+            // successful `syncCompleted`, EngineSessionCoordinator.syncCompleted).
+            // The synchronization itself is finished and its results are already
+            // presented; the caller's explanation must read as a completion, not a
+            // generic state change, even though the connection teardown is still in
+            // flight.
+            outcome = .completed
         case .restartRequired:
             outcome = .restartRequired    // the sync failed / recovery needed
         default:

@@ -230,20 +230,53 @@ final class SyncDecisionUnificationTests: XCTestCase {
 
     // MARK: explicit acceptance — accurate FINAL CLI message on completion vs failure
 
-    func test_cliDecision_syncCompletesWhileOpen_refusesWithCompletedMessage() {
+    func test_cliDecision_syncCompletesNonInteractive_cleanupInFlight_refusesWithCompletedMessage() {
+        // The PRODUCTION path a reviewer flagged: a non-interactive remote sync
+        // completes and IMMEDIATELY enters .closing(.backToReady) to tear the
+        // connection down. The resolver runs while that cleanup is still in flight
+        // (closeCompleted NOT yet delivered), so it must recognize completion from
+        // the .closing(.backToReady) state — NOT report a generic state change.
         let d = AppDelegate()
         let e = d.engineForTesting
-        // Interactive so the completed sync rests at .ready (results shown, window
-        // stays) rather than auto-closing back through the connection.
+        let (aS, syncO) = driveToSyncingWithOp(e, profile: "A", interactive: false)
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x", args: ["-path", "B"]), session: aS, expired: false)
+
+        // The sync finishes cleanly. Non-interactive: presentSyncResults then a
+        // connection close for cleanup → phase is .closing(.backToReady), still
+        // syncing nothing but not yet back at .ready.
+        _ = e.syncCompleted(aS, syncO, results: .available([]))
+        guard case .closing(aS, _, .backToReady) = e.phase else {
+            return XCTFail("expected a non-interactive completion to be cleaning up, got \(e.phase)")
+        }
+
+        // Resolve while cleanup is unfinished (as run() does after the transition).
+        d.resolvePendingSyncDecisionIfStaleForTesting()
+
+        XCTAssertFalse(d.hasPendingSyncDecisionForTesting, "the completed sync resolves the pending decision")
+        XCTAssertFalse(e.commandLineRequestPending, "no replacement profile is opened on a completion")
+        XCTAssertFalse(e.openRequestPending, "no open is queued on a completion")
+        guard case .refused(let m) = ticket.wait(seconds: 1) else {
+            return XCTFail("a completed sync must resolve the caller, not leave it waiting")
+        }
+        XCTAssertTrue(m.contains("finished the synchronization"),
+                      "a clean completion must read as a completion, not a generic state change: \(m)")
+        XCTAssertFalse(m.contains("state changed"), "a completion must not read as a generic state change: \(m)")
+        XCTAssertFalse(m.contains("quit and reopen"), "a completion must not read as a restart: \(m)")
+    }
+
+    func test_cliDecision_syncCompletesInteractive_restsAtReady_refusesWithCompletedMessage() {
+        // Interactive completion rests at .ready (results shown, window stays); the
+        // resolver recognizes completion there too.
+        let d = AppDelegate()
+        let e = d.engineForTesting
         let (aS, syncO) = driveToSyncingWithOp(e, profile: "A", interactive: true)
         let ticket = d.setPendingSyncDecisionForTesting(
             request: req(given: "B", dir: "/x"), session: aS, expired: false)
 
-        // The sync finishes cleanly: phase → .ready(aS). The post-transition hook
-        // resolves the pending decision.
         _ = e.syncCompleted(aS, syncO, results: .available([]))
         guard case .ready(aS) = e.phase else {
-            return XCTFail("expected the completed sync to rest at .ready, got \(e.phase)")
+            return XCTFail("expected an interactive completion to rest at .ready, got \(e.phase)")
         }
         d.resolvePendingSyncDecisionIfStaleForTesting()
 
