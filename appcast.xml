@@ -6,6 +6,33 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.10.0</title>
+            <pubDate>Sun, 13 Sep 2026 16:15:10 +0000</pubDate>
+            <sparkle:version>26</sparkle:version>
+            <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 0.10.0</h1>
+<p>Version 0.10.0 completes how a <code>unison &lt;profile&gt;</code> request behaves when the app is already running. A request now carries its own command-line options to the running instance, waits for the app when it is busy instead of being turned away, and, when a synchronization is in progress, asks you how to handle it. Existing profiles and settings continue to work without migration.</p>
+<h2>Added</h2>
+<ul>
+<li><strong>Options are delivered to the running instance.</strong> <code>unison &lt;profile&gt; -path &lt;dir&gt;</code> handed to a running app opens that profile scoped to <code>&lt;dir&gt;</code>, exactly as the same command would at a fresh launch. <code>-include</code> and <code>-source</code> are carried too, with order, repeated options, and profile precedence preserved. How the running app was itself started no longer matters: each request is scoped only by its own options.</li>
+<li><strong>A busy app makes the request wait instead of turning it away.</strong> If the app is scanning, showing reconciliation results, or finishing a previous run, it accepts the request and opens the profile once that work and its cleanup finish. The command reports that it was accepted and is waiting, and the app shows it waiting.</li>
+<li><strong>A request during a synchronization asks how to handle the sync.</strong> When a sync is running, the app raises its Keep Syncing / Abort &amp; Close / Close (let it run) decision for the requested profile. The command prints that a synchronization is running and a decision is required in the app, then waits for your choice within a short window: stopping the sync or letting it finish in the background opens the requested profile; Keep Syncing leaves the sync untouched and does not open it. No command ever aborts a sync or makes that choice on its own.</li>
+</ul>
+<h2>Changed</h2>
+<ul>
+<li><strong>A request to a busy app is no longer simply refused.</strong> Earlier versions kept the work in progress and told you they did not start the new profile. Now the request waits (for a scan or cleanup) or asks you how to handle a running sync, and opens the profile when it can. The profile editor and a recovery/restart state still refuse, with a specific reason and the step to take.</li>
+</ul>
+<h2>Notes</h2>
+<ul>
+<li>Only one command-line request is handled at a time. A second request while one is waiting is refused with a clear message, and choosing a profile in the app never silently replaces a waiting command-line request.</li>
+<li>If a request cannot be confirmed (the reply was lost), the command says so and asks you to check the app before running it again, rather than retrying on its own; the original request may already have been accepted.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.10.0/unison-ui-mac-0.10.0.app.zip" length="5670671" type="application/octet-stream" sparkle:edSignature="yKA99lWHZpJmqFtNbWu2CGG/tIwDUxmUo+20te1M0crPjHgBJze+EtNDlCui72YejRBZw/NTubeL1y41INR4Dg=="/>
+        </item>
+        <item>
             <title>0.9.0</title>
             <pubDate>Fri, 11 Sep 2026 14:24:52 +0000</pubDate>
             <sparkle:version>25</sparkle:version>
@@ -62,34 +89,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.8.0/unison-ui-mac-0.8.0.app.zip" length="5574875" type="application/octet-stream" sparkle:edSignature="7Qri2gl5/XeO78sjFd9gfnbqoLlcKy6PiijNncrSuR9EBrDZBqY2xULqGWN2U3b/oLP4+axOxpdP3hgAa6gsBA=="/>
         </item>
-        <item>
-            <title>0.7.0</title>
-            <pubDate>Sun, 06 Sep 2026 09:40:21 +0000</pubDate>
-            <sparkle:version>23</sparkle:version>
-            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.7.0</h1>
-<p>Version 0.7.0 adds a <code>unison</code> command to the app. One install now serves both the graphical interface and Unison's command-line roles, including acting as the far side of an SSH profile, so a Mac with this app no longer needs a separate Unison installation. Existing profiles and settings continue to work without migration.</p>
-<h2>Added</h2>
-<ul>
-<li><strong>The <code>unison</code> command.</strong> The app bundle carries a command-line launcher. Once linked onto your PATH under the name <code>unison</code>, it behaves like Unison's own command: <code>unison -ui graphic</code> opens this app, <code>unison &lt;profile&gt;</code> and <code>unison -ui text &lt;profile&gt;</code> run Unison's text interface in the terminal on the app's embedded engine, and <code>unison -server</code>, which another machine runs over ssh when it syncs to this Mac, is served by the app's engine headlessly. Arguments reach Unison exactly as typed, so everything Unison accepts on the command line works the same way here. A profile named after <code>-ui graphic</code> is preselected in the profile picker.</li>
-<li><strong>Settings ▸ Command Line.</strong> Shows what <code>unison</code> currently resolves to on two PATHs, the one a login shell builds and the one macOS gives commands arriving over ssh, and names it: this app's command, another copy of this app, the Homebrew <code>unison</code> formula, upstream Unison.app, a broken link, or something else. One button is offered only when the evidence supports it: Install when nothing owns the name, Repair when a broken link points at a former copy of this app, Remove for this installation's own link. Each asks for an administrator password, and each re-checks the link at the moment it runs.</li>
-<li><strong>First-launch offer.</strong> When nothing on either PATH is named <code>unison</code>, or a broken link points at a former copy of this app, the app offers to install or repair the command once per launch after the profile picker appears. "Not Now" asks again next time; "Do not ask again" stops the offer, and the Settings tab remains the way to install later.</li>
-</ul>
-<h2>Compatibility</h2>
-<ul>
-<li>No profile or settings migration is required. Same system requirements as 0.6.1: macOS 15 or later, Apple Silicon.</li>
-<li>Installing the command writes one link at <code>/usr/local/bin/unison</code>. Homebrew users get the link from the cask instead, under the Homebrew prefix, once the cask for this version is published. Only one command can hold the name: if the Homebrew <code>unison</code> formula is linked, either unlink it or keep it and install the app from the zip without the command.</li>
-<li>Machines that sync to this Mac over ssh run <code>unison -server</code> here in a non-interactive shell. <code>/usr/local/bin</code> is on that shell's PATH on a stock macOS; the Homebrew prefix is not, so peers of a Homebrew install should set <code>servercmd</code> in their profile. Launch the app once from Finder before relying on it as an ssh peer, so macOS completes its first-open check of the download.</li>
-<li>If automatic update checking is enabled, Sparkle notifies you when 0.7.0 is available. You can also update any time from App menu ▸ Check for Updates.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.7.0/unison-ui-mac-0.7.0.app.zip" length="5260748" type="application/octet-stream" sparkle:edSignature="S9Zd+BPqWkCYkj/sjWFlZK86NWJGxXwqZdTuxAy9nln3XdLyA7ap3p5aTz5tMHAKpi9HD+kYVFFUhwLcj/joBA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 5wodQKp4U/8AEe1wRI2m755RFvTLEQSQCRfb2/z7MZMChNK1hDj1Rree9YsC6B/tqo4TLxGtmC8y8DQ3wcvtAg==
-length: 12961
+edSignature: txq1ovHwrZ8fhNyTaMnQM5jYPuAsOAl7gYjl3yHofLNMKwnPz9UmT9TcI5xp5gZO9tJGrfg+0SALLNQGOWOVAA==
+length: 12434
 -->
