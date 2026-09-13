@@ -373,8 +373,10 @@ disposable `UNISON` export stays in effect.
    named or picked, and nothing after.
 6. **(Remote) A reconnecting Rescan reloads unscoped.** This needs a remote root so
    the connection actually closes on sync-end. First **quit** the instance left by
-   step 5: it was launched with options, so the next command would meet the
-   preserved handoff refusal instead of starting this test. In the same exported
+   step 5, so this step exercises a fresh launch rather than a running-instance
+   handoff (from v0.10.0 a request to a running instance is served, delivering the
+   option to the opened session rather than being refused; TC15 covers that path).
+   In the same exported
    `UNISON` directory, add a disposable remote fixture: a key (non-interactive)
    remote host that connects without a prompt, an empty remote scratch directory,
    and a profile `remote` with roots `"$TC14/A"` and `ssh://<host>//<remote-scratch>`
@@ -399,6 +401,101 @@ both `second` and `first` unscoped (both changes, no refusal); a no-profile
 `-path` launch scopes only the first selection; the remote reconnecting Rescan
 (after a scoped sync) exposes only the untouched outside change; and after a
 normal relaunch the scope is gone.
+
+### TC15 — Running-instance requests: the complete state table (v0.10.0)
+
+Verifies, on the signed release candidate, how a `unison <profile>` request is
+handled when the app is **already running** — the #162 state table, session-scoped
+option delivery, and the synchronization decision. This is the acceptance for the
+v0.10.0 running-instance work (PRs #164–#168). It is hands-on: it needs the app
+open plus a second Terminal issuing requests to it. Run the RC's **in-bundle
+launcher explicitly** (quote its path; confirm a linked `unison` resolves into the
+RC bundle with `-version`), and export a disposable `UNISON` directory shared by
+both Terminals so nothing real is touched. A request that opens replies exit 0
+with no extra output (the window is the feedback); a request that is refused prints
+one line to stderr and exits non-zero.
+
+**Setup.** As in TC14, make a throwaway directory with two local roots `A`/`B`, a
+change inside `A/Documents` and one outside it, and local-only profiles `work` and
+`other` (roots `A`,`B`; no `path`/`include`/`ignore`). For the synchronization
+sub-cases (f, g) also add a **key (non-interactive) remote** profile `remote`
+(local root `A`, an `ssh://` root whose `servercmd` points at the RC engine) and a
+way to hold a sync open long enough to issue a request during it — either a large
+disposable payload or a `kill -STOP` freeze of the remote `unison -server` child
+(see TC11). Keep the app launched from the exported `UNISON` throughout. Record the
+RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher path.
+
+- **TC15a — Idle at the picker opens now.** With the app idle at the picker, in the
+  second Terminal run `"<RC launcher>" work`. **Expect:** the app activates and
+  opens `work`, scanning; the command exits 0 with no output.
+- **TC15b — Options are delivered to the running instance.** Return the app to the
+  picker. Run `"<RC launcher>" work -path Documents`. **Expect:** `work` opens
+  scoped to `Documents` (only the inside change listed), exactly as the same
+  command would at a fresh launch; exit 0. Repeat with a repeated list option
+  (`-path Documents -path Other`) and a scalar/bool option to confirm each is
+  applied as on the `unison` command line (order and accumulation preserved). A
+  later picker selection of `work` is unscoped (both changes).
+- **TC15c — Busy but leavable: accepted and waiting.** Open `work` and let it sit
+  at the reconciliation results (or catch it mid-scan). In the second Terminal run
+  `"<RC launcher>" other`. **Expect:** the command reports it was **accepted and is
+  waiting** (a message, exit 0); the app shows a waiting window; `work`'s window is
+  dismissed; and once `work`'s session finishes its cleanup, `other` opens and
+  scans. `work`'s old window must not be able to act on `other` (its controls are
+  gone).
+- **TC15d — Profile editor open: refused, edits kept.** Open the Profile Editor and
+  begin editing a profile (make an unsaved change). Run `"<RC launcher>" work`.
+  **Expect:** refused, exit non-zero, with a message naming the profile being
+  edited and asking you to close the editor and run again; your unsaved edits are
+  intact.
+- **TC15e — Restart-required: refused with recovery guidance.** Drive the app into
+  the restart-required state (e.g. TC11's frozen-remote scan-stall). Run
+  `"<RC launcher>" work`. **Expect:** refused, exit non-zero, with a message that
+  the app needs to be quit and reopened; no `-ui text` alternative is offered.
+- **TC15f — Synchronizing: the three-way decision (caller waits).** Open `remote`,
+  click **Go**, and hold the sync open. In the second Terminal run
+  `"<RC launcher>" work`. **Expect:** the command immediately prints that a
+  synchronization is running and a decision is required in the app, with the
+  timeout, and then **waits**. In the app a sheet appears on the sync window naming
+  `work`, with **Keep Syncing / Abort & Close / Close (let it run)**. Test each:
+  - **Keep Syncing** — the sync continues; the command reports `work` was **not**
+    started (exit non-zero); nothing opens.
+  - **Abort & Close** — the abort runs; after cleanup `work` opens; the command
+    reports **accepted and waiting** (exit 0).
+  - **Close (let it run)** — the sync continues in the background (its window
+    closes); the command reports **accepted and waiting**; `work` opens once the
+    background sync finishes.
+  - **Timeout** — issue the request, then leave the sheet untouched past the stated
+    window. **Expect:** the sheet is dismissed, the command reports the request was
+    not made in time (exit non-zero), and a later click cannot start `work`; the
+    sync itself is unaffected.
+  No command ever aborts the sync or picks a dialog option on its own.
+- **TC15g — Background sync has no decision surface.** After a **Close (let it
+  run)** from TC15f (a sync running with no window), run `"<RC launcher>" other`.
+  **Expect:** no sheet; the command reports **accepted and waiting**; `other` opens
+  when the background sync finishes.
+- **TC15h — One request at a time; the picker cannot replace it.** While a request
+  is accepted-and-waiting (TC15c) or awaiting the sync decision (TC15f), run a
+  second `"<RC launcher>" other`. **Expect:** the second is refused as already
+  handling another request (exit non-zero); the first is preserved. Separately,
+  while a command-line request is waiting, choosing a profile in the app’s picker
+  does **not** silently replace it (you are told it is waiting).
+- **TC15i — Outcome unconfirmed is not retried.** Simulate a lost final reply
+  (e.g. quit the app during an awaited sync decision). **Expect:** the command
+  reports the outcome could not be confirmed and to check the app before running
+  again; it does not silently retry or open a duplicate.
+
+Record pass/fail evidence per sub-case with the RC version/build, macOS version,
+and launcher path.
+
+**PASS =** idle opens now; options are delivered to the running instance as at a
+fresh launch; a busy-but-leavable request is accepted-and-waiting and opens after
+cleanup with the old window torn down; the editor and restart-required states
+refuse with specific guidance; the synchronization decision offers all three
+choices with the caller waiting and reports Started / Accepted-and-waiting /
+Refused accurately, honours the admission timeout, and never acts on the sync by
+itself; a windowless background sync accepts-and-waits; only one request is pending
+at a time and the picker cannot silently replace it; and a lost reply is reported
+as unconfirmed without an automatic retry.
 
 ### Interactive-password cases (run last)
 
