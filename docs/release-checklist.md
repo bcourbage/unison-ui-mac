@@ -67,21 +67,28 @@ artifact is ever published.
 
 `release.yml` implements this sequence: **sign-rc** performs step 1 (signs,
 notarizes, staples, and uploads the unpublished signed RC as the
-`unison-ui-mac-signed-<version>` artifact with its SHA-256), and **publish** —
-gated by the protected `release-publish` environment — performs step 4 on the
-**same** artifact, re-verifying its SHA-256 (`shasum -a 256 -c`) and its signature,
-staple, and macOS floor before creating the Release and publishing the feed. Step 2
-happens between them: download the sign-rc artifact, run every applicable TC case on
-those exact bytes, and only then approve `release-publish`. A `release-publish`
-approval must never be granted until step 2 has passed on that RC.
+`unison-ui-mac-signed-<version>` artifact, printing its SHA-256 to the run summary),
+and **publish** — gated by the protected `release-publish` environment — performs
+step 4 on the **same** artifact, re-verifying its SHA-256 (`shasum -a 256 -c`) and
+its signature, staple, and macOS floor before creating the Release and publishing
+the feed. Step 2 happens between them: download the sign-rc artifact, run every
+applicable TC case on those exact bytes, **and record the RC's SHA-256 (from the
+sign-rc run summary) in the acceptance record**, then approve `release-publish`. A
+`release-publish` approval must never be granted until step 2 has passed on that RC.
+Because a matching checksum only proves integrity, the acceptance record must name
+the exact artifact + SHA-256 that was tested, and the publish run's summary prints
+the SHA-256 it is shipping — confirm the two match so promotion demonstrably
+publishes the tested RC, not merely a self-consistent one.
 
 **Both `release` and `release-publish` must be configured in repo settings with
 required reviewers.** `release` gates reaching the signing secrets; `release-publish`
-gates publication and is where the acceptance decision is recorded. A referenced but
-unconfigured environment has **no** protection, which would let publish run without
-the acceptance gate — treat confirming both environments' reviewers as a pre-tag
-check. The per-release rollback procedures below cover a defect that escapes this
-gate; they do not authorize skipping it.
+gates publication and is where the acceptance decision is recorded. This is enforced,
+not just documented: the **`verify-publish-gate`** job queries the environment and
+**fails the release before any signing** if `release-publish` is missing or has no
+required reviewers, so GitHub cannot silently auto-create it unprotected. Confirming
+both environments' reviewers stays a pre-tag check as well. The per-release rollback
+procedures below cover a defect that escapes this gate; they do not authorize
+skipping it.
 
 ## Every release
 

@@ -291,9 +291,42 @@ jobs:
           fi
           echo "Release build launched and exited cleanly on macOS 15."
 
+  # Fail closed BEFORE any signing if the publication gate is not actually
+  # protected. GitHub auto-creates a referenced-but-undefined environment WITHOUT
+  # protection on first use, so a missing/unprotected `release-publish` would let
+  # `publish` run with no acceptance gate. This job refuses the whole release in
+  # that case, so the hazard cannot reach a future run via a checklist miss.
+  verify-publish-gate:
+    name: Verify the promotion gate is protected (fail closed)
+    needs: [build, smoke-macos15]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Require release-publish to exist with required reviewers
+        run: |
+          set -euo pipefail
+          env="release-publish"
+          # A 404 (missing) makes `gh api` exit non-zero; capture that as "missing".
+          if ! json="$(gh api "repos/${REPO}/environments/${env}" 2>/dev/null)"; then
+            echo "::error::environment '${env}' is missing (or unreadable). Publication is gated on it; create it in Settings ▸ Environments with required reviewers before releasing. Refusing to sign."
+            exit 1
+          fi
+          count="$(printf '%s' "$json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(len(r.get("reviewers",[])) for r in d.get("protection_rules",[]) if r.get("type")=="required_reviewers"))')"
+          echo "release-publish required reviewers: $count"
+          if [ "$count" -lt 1 ]; then
+            echo "::error::environment '${env}' has no required reviewers; the promotion gate would be bypassed. Refusing to sign."
+            exit 1
+          fi
+          echo "Promotion gate '${env}' is protected ($count required reviewer(s))."
+
   sign-rc:
     name: Sign, notarize, upload the RC (no publish)
-    needs: [build, smoke-macos15]
+    needs: [build, smoke-macos15, verify-publish-gate]
     # Only a pushed v* tag reaches this job; the `release` environment adds
     # required-reviewer approval and a v* tag deployment rule on top. This job
     # signs + notarizes + staples and UPLOADS the RC — it publishes nothing.
@@ -459,6 +492,17 @@ jobs:
           } > rc-manifest.txt
           echo "Signed, notarized, stapled RC: $zip"
           echo "sha256: $sha"
+          # Surface the identity on the run page so the acceptance record can name the
+          # EXACT artifact + hash that was tested (promotion then publishes that RC).
+          {
+            echo "### Signed RC for acceptance"
+            echo ""
+            echo "- artifact: \`unison-ui-mac-signed-${VERSION}\`"
+            echo "- file: \`$zip\`"
+            echo "- sha256: \`$sha\`"
+            echo ""
+            echo "Record this sha256 in the TC15 acceptance record; \`publish\` re-verifies it."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The unpublished RC for acceptance + promotion. `publish` downloads THIS exact
       # artifact and re-verifies rc.sha256 before shipping, so the bytes a reviewer
@@ -533,6 +577,14 @@ jobs:
           shasum -a 256 -c rc.sha256
           echo "zip=$zip" >> "$GITHUB_OUTPUT"
           echo "Bound to the signed RC:"; shasum -a 256 "$zip"
+          # Surface the published hash so a reviewer can confirm it equals the sha256
+          # they recorded during acceptance — promotion publishes the tested RC.
+          {
+            echo "### Publishing the tested RC"
+            echo ""
+            echo "- file: \`$zip\`"
+            echo "- sha256: \`$(shasum -a 256 "$zip" | awk '{print $1}')\` (must equal the acceptance record)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Re-verify the signed RC (signature, notarized-stapled, macOS floor)
         env:
