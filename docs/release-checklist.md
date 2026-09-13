@@ -130,17 +130,27 @@ skipping it.
       Release configuration) is built from the exact tagged commit. (Cannot be
       confirmed before the tag exists; it is the job's checkout/build guarantee.)
 - [ ] **(pre-promotion — manual, Gatekeeper, on the signed RC)** On a Mac that has
-      never run this version: download the **`sign-rc` artifact**
-      (`unison-ui-mac-signed-<version>`, the signed + notarized + stapled RC — not
-      the unsigned build artifact), unzip, move to `/Applications`, launch once from
-      Finder and accept nothing but the standard first-open dialog. Then
-      `ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /tmp/unison`
-      and run `/tmp/unison -version`: it prints the engine version, exit 0. This is
-      the only check that exercises Gatekeeper acceptance of the quarantined,
-      notarized distribution and its embedded launcher (an Actions-downloaded zip is
-      quarantined like a browser download); `smoke-macos15` runs the unsigned
-      artifact before signing and cannot stand in for it. Run this before approving
-      `release-publish`; a failure blocks promotion.
+      never run this version, exercise Gatekeeper on a genuinely **quarantined** copy
+      of the `sign-rc` artifact (`unison-ui-mac-signed-<version>`, the signed +
+      notarized + stapled RC — not the unsigned build artifact). Quarantine is **not**
+      assumed: download in a way that sets it (a browser download from the run's
+      artifact page, which applies `com.apple.quarantine`), and extract with a
+      quarantine-preserving tool. Command-line retrieval (`gh run download`) and some
+      unarchivers do **not** set the flag, which would silently invalidate the check;
+      if you must use them, apply it explicitly
+      (`xattr -w com.apple.quarantine "0081;0;;" <app>` on the extracted bundle).
+      **Before the first launch, verify the flag is present:**
+      `xattr -p com.apple.quarantine "<app>"` must print a value (non-empty, exit 0);
+      if it is absent, the copy is not quarantined and the result is invalid. Then
+      move to `/Applications`, launch once from Finder, and accept nothing but the
+      standard first-open dialog. Then
+      `ln -s /Applications/unison-ui-mac.app/Contents/MacOS/cltool /tmp/unison` and
+      run `/tmp/unison -version`: it prints the engine version, exit 0. This is the
+      only check that exercises Gatekeeper acceptance of the quarantined, notarized
+      distribution and its embedded launcher (Apple's testing guidance requires a
+      quarantined copy); `smoke-macos15` runs the unsigned artifact before signing
+      and cannot stand in for it. Run this before approving `release-publish`; a
+      failure (or an unquarantined copy) blocks promotion.
 - [ ] **(pre-promotion — on the signed RC)** The `sign-rc` artifact reports the
       right `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, minimum macOS, a Developer
       ID signature with a hardened runtime, a stapled notarization ticket, and no
@@ -151,16 +161,17 @@ skipping it.
 
 ### Command-line option scope (#122)
 
-- [ ] **(pre-publication gate, live on the signed RC)** **TC14**
-      (`docs/manual-test-step2b.md`) — CLI option scope, first-load-only contract:
+- [ ] **(pre-promotion, live on the signed RC)** **TC14**
+      (`docs/manual-test-step2b.md`) — CLI option scope, session-scoped contract:
       `unison first -path Documents` scans only `Documents`; an in-place local
       rescan of `first` stays limited to `Documents`; returning to the picker opens
       both `second` and `first` in full (unscoped, no refusal); a no-profile
       `-path` launch scopes only the first selection; and a key/remote profile's
-      reconnecting Rescan after a sync is unscoped. Uses disposable roots with
-      changes inside and outside `Documents`. Record the RC version/build, macOS
-      version, exact launcher path, and pass/fail evidence. Required before
-      publication.
+      reconnecting Rescan after a sync **keeps the scope** (shows a new in-`Documents`
+      change, excludes the outside change), while a subsequent picker reopen of that
+      profile is unscoped. Uses disposable roots with changes inside and outside
+      `Documents`. Record the RC version/build, macOS version, exact launcher path,
+      and pass/fail evidence. Required before promotion.
 
 ## 0.6.0
 
