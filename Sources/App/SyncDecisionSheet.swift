@@ -110,9 +110,13 @@ enum SyncDecisionSheet {
     /// so the caller can dismiss it (`endSheet`) if state changes first.
     ///
     /// Return triggers the default (keep) — NSAlert's first button. Escape also
-    /// cancels to keep via a local key monitor scoped to this sheet: NSAlert cannot
-    /// make one button both the Return default and the Escape cancel, so the monitor
-    /// ends the sheet on Escape (and is torn down when the sheet closes by any path).
+    /// cancels to keep via a local key monitor scoped to THIS sheet's keyboard
+    /// context: NSAlert cannot make one button both the Return default and the
+    /// Escape cancel, so the monitor ends the sheet on Escape. It fires only when
+    /// the event targets the sheet's own window (`event.window === sheet`), so
+    /// Escape pressed in another window — Settings, the picker — passes through
+    /// unchanged and cannot dismiss this decision. The monitor is torn down on
+    /// every dismissal path (the completion runs for any `endSheet`).
     @MainActor
     static func present(_ content: SyncDecisionContent,
                         on window: NSWindow,
@@ -125,7 +129,8 @@ enum SyncDecisionSheet {
         }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak window, weak alert] event in
             guard event.keyCode == 53,                       // Escape
-                  let sheet = alert?.window, sheet.isVisible else { return event }
+                  let sheet = alert?.window, sheet.isVisible,
+                  event.window === sheet else { return event }   // only when THIS sheet is key
             window?.endSheet(sheet, returnCode: .cancel)     // → completion → keep (and monitor teardown)
             return nil
         }

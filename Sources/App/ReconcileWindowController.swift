@@ -92,6 +92,13 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     private let onSyncStart: SyncStartRequest
     /// User chose how to leave a running sync; see `SyncExitRequest`.
     private let onSyncExit: SyncExitRequest
+    /// Acquire the single app-wide sync-decision slot for a window-close decision.
+    /// Returns false if a decision (this window's own, or a command-line request's)
+    /// is already open, in which case no second sheet is raised. Default true so
+    /// unit tests that build the controller directly still open the sheet.
+    private let onBeginSyncCloseDecision: @MainActor () -> Bool
+    /// Release the sync-decision slot when the window-close decision resolves.
+    private let onEndSyncCloseDecision: @MainActor () -> Void
     /// A row mutation left the engine uncertain; see `EngineUncertainRequest`.
     private let onEngineUncertain: EngineUncertainRequest
     /// Perform an Ignore through the driver; see `IgnoreRequest`.
@@ -182,11 +189,15 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Reset at each `startSync`.
     private var userRequestedStop = false
 
-    /// The non-blocking window-close sync sheet, while it is up. `syncCloseSheetUp`
-    /// gates against a duplicate sheet on a repeated close attempt; `syncCloseAlert`
+    /// The non-blocking window-close sync sheet, while it is up. `syncCloseAlert`
     /// is retained so it can be dismissed if the sync ends while the sheet is open.
-    private var syncCloseSheetUp = false
+    /// `syncCloseToken` is the identity of the active decision: its callback acts
+    /// only while the token is still current, so a choice delivered after the sync
+    /// already finished (which invalidates the token) performs NO stop, close, or
+    /// open. A repeated close attempt is gated app-wide by the shared decision slot
+    /// (`onBeginSyncCloseDecision`), so no duplicate sheet is raised.
     private var syncCloseAlert: NSAlert?
+    private var syncCloseToken: NSObject?
 
     /// Reconcile-window lifecycle phase. Single source of truth for
     /// what stage the window is in:
@@ -236,6 +247,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
          onProfilesRequested: @escaping ProfilesRequest = { false },
          onSyncStart: @escaping SyncStartRequest,
          onSyncExit: @escaping SyncExitRequest,
+         onBeginSyncCloseDecision: @escaping @MainActor () -> Bool = { true },
+         onEndSyncCloseDecision: @escaping @MainActor () -> Void = {},
          onEngineUncertain: @escaping EngineUncertainRequest,
          onIgnore: @escaping IgnoreRequest,
          onDiffRequest: @escaping DiffRequest,
@@ -249,6 +262,8 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         self.onProfilesRequested = onProfilesRequested
         self.onSyncStart = onSyncStart
         self.onSyncExit = onSyncExit
+        self.onBeginSyncCloseDecision = onBeginSyncCloseDecision
+        self.onEndSyncCloseDecision = onEndSyncCloseDecision
         self.onEngineUncertain = onEngineUncertain
         self.onIgnore = onIgnore
         self.onDiffRequest = onDiffRequest
@@ -323,45 +338,69 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // veto the immediate close here and let the sheet's choice drive it.
             // A repeated close attempt while the sheet is up is a no-op (no
             // duplicate sheet).
-            if syncCloseSheetUp { return false }
-            syncCloseSheetUp = true
+            // Acquire the single app-wide sync-decision slot. If a decision is
+            // already open (this window's own, or a command-line request's), do not
+            // raise a second sheet — preserve the existing one.
+            guard onBeginSyncCloseDecision() else { return false }
+            let token = NSObject()
+            syncCloseToken = token
             let content = SyncDecisionSheet.content(for: .windowClose(profile: profile))
             syncCloseAlert = SyncDecisionSheet.present(content, on: sender) { [weak self] choice in
-                guard let self else { return }
-                self.syncCloseSheetUp = false
-                self.syncCloseAlert = nil
-                switch choice {
-                case .keep:
-                    // Keep the window open; the sync is untouched. Any dismissal
-                    // (Escape / the sync ending while the sheet was up) lands here.
-                    break
-                case .background:
-                    // Continue in Background — close the window; the coordinator
-                    // closes the connection after the sync finishes naturally.
-                    // Revalidate: only drive the sync exit if still syncing.
-                    Log.reconcile.notice("user closed mid-sync: continue in background")
-                    if self.isSyncing { self.onSyncExit(.closeAndLetRun) }
-                    sender.close()   // bypasses windowShouldClose → windowWillClose → onClose
-                case .stop:
-                    // Stop Syncing & Close — the coordinator aborts the transport
-                    // and closes the connection once the sync unwinds. We never
-                    // call unison_bridge_abort_sync() directly.
-                    Log.reconcile.notice("user closed mid-sync: stop syncing & close")
-                    if self.isSyncing { self.userRequestedStop = true; self.onSyncExit(.abortAndClose) }
-                    sender.close()
-                }
+                self?.resolveWindowCloseChoice(choice, token: token, closeWindow: { sender.close() })
             }
             return false
         }
     }
+
+    /// Resolve a window-close decision identified by `token`. Always releases the
+    /// shared decision slot and drops the sheet reference. The action runs ONLY if
+    /// `token` is still the active decision: if the sync finished while the sheet
+    /// was up it invalidated the token (and dismissed the sheet), so a choice
+    /// delivered afterwards is stale and performs NO stop, close, or open — the
+    /// window stays, showing the completed results. `closeWindow` is injected so
+    /// this is testable without a real window. `isSyncing` is revalidated before
+    /// driving the engine (a background/stop choice acts only while still syncing).
+    func resolveWindowCloseChoice(_ choice: SyncDecisionChoice,
+                                  token: NSObject,
+                                  closeWindow: () -> Void) {
+        onEndSyncCloseDecision()
+        syncCloseAlert = nil
+        guard syncCloseToken === token else { return }   // stale: sync finished first
+        syncCloseToken = nil
+        switch choice {
+        case .keep:
+            break   // keep the window open; the sync is untouched (Escape/Keep)
+        case .background:
+            Log.reconcile.notice("user closed mid-sync: continue in background")
+            if isSyncing { onSyncExit(.closeAndLetRun) }
+            closeWindow()   // bypasses windowShouldClose → windowWillClose → onClose
+        case .stop:
+            Log.reconcile.notice("user closed mid-sync: stop syncing & close")
+            if isSyncing { userRequestedStop = true; onSyncExit(.abortAndClose) }
+            closeWindow()
+        }
+    }
+
+    #if DEBUG
+    /// Simulate the sheet being up: arm a decision token and return it.
+    func armWindowCloseDecisionTokenForTesting() -> NSObject { let t = NSObject(); syncCloseToken = t; return t }
+    /// Simulate the sync finishing while the sheet was up (invalidates the token).
+    func invalidateWindowCloseDecisionForTesting() { syncCloseToken = nil }
+    func setSyncingForTesting(_ v: Bool) { isSyncing = v }
+    var userRequestedStopForTesting: Bool { userRequestedStop }
+    #endif
 
     /// Dismiss the window-close sync sheet if it is up (called when the sync
     /// ends/fails/enters recovery, so the sheet never lingers with a stale "still
     /// synchronizing" question). Resolves to keep — the window stays, now showing
     /// the completed/failed results, and can be closed normally.
     private func dismissSyncCloseSheetIfPresent() {
-        guard syncCloseSheetUp, let alert = syncCloseAlert, let parent = window else { return }
-        parent.endSheet(alert.window, returnCode: .cancel)   // → completion maps to keep
+        guard let alert = syncCloseAlert, let parent = window else { return }
+        // Invalidate the decision BEFORE dismissing so the sheet's completion (fired
+        // by endSheet) performs no stale action — it only releases the slot and
+        // clears the reference. The window stays, now showing the results.
+        syncCloseToken = nil
+        parent.endSheet(alert.window, returnCode: .cancel)
     }
 
     /// Replace the displayed items (e.g. after a rescan completes). Must

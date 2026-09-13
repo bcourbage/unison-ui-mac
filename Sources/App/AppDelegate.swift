@@ -46,6 +46,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
     private var pendingSyncDecision: PendingSyncDecision?
+
+    /// The SINGLE active sync decision, shared across both entry points — an
+    /// ordinary window close and a command-line request — so only one decision is
+    /// ever open for the one syncing session. The engine syncs one session at a
+    /// time, so a single app-wide slot is sufficient. `acquireSyncDecision` gates
+    /// both origins: a command-line request arriving while an ordinary close
+    /// decision is open is refused (a decision is already open in the app), and an
+    /// ordinary close during a command-line decision does not open a second sheet.
+    private enum SyncDecisionKind { case windowClose, commandLine }
+    private var activeSyncDecisionKind: SyncDecisionKind?
+    /// Try to become the one active sync decision. Returns false if one is already
+    /// open (of either origin).
+    private func acquireSyncDecision(_ kind: SyncDecisionKind) -> Bool {
+        guard activeSyncDecisionKind == nil else { return false }
+        activeSyncDecisionKind = kind
+        return true
+    }
+    private func releaseSyncDecision(_ kind: SyncDecisionKind) {
+        if activeSyncDecisionKind == kind { activeSyncDecisionKind = nil }
+    }
+    /// Whether a command-line sync decision is currently open (consulted by the
+    /// ordinary window-close path so it never raises a second decision over one).
+    private func commandLineSyncDecisionActive() -> Bool { activeSyncDecisionKind == .commandLine }
+
     /// How long a sync-decision request stays admissible while awaiting the user's
     /// choice. Bounded so a decision made long after the request was sent cannot
     /// start a now-stale open. The caller is told this timeout in the interim.
@@ -400,6 +424,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             onProfilesRequested: { [weak self] in self?.profilesRequested(s) ?? false },
             onSyncStart: { [weak self] in self?.windowRequestedSync(s) },
             onSyncExit: { [weak self] intent in self?.windowRequestedSyncExit(s, intent: intent) },
+            onBeginSyncCloseDecision: { [weak self] in self?.acquireSyncDecision(.windowClose) ?? false },
+            onEndSyncCloseDecision: { [weak self] in self?.releaseSyncDecision(.windowClose) },
             onEngineUncertain: { [weak self] reason in self?.windowReportedEngineUncertain(s, reason: reason) },
             onIgnore: { [weak self] action, row in
                 self?.windowRequestedIgnore(s, action: action, row: row) ?? UNISON_OP_INVALID
@@ -2245,6 +2271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// How a pending sync decision was resolved.
     private enum SyncDecisionOutcome {
         case keepSyncing, abortAndClose, closeAndLetRun
+        case completed        // the sync FINISHED (results shown) before a choice was made
+        case restartRequired  // the sync failed / the app entered recovery while deciding
         case expired          // the admission deadline elapsed with no choice
         case unavailable      // the sync ended/changed while the decision was open
         case transportLost    // the caller went away before the interim could be sent
@@ -2261,6 +2289,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// callback for an expired request can never resolve a newer one (#2).
     private func armSyncDecision(request: CommandLineHandoff.Request,
                                  session: EngineSessionCoordinator.SessionID) -> HandoffServe {
+        // Single decision per session: if an ordinary window-close decision (or any
+        // other) is already open in the app, refuse rather than raising a second
+        // sheet over the same syncing window.
+        guard acquireSyncDecision(.commandLine) else {
+            log.write("handoff: refusing '\(request.given)' — a sync decision is already open in the app")
+            return .reply(CommandLineHandoff.syncDecisionBusyResponse(name: request.given))
+        }
         let ticket = HandoffDecisionTicket()
         let windowSecs = Self.syncDecisionAdmissionWindow
         let deadline = DispatchTime.now() + windowSecs
@@ -2337,8 +2372,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func resolvePendingSyncDecisionIfStale() {
         guard let p = pendingSyncDecision else { return }
         if case .syncing(let s, _) = engine.phase, s == p.session { return }   // still its sync
-        log.write("sync decision: the sync for '\(p.request.given)' ended/changed while waiting; refusing")
-        finishSyncDecision(p, .unavailable)
+        // The sync left `.syncing` while the decision was open. Distinguish the
+        // reason so the caller's final message is accurate — a successful
+        // completion must not read like a failure, and a failure/restart must not
+        // read like a clean completion.
+        let outcome: SyncDecisionOutcome
+        switch engine.phase {
+        case .ready(let s) where s == p.session:
+            outcome = .completed          // the sync finished; results are shown
+        case .restartRequired:
+            outcome = .restartRequired    // the sync failed / recovery needed
+        default:
+            outcome = .unavailable        // some other state change
+        }
+        log.write("sync decision: the sync for '\(p.request.given)' left syncing (\(outcome)) while waiting; refusing")
+        finishSyncDecision(p, outcome)
     }
 
     /// The single, idempotent, IDENTITY-BOUND resolution point — reached from the
@@ -2351,6 +2399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         guard pendingSyncDecision === pending else { return }
         let p = pending
         pendingSyncDecision = nil
+        releaseSyncDecision(.commandLine)   // free the single decision slot for the next request
         p.timer?.cancel()
         // Dismiss the request-specific sheet if still up (the expiry / state-change /
         // transport paths). On the user-choice path it has already closed, so this is
@@ -2377,6 +2426,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .expired:
             log.write("sync decision: expired — did not start '\(name)'")
             response = CommandLineHandoff.syncDecisionExpiredResponse(name: name)
+        case .completed:
+            log.write("sync decision: the sync finished before a choice — did not open '\(name)'")
+            response = CommandLineHandoff.syncDecisionCompletedResponse(name: name)
+        case .restartRequired:
+            log.write("sync decision: the sync failed / recovery needed before a choice — did not open '\(name)'")
+            response = CommandLineHandoff.syncDecisionRestartResponse(name: name)
         case .unavailable:
             response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
         case .transportLost:
@@ -3688,5 +3743,16 @@ extension AppDelegate {
         return (ticket, { [weak self] in self?.applySyncDecision(pending, .keepSyncing) })
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
+    /// The shared sync-decision slot, for the ownership/mutual-exclusion tests.
+    @discardableResult
+    func beginWindowCloseDecisionForTesting() -> Bool { acquireSyncDecision(.windowClose) }
+    func endWindowCloseDecisionForTesting() { releaseSyncDecision(.windowClose) }
+    var activeSyncDecisionKindForTesting: String? {
+        switch activeSyncDecisionKind {
+        case .windowClose: return "windowClose"
+        case .commandLine: return "commandLine"
+        case nil:          return nil
+        }
+    }
 }
 #endif
