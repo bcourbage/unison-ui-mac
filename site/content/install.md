@@ -51,9 +51,11 @@ ssh, from cron, or from launchd) is refused with a message rather than run in th
 terminal. When the app is already running, a `unison <profile>` request goes to
 that instance and carries its options (`-path`, `-include`, `-source`), so the
 profile opens scoped just as it would at a fresh launch. If the app is busy —
-scanning, showing results, or finishing a run — the request waits and opens the
-profile once that work finishes, rather than being turned away; if a
-synchronization is in progress, the app asks how to handle it.
+scanning, showing results, or finishing a run — an accepted request waits and opens
+the profile once that work finishes, rather than being turned away; a
+synchronization in progress raises a decision, and some requests are still refused.
+The [manual]({{REPO}}/blob/main/MANUAL.md#the-unison-command) covers the exact
+handling.
 
 Homebrew installs create the `unison` link automatically — unless the `unison`
 formula already owns that name, in which case Homebrew installs the app but keeps

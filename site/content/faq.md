@@ -20,15 +20,21 @@ Terminal?](#can-i-start-a-graphical-synchronization-from-terminal) below.
 
 ## Can I start a graphical synchronization from Terminal?
 
-Yes. With the app's `unison` command on your PATH, `unison home` opens the app on
-the `home` profile and starts its scan, stopping at the reconciliation results so
-nothing is applied until you act. Session options come along: `unison home -path
-Documents` opens the profile scoped to `Documents`, and `-include` and `-source`
-are carried too. If the app is already running, the request goes to that instance —
-opening the profile there, and waiting if the app is busy rather than being turned
-away. For scripts and scheduled jobs, pass `-ui text` explicitly to run Unison's
-text interface in the terminal instead of opening the app. **Settings ▸ Command
-Line** adds the command to your PATH, with no administrator password; see
+Yes. A bare `unison home` follows your **Default interface** preference in
+Settings ▸ Command Line, which is Graphical unless you select Text, so by default it
+opens the app on the `home` profile and starts its scan, stopping at the
+reconciliation results so nothing is applied until you act. Session options come
+along and stay in effect for that session, including its rescans and reconnects:
+`unison home -path Documents` opens the profile scoped to `Documents` (a `-path` is
+root-relative and adds to the profile's own configured paths rather than replacing
+them), and `-include` and `-source` are carried too. If the app is already running,
+the request goes to that instance: it opens the profile when it can, waits if the app
+is busy with a scan or cleanup, or asks how to handle a synchronization that is in
+progress, and a few requests are refused with a reason. See the
+[manual](../manual/#the-unison-command) for exactly how each case is handled. For
+scripts and scheduled jobs, pass `-ui text` explicitly to run Unison's text interface
+in the terminal instead of opening the app. **Settings ▸ Command Line** adds the
+command to your PATH, with no administrator password; see
 [Install](../install/#the-unison-command).
 
 ## How does it compare to the macOS app included with Unison?

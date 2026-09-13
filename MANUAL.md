@@ -123,22 +123,57 @@ Unison with its usage text.
 
 When the graphical interface is already running and a `unison <profile>` request
 reaches it, the request goes to that instance rather than starting a second one.
-The request carries its options (`-path`, `-include`, `-source`), so the profile
-opens scoped exactly as it would at a fresh launch, with order, repeated options,
-and profile precedence preserved; how the running app was itself started no longer
-matters. If it is idle at the picker, it opens the profile and starts its scan. If
-the app is busy — scanning, showing reconciliation results, or finishing a previous
-run — it accepts the request and opens the profile once that work and its cleanup
-finish, reporting meanwhile that the request was accepted and is waiting; only one
-request waits at a time. If a synchronization is in progress, it asks how to handle
-it: keep syncing, finish the sync first, or stop it and then open. A request is
-still refused, with a reason, while the profile editor is open (close it first;
-your edits are kept) and when the app needs to be quit and reopened after a
+The request carries its session options (`-path`, `-include`, `-source`), so the
+profile opens scoped exactly as it would at a fresh launch, with order, repeated
+options, and profile precedence preserved; how the running app was itself started no
+longer matters. A `-path` is root-relative and adds to the profile's configured
+`path` preferences rather than replacing them, following Unison's usual precedence,
+so `unison home -path Documents` narrows the `home` profile to `Documents` on top of
+whatever it already restricts. These options apply for that session: the opened
+profile and any rescans or reconnects it makes. Choosing a different profile from the
+picker afterward uses that profile's saved configuration, not the earlier command
+line's options.
+
+How the request is handled depends on what the app is doing:
+
+- Idle at the picker: it opens the profile and starts its scan. This is a *Started*
+  handoff.
+- Busy (scanning, showing reconciliation results, or finishing a previous run): it
+  accepts the request and opens the profile once that work and its cleanup finish.
+  The command reports that it was *accepted and is waiting*, which is distinct from
+  Started; the profile has not opened yet, and the app shows it waiting. Only one
+  command-line request waits at a time; a second while one is waiting is refused, and
+  choosing a profile in the app never silently replaces a waiting request.
+- Synchronizing: it raises a decision for the requested profile, keep syncing (the
+  sync is untouched and the profile is not opened), finish the sync first, or stop it
+  and then open. The command prints that a decision is required in the app and waits
+  for your choice within a short window. Stopping the sync or letting it finish opens
+  the requested profile; keeping the sync does not, and no command aborts a sync or
+  makes that choice on its own. If the window elapses with no choice, or the
+  synchronization finishes on its own before you choose, the request is not opened and
+  the command says so; run it again to open the profile.
+
+A request is still refused, with a reason, while the profile editor is open (close it
+first; your edits are kept) and when the app needs to be quit and reopened after a
 connection problem, as is one from a different copy of the app or one that uses a
-different Unison directory. A successful handoff means the profile was accepted and began opening,
-not that its scan or synchronization finished; the command returns an exit status
-that reflects that. If the reply is lost, because the running instance did not
-answer in time, the outcome is left unconfirmed and the command says so.
+different Unison directory.
+
+A *Started* reply means the profile opened and its scan began; an *accepted and
+waiting* reply means the request was queued and will open when the app is free. In
+neither case has the scan or synchronization finished, and the command's exit status
+reflects which happened. If the reply is lost, because the running instance did not
+answer in time, the outcome is left unconfirmed: the command says so and asks you to
+check the app before running it again, since the original request may already have
+been accepted.
+
+Three quick examples:
+
+- `unison home` opens the `home` profile in the app under the Graphical default, or
+  runs its text interface if you have set **Default interface** to Text.
+- `unison home -path Documents` opens `home` scoped to the `Documents` subpath, added
+  to the profile's configured paths.
+- `unison -ui text home` runs `home` in the terminal's text interface, for scripts and
+  scheduled jobs, whatever the Default interface preference is.
 
 For scripts and scheduled jobs, pass `-ui text` explicitly rather than relying on
 the default. A script that omits it runs the graphical interface wherever the
@@ -275,7 +310,7 @@ verified.
    - it is installed and already current: `brew reinstall --cask unison-ui`.
      An upgrade with nothing newer to install does not recreate the link.
    Homebrew records the installed version in
-   `/opt/homebrew/Caskroom/unison-ui-mac/` (also shown by
+   `/opt/homebrew/Caskroom/unison-ui/` (also shown by
    `brew info --cask unison-ui`); check it and pick the matching case.
    Check afterwards that the link exists and points into this app:
    `readlink /opt/homebrew/bin/unison`.
@@ -300,7 +335,7 @@ and re-verify.
 
 **Sparkle and Homebrew.** Sparkle updates the app bundle in place; Homebrew's
 receipt keeps the version Homebrew itself installed. A later
-`brew upgrade --cask --greedy unison-ui-mac` reinstalls the current version and
+`brew upgrade --cask --greedy unison-ui` reinstalls the current version and
 brings the receipt up to date; when the receipt already matches the current
 version, `brew reinstall --cask unison-ui` is the command that reruns the
 artifacts. If the formula owns the command at that time,
@@ -1563,26 +1598,20 @@ diverge between CLI and GUI. Either remove the `clientHostName`
 override, or set `UNISONLOCALHOSTNAME=<your-hostname>` in the launch
 environment so both pick up the same value.
 
-**2. Command-line argument overrides.** This app launches OCaml with
-`argv = [program_name]`, no CLI args propagate from your shell to
-Unison. So if you typically run `unison -opt=val <profile>` to
-override a preference at the command line, the GUI won't apply that
-override (it only sees the `.prf` content). Put the override in the
-`.prf` itself via the Advanced field of the Profile Form to bring
-the GUI into parity.
+**2. Command-line session options.** A `unison <profile>` request
+delivers its session options (`-path`, `-include`, `-source`) to the
+app, which opens the profile scoped by them exactly as a fresh launch
+would; see [The `unison` command](#the-unison-command). Preferences
+beyond those session options are still read from the `.prf`, not from
+arbitrary `-opt=val` flags, so put such an override in the `.prf` via
+the Advanced field of the Profile Form.
 
-**3. Multi-profile session quirk.** If you switch profiles within
-one GUI session (via the picker), the GUI doesn't re-parse the
-command line for the new profile, only on first launch. The CLI
-re-parses on every profile open. For our app this is moot (we
-don't accept user CLI args anyway), but it's a documented
-divergence from upstream's `Uicommon.initPrefs` that matters if
-we ever start accepting CLI overrides at the app's launch
-arguments. See the audit comment near
-`Prefs.parseCmdLine` in `unison/src/uimacbridge.ml`:
-`do_unisonInit1` runs `parseCmdLine` only on `firstTime`, while
-upstream `Uicommon.initPrefs` runs it unconditionally (per the
-"JV (6/09): always reparse the command line" note in that file).
+**3. Session boundary for command-line options.** A request's session
+options apply to the session it opens, that profile and any rescans or
+reconnects it makes. Choosing a different profile from the picker
+afterward uses that profile's saved configuration; the app does not
+re-apply the earlier command line's options to a picker selection, so
+each request is scoped only by its own options.
 
 ---
 
