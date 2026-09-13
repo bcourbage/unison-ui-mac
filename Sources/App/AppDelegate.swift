@@ -2367,6 +2367,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             parent.endSheet(sheetWindow)
         }
         let name = p.request.given
+        // Claim the ticket BEFORE any sync-exit or takeover effect. Admission and
+        // transport abandonment compete through this single atomic transition: if
+        // the caller already went away (the serving thread abandoned the ticket),
+        // the claim loses and the choice is wholly inactive — no sync exit, no
+        // takeover — even if a user-choice callback reaches here first (P2, ordering).
+        guard p.ticket.claim() else {
+            log.write("sync decision: request '\(name)' was abandoned by the caller; the choice is inactive")
+            return
+        }
         let response: CommandLineHandoff.Response
         switch outcome {
         case .keepSyncing:
@@ -2378,14 +2387,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .unavailable:
             response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
         case .transportLost:
-            // The caller is gone; completing the ticket only unblocks the serving
-            // thread. The point of this path is releasing the slot + sheet above.
-            log.write("sync decision: caller went away before the interim; dropping '\(name)'")
+            // Unreachable via a won claim (abandon() already took the ticket, so the
+            // claim above fails first); kept for exhaustiveness.
             response = CommandLineHandoff.syncDecisionUnavailableResponse(name: name)
         case .abortAndClose, .closeAndLetRun:
             response = resolveSyncLeaveChoice(outcome, pending: p)
         }
-        p.ticket.complete(response)
+        p.ticket.deliver(response)
     }
 
     /// Apply a "leave the sync" choice: revalidate that the ORIGINATING session is

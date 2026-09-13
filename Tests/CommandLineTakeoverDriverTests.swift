@@ -279,6 +279,29 @@ final class CommandLineTakeoverDriverTests: XCTestCase {
                        "transport loss before admission invalidates the pending decision")
     }
 
+    func test_syncDecision_abandonBeatsLeaveChoice_noExitNoAdmission() {
+        // The race the async invalidation could lose: the caller went away (ticket
+        // abandoned) but the leave-choice callback runs BEFORE the queued
+        // invalidation. The atomic claim must make the choice inactive — no sync
+        // exit, no admission — because abandonment already won the ticket.
+        let d = AppDelegate()
+        let e = d.engineForTesting
+        let aS = driveToSyncing(e, profile: "A")
+        let ticket = d.setPendingSyncDecisionForTesting(
+            request: req(given: "B", dir: "/x", args: ["-path", "B"]), session: aS, expired: false)
+
+        ticket.abandon()   // transport gone; abandonment wins the ticket synchronously
+
+        // The user-choice callback runs before any queued invalidation drains.
+        d.applySyncDecisionForTesting(.closeAndLetRun)
+
+        XCTAssertFalse(d.hasPendingSyncDecisionForTesting)
+        XCTAssertFalse(e.commandLineRequestPending, "an abandoned request must not be admitted by a later choice")
+        guard case .syncing = e.phase else {
+            return XCTFail("an abandoned request's choice must not exit the sync")
+        }
+    }
+
     func test_syncDecision_resolvedWhenSyncEndsWhilePending() {
         // The sync finishes on its own while the decision is open (no user choice):
         // the caller must be resolved rather than left waiting to the deadline (#4).

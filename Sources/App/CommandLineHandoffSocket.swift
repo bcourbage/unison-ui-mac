@@ -291,43 +291,74 @@ enum CommandLineHandoffClient {
 /// (deferred) reply. The connection-serving thread waits on it while the main
 /// thread drives the user's decision; whichever of the user's choice or the
 /// admission-deadline timer resolves first wins (the rest are no-ops).
+/// A one-shot arbiter between the app admitting the request (main thread) and the
+/// serving thread abandoning it because the caller went away. Both go through a
+/// single synchronized state transition, so exactly one wins; the loser is inert.
+/// This makes admission and abandonment atomic — the app must WIN a claim before it
+/// performs any sync-exit or takeover effect, so a transport abandonment cannot be
+/// overrun by a user choice, and a user choice that wins first is honoured even if
+/// the final reply is later lost (#3, ordering).
 final class HandoffDecisionTicket: @unchecked Sendable {
+    private enum State { case open, claimed, abandoned }
     private let sem = DispatchSemaphore(value: 0)
     private let lock = NSLock()
+    private var state: State = .open
     private var value: CommandLineHandoff.Response?
     private var abandonHandler: (() -> Void)?
 
-    /// Set by the primary (app side) so the serving thread can tell it to invalidate
-    /// the pending decision when it gives up before the app resolves it — e.g. the
-    /// interim could not be sent to a caller that already went away (#3). Called at
-    /// most once, and never after the ticket is completed.
+    /// Set by the primary so the serving thread can invalidate the pending decision
+    /// when it gives up before the app resolves it (the interim could not be sent to
+    /// a caller that already went away). Ignored once the ticket is no longer open.
     func setAbandonHandler(_ handler: @escaping () -> Void) {
         lock.lock()
-        if value == nil { abandonHandler = handler }
+        if state == .open { abandonHandler = handler }
         lock.unlock()
     }
 
-    func complete(_ response: CommandLineHandoff.Response) {
+    /// Main thread: atomically claim the ticket for admission. Returns true iff this
+    /// call won (the ticket was still open, i.e. not abandoned). On a win the caller
+    /// owns the resolution and must `deliver` the verdict; on a loss the caller must
+    /// perform no effects.
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard state == .open else { return false }
+        state = .claimed
+        abandonHandler = nil
+        return true
+    }
+
+    /// Deliver the verdict to the waiting caller after a won `claim`.
+    func deliver(_ response: CommandLineHandoff.Response) {
         lock.lock()
-        let first = value == nil
-        if first { value = response; abandonHandler = nil }
+        let ok = state == .claimed && value == nil
+        if ok { value = response }
         lock.unlock()
-        if first { sem.signal() }
+        if ok { sem.signal() }
     }
 
-    /// The serving thread abandons the ticket (transport failed before the app
-    /// resolved it): invokes the app's invalidation hook once, if it has not
-    /// already completed. Does not itself complete the ticket — the app's hook does.
+    /// Atomic claim + deliver in one step (used by tests and any immediate resolver).
+    @discardableResult
+    func complete(_ response: CommandLineHandoff.Response) -> Bool {
+        guard claim() else { return false }
+        deliver(response)
+        return true
+    }
+
+    /// Serving thread: abandon the ticket if it is still open (transport failed
+    /// before the app resolved it). Wins atomically against `claim`; invokes the
+    /// app's invalidation hook once on a win.
     func abandon() {
         lock.lock()
-        let handler = (value == nil) ? abandonHandler : nil
+        let won = state == .open
+        let handler = won ? abandonHandler : nil
+        if won { state = .abandoned }
         abandonHandler = nil
         lock.unlock()
         handler?()
     }
 
-    /// Wait up to `seconds` for completion; nil on timeout (a server-side safety
-    /// net — the primary's own deadline should complete the ticket first).
+    /// Wait up to `seconds` for a delivered verdict; nil on timeout (a server-side
+    /// safety net — the primary's own deadline should resolve the ticket first).
     func wait(seconds: TimeInterval) -> CommandLineHandoff.Response? {
         guard sem.wait(timeout: .now() + seconds) == .success else { return nil }
         lock.lock(); defer { lock.unlock() }
