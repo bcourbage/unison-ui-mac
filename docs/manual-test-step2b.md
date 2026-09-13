@@ -207,28 +207,39 @@ resolve, which is why the interactive numbers appear out of sequence there.
 
 Use a profile + data big enough that the sync runs for a few seconds (e.g.
 a directory of several large files) so you can act mid-sync. Repeat the
-sync before each sub-case.
+sync before each sub-case. The close decision is now a **non-blocking window
+sheet** titled **"Close the window while syncing?"** (the same three choices are
+raised by ✕, ⌘W, and Profiles during a sync).
 
-**TC6a — Keep Syncing:** start a sync, click the window's close button
-mid-sync, choose **Keep Syncing**.
+**TC6a — Keep Window Open:** start a sync, click the window's close button
+mid-sync, choose **Keep Window Open** (also the Escape/Return default).
 - **Expect:** window stays open, sync continues, no close in the log.
 
-**TC6b — Abort & Close:** start a sync, close mid-sync, choose **Abort & Close**.
+**TC6b — Stop Syncing & Close:** start a sync, close mid-sync, choose
+**Stop Syncing & Close** (destructive).
 - **Expect (log):** the abort, then once the worker unwinds,
   `background sync complete — closing deferred connection` and
   `closeConnection (background sync complete after leave) -> status 0`.
 - **Expect (ssh):** ssh child reaped after the abort settles.
 
-**TC6c — Close (let it run):** start a sync, close mid-sync, choose
-**Close (let it run)**.
+**TC6c — Continue in Background:** start a sync, close mid-sync, choose
+**Continue in Background**.
 - **Expect:** window closes, sync keeps running in the background; when it
   finishes naturally you see `background sync complete — closing deferred
   connection` and `closeConnection … -> status 0`.
 - **Expect (ssh):** ssh child persists until the background sync finishes,
   then is reaped.
 
+**TC6d — Sync finishes while the sheet is up:** start a short sync, raise the
+close sheet, then let the sync complete without choosing.
+- **Expect:** the sheet is dismissed automatically (no stale "still syncing"
+  prompt), the window stays open showing the completed results, and it can then
+  be closed normally.
+
 **PASS =** each choice lands the connection correctly (none tears out a
-running transport; both closing choices reap the child at the right time).
+running transport; both closing choices reap the child at the right time); the
+sheet is non-blocking (a command-line request issued while it is up is still
+answered), and a sync that finishes while the sheet is up dismisses it.
 
 ### TC7 — Local-only profile (sanity)
 
@@ -256,7 +267,7 @@ This is the step-3 behavior. Two sub-cases.
 
 **TC9a — pick while a background sync is running:**
 1. Open a **key** profile with enough data that the sync runs a few seconds.
-2. Start the sync, close the window mid-sync, choose **Close (let it run)** → you're back at the picker with the sync still running in the background.
+2. Start the sync, close the window mid-sync, choose **Continue in Background** → you're back at the picker with the sync still running in the background.
 3. Immediately pick **another** profile.
 4. **Expect (UI):** the new profile's window opens showing **"Waiting for the previous operation to finish…"** (its normal connecting spinner), and does **not** connect yet.
 5. **Expect (log):** `engine busy — queueing open of '…'`, then when the background sync finishes: `background sync complete …`, `closeConnection … -> status 0`, `engine idle …`, `engine idle — running queued profile open`, then the new profile's `init1 complete` / scan.
@@ -484,26 +495,27 @@ version, and launcher path.
   click **Go**, and hold the sync open. In the second Terminal run
   `"<RC launcher>" work`. **Expect:** the command immediately prints that a
   synchronization is running and a decision is required in the app, with the
-  timeout, and then **waits**. In the app a sheet appears on the sync window naming
-  `work`, with **Keep Syncing / Abort & Close / Close (let it run)**. Test each:
-  - **Keep Syncing** — the sync continues; the command reports `work` was **not**
-    started (exit non-zero); nothing opens.
-  - **Abort & Close** — the abort runs; after cleanup `work` opens; the command
-    reports **accepted and waiting** (exit 0).
-  - **Close (let it run)** — the sync continues in the background (its window
+  timeout, and then **waits**. In the app a sheet appears on the sync window titled
+  **"Open "work" while "remote" is syncing?"**, with **Keep Syncing; Don't Open /
+  Finish Sync, Then Open / Stop Sync, Then Open** (Stop is destructive). Test each:
+  - **Keep Syncing; Don't Open** — the sync continues; the command reports `work`
+    was **not** started (exit non-zero); nothing opens.
+  - **Stop Sync, Then Open** — the sync is stopped; after cleanup `work` opens; the
+    command reports **accepted and waiting** (exit 0).
+  - **Finish Sync, Then Open** — the sync continues in the background (its window
     closes); the command reports **accepted and waiting**; `work` opens once the
     background sync finishes.
   - **Timeout** — issue the request, then leave the sheet untouched past the stated
     window. **Expect:** the sheet is dismissed, the command reports the request was
     not made in time (exit non-zero), and a later click cannot start `work`; the
     sync itself is unaffected.
-  No command ever aborts the sync or picks a dialog option on its own.
+  No command ever stops the sync or picks a sheet option on its own.
 - **TC15g — Background sync has no decision surface.** Set this up **independently
   of TC15f** (whose Close-let-run already leaves a request queued behind the
   background sync — sending another there would be refused as already-pending, not
   accepted). Instead: start a fresh held remote sync (open `remote`, Go, hold it),
   then background it through the **window's own close controls** — click the window's
-  close and choose **Close (let it run)** — with **no** incoming CLI request, so
+  close and choose **Continue in Background** — with **no** incoming CLI request, so
   nothing is queued and the sync runs windowless. Now run `"<RC launcher>" other`.
   **Expect:** no sheet (there is no window to host the decision); the command reports
   **accepted and waiting**; `other` opens when the background sync finishes.
@@ -672,9 +684,10 @@ followed by a password prompt is masked, never plain.
 | TC3 | interactive held through sync-end | PASS | live (Release, user typed password, → .241 VM): connection authenticated; the ssh child **persisted** through the entire Go/sync and after "Synchronization complete" (3 items, 74 bytes) — held, NOT closed on sync-end (interactive-auth close policy). |
 | TC4 | interactive Rescan no re-prompt | PASS | live: same-session Rescan reused the held connection (same ssh pid, **no** second credential sheet), scan completed ("Everything is up to date"). |
 | TC5 | interactive closes on leave | PASS | live: clicking Profiles (leave) closed the connection and reaped the ssh child within ~1 s; returned to the picker. |
-| TC6a | Keep Syncing | | |
-| TC6b | Abort & Close | | |
-| TC6c | Close (let it run) | | |
+| TC6a | Keep Window Open | | |
+| TC6b | Stop Syncing & Close | | |
+| TC6c | Continue in Background | | |
+| TC6d | sync finishes while sheet up | | |
 | TC7 | local-only sanity (detector never arms) | PASS | live + automated regression |
 | TC8 | no ssh pile-up | PASS | live regression |
 | TC9a | gate: pick during background sync | | |

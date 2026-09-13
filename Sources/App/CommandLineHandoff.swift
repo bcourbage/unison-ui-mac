@@ -404,7 +404,7 @@ enum CommandLineHandoff {
     static func syncDecisionInterim(name: String, timeoutSeconds: Int) -> Interim {
         Interim(timeoutSeconds: timeoutSeconds, message:
             "unison-ui-mac is synchronizing; it needs a decision in the app before it can start \(name). "
-            + "Waiting up to \(timeoutSeconds)s for you to choose Keep Syncing, Abort & Close, or Close (let it run)…")
+            + "Waiting up to \(timeoutSeconds)s for you to keep syncing, finish the sync first, or stop it…")
     }
 
     /// Final verdict: the user kept syncing, so the request was not started.

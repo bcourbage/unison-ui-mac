@@ -2302,27 +2302,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             return
         }
         if Self.testSyncDecisionSheetSuppressed { return }
-        let name = p.request.given
-        let alert = NSAlert()
-        alert.messageText = "Synchronization is still running"
-        alert.informativeText =
-            "A command-line request wants to open \(name). Choose how to handle the current sync:\n\n"
-            + "• Abort & Close: stop the sync, then open \(name). Already-in-progress transfers may "
-            + "complete before the abort takes effect; queued rows will fail.\n"
-            + "• Close (let it run): let the sync finish in the background, then open \(name).\n"
-            + "• Keep Syncing: don't open \(name); the sync continues."
-        alert.addButton(withTitle: "Keep Syncing")
-        let abortClose = alert.addButton(withTitle: "Abort & Close")
-        abortClose.hasDestructiveAction = true
-        alert.addButton(withTitle: "Close (let it run)")
-        alert.alertStyle = .warning
+        // The same three-way decision as an ordinary window close, worded for a
+        // command-line request. `current` is the syncing profile; `requested` is
+        // the profile the command wants to open.
+        let current = profileBySession[p.session] ?? "the current profile"
+        let content = SyncDecisionSheet.content(
+            for: .commandLineRequest(current: current, requested: p.request.given))
         p.sheetParent = window
-        p.sheetAlert = alert
-        alert.beginSheetModal(for: window) { [weak self] response in
-            switch response {
-            case .alertSecondButtonReturn: self?.applySyncDecision(p, .abortAndClose)
-            case .alertThirdButtonReturn:  self?.applySyncDecision(p, .closeAndLetRun)
-            default:                       self?.applySyncDecision(p, .keepSyncing)   // Keep Syncing / dismissed
+        // keep = refuse and preserve the sync; background = finish then open;
+        // stop = abort then open. Any dismissal maps to keep.
+        p.sheetAlert = SyncDecisionSheet.present(content, on: window) { [weak self] choice in
+            switch choice {
+            case .keep:       self?.applySyncDecision(p, .keepSyncing)
+            case .background: self?.applySyncDecision(p, .closeAndLetRun)
+            case .stop:       self?.applySyncDecision(p, .abortAndClose)
             }
         }
     }

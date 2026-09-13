@@ -182,6 +182,12 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// Reset at each `startSync`.
     private var userRequestedStop = false
 
+    /// The non-blocking window-close sync sheet, while it is up. `syncCloseSheetUp`
+    /// gates against a duplicate sheet on a repeated close attempt; `syncCloseAlert`
+    /// is retained so it can be dismissed if the sync ends while the sheet is open.
+    private var syncCloseSheetUp = false
+    private var syncCloseAlert: NSAlert?
+
     /// Reconcile-window lifecycle phase. Single source of truth for
     /// what stage the window is in:
     ///   - `.ready`   — post-init2 (or freshly opened), pre-Go;
@@ -311,45 +317,51 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
             // close.
             if !onWindowShouldClose() { return false }
             guard isSyncing else { return true }
-            let alert = NSAlert()
-            alert.messageText = "Synchronization is still running"
-            alert.informativeText =
-                "Choose how to close this window:\n\n" +
-                "• Abort & Close: stop the sync and close. Already-in-progress " +
-                "transfers may complete before the abort takes effect; queued " +
-                "rows will fail.\n" +
-                "• Close (let it run): close the window but let the sync " +
-                "continue in the background until it finishes naturally.\n" +
-                "• Keep Syncing: don't close. You can hit Stop in the toolbar " +
-                "to abort with the window staying open."
-            alert.addButton(withTitle: "Keep Syncing")
-            let abortClose = alert.addButton(withTitle: "Abort & Close")
-            abortClose.hasDestructiveAction = true
-            alert.addButton(withTitle: "Close (let it run)")
-            alert.alertStyle = .warning
-            let response = alert.runModal()
-            switch response {
-            case .alertFirstButtonReturn:
-                // Keep Syncing
-                return false
-            case .alertSecondButtonReturn:
-                // Abort & Close — the coordinator aborts the transport and
-                // closes the connection once the sync unwinds. We never call
-                // unison_bridge_abort_sync() directly.
-                Log.reconcile.notice("user closed mid-sync with Abort & Close")
-                userRequestedStop = true
-                onSyncExit(.abortAndClose)
-                return true
-            case .alertThirdButtonReturn:
-                // Close (let it run) — no abort; the coordinator closes the
-                // connection after the sync finishes naturally.
-                Log.reconcile.notice("user closed mid-sync without aborting")
-                onSyncExit(.closeAndLetRun)
-                return true
-            default:
-                return false
+            // A sync is running: raise the shared three-way decision as a
+            // NON-BLOCKING window sheet (never runModal — which would freeze the
+            // main thread and stall a concurrent command-line request). We always
+            // veto the immediate close here and let the sheet's choice drive it.
+            // A repeated close attempt while the sheet is up is a no-op (no
+            // duplicate sheet).
+            if syncCloseSheetUp { return false }
+            syncCloseSheetUp = true
+            let content = SyncDecisionSheet.content(for: .windowClose(profile: profile))
+            syncCloseAlert = SyncDecisionSheet.present(content, on: sender) { [weak self] choice in
+                guard let self else { return }
+                self.syncCloseSheetUp = false
+                self.syncCloseAlert = nil
+                switch choice {
+                case .keep:
+                    // Keep the window open; the sync is untouched. Any dismissal
+                    // (Escape / the sync ending while the sheet was up) lands here.
+                    break
+                case .background:
+                    // Continue in Background — close the window; the coordinator
+                    // closes the connection after the sync finishes naturally.
+                    // Revalidate: only drive the sync exit if still syncing.
+                    Log.reconcile.notice("user closed mid-sync: continue in background")
+                    if self.isSyncing { self.onSyncExit(.closeAndLetRun) }
+                    sender.close()   // bypasses windowShouldClose → windowWillClose → onClose
+                case .stop:
+                    // Stop Syncing & Close — the coordinator aborts the transport
+                    // and closes the connection once the sync unwinds. We never
+                    // call unison_bridge_abort_sync() directly.
+                    Log.reconcile.notice("user closed mid-sync: stop syncing & close")
+                    if self.isSyncing { self.userRequestedStop = true; self.onSyncExit(.abortAndClose) }
+                    sender.close()
+                }
             }
+            return false
         }
+    }
+
+    /// Dismiss the window-close sync sheet if it is up (called when the sync
+    /// ends/fails/enters recovery, so the sheet never lingers with a stale "still
+    /// synchronizing" question). Resolves to keep — the window stays, now showing
+    /// the completed/failed results, and can be closed normally.
+    private func dismissSyncCloseSheetIfPresent() {
+        guard syncCloseSheetUp, let alert = syncCloseAlert, let parent = window else { return }
+        parent.endSheet(alert.window, returnCode: .cancel)   // → completion maps to keep
     }
 
     /// Replace the displayed items (e.g. after a rescan completes). Must
@@ -651,7 +663,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         userRequestedStop = true   // finalizeSyncUI reads this for the "stopped" summary
         Log.reconcile.notice("user requested Stop — routing abort through the coordinator")
         TraceLog.shared.write("ReconcileWindow: user requested Stop — coordinator abort (keep window)")
-        setSummary("Aborting sync… in-progress transfers may finish before the abort takes effect")
+        setSummary("Stopping sync… transfers already underway may finish before it stops")
         // The coordinator owns the abort. It emits `.abortSync`, whose
         // driver calls the bridge. We never call unison_bridge_abort_sync().
         onSyncExit(.stopAndKeepWindow)
@@ -1028,6 +1040,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// only paints the completed/failed/stopped state.
     func finalizeSyncUI(snapshot: [SyncSnapshotRow]) {
         isSyncing = false
+        dismissSyncCloseSheetIfPresent()
         cancelSyncStallDetector()
         progressBar.doubleValue = 100
         progressBar.isHidden = true
@@ -1109,6 +1122,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     /// recovery/navigation actions live (Rescan, Profiles, Quit).
     func finalizeSyncUnavailable(reason: String) {
         isSyncing = false
+        dismissSyncCloseSheetIfPresent()
         cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
         progressBar.isIndeterminate = false
@@ -1183,6 +1197,7 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
         restartRequired = true
         remoteCheckOffered = offerRemoteCheck
         isSyncing = false
+        dismissSyncCloseSheetIfPresent()
         isScanning = false
         cancelSyncStallDetector()
         progressBar.stopAnimation(nil)
