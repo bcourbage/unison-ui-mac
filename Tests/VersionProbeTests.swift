@@ -150,6 +150,118 @@ final class VersionProbeTests: XCTestCase {
         XCTAssertTrue(cfg.arguments.contains("h"))
     }
 
+    // MARK: - #149: owned-subprocess lifecycle (exit observation + coordinated teardown)
+
+    private func sh(_ script: String) -> V.ProbeConfig {
+        V.ProbeConfig(executable: "/bin/sh", arguments: ["-c", script], host: "local")
+    }
+
+    /// A nonzero exit status must be carried out of the owned child unchanged.
+    /// This exercises `OwnedChildProcess.exitStatus()` (waitpid status → code),
+    /// which replaced reading `Process.terminationStatus`.
+    func test_realExecutor_nonzeroExitStatus_isCarried() {
+        let raw = V.SubprocessProbeExecutor().execute(
+            sh("printf out; printf err 1>&2; exit 7"), deadline: 10, canceller: V.ProbeCanceller())
+        guard case .exited(let status, let stdout, let stderr) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 7, "the child's own nonzero status is reported verbatim")
+        XCTAssertEqual(stdout, "out")
+        XCTAssertEqual(stderr, "err")
+    }
+
+    /// An immediate clean exit is observed and reported without waiting out the
+    /// deadline. The deadline is generous; a regression that failed to observe the
+    /// exit would instead time out.
+    func test_realExecutor_immediateCleanExit_isObserved() {
+        let started = Date()
+        let raw = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02).execute(
+            sh("printf hi"), deadline: 30, canceller: V.ProbeCanceller())
+        guard case .exited(let status, let stdout, _) = raw else { return XCTFail("\(raw)") }
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(stdout, "hi")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10,
+                          "a child that exits in milliseconds must be observed promptly, not at the deadline")
+    }
+
+    /// COORDINATION INVARIANT (no signal after ownership released), deterministic.
+    /// The exit-observation hook blocks INSIDE the reap, after the child has been
+    /// reaped (`reaped` set) but before `exited` is signalled. The executor cannot
+    /// observe the exit, so it hits its deadline and runs teardown while the child
+    /// is already reaped. Every teardown signal must be skipped: the injected
+    /// `killFn` must record ZERO calls. Defeat proof: make `signalIfOwned` signal
+    /// unconditionally (ignore `reaped`) and this records calls after reaping.
+    func test_ownership_noSignalIsSentAfterReap() {
+        let kills = KillRecorder()
+        let release = DispatchSemaphore(value: 0)
+        var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
+        exec.killFn = { pid, sig in kills.record(pid, sig); return 0 }   // count only; no real signal needed
+        exec.exitObservationHook = { release.wait() }                    // hold observation open, after reap
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.value = exec.execute(self.sh("echo done"), deadline: 0.3, canceller: V.ProbeCanceller())
+            done.signal()
+        }
+        // The child exits in ms and is reaped; the executor then times out (the
+        // reap is still blocked in the hook) and runs teardown.
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "executor returned on deadline while reap was held")
+        guard case .timedOut = box.value else { release.signal(); return XCTFail("expected .timedOut, got \(box.value)") }
+        XCTAssertEqual(kills.count(), 0, "no signal may be sent once the child has been reaped (PID could be reused)")
+        release.signal()
+        _ = done.wait(timeout: .now() + 5)   // let the reap unwind
+    }
+
+    /// The complementary case: while the child is ALIVE (TERM-resistant), teardown
+    /// DOES signal it — SIGTERM then SIGKILL — and the child is terminated and
+    /// reaped. Proves the coordination gate does not over-suppress: signals are
+    /// sent while we own the PID. The child self-limits (~10s) so nothing lingers
+    /// and the test never signals a saved PID. Defeat proof: remove the SIGKILL
+    /// escalation and the child stays alive across the reaping poll.
+    func test_ownership_signalsSentAndChildReaped_whileAlive() {
+        let kills = KillRecorder()
+        let pidBox = PidBox()
+        var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.5,
+                                             onLaunch: { pidBox.set($0) })
+        exec.killFn = { pid, sig in kills.record(pid, sig); return Darwin.kill(pid, sig) }  // count AND deliver
+        let cfg = sh("trap '' TERM; printf READY; i=0; while [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done")
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.value = exec.execute(cfg, deadline: 0.4, canceller: V.ProbeCanceller())
+            done.signal()
+        }
+        XCTAssertEqual(done.wait(timeout: .now() + 15), .success, "executor returned via SIGKILL escalation")
+        let pid = pidBox.get()
+        guard case .timedOut(let stdout, _) = box.value else { return XCTFail("expected .timedOut, got \(box.value)") }
+        XCTAssertGreaterThan(pid, 0, "child pid captured")
+        XCTAssertTrue(stdout.contains("READY"), "child installed its TERM-ignoring trap and ran (resisted SIGTERM)")
+        XCTAssertTrue(kills.sent(SIGTERM), "SIGTERM was sent while the child was alive")
+        XCTAssertTrue(kills.sent(SIGKILL), "SIGKILL escalation was sent while the child was alive")
+        // Terminated + reaped: the pid no longer resolves. kill(pid, 0) sends no
+        // signal; poll briefly for the asynchronous reap after our SIGKILL.
+        var reaped = false
+        for _ in 0..<200 {   // ~4s, safely inside the child's ~10s self-limit
+            if Darwin.kill(pid, 0) == -1 && errno == ESRCH { reaped = true; break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(reaped, "the TERM-resistant child was SIGKILLed and reaped (its pid no longer resolves)")
+    }
+
+    private final class ResultBox: @unchecked Sendable {
+        var value: V.RawExecResult = .cancelled
+    }
+    private final class PidBox: @unchecked Sendable {
+        private let lock = NSLock(); private var value: pid_t = 0
+        func set(_ v: pid_t) { lock.lock(); value = v; lock.unlock() }
+        func get() -> pid_t { lock.lock(); defer { lock.unlock() }; return value }
+    }
+    /// Records the signals the executor's teardown issues (via the killFn seam).
+    private final class KillRecorder: @unchecked Sendable {
+        private let lock = NSLock(); private var sigs: [Int32] = []
+        func record(_ pid: pid_t, _ sig: Int32) { lock.lock(); sigs.append(sig); lock.unlock() }
+        func count() -> Int { lock.lock(); defer { lock.unlock() }; return sigs.count }
+        func sent(_ sig: Int32) -> Bool { lock.lock(); defer { lock.unlock() }; return sigs.contains(sig) }
+    }
+
     // MARK: - Finding #8/#12: classifyRaw distinguishes failure kinds
 
     func test_classifyRaw_versionOnCleanExit() {

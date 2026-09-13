@@ -2,13 +2,12 @@ import XCTest
 @testable import unison_ui_mac
 
 /// Deterministic coverage for the opt-in probe timing recorder
-/// (VersionCheck.ProbeTiming) and the executor's timing behavior, plus two
-/// test-only seams that delay wait-task entry and exit observation so the
-/// diagnostics can be checked against a known cause.
+/// (VersionCheck.ProbeTiming) and the executor's timing behavior, plus a
+/// test-only seam that delays exit observation inside the owned child's reap so
+/// the diagnostics can be checked against a known cause.
 ///
 /// These are diagnostic tests, not reproductions of the historical intermittent
-/// timeout. They add no waitpid caller and change no production deadline or
-/// verdict.
+/// timeout. They change no production deadline or verdict.
 final class ProbeTimingTests: XCTestCase {
     private typealias Timing = VersionCheck.ProbeTiming
     private typealias Exec = VersionCheck.SubprocessProbeExecutor
@@ -82,14 +81,14 @@ final class ProbeTimingTests: XCTestCase {
         let lines = withTimingFile {
             let t = Timing()
             t.begin(executable: "/bin/sh", deadline: 1)
-            t.mark("launch"); t.mark("waitTaskEntry"); t.mark("waitUntilExitReturn")
+            t.mark("launch"); t.mark("procExitObserved")
             t.setResult("exited(0)")
             t.emit()                  // exit already recorded: single line
             t.noteWaitTaskComplete()  // nothing to preserve
         }
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("phase=return"))
-        XCTAssertTrue(lines[0].contains("waitUntilExitReturn="))
+        XCTAssertTrue(lines[0].contains("procExitObserved="))
         XCTAssertEqual(Set(ids(lines)).count, 1)
     }
 
@@ -97,18 +96,18 @@ final class ProbeTimingTests: XCTestCase {
         let lines = withTimingFile {
             let t = Timing()
             t.begin(executable: "/bin/sh", deadline: 1)
-            t.mark("launch"); t.mark("waitTaskEntry")
+            t.mark("launch")
             t.setResult("timedOut")
             t.emit()                  // return WITHOUT the exit observed yet
-            t.mark("waitUntilExitReturn"); t.mark("exitedSemaphoreSignal")
+            t.mark("procExitObserved"); t.mark("exitedSemaphoreSignal")
             t.noteWaitTaskComplete()  // the exit arrived late: preserve it
         }
         XCTAssertEqual(lines.count, 2)
         let ret = lines.first { $0.contains("phase=return") }
         let late = lines.first { $0.contains("phase=late-exit") }
         XCTAssertNotNil(ret); XCTAssertNotNil(late)
-        XCTAssertFalse(ret!.contains("waitUntilExitReturn="), "the return line predates the exit")
-        XCTAssertTrue(late!.contains("waitUntilExitReturn="), "the late-exit line preserves the exit event")
+        XCTAssertFalse(ret!.contains("procExitObserved="), "the return line predates the exit")
+        XCTAssertTrue(late!.contains("procExitObserved="), "the late-exit line preserves the exit event")
         XCTAssertEqual(Set(ids(lines)).count, 1, "return and late-exit share one correlation id")
     }
 
@@ -118,17 +117,17 @@ final class ProbeTimingTests: XCTestCase {
         let lines = withTimingFile {
             let t = Timing()
             t.begin(executable: "/bin/sh", deadline: 1)
-            t.mark("launch"); t.mark("waitTaskEntry"); t.mark("waitUntilExitReturn")
+            t.mark("launch"); t.mark("procExitObserved")
             t.noteWaitTaskComplete()  // primary not emitted yet: no-op
             t.emit()
         }
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("phase=return"))
-        XCTAssertTrue(lines[0].contains("waitUntilExitReturn="))
+        XCTAssertTrue(lines[0].contains("procExitObserved="))
     }
 
     func test_recorder_exitArrivalRacingEmission_holdInvariants() {
-        // The exit ARRIVING (the wait task marking waitUntilExitReturn) races the
+        // The exit ARRIVING (the reap marking procExitObserved) races the
         // executor's emission, the interleaving that matters. Under any order:
         // exactly one return line, the exit preserved somewhere (the return line
         // if emission lost the race, else a correlated late-exit line), and no
@@ -138,14 +137,14 @@ final class ProbeTimingTests: XCTestCase {
             let lines = withTimingFile {
                 let t = Timing()
                 t.begin(executable: "/bin/sh", deadline: 1)
-                t.mark("launch"); t.mark("waitTaskEntry")
+                t.mark("launch")
                 let g = DispatchGroup()
-                g.enter(); DispatchQueue.global().async { t.mark("waitUntilExitReturn"); t.noteWaitTaskComplete(); g.leave() }
+                g.enter(); DispatchQueue.global().async { t.mark("procExitObserved"); t.noteWaitTaskComplete(); g.leave() }
                 g.enter(); DispatchQueue.global().async { t.emit(); g.leave() }
                 g.wait()
             }
             XCTAssertEqual(lines.filter { $0.contains("phase=return") }.count, 1, "exactly one return line under the race")
-            XCTAssertTrue(lines.contains { $0.contains("waitUntilExitReturn=") }, "exit arrival preserved under the race")
+            XCTAssertTrue(lines.contains { $0.contains("procExitObserved=") }, "exit arrival preserved under the race")
             XCTAssertLessThanOrEqual(lines.count, 2, "at most a return line and one late-exit line")
         }
     }
@@ -195,7 +194,7 @@ final class ProbeTimingTests: XCTestCase {
         let lines = withTimingFile {
             for _ in 0..<3 {
                 let t = Timing(); t.begin(executable: "/bin/sh", deadline: 1)
-                t.mark("launch"); t.mark("waitUntilExitReturn"); t.emit()
+                t.mark("launch"); t.mark("procExitObserved"); t.emit()
             }
         }
         XCTAssertEqual(lines.count, 3)
@@ -232,23 +231,23 @@ final class ProbeTimingTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: path), "timing disabled must write no file")
     }
 
-    // MARK: 3. test-only delay seams
+    // MARK: 3. test-only delay seam
 
-    private enum Stage { case entry, exit }
-
-    /// Runs the executor with a seam that BLOCKS until the executor has already
-    /// returned, then releases it and waits (generously) for the late-exit line.
-    /// The executor returning while the hook is still blocked is the proof that
-    /// its return is independent of the delayed background task — no timing
-    /// threshold.
+    /// Runs the REAL executor with `exitObservationHook` set to a block that holds
+    /// INSIDE the child's reap — after the child is reaped (so `reaped` is set and
+    /// any teardown signal is skipped) and before the exit is recorded/signalled.
+    /// The child exits in milliseconds, so the reap fires at once; holding the hook
+    /// there means the exit is OBSERVED late, exactly the #149 shape. The executor
+    /// returning (on its deadline) while the hook is still blocked proves its
+    /// return is independent of when the exit is observed — no timing threshold.
     ///
-    /// `execute()` runs on a background queue so a regression (a return that
-    /// waited for the blocked task) cannot hang the suite: its return is bounded
-    /// by a generous guard, and the hook is released on BOTH the return and the
-    /// guard-tripped path before the background work is unwound and cleaned up. A
-    /// `nil` result means the guard tripped (the executor did not return while the
-    /// hook was blocked), which fails the calling test.
-    private func runBlockingSeam(_ stage: Stage)
+    /// `execute()` runs on a background queue so a regression (a return that waited
+    /// for the blocked reap) cannot hang the suite: its return is bounded by a
+    /// generous guard, and the hook is released on BOTH the return and the
+    /// guard-tripped path before the background work is unwound. A `nil` result
+    /// means the guard tripped (the executor did not return while the hook was
+    /// blocked), which fails the calling test.
+    private func runBlockingExitSeam()
         -> (returnLine: String?, lateLine: String?, result: VersionCheck.RawExecResult?) {
         let path = NSTemporaryDirectory() + "seam-\(UUID().uuidString).log"
         let prevOn = getenv("UUM_PROBE_TIMING").map { String(cString: $0) }
@@ -259,10 +258,7 @@ final class ProbeTimingTests: XCTestCase {
         let release = DispatchSemaphore(value: 0)
         let hook: @Sendable () -> Void = { release.wait() }
         var exec = Exec(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
-        switch stage {
-        case .entry: exec.waitTaskEntryHook = hook
-        case .exit:  exec.exitObservationHook = hook
-        }
+        exec.exitObservationHook = hook
         let cfg = sh("echo done")
         let box = ResultBox()
         let done = DispatchSemaphore(value: 0)
@@ -285,30 +281,18 @@ final class ProbeTimingTests: XCTestCase {
         return (returnLine, lateLine, returnedWhileBlocked ? box.value : nil)
     }
 
-    func test_seam_delayedWaitTaskEntry_returnsIndependently_lateRecordShowsEntry() {
-        let (ret, late, result) = runBlockingSeam(.entry)
-        guard case .timedOut? = result else { return XCTFail("executor did not return while the wait task was blocked: \(String(describing: result))") }
-        XCTAssertNotNil(ret, "the return line was written before the wait task was released")
+    func test_seam_delayedExitObservation_returnsIndependently_lateRecordShowsExit() {
+        let (ret, late, result) = runBlockingExitSeam()
+        guard case .timedOut? = result else { return XCTFail("executor did not return while exit observation was blocked: \(String(describing: result))") }
+        XCTAssertNotNil(ret, "the return line was written before the reap was released")
         XCTAssertNotNil(late, "the late-exit line is written once the hook is released")
         guard let ret, let late else { return }
-        // The delayed stage is wait-task ENTRY: the return line predates the
-        // entry mark; the late line carries it (and the exit).
-        XCTAssertFalse(ret.contains("waitTaskEntry="), "the wait task had not entered when the executor returned")
-        XCTAssertTrue(late.contains("waitTaskEntry="), "entry is recorded once the hook is released")
-        XCTAssertTrue(late.contains("waitUntilExitReturn="), "the exit is preserved in the late record")
-        XCTAssertEqual(idOf(ret), idOf(late), "return and late-exit share a correlation id")
-    }
-
-    func test_seam_delayedExitObservation_returnsIndependently_lateRecordShowsExit() {
-        let (ret, late, result) = runBlockingSeam(.exit)
-        guard case .timedOut? = result else { return XCTFail("executor did not return while the wait task was blocked: \(String(describing: result))") }
-        XCTAssertNotNil(ret); XCTAssertNotNil(late)
-        guard let ret, let late else { return }
-        // The delayed stage is EXIT observation: entry was recorded before the
-        // return; the exit appears only in the late record.
-        XCTAssertTrue(ret.contains("waitTaskEntry="), "the wait task entered promptly")
-        XCTAssertFalse(ret.contains("waitUntilExitReturn="), "the exit was not observed by return")
-        XCTAssertTrue(late.contains("waitUntilExitReturn="), "the exit is preserved in the late record")
+        // Exit observation is delayed: launch was recorded before the return, and
+        // the exit appears only in the late record — proving the deadline return
+        // does not depend on when the exit is observed.
+        XCTAssertTrue(ret.contains("launch="), "the child launched before the executor returned")
+        XCTAssertFalse(ret.contains("procExitObserved="), "the exit was not observed by return")
+        XCTAssertTrue(late.contains("procExitObserved="), "the exit is preserved in the late record")
         XCTAssertEqual(idOf(ret), idOf(late), "return and late-exit share a correlation id")
     }
 }
