@@ -183,31 +183,112 @@ final class VersionProbeTests: XCTestCase {
     }
 
     /// COORDINATION INVARIANT (no signal after ownership released), deterministic.
-    /// The exit-observation hook blocks INSIDE the reap, after the child has been
-    /// reaped (`reaped` set) but before `exited` is signalled. The executor cannot
-    /// observe the exit, so it hits its deadline and runs teardown while the child
-    /// is already reaped. Every teardown signal must be skipped: the injected
+    /// The exit-observation hook FIRST acknowledges it has been entered (which
+    /// happens only AFTER the reap set `reaped`), then blocks. The test waits for
+    /// that acknowledgment — establishing the ordering "child reaped" precedes any
+    /// teardown, with no reliance on a deadline race — and then triggers teardown
+    /// explicitly via cancel. Every teardown signal must be skipped: the injected
     /// `killFn` must record ZERO calls. Defeat proof: make `signalIfOwned` signal
     /// unconditionally (ignore `reaped`) and this records calls after reaping.
     func test_ownership_noSignalIsSentAfterReap() {
         let kills = KillRecorder()
+        let hookEntered = DispatchSemaphore(value: 0)   // fires after the reap, before observation is released
         let release = DispatchSemaphore(value: 0)
         var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.2, outputSettle: 0.2)
         exec.killFn = { pid, sig in kills.record(pid, sig); return 0 }   // count only; no real signal needed
-        exec.exitObservationHook = { release.wait() }                    // hold observation open, after reap
+        exec.exitObservationHook = { hookEntered.signal(); release.wait() }
+        let canceller = V.ProbeCanceller()
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.value = exec.execute(self.sh("echo done"), deadline: 30, canceller: canceller)
+            done.signal()
+        }
+        // Establish the ordering: the child has been reaped (the hook runs only
+        // after the reap) before we do anything else.
+        XCTAssertEqual(hookEntered.wait(timeout: .now() + 10), .success, "the child was reaped and observation is held open")
+        // Now trigger teardown deterministically. Every signal must be skipped
+        // because the child is already reaped.
+        canceller.cancel()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "executor returned after cancel")
+        guard case .cancelled = box.value else { release.signal(); return XCTFail("expected .cancelled, got \(box.value)") }
+        XCTAssertEqual(kills.count(), 0, "no signal may be sent once the child has been reaped (PID could be reused)")
+        release.signal()
+    }
+
+    /// [P1] Ownership must survive the executor returning and dropping its
+    /// reference before the reaper runs. The reaper runs on a serial queue we
+    /// block until AFTER the executor has returned, so the child is unreaped and
+    /// the executor's own reference is gone. If ownership were held only by the
+    /// executor (weak exit callbacks), the child would deallocate here and never
+    /// be reaped. The self-retain keeps it alive; once we release the queue the
+    /// reap runs and the observation hook fires — proving the owner survived and
+    /// reaped the child. Defeat proof: remove the `selfRetain` assignment and this
+    /// hook never fires (the owner deallocated).
+    func test_ownership_survivesExecutorReturn_andStillReaps() {
+        let reaper = DispatchQueue(label: "test.reaper.serial")   // serial
+        let blockReaper = DispatchSemaphore(value: 0)
+        reaper.async { blockReaper.wait() }                        // hog the queue: the reap cannot run yet
+        let reapedByOwner = DispatchSemaphore(value: 0)
+        var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.1, outputSettle: 0.1)
+        exec.reaperQueue = reaper
+        exec.exitObservationHook = { reapedByOwner.signal() }      // runs only if the owner survived to reap
         let box = ResultBox()
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             box.value = exec.execute(self.sh("echo done"), deadline: 0.3, canceller: V.ProbeCanceller())
             done.signal()
         }
-        // The child exits in ms and is reaped; the executor then times out (the
-        // reap is still blocked in the hook) and runs teardown.
-        XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "executor returned on deadline while reap was held")
-        guard case .timedOut = box.value else { release.signal(); return XCTFail("expected .timedOut, got \(box.value)") }
-        XCTAssertEqual(kills.count(), 0, "no signal may be sent once the child has been reaped (PID could be reused)")
-        release.signal()
-        _ = done.wait(timeout: .now() + 5)   // let the reap unwind
+        // Executor times out and returns (child unreaped: the reaper queue is
+        // blocked), dropping its reference to the owned child.
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "executor returned while the reaper was blocked")
+        guard case .timedOut = box.value else { blockReaper.signal(); return XCTFail("expected .timedOut, got \(box.value)") }
+        // Release the reaper. The child must still be reaped by the owner.
+        blockReaper.signal()
+        XCTAssertEqual(reapedByOwner.wait(timeout: .now() + 10), .success,
+                       "the owner survived the executor's return and reaped the child")
+    }
+
+    /// [P2] When `waitpid` reports the child is gone but yields no status (ECHILD
+    /// or an unexpected error), the probe must be reported as a FAILURE, never as a
+    /// clean exit with a fabricated status of 0 that could be classified as a
+    /// verified version. The injected `waitpidFn` reaps the real child (so nothing
+    /// leaks) but reports ECHILD to the executor.
+    func test_realExecutor_missingExitStatus_isReportedAsFailure() {
+        var exec = V.SubprocessProbeExecutor(deadlinePollInterval: 0.02, grace: 0.3, outputSettle: 0.3)
+        exec.waitpidForTesting = { pid, st, opt in
+            _ = Darwin.waitpid(pid, st, opt)   // really reap so no zombie leaks
+            errno = ECHILD                       // …but report "no child / no status"
+            return -1
+        }
+        // A child that prints a valid version and exits 0 — which, with a fabricated
+        // status of 0, would otherwise be misclassified as verified.
+        let raw = exec.execute(sh("echo unison version 2.54.0"), deadline: 10, canceller: V.ProbeCanceller())
+        guard case .launchFailed(let message) = raw else {
+            return XCTFail("expected .launchFailed for unknown status, got \(raw)")
+        }
+        XCTAssertTrue(message.contains("status unavailable"), "message names the missing status: \(message)")
+        // And it must NOT be classifiable as a version despite the version output.
+        if case .version = V.classifyRaw(raw) { XCTFail("unknown status must never classify as a verified version") }
+    }
+
+    /// [P3] A launch-preparation failure (here, argv duplication) must fail BEFORE
+    /// spawning: no child is launched (so `onLaunch` never fires) and the command
+    /// is never run with truncated arguments. The injected `dup` fails on the
+    /// second argument.
+    func test_spawn_argvDuplicationFailure_launchesNoChild() {
+        let launched = LaunchFlag()
+        var exec = V.SubprocessProbeExecutor(onLaunch: { _ in launched.set() })
+        let calls = Counter()
+        exec.dupForTesting = { s in
+            let n = calls.next()
+            return n == 2 ? nil : strdup(s)   // fail duplicating the second argv entry
+        }
+        let raw = exec.execute(
+            V.ProbeConfig(executable: "/bin/echo", arguments: ["a", "b", "c"], host: "local"),
+            deadline: 5, canceller: V.ProbeCanceller())
+        guard case .launchFailed = raw else { return XCTFail("expected .launchFailed, got \(raw)") }
+        XCTAssertFalse(launched.wasSet(), "no child may launch when argv preparation failed")
     }
 
     /// The complementary case: while the child is ALIVE (TERM-resistant), teardown
@@ -260,6 +341,15 @@ final class VersionProbeTests: XCTestCase {
         func record(_ pid: pid_t, _ sig: Int32) { lock.lock(); sigs.append(sig); lock.unlock() }
         func count() -> Int { lock.lock(); defer { lock.unlock() }; return sigs.count }
         func sent(_ sig: Int32) -> Bool { lock.lock(); defer { lock.unlock() }; return sigs.contains(sig) }
+    }
+    private final class LaunchFlag: @unchecked Sendable {
+        private let lock = NSLock(); private var flag = false
+        func set() { lock.lock(); flag = true; lock.unlock() }
+        func wasSet() -> Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    }
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock(); private var n = 0
+        func next() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; return n }
     }
 
     // MARK: - Finding #8/#12: classifyRaw distinguishes failure kinds

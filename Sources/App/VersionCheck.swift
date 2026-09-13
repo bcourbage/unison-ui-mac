@@ -590,6 +590,18 @@ enum VersionCheck {
         /// `kill`.
         var exitObservationHook: (@Sendable () -> Void)? = nil
         var killFn: (@Sendable (pid_t, Int32) -> Int32)? = nil
+        /// The queue the exit source / reap runs on; a test supplies a serial
+        /// queue it can block to hold the reaper until after the executor returns
+        /// (proving ownership survives and the child is still reaped). Defaults to
+        /// a global queue.
+        var reaperQueue: DispatchQueue? = nil
+        /// Duplicates argv strings; a test makes it fail to prove no child is
+        /// launched with truncated arguments. Defaults to `strdup`.
+        var dupForTesting: (@Sendable (String) -> UnsafeMutablePointer<CChar>?)? = nil
+        /// Reaps the child; a test injects one that reaps for real but reports
+        /// ECHILD, to exercise the unknown-status failure path. Defaults to
+        /// `waitpid`.
+        var waitpidForTesting: (@Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t)? = nil
 
         init(deadlinePollInterval: TimeInterval = 0.05,
              grace: TimeInterval = VersionCheck.terminateGrace,
@@ -748,45 +760,83 @@ enum VersionCheck {
             private let lock = NSLock()
             private var reaped = false
             private var rawStatus: Int32 = 0
+            /// False until `waitpid` yields a real status. If the child is gone
+            /// but `waitpid` could not return a status (ECHILD or an unexpected
+            /// error), we mark it reaped (to suppress further signalling) but
+            /// leave this false so the executor reports a failure, never a clean
+            /// exit with a fabricated status of 0.
+            private var statusKnown = false
             private let exited = DispatchSemaphore(value: 0)
             private let killFn: @Sendable (pid_t, Int32) -> Int32
+            private let waitpidFn: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t
             private let timing: ProbeTiming?
             private let exitObservationHook: (@Sendable () -> Void)?
+            private let reaperQueue: DispatchQueue
             private var source: DispatchSourceProcess?
+            /// A strong self-reference held from launch until the child is reaped,
+            /// so ownership survives the executor returning and dropping its own
+            /// reference. Without it the exit callbacks (which hold `self` weakly)
+            /// could find `self` gone before the reap runs, leaving the child
+            /// unreaped. Cleared at the end of the reap, so the object then
+            /// deallocates normally.
+            private var selfRetain: OwnedChildProcess?
 
-            /// Spawn `executable` with `arguments`, wiring the child's stdout/stderr
-            /// to the given pipe WRITE-end fds and giving it `/dev/null` for stdin.
-            /// Returns the owned child, or a failure message on `posix_spawn` error.
             /// Spawn outcome: the launched child, or a failure message.
             enum SpawnOutcome { case launched(OwnedChildProcess); case failed(String) }
 
+            /// Spawn `executable` with `arguments`, wiring the child's stdout/stderr
+            /// to the given pipe WRITE-end fds and giving it `/dev/null` for stdin.
+            /// EVERY preparation step is checked: if any file action, attribute, or
+            /// argv duplication fails, no child is launched and a failure is
+            /// returned — so a child never runs with truncated arguments or missing
+            /// redirection. `dup` duplicates argv strings (injectable for testing
+            /// an allocation failure); `reaperQueue` runs the exit source/reap.
             static func spawn(executable: String, arguments: [String],
                               stdoutWrite: Int32, stderrWrite: Int32,
                               killFn: @escaping @Sendable (pid_t, Int32) -> Int32,
+                              waitpidFn: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
                               timing: ProbeTiming?,
-                              exitObservationHook: (@Sendable () -> Void)?)
+                              exitObservationHook: (@Sendable () -> Void)?,
+                              reaperQueue: DispatchQueue,
+                              dup: (String) -> UnsafeMutablePointer<CChar>?)
                 -> SpawnOutcome {
                 var fileActions: posix_spawn_file_actions_t?
-                posix_spawn_file_actions_init(&fileActions)
+                guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+                    return .failed("posix_spawn_file_actions_init failed")
+                }
                 defer { posix_spawn_file_actions_destroy(&fileActions) }
                 // No inherited stdin; child stdout/stderr are the pipe write ends.
-                posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0)
-                posix_spawn_file_actions_adddup2(&fileActions, stdoutWrite, 1)
-                posix_spawn_file_actions_adddup2(&fileActions, stderrWrite, 2)
+                guard posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0) == 0,
+                      posix_spawn_file_actions_adddup2(&fileActions, stdoutWrite, 1) == 0,
+                      posix_spawn_file_actions_adddup2(&fileActions, stderrWrite, 2) == 0 else {
+                    return .failed("posix_spawn_file_actions setup failed")
+                }
 
                 var attr: posix_spawnattr_t?
-                posix_spawnattr_init(&attr)
+                guard posix_spawnattr_init(&attr) == 0 else {
+                    return .failed("posix_spawnattr_init failed")
+                }
                 defer { posix_spawnattr_destroy(&attr) }
                 // Close every inherited fd in the child except the ones the file
                 // actions establish (0/1/2). This keeps the pipe write ends off
                 // any inherited high fd, so EOF is delivered when the child and
                 // its descendants close fd 1/2. POSIX_SPAWN_CLOEXEC_DEFAULT is an
                 // Apple extension (0x4000).
-                posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+                guard posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else {
+                    return .failed("posix_spawnattr_setflags failed")
+                }
 
-                // argv: [executable, arguments…, NULL].
-                var argv: [UnsafeMutablePointer<CChar>?] = [strdup(executable)]
-                argv.append(contentsOf: arguments.map { strdup($0) })
+                // argv: [executable, arguments…, NULL]. A failed duplication frees
+                // what was allocated and fails BEFORE spawning, so argv can never
+                // carry a premature null that truncates the command.
+                var argv: [UnsafeMutablePointer<CChar>?] = []
+                for s in [executable] + arguments {
+                    guard let d = dup(s) else {
+                        for p in argv { free(p) }
+                        return .failed("argument duplication failed (out of memory)")
+                    }
+                    argv.append(d)
+                }
                 argv.append(nil)
                 defer { for p in argv where p != nil { free(p) } }
 
@@ -794,41 +844,57 @@ enum VersionCheck {
                 let rc = posix_spawn(&pid, executable, &fileActions, &attr, argv, environ)
                 if rc != 0 { return .failed(String(cString: strerror(rc))) }
 
-                let child = OwnedChildProcess(pid: pid, killFn: killFn, timing: timing,
-                                              exitObservationHook: exitObservationHook)
+                let child = OwnedChildProcess(pid: pid, killFn: killFn, waitpidFn: waitpidFn,
+                                              timing: timing, exitObservationHook: exitObservationHook,
+                                              reaperQueue: reaperQueue)
                 child.armExitSource()
                 return .launched(child)
             }
 
             private init(pid: pid_t, killFn: @escaping @Sendable (pid_t, Int32) -> Int32,
-                         timing: ProbeTiming?, exitObservationHook: (@Sendable () -> Void)?) {
-                self.pid = pid; self.killFn = killFn
+                         waitpidFn: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
+                         timing: ProbeTiming?, exitObservationHook: (@Sendable () -> Void)?,
+                         reaperQueue: DispatchQueue) {
+                self.pid = pid; self.killFn = killFn; self.waitpidFn = waitpidFn
                 self.timing = timing; self.exitObservationHook = exitObservationHook
+                self.reaperQueue = reaperQueue
             }
 
             private func armExitSource() {
-                let queue = DispatchQueue.global(qos: .userInitiated)
-                let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+                // Retain ourselves until reaping finishes, so ownership does not
+                // vanish if the executor returns and drops its reference first.
+                lock.lock(); selfRetain = self; lock.unlock()
+                let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: reaperQueue)
                 src.setEventHandler { [weak self] in self?.handleExit() }
                 source = src
                 src.resume()
                 // Belt-and-suspenders for a child that exited before the source
-                // armed: probe once on the source's queue (never synchronously on
-                // the caller's thread, so a blocking test hook cannot stall it).
-                queue.async { [weak self] in self?.handleExit() }
+                // armed: probe once on the reaper queue (never synchronously on the
+                // caller's thread, so a blocking test hook cannot stall it).
+                reaperQueue.async { [weak self] in self?.handleExit() }
             }
 
             /// Reap under the lock (mutually exclusive with `signalIfOwned`), then —
             /// only for the caller that actually performed the reap — run the
-            /// observation hook, record the exit, and signal `exited`.
+            /// observation hook, record the exit, signal `exited`, and release the
+            /// self-retain so the object can deallocate.
             private func handleExit() {
                 lock.lock()
                 if reaped { lock.unlock(); return }
                 var st: Int32 = 0
-                let r = waitpid(pid, &st, WNOHANG)
-                if r == pid { rawStatus = st; reaped = true }
-                else if r == -1 && errno == ECHILD { reaped = true }   // already gone
-                else { lock.unlock(); return }                          // not exited yet
+                var r: pid_t
+                repeat { r = waitpidFn(pid, &st, WNOHANG) } while r == -1 && errno == EINTR
+                if r == pid {
+                    rawStatus = st; statusKnown = true; reaped = true
+                } else if r == 0 {
+                    lock.unlock(); return                 // not exited yet (spurious early probe)
+                } else {
+                    // r == -1 with ECHILD (no child to reap) or an unexpected
+                    // error: the child is gone but we have no status. Mark reaped
+                    // to suppress any further signalling (the PID may be reused);
+                    // statusKnown stays false so the executor reports a failure.
+                    reaped = true
+                }
                 lock.unlock()
 
                 source?.cancel()
@@ -842,6 +908,9 @@ enum VersionCheck {
                 // If the executor already returned WITHOUT observing this exit (a
                 // timeout that outran the reap), emit a correlated late-exit line.
                 timing?.noteWaitTaskComplete()
+                // Ownership is discharged; drop the self-retain. `self` stays alive
+                // for the rest of this call via the stack frame.
+                lock.lock(); selfRetain = nil; lock.unlock()
             }
 
             /// Send `sig` only while we still own the PID. Returns whether it was
@@ -857,11 +926,13 @@ enum VersionCheck {
 
             func waitExit(timeout: DispatchTime) -> DispatchTimeoutResult { exited.wait(timeout: timeout) }
 
-            /// The child's exit status as a conventional code: the exit code for a
-            /// normal exit, or 128 + signal for a signalled one. Meaningful only
-            /// after a successful `waitExit`.
-            func exitStatus() -> Int32 {
+            /// The child's exit status as a conventional code (exit code, or
+            /// 128 + signal for a signalled child), or nil if the status is not
+            /// known (the child is gone but `waitpid` yielded no status). Meaningful
+            /// only after a successful `waitExit`.
+            func exitStatus() -> Int32? {
                 lock.lock(); defer { lock.unlock() }
+                guard statusKnown else { return nil }
                 let low = rawStatus & 0x7f
                 return low == 0 ? (rawStatus >> 8) & 0xff : 128 + low
             }
@@ -883,11 +954,16 @@ enum VersionCheck {
 
             let outPipe = Pipe(); let errPipe = Pipe()
             let kfn: @Sendable (pid_t, Int32) -> Int32 = killFn ?? { Darwin.kill($0, $1) }
+            let wfn: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t =
+                waitpidForTesting ?? { Darwin.waitpid($0, $1, $2) }
+            let dup: (String) -> UnsafeMutablePointer<CChar>? = dupForTesting ?? { strdup($0) }
             let spawned = OwnedChildProcess.spawn(
                 executable: config.executable, arguments: config.arguments,
                 stdoutWrite: outPipe.fileHandleForWriting.fileDescriptor,
                 stderrWrite: errPipe.fileHandleForWriting.fileDescriptor,
-                killFn: kfn, timing: timing, exitObservationHook: exitObservationHook)
+                killFn: kfn, waitpidFn: wfn, timing: timing, exitObservationHook: exitObservationHook,
+                reaperQueue: reaperQueue ?? DispatchQueue.global(qos: .userInitiated),
+                dup: dup)
             let child: OwnedChildProcess
             switch spawned {
             case .failed(let message): timing?.setResult("launchFailed"); return .launchFailed(message)
@@ -970,7 +1046,13 @@ enum VersionCheck {
                         out.stop(); err.stop(); timing?.setResult("cancelled"); return .cancelled
                     }
                     let (stdout, stderr) = collected()
-                    let status = child.exitStatus()
+                    guard let status = child.exitStatus() else {
+                        // The child is gone but we could not obtain its status
+                        // (ECHILD or an unexpected waitpid error). Never report a
+                        // clean/verified exit on a fabricated status; fail instead.
+                        timing?.setResult("exitStatusUnavailable")
+                        return .launchFailed("subprocess exit status unavailable")
+                    }
                     timing?.setResult("exited(\(status))")
                     return .exited(status: status, stdout: stdout, stderr: stderr)
                 }
