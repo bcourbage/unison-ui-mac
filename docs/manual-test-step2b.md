@@ -302,18 +302,19 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 **PASS =** a post-auth transport wedge reaches restart-required within the scan timeout (never an indefinite "Opening…"/"Looking for changes…"); **Profiles** returns to the picker (without cancelling the scan) while the retained detector carries the op to restart-required; the **Stop** control stays disabled and "Stop Scan" is never offered; a waiting replacement profile is carried to restart-required rather than stranded; and quit+reopen recovers cleanly.
 
-### TC14 — CLI option scope: first load only, picker opens unscoped (issue #122)
+### TC14 — CLI option scope: session-scoped, picker opens unscoped (issue #122, updated for v0.10.0)
 
 Verifies, on the signed release candidate, how a command-line option passed at
 launch (for example `-path`) is scoped, and that returning to the profile picker
-opens any profile normally, with no refusal. The contract: a launch option is
-consumed by the engine's **first** profile load only (upstream's `firstTime`
-behavior in `uimacbridge.ml`, which parses the command line on the first
-`do_unisonInit1` and resets preferences to defaults on every later call). So the
-option scopes the launch's first opened profile and that load while it persists;
-every later picker selection loads fresh and unscoped. Steps 1 to 5 are
+opens any profile normally, with no refusal. The contract: a launch option scopes
+the launch's first opened profile **for the whole life of that session** — its
+initial scan, its in-place rescans, and (from v0.10.0, #164/#165) its reconnecting
+rescans after a remote sync closes the connection, because the session's options
+are re-applied on every (re)load. Only a NEW session is unscoped: every later
+picker selection loads fresh with no options. (This supersedes the earlier
+first-load-only behavior, where a reconnect lost the scope.) Steps 1 to 5 are
 local-only and apply no synchronization; step 6 uses a remote profile and does
-sync.
+sync to exercise the reconnect.
 
 **Setup.** In one Terminal, create a uniquely-named throwaway directory so nothing
 real is touched, and point the Unison directory and two local roots inside it:
@@ -351,7 +352,8 @@ disposable `UNISON` export stays in effect.
    profile, click **Rescan**. **Expect:** the results are again limited to
    `Documents`. A local profile's engine load persists across an in-place rescan
    (no reconnect), so the launch option still applies. (Step 6 shows the remote
-   case, where the load does not persist.)
+   case, where the connection closes and Rescan reconnects — and under v0.10.0 the
+   scope is preserved across that reconnect too.)
 3. **The picker opens any profile unscoped.** Click **Profiles** to return to the
    picker, then:
    1. Open `second`. **Expect:** it opens normally and lists **both** changes
@@ -371,26 +373,33 @@ disposable `UNISON` export stays in effect.
    option). Return to the picker and open `second`: now unscoped, both changes.
    This is the qualified contract: the option applies to the first opened profile,
    named or picked, and nothing after.
-6. **(Remote) A reconnecting Rescan reloads unscoped.** This needs a remote root so
-   the connection actually closes on sync-end. First **quit** the instance left by
-   step 5, so this step exercises a fresh launch rather than a running-instance
-   handoff (from v0.10.0 a request to a running instance is served, delivering the
-   option to the opened session rather than being refused; TC15 covers that path).
-   In the same exported
-   `UNISON` directory, add a disposable remote fixture: a key (non-interactive)
-   remote host that connects without a prompt, an empty remote scratch directory,
-   and a profile `remote` with roots `"$TC14/A"` and `ssh://<host>//<remote-scratch>`
-   (point `servercmd` at the RC's engine). `A` still holds the inside-`Documents`
-   change and the outside change from the setup; the remote scratch is empty.
+6. **(Remote) A reconnecting Rescan KEEPS the session's scope (v0.10.0).** This
+   needs a remote root so the connection actually closes on sync-end. First **quit**
+   the instance left by step 5, so this step exercises a fresh launch rather than a
+   running-instance handoff (from v0.10.0 a request to a running instance is served,
+   delivering the option to the opened session; TC15 covers that path). In the same
+   exported `UNISON` directory, add a disposable remote fixture: a key
+   (non-interactive) remote host that connects without a prompt, an empty remote
+   scratch directory, and a profile `remote` with roots `"$TC14/A"` and
+   `ssh://<host>//<remote-scratch>` (point `servercmd` at the RC's engine). `A` holds
+   the inside-`Documents` change and the outside change from the setup; the remote
+   scratch is empty. Under v0.10.0 (#164/#165) a session's command-line options
+   persist across its rescans and reconnects, so a reconnecting Rescan stays scoped;
+   only starting a NEW session (a picker reopen) is unscoped.
    1. Run `"<RC launcher>" remote -path Documents`. **Expect:** the initial scan
       lists **only** the inside change (`Documents/inside.txt`).
    2. Click **Go**. **Expect:** the sync completes, propagating only the inside
-      change, and the non-interactive connection **closes** on sync-end.
-   3. Click **Rescan**. **Expect:** it **reconnects** and lists **only the outside
-      change** (`outside.txt`): the change the scoped launch hid and the scoped
-      sync never touched. This proves the reconnecting Rescan reloaded unscoped, and
-      is expected under the first-load-only contract, not a defect. Do **not** sync
-      this second scan.
+      change, and the non-interactive connection **closes** on sync-end. `outside.txt`
+      is untouched (it was scoped out) and still differs.
+   3. Add **another** change inside `Documents` (e.g. `printf y > "$TC14/A/Documents/inside2.txt"`),
+      then click **Rescan**. **Expect:** it **reconnects** and lists **only the new
+      inside change** (`Documents/inside2.txt`), and does **not** list `outside.txt`.
+      This proves the reconnecting Rescan reloaded with the session's `-path` scope
+      preserved (the v0.10.0 contract). Do **not** sync this scan.
+   4. Click **Profiles** to leave, then reopen `remote` from the picker (no `-path`).
+      **Expect:** this is a new, unscoped session: the scan now lists **both**
+      `Documents/inside2.txt` **and** `outside.txt`. This separately proves a picker
+      reopen carries no prior scope.
 
 Record: the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, the macOS version,
 the exact launcher path, and pass/fail evidence for each step.
@@ -399,8 +408,9 @@ the exact launcher path, and pass/fail evidence for each step.
 in-place local Rescan stays limited to `Documents`; returning to the picker opens
 both `second` and `first` unscoped (both changes, no refusal); a no-profile
 `-path` launch scopes only the first selection; the remote reconnecting Rescan
-(after a scoped sync) exposes only the untouched outside change; and after a
-normal relaunch the scope is gone.
+(after a scoped sync) **keeps the scope** — it lists the new inside change and
+excludes `outside.txt` — while a subsequent picker reopen of the same profile is
+unscoped (both changes); and after a normal relaunch the scope is gone.
 
 ### TC15 — Running-instance requests: the complete state table (v0.10.0)
 
@@ -415,15 +425,23 @@ both Terminals so nothing real is touched. A request that opens replies exit 0
 with no extra output (the window is the feedback); a request that is refused prints
 one line to stderr and exits non-zero.
 
-**Setup.** As in TC14, make a throwaway directory with two local roots `A`/`B`, a
-change inside `A/Documents` and one outside it, and local-only profiles `work` and
-`other` (roots `A`,`B`; no `path`/`include`/`ignore`). For the synchronization
-sub-cases (f, g) also add a **key (non-interactive) remote** profile `remote`
-(local root `A`, an `ssh://` root whose `servercmd` points at the RC engine) and a
-way to hold a sync open long enough to issue a request during it — either a large
-disposable payload or a `kill -STOP` freeze of the remote `unison -server` child
-(see TC11). Keep the app launched from the exported `UNISON` throughout. Record the
-RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher path.
+**Setup.** As in TC14, make a throwaway directory with two local roots `A`/`B` and
+local-only profiles `work` and `other` (roots `A`,`B`; no `path`/`include`/`ignore`).
+**Pre-synchronize each profile once while the replicas are still equal, BEFORE
+introducing any differences** (e.g. `"<RC launcher>" -ui text -batch work`): this
+creates the archive so a later graphical open does not raise Unison's normal
+first-synchronization "no archive files" warning (a main-thread modal — see the note
+below), and it is a prerequisite for the option-delivery check to have a controlled
+difference to show. **Only after pre-syncing**, stage one change inside
+`A/Documents` and one outside it, so `-path Documents` has exactly one in-scope and
+one out-of-scope difference to distinguish. For the remote sub-cases (TC15c(ii), f,
+g) also add a **key (non-interactive) remote** profile `remote` (local root `A`, an
+`ssh://` root whose `servercmd` points at the RC engine), pre-synced the same way;
+for f and g you also need a way to hold a sync open long enough to act during it —
+either a large disposable payload or a `kill -STOP` freeze of the remote
+`unison -server` child (see TC11). Keep the app launched from the exported `UNISON`
+throughout. Record the RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS
+version, and launcher path.
 
 - **TC15a — Idle at the picker opens now.** With the app idle at the picker, in the
   second Terminal run `"<RC launcher>" work`. **Expect:** the app activates and
@@ -435,13 +453,24 @@ RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher pa
   (`-path Documents -path Other`) and a scalar/bool option to confirm each is
   applied as on the `unison` command line (order and accumulation preserved). A
   later picker selection of `work` is unscoped (both changes).
-- **TC15c — Busy but leavable: accepted and waiting.** Open `work` and let it sit
-  at the reconciliation results (or catch it mid-scan). In the second Terminal run
-  `"<RC launcher>" other`. **Expect:** the command reports it was **accepted and is
-  waiting** (a message, exit 0); the app shows a waiting window; `work`'s window is
-  dismissed; and once `work`'s session finishes its cleanup, `other` opens and
-  scans. `work`'s old window must not be able to act on `other` (its controls are
-  gone).
+- **TC15c(i) — Immediate local takeover: Started.** Open the local `work` and let
+  it sit at reconciliation results. In the second Terminal run `"<RC launcher>" other`.
+  A local session has no connection to tear down, so its cleanup completes
+  synchronously and `other` opens right away. **Expect:** the command reports
+  **Started** (exit 0, no waiting message); `work`'s window is dismissed and `other`
+  opens. This is the immediate case; it deliberately produces no waiting message.
+- **TC15c(ii) — Accepted-and-waiting: a genuine outstanding operation.** This case
+  needs cleanup that is actually asynchronous, so use a **remote (key/non-interactive)
+  profile** `remote` (local root + an `ssh://` root, `servercmd` at the RC engine)
+  and let it sit at reconciliation results with the connection open. In the second
+  Terminal run `"<RC launcher>" other`. Abandoning `remote` must close its remote
+  connection before `other` can open, so the request cannot complete immediately.
+  **Expect:** the command reports **accepted and is waiting** (a message, exit 0);
+  the app shows a waiting window; `remote`'s window is dismissed; and once the
+  connection close and cleanup finish, `other` opens and scans. Do **not** rely on
+  catching a local scan mid-flight — that is not a reproducible way to force
+  waiting. In both (i) and (ii), the dismissed window's controls must be inert: it
+  cannot act on `other`.
 - **TC15d — Profile editor open: refused, edits kept.** Open the Profile Editor and
   begin editing a profile (make an unsaved change). Run `"<RC launcher>" work`.
   **Expect:** refused, exit non-zero, with a message naming the profile being
@@ -469,10 +498,15 @@ RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher pa
     not made in time (exit non-zero), and a later click cannot start `work`; the
     sync itself is unaffected.
   No command ever aborts the sync or picks a dialog option on its own.
-- **TC15g — Background sync has no decision surface.** After a **Close (let it
-  run)** from TC15f (a sync running with no window), run `"<RC launcher>" other`.
-  **Expect:** no sheet; the command reports **accepted and waiting**; `other` opens
-  when the background sync finishes.
+- **TC15g — Background sync has no decision surface.** Set this up **independently
+  of TC15f** (whose Close-let-run already leaves a request queued behind the
+  background sync — sending another there would be refused as already-pending, not
+  accepted). Instead: start a fresh held remote sync (open `remote`, Go, hold it),
+  then background it through the **window's own close controls** — click the window's
+  close and choose **Close (let it run)** — with **no** incoming CLI request, so
+  nothing is queued and the sync runs windowless. Now run `"<RC launcher>" other`.
+  **Expect:** no sheet (there is no window to host the decision); the command reports
+  **accepted and waiting**; `other` opens when the background sync finishes.
 - **TC15h — One request at a time; the picker cannot replace it.** While a request
   is accepted-and-waiting (TC15c) or awaiting the sync decision (TC15f), run a
   second `"<RC launcher>" other`. **Expect:** the second is refused as already
