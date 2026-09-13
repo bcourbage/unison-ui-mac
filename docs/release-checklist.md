@@ -173,6 +173,29 @@ skipping it.
       `Documents`. Record the RC version/build, macOS version, exact launcher path,
       and pass/fail evidence. Required before promotion.
 
+### Running-instance requests (v0.10.0, #162)
+
+- [ ] **(pre-promotion, live on the signed RC)** **TC15**
+      (`docs/manual-test-step2b.md`) — the complete running-instance state table:
+      idle-at-picker opens now; options are delivered to a running instance exactly
+      as at a fresh launch; a busy-but-leavable request is accepted-and-waiting and
+      opens after cleanup with the previous window torn down; the profile editor and
+      restart-required states refuse with specific guidance; a request during an
+      active (windowed) sync raises the Keep Syncing / Abort & Close / Close
+      (let it run) decision with the caller waiting, reports Started /
+      Accepted-and-waiting / Refused accurately, honours the admission timeout, and
+      never acts on the sync by itself; a windowless background sync
+      accepts-and-waits; only one request is pending at a time and the picker cannot
+      silently replace it; a lost reply is Outcome-unconfirmed with no auto-retry.
+      Hands-on (needs the app open plus a second Terminal). Record the RC
+      version/build, macOS version, launcher path, and per-sub-case evidence.
+      Required before promotion.
+- [ ] **(pre-tag)** The product-site copy describing the running-instance behavior
+      (Install ▸ "The `unison` command", FAQ) is updated for v0.10.0: options are
+      now delivered to a running instance and busy states wait or raise the sync
+      decision, replacing the earlier "keeps the work in progress and tells you it
+      did not start the new one" wording. Draft reviewed and approved before deploy.
+
 ## 0.6.0
 
 Build **21** (v0.6.0), on top of 0.5.1 (build 20). No profile/settings migration.
