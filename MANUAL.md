@@ -123,14 +123,19 @@ Unison with its usage text.
 
 When the graphical interface is already running and a `unison <profile>` request
 reaches it, the request goes to that instance rather than starting a second one.
-If it is idle at the picker, it opens the profile and starts its scan. If a scan,
-reconciliation, sync, or a profile edit is already in progress, it keeps that work
-and reports that it did not start the new profile, so nothing in progress is
-disturbed. The running instance also refuses a request it cannot carry faithfully,
-saying why: one that carries options beyond the profile name (on the request, or
-on the running instance's own launch, since those options would otherwise affect
-it), one from a different copy of the app, or one that uses a different Unison
-directory. A successful handoff means the profile was accepted and began opening,
+The request carries its options (`-path`, `-include`, `-source`), so the profile
+opens scoped exactly as it would at a fresh launch, with order, repeated options,
+and profile precedence preserved; how the running app was itself started no longer
+matters. If it is idle at the picker, it opens the profile and starts its scan. If
+the app is busy — scanning, showing reconciliation results, or finishing a previous
+run — it accepts the request and opens the profile once that work and its cleanup
+finish, reporting meanwhile that the request was accepted and is waiting; only one
+request waits at a time. If a synchronization is in progress, it asks how to handle
+it: keep syncing, finish the sync first, or stop it and then open. A request is
+still refused, with a reason, while the profile editor is open (close it first;
+your edits are kept) and when the app needs to be quit and reopened after a
+connection problem, as is one from a different copy of the app or one that uses a
+different Unison directory. A successful handoff means the profile was accepted and began opening,
 not that its scan or synchronization finished; the command returns an exit status
 that reflects that. If the reply is lost, because the running instance did not
 answer in time, the outcome is left unconfirmed and the command says so.

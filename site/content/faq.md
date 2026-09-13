@@ -11,19 +11,24 @@ Swift and AppKit interface with a visual conflict-review step.
 ## How is it different from the `unison` command-line tool?
 
 It is the same engine with a different front end. The app embeds Unison's compiled
-core, so the `unison` CLI does not need to be installed for the app to run, and
-everything happens through the macOS interface instead of a terminal: choosing
-profiles, reviewing changes, and resolving conflicts.
+core, so the `unison` CLI does not need to be installed, and the usual workflow —
+choosing profiles, reviewing changes, and resolving conflicts — happens through the
+macOS interface. It is not graphical-only, though: the app also provides the
+`unison` command, so you can start a sync from Terminal or run the text interface in
+scripts. See [Can I start a graphical synchronization from
+Terminal?](#can-i-start-a-graphical-synchronization-from-terminal) below.
 
-The app also provides the `unison` command itself. On your PATH, it opens the app
-for `unison -ui graphic`, runs Unison's text interface for `unison -ui text <profile>`,
-and serves `unison -server` for machines that sync to this Mac over ssh. A bare
-`unison <profile>`, with no `-ui`, follows the **Default interface** preference in
-Settings ▸ Command Line. You can set that preference to Graphical or Text; it is
-Graphical by default, so a bare `unison <profile>` opens the app on that profile.
-Pass `-ui text` for the terminal interface (this changed in 0.9.0, where a bare
-`unison <profile>` used to run text). Settings ▸ Command Line can add the command
-to your login-shell PATH for you, with no administrator password. See
+## Can I start a graphical synchronization from Terminal?
+
+Yes. With the app's `unison` command on your PATH, `unison home` opens the app on
+the `home` profile and starts its scan, stopping at the reconciliation results so
+nothing is applied until you act. Session options come along: `unison home -path
+Documents` opens the profile scoped to `Documents`, and `-include` and `-source`
+are carried too. If the app is already running, the request goes to that instance —
+opening the profile there, and waiting if the app is busy rather than being turned
+away. For scripts and scheduled jobs, pass `-ui text` explicitly to run Unison's
+text interface in the terminal instead of opening the app. **Settings ▸ Command
+Line** adds the command to your PATH, with no administrator password; see
 [Install](../install/#the-unison-command).
 
 ## How does it compare to the macOS app included with Unison?
