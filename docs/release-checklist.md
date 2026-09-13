@@ -119,16 +119,17 @@ gate; they do not authorize skipping it.
 
 ### Command-line option scope (#122)
 
-- [ ] **(pre-publication gate, live on the signed RC)** **TC14**
-      (`docs/manual-test-step2b.md`) — CLI option scope, first-load-only contract:
+- [ ] **(pre-promotion, live on the signed RC)** **TC14**
+      (`docs/manual-test-step2b.md`) — CLI option scope, session-scoped contract:
       `unison first -path Documents` scans only `Documents`; an in-place local
       rescan of `first` stays limited to `Documents`; returning to the picker opens
       both `second` and `first` in full (unscoped, no refusal); a no-profile
       `-path` launch scopes only the first selection; and a key/remote profile's
-      reconnecting Rescan after a sync is unscoped. Uses disposable roots with
-      changes inside and outside `Documents`. Record the RC version/build, macOS
-      version, exact launcher path, and pass/fail evidence. Required before
-      publication.
+      reconnecting Rescan after a sync **keeps the scope** (shows a new in-`Documents`
+      change, excludes the outside change), while a subsequent picker reopen of that
+      profile is unscoped. Uses disposable roots with changes inside and outside
+      `Documents`. Record the RC version/build, macOS version, exact launcher path,
+      and pass/fail evidence. Required before promotion.
 
 ### Running-instance requests (v0.10.0, #162)
 
