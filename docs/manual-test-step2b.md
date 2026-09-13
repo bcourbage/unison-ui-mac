@@ -484,6 +484,19 @@ RC `MARKETING_VERSION (CURRENT_PROJECT_VERSION)`, macOS version, and launcher pa
   reports the outcome could not be confirmed and to check the app before running
   again; it does not silently retry or open a duplicate.
 
+**A blocking modal on the app's main thread will make the NEXT request time out.**
+The handoff handler runs on the main thread, so while any app-modal alert is up the
+running instance cannot answer a request, and the caller reports the outcome as
+unconfirmed (a lost reply) after its timeout. Two common cases to avoid confusing
+with a defect: the first synchronization of a fresh profile shows Unison's "no
+archive files were found / first synchronization" warning as a modal, and a killed
+(not cleanly quit) prior instance can leave a stale archive lock whose next open is
+a "the archives are locked" modal. Before exercising the busy/takeover sub-cases,
+make sure no such modal is open: use profiles that have been synchronized at least
+once (so there is no first-sync warning), quit the app cleanly between runs rather
+than killing it, and clear any stale `lk*` files in the Unison directory. This is
+expected modal-vs-main behavior, not a running-instance defect.
+
 Record pass/fail evidence per sub-case with the RC version/build, macOS version,
 and launcher path.
 
