@@ -1,14 +1,19 @@
 # Release checklist
 
 Validation steps for a release, grouped by **when** they can actually run under
-the current `release.yml`. That workflow is split into three jobs: **build**
-(unsigned Release + tests, uploads the app artifact), **smoke-macos15** (launches
-that exact artifact on a macOS 15 runner and *gates* the release), and
-**release** (signs the **same** artifact with Developer ID, notarizes, staples,
-then creates the public Release and publishes the live feed). So the bytes the
-smoke job validated are the bytes that get signed, and the macOS-15 launch is a
-real pre-publication gate — but there is still no pause for *manual* testing
-before publication:
+`release.yml`. That workflow is split into four jobs: **build** (unsigned Release +
+tests, uploads the app artifact), **smoke-macos15** (launches that exact artifact
+on a macOS 15 runner and *gates* the release), **sign-rc** (signs the **same**
+artifact with Developer ID, notarizes, staples, verifies the finished bytes, and
+uploads the signed RC as an artifact with its SHA-256 — publishing nothing), and
+**publish** (gated by the protected `release-publish` environment: downloads that
+exact signed RC, re-verifies its SHA-256, then creates the public Release and
+publishes the live feed **without rebuilding or re-signing**). So the bytes the
+smoke job validated are the bytes that get signed, and the bytes acceptance-tested
+on the signed RC are the bytes shipped. There is now a real pause for **manual
+acceptance on the signed RC** before publication — the `release-publish` approval —
+provided both `release` and `release-publish` are configured with required
+reviewers (an unconfigured environment has no protection):
 
 - **Pre-tag checks** (repo state, before you tag): `main` is green; the vendored
   blob checksum matches `vendor/README.md`; the product-site pages are current for
@@ -60,15 +65,22 @@ artifact is ever published.
    fresh rebuild: create the GitHub Release, then publish the appcast (Sparkle)
    and bump the Homebrew cask.
 
-Today `release.yml` signs, notarizes and publishes in a single run, so it does
-not yet stop between steps 1 and 4. That is a release blocker, not a license to
-publish first and roll back on failure: **publication stays held until the
-workflow can hand off an unpublished signed RC for step 2 and promote that exact
-artifact to publish without rebuilding.** Building the protected manual-promotion
-stage (a job that uploads the signed, notarized RC without creating the public
-Release or feed, promoted only after step 2 passes) can be separate work, but
-until it exists the sequence above is not satisfiable and a release must not go
-out. The per-release rollback procedures below cover a defect that escapes this
+`release.yml` implements this sequence: **sign-rc** performs step 1 (signs,
+notarizes, staples, and uploads the unpublished signed RC as the
+`unison-ui-mac-signed-<version>` artifact with its SHA-256), and **publish** —
+gated by the protected `release-publish` environment — performs step 4 on the
+**same** artifact, re-verifying its SHA-256 (`shasum -a 256 -c`) and its signature,
+staple, and macOS floor before creating the Release and publishing the feed. Step 2
+happens between them: download the sign-rc artifact, run every applicable TC case on
+those exact bytes, and only then approve `release-publish`. A `release-publish`
+approval must never be granted until step 2 has passed on that RC.
+
+**Both `release` and `release-publish` must be configured in repo settings with
+required reviewers.** `release` gates reaching the signing secrets; `release-publish`
+gates publication and is where the acceptance decision is recorded. A referenced but
+unconfigured environment has **no** protection, which would let publish run without
+the acceptance gate — treat confirming both environments' reviewers as a pre-tag
+check. The per-release rollback procedures below cover a defect that escapes this
 gate; they do not authorize skipping it.
 
 ## Every release

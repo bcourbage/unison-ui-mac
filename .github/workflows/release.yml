@@ -1,6 +1,8 @@
-# Release pipeline, split into three jobs so production code-signing can never be
-# reached from an arbitrary ref, and so the exact bytes we sign are the exact
-# bytes proven to run on the macOS deployment floor:
+# Release pipeline, split into FOUR jobs so production code-signing can never be
+# reached from an arbitrary ref, the exact bytes we sign are the exact bytes proven
+# to run on the macOS deployment floor, and — critically — the exact SIGNED bytes
+# can be acceptance-tested BEFORE anything is published, then published without a
+# rebuild:
 #
 #   build        — runs for every trigger (a v* tag push, or a manual dispatch of
 #                  any branch/SHA). Builds + tests + packages the app UNSIGNED and
@@ -8,15 +10,31 @@
 #                  holds a read-only token. The safe "dry-run" build check.
 #   smoke-macos15 — runs on macos-15, downloads the build artifact and LAUNCHES it
 #                  on the deployment-floor OS (exercising the exact executable +
-#                  OCaml runtime bytes). Gates the release job (SF7): a build that
-#                  cannot run on macOS 15 blocks publication.
-#   release      — runs ONLY on a pushed v* tag, gated by the `release` GitHub
+#                  OCaml runtime bytes). Gates sign-rc (SF7): a build that cannot
+#                  run on macOS 15 blocks the release.
+#   sign-rc      — runs ONLY on a pushed v* tag, gated by the `release` GitHub
 #                  Environment (required reviewers + a v* tag deployment rule) AND
-#                  by smoke-macos15. Only this job reads the Developer ID / notary
-#                  secrets and holds a write token. It SIGNS THE SAME ARTIFACT the
-#                  smoke job validated (it does not rebuild), then notarizes and
-#                  publishes — so signing + notarization + publishing are reachable
-#                  solely through the protected tag path, with human approval.
+#                  by smoke-macos15. Reads the Developer ID / notary secrets. SIGNS
+#                  THE SAME ARTIFACT the smoke job validated (it does not rebuild),
+#                  notarizes and staples it, verifies the finished bytes, then
+#                  UPLOADS the signed + notarized RC as an artifact together with
+#                  its SHA-256 — and STOPS. It creates no public Release and
+#                  publishes no feed. This is the unpublished RC for acceptance.
+#   publish      — runs ONLY on the same v* tag, needs sign-rc, and is gated by a
+#                  SECOND protected GitHub Environment, `release-publish` (required
+#                  reviewers). A reviewer approves it ONLY AFTER downloading the
+#                  sign-rc artifact and running live acceptance on those exact
+#                  bytes. It then downloads the SAME signed RC, BINDS to it by
+#                  re-verifying the recorded SHA-256 (fail closed), generates and
+#                  signs the appcast OVER that zip (metadata only — no app rebuild,
+#                  no re-sign), creates the public Release with it, and publishes
+#                  the feed. So the bytes tested are the bytes shipped.
+#
+# The two environments must BOTH be configured in repo settings with required
+# reviewers. `release` gates reaching the signing secrets (as before); the new
+# `release-publish` gates publication and is where the acceptance decision is made.
+# An environment that is referenced but not configured has NO protection, which
+# would defeat the promotion gate — see docs/release-checklist.md.
 #
 # build runs on macos-26, pinned to Xcode 26.6 (build 17F113): the native Icon
 # Composer app icon (Resources/Unison.icon) only compiles under Xcode 26's
@@ -273,18 +291,18 @@ jobs:
           fi
           echo "Release build launched and exited cleanly on macOS 15."
 
-  release:
-    name: Sign, notarize, publish
+  sign-rc:
+    name: Sign, notarize, upload the RC (no publish)
     needs: [build, smoke-macos15]
     # Only a pushed v* tag reaches this job; the `release` environment adds
-    # required-reviewer approval and a v* tag deployment rule on top.
+    # required-reviewer approval and a v* tag deployment rule on top. This job
+    # signs + notarizes + staples and UPLOADS the RC — it publishes nothing.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
     environment: release
+    # No write token and no GH_TOKEN: signing produces an artifact, not a Release.
     permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      contents: read
     steps:
       - name: Resolve version from the tag
         id: ver
@@ -425,6 +443,112 @@ jobs:
           echo "Built $zip"
           shasum -a 256 "$zip"
 
+      - name: Record the signed RC digest and manifest
+        id: rc
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          zip="${{ steps.pkg.outputs.zip }}"
+          sha="$(shasum -a 256 "$zip" | awk '{print $1}')"
+          # `shasum -c` reads "<sha>  <path>"; keep the bare filename so the publish
+          # job can verify the downloaded artifact from its own working directory.
+          printf '%s  %s\n' "$sha" "$zip" > rc.sha256
+          {
+            echo "tag=$TAG"; echo "version=$VERSION"; echo "zip=$zip"; echo "sha256=$sha"
+          } > rc-manifest.txt
+          echo "Signed, notarized, stapled RC: $zip"
+          echo "sha256: $sha"
+
+      # The unpublished RC for acceptance + promotion. `publish` downloads THIS exact
+      # artifact and re-verifies rc.sha256 before shipping, so the bytes a reviewer
+      # tests are the bytes published — nothing is rebuilt or re-signed.
+      - name: Upload the signed RC (for acceptance + promotion)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unison-ui-mac-signed-${{ steps.ver.outputs.version }}
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            rc.sha256
+            rc-manifest.txt
+          retention-days: 14
+
+  publish:
+    name: Promote (manual gate) and publish the tested RC
+    needs: sign-rc
+    # Same v* tag path; the SECOND protected environment `release-publish` adds the
+    # required-reviewer approval, granted only AFTER the signed RC uploaded by
+    # sign-rc has passed live acceptance on those exact bytes. Configure this
+    # environment with required reviewers — an unconfigured environment has no
+    # protection and would defeat the promotion gate (docs/release-checklist.md).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    environment: release-publish
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve version from the tag
+        id: ver
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"  >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Select and verify Xcode 26.6 (fail closed)
+        run: |
+          dev="/Applications/Xcode_26.6.app/Contents/Developer"
+          [ -d "$dev" ] || { echo "::error::Xcode 26.6 not found at $dev"; exit 1; }
+          sudo xcode-select -s "$dev"
+          ver="$(xcodebuild -version)"; echo "$ver"
+          echo "$ver" | grep -qx "Xcode 26.6"           || { echo "::error::expected Xcode 26.6"; exit 1; }
+          echo "$ver" | grep -qx "Build version 17F113" || { echo "::error::expected build 17F113"; exit 1; }
+
+      - name: Download the signed, tested RC
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: unison-ui-mac-signed-${{ steps.ver.outputs.version }}
+          path: rc
+
+      - name: Bind to the exact signed RC bytes (artifact binding)
+        id: bind
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          zip="unison-ui-mac-${VERSION}.app.zip"
+          test -f "rc/$zip" || { echo "::error::signed RC $zip not found in the artifact"; exit 1; }
+          test -f "rc/rc.sha256" || { echo "::error::rc.sha256 manifest missing from the artifact"; exit 1; }
+          # Move the zip to the workspace root under its bare name and verify it
+          # against the digest sign-rc recorded, so the published bytes are exactly
+          # the signed + tested bytes. Fail closed on any mismatch.
+          mv "rc/$zip" "$zip"
+          cp "rc/rc.sha256" rc.sha256
+          shasum -a 256 -c rc.sha256
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "Bound to the signed RC:"; shasum -a 256 "$zip"
+
+      - name: Re-verify the signed RC (signature, notarized-stapled, macOS floor)
+        env:
+          ZIP: ${{ steps.bind.outputs.zip }}
+        run: |
+          work="$RUNNER_TEMP/verify"; mkdir -p "$work"
+          /usr/bin/ditto -x -k "$ZIP" "$work"
+          app="$(find "$work" -maxdepth 2 -name '*.app' -type d | head -1)"
+          test -n "$app" || { echo "::error::no .app in the signed RC"; exit 1; }
+          codesign --verify --deep --strict "$app"
+          spctl -a -vvv --type exec "$app"
+          xcrun stapler validate "$app"
+          ./scripts/verify-bundle-minos.sh "$app"
+          ./scripts/verify-plist-keys.sh   --app "$app"
+          ./scripts/verify-plist-policy.sh --app "$app"
+
       - name: Resolve release notes
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -509,7 +633,7 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           TAG: ${{ steps.ver.outputs.tag }}
-          ZIP: ${{ steps.pkg.outputs.zip }}
+          ZIP: ${{ steps.bind.outputs.zip }}
           REPO: ${{ github.repository }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
@@ -546,7 +670,7 @@ jobs:
       - name: Create / update the GitHub Release
         env:
           TAG: ${{ steps.ver.outputs.tag }}
-          ZIP: ${{ steps.pkg.outputs.zip }}
+          ZIP: ${{ steps.bind.outputs.zip }}
           REPO: ${{ github.repository }}
         run: |
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
