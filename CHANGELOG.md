@@ -11,6 +11,8 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-09-15
+
 ### Fixed
 
 - Release builds no longer carry code-coverage instrumentation that writes
