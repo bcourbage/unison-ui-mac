@@ -162,7 +162,10 @@ jobs:
         # target, nothing (incl. Sparkle) exceeds it. Signing/notarization don't
         # change a Mach-O's minos, so verifying here proves the floor for the
         # product the signed release job builds from the same recipe.
-        run: make verify-bundle-minos CONFIG=Release
+        run: |
+          make verify-bundle-minos CONFIG=Release
+          ./scripts/verify-no-coverage.py .build/derived/Build/Products/Release/unison-ui-mac.app
+          ./scripts/verify-bundled-manual.py .build/derived/Build/Products/Release/unison-ui-mac.app
 
       - name: Verify Info.plist critical values (generated + unsigned Release app)
         # Propagation (vs project.yml) + policy (hard-coded security invariants),
@@ -246,7 +249,10 @@ jobs:
           echo "unpacked: $app"
 
       - name: Verify the release bundle's macOS floor (exact release bytes)
-        run: ./scripts/verify-bundle-minos.sh "$APP"
+        run: |
+          ./scripts/verify-bundle-minos.sh "$APP"
+          ./scripts/verify-no-coverage.py "$APP"
+          ./scripts/verify-bundled-manual.py "$APP"
 
       - name: Launcher and headless engine on macOS 15 (exact release bytes)
         # XCTest and UNISON_UI_SMOKE deliberately take the graphical branch, so
@@ -255,7 +261,7 @@ jobs:
         # server transport (the app in text mode as client, the same bundle as
         # server through an ssh stand-in) on the deployment-floor OS. See
         # scripts/smoke-cli.sh for exactly what is and is not proved.
-        run: ./scripts/smoke-cli.sh "$APP"
+        run: ./scripts/smoke-cli.sh "$APP" --no-coverage
 
       - name: Launch on macOS 15 and require a clean exit
         # Runs the release-built binary directly (not via `open`) so the process
@@ -461,6 +467,9 @@ jobs:
           # macOS baseline floor before it is zipped and published — the "exact
           # signed package" guarantee, on the literal bytes shipped to users.
           ./scripts/verify-bundle-minos.sh "$app"
+          ./scripts/verify-no-coverage.py "$app"
+          ./scripts/verify-bundled-manual.py "$app"
+          ./scripts/smoke-cli.sh "$app" --no-coverage
           # Re-run BOTH plist layers against the SAME signed + stapled bytes:
           #  - propagation vs project.yml (bundle id, executable, min-os, version);
           #  - independent security policy (exact production SUFeedURL, signed-feed
@@ -598,6 +607,9 @@ jobs:
           spctl -a -vvv --type exec "$app"
           xcrun stapler validate "$app"
           ./scripts/verify-bundle-minos.sh "$app"
+          ./scripts/verify-no-coverage.py "$app"
+          ./scripts/verify-bundled-manual.py "$app"
+          ./scripts/smoke-cli.sh "$app" --no-coverage
           ./scripts/verify-plist-keys.sh   --app "$app"
           ./scripts/verify-plist-policy.sh --app "$app"
 

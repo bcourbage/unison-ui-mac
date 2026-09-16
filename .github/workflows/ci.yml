@@ -215,6 +215,9 @@ jobs:
         # Runs before Build so a regression in the deployment gate fails fast.
         run: make check-bundle-minos
 
+      - name: Check Release coverage gate (real Mach-O fixtures)
+        run: python3 scripts/test-verify-no-coverage.py
+
       - name: Check release-notes HTML converter
         # Pure-Python (stdlib) gate: the release-notes markdown -> Sparkle
         # "What's New" HTML-fragment converter, including the fragment invariant
@@ -317,6 +320,17 @@ jobs:
         # (~10–20 s) plus the test execution.
         run: make test
 
+      - name: Build and verify Release without coverage
+        run: |
+          set -o pipefail
+          make build CONFIG=Release 2>&1 | tee release-build.log
+          if grep -q "was built for newer" release-build.log; then
+            echo "::error::Release deployment-version linker warnings present"
+            exit 1
+          fi
+          make verify-bundle-minos CONFIG=Release
+          ./scripts/smoke-cli.sh .build/derived/Build/Products/Release/unison-ui-mac.app --no-coverage
+
       - name: Probe lifecycle timing (timeout-cause investigation)
         # The probe test classes opt the executor's timing in for the test bundle
         # (production stays off) and write "UUM-PROBE-TIMING ..." lines — lifecycle
@@ -374,7 +388,9 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-site.txt
 
       - name: Unit tests
-        run: python scripts/test-build-site.py
+        run: |
+          python scripts/test-build-site.py
+          python scripts/build-bundled-manual.py --check
 
       - name: Build the site
         run: python scripts/build-site.py _site
