@@ -6,6 +6,21 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>0.10.1</title>
+            <pubDate>Wed, 16 Sep 2026 05:26:12 +0000</pubDate>
+            <sparkle:version>27</sparkle:version>
+            <sparkle:shortVersionString>0.10.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<p>### Fixed</p>
+<ul>
+<li>Release builds no longer carry code-coverage instrumentation that writes <code>default.profraw</code> when the bundled command or server exits. Release gates now inspect the finished binaries and exercise CLI/server execution without coverage output redirection.</li>
+<li>Help now opens an offline copy of this app's user manual, including the corrected command-line session documentation, shipped with the app.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.10.1/unison-ui-mac-0.10.1.app.zip" length="5211485" type="application/octet-stream" sparkle:edSignature="oKcQfZ+d8QhhTF3OJjfNMCNaRGuw+IJJhRVjiuuwpbHjGNaVcKw6x9jBHaLi8gIZuLwD7b+b+w7aVnKhY/u0Cw=="/>
+        </item>
+        <item>
             <title>0.10.0</title>
             <pubDate>Sun, 13 Sep 2026 16:15:10 +0000</pubDate>
             <sparkle:version>26</sparkle:version>
@@ -58,40 +73,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.9.0/unison-ui-mac-0.9.0.app.zip" length="5613018" type="application/octet-stream" sparkle:edSignature="zSiioO2V6kIHXgeTu2heIRW1VKw3c/hjRoWfi9HmTVMN+4sfwAKAirjUGvjeeOEAtf00b8p7MyB9V+ThKQ64Cg=="/>
         </item>
-        <item>
-            <title>0.8.0</title>
-            <pubDate>Thu, 10 Sep 2026 03:59:11 +0000</pubDate>
-            <sparkle:version>24</sparkle:version>
-            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.8.0</h1>
-<p>Version 0.8.0 changes how the app's <code>unison</code> command reaches your PATH and adds a guided check that a remote sync profile will use the Unison you intend on the far side. The command is now placed on your PATH by editing your own login-shell startup file, with your consent and without an administrator password; the 0.7.0 installer that wrote a link under <code>/usr/local/bin</code> is removed. Existing profiles and settings continue to work without migration.</p>
-<h2>Added</h2>
-<ul>
-<li><strong>Guided remote check.</strong> Before you depend on an ssh profile, get a read on what the far side will run: a version or engine mismatch on the remote is a common cause of sync failures, and it is easier to look up front than mid-sync. The check tests whether this profile's remote command reports a Unison version over ssh, and offers discovered alternatives if you want to change it. Discovery uses a plain <code>sh</code> lookup, which may resolve commands differently from the profile. Only a synchronization confirms the server protocol. It changes nothing on either side, is reachable from the profile picker and the Profile Editor, states the current result first, titles its alternatives by their consequence, and reports a failed connection plainly. Effective-value fields show the actual host, user, port, and remote command a profile will use; the advice that avoids the question is an absolute <code>servercmd</code> in the peer's profile, which the pane can copy and the check can assess.</li>
-<li><strong>Command-line setup through your login shell (Settings ▸ Command Line).</strong> So you can type <code>unison</code> and get this app — <code>unison -ui graphic</code> opens it, and the same install serves Unison's text interface and its ssh-server role — the app can put its command on your PATH. Its command lives inside the bundle at <code>Contents/SharedSupport/bin/unison</code>. Add Terminal Setup puts that directory on your PATH by writing a marked, app-managed block to your own shell startup file — automatically only when the case is unambiguous and safe (a recognized stock zsh startup, this app's own earlier block, or a stated set of bash and fish cases), and otherwise as Manual setup, where the pane shows what to add and names the file to edit when it can identify one — when it cannot safely identify the file, such as a redirected <code>ZDOTDIR</code> or an unsupported shell, it says so rather than point at the wrong file. The pane leads with what <code>unison</code> resolves to in your login shell and names it — this app, another copy, no unison, could not be checked, or manual — with the resolved path shown as evidence, and offers Use This Copy, Remove Terminal Setup, and copying the app's command path. Removing restores the file with its other contents intact. No administrator password, and nothing is written outside your own files. macOS 15 and macOS 26 stock <code>/etc/zprofile</code> are recognized so a fresh account is offered automatic zsh setup; an unrecognized system file falls back to Manual setup rather than guessing.</li>
-<li><strong>Profile Editor keyboard navigation.</strong> The General, Roots, File Attributes, Options, and Includes sections of the Profile Editor are navigable from the keyboard.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>Homebrew cask is <code>unison-ui</code>.</strong> Homebrew's token rules drop platform suffixes, so the tap's cask is <code>bcourbage/tap/unison-ui</code>; installs under the old token migrate on their own at the next <code>brew update</code>, and Settings ▸ Command Line recognizes a Homebrew-managed install under either token.</li>
-</ul>
-<h2>Removed</h2>
-<ul>
-<li><strong>The 0.7.0 privileged command installer</strong> and its administrator prompt. The <code>unison</code> command is now placed on your PATH through your own login-shell startup file (Settings ▸ Command Line). A <code>/usr/local/bin/unison</code> link left by 0.7.0 keeps working — it points at the app's launcher, and Settings reports it as this app — and is not removed automatically; remove it yourself if you no longer want it.</li>
-</ul>
-<h2>Compatibility</h2>
-<ul>
-<li>No profile or settings migration is required. Same system requirements as 0.7.0: macOS 15 or later, Apple Silicon.</li>
-<li>Automatic updates are delivered through Sparkle; Homebrew users update with <code>brew upgrade --cask unison-ui</code>.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.8.0/unison-ui-mac-0.8.0.app.zip" length="5574875" type="application/octet-stream" sparkle:edSignature="7Qri2gl5/XeO78sjFd9gfnbqoLlcKy6PiijNncrSuR9EBrDZBqY2xULqGWN2U3b/oLP4+axOxpdP3hgAa6gsBA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: txq1ovHwrZ8fhNyTaMnQM5jYPuAsOAl7gYjl3yHofLNMKwnPz9UmT9TcI5xp5gZO9tJGrfg+0SALLNQGOWOVAA==
-length: 12434
+edSignature: Bh1sNR+ZU5GHZL4YuWPhP54OuoSARqk0nth0dUacJRou3NVuuxkx8ibke9vih0/TFhCBjx6KqCcZh7sx6ORTBg==
+length: 8404
 -->
