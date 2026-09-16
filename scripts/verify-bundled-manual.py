@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Check the exact app resource against the reviewed manual and its source hash."""
+"""Check bundled == committed HTML and its marker == the current source hash.
+
+This does not re-render Markdown. Rendering fidelity is checked separately by
+CI's site job (build-bundled-manual.py --check); release from a commit that passed
+that check. A matching source-hash marker alone does not prove faithful rendering.
+"""
 import hashlib
 import pathlib
 import sys

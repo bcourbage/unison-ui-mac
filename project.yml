@@ -24,7 +24,7 @@ settings:
 
   configs:
     Release:
-      # Xcode enables coverage by default even for a normal Release build.
+      # The inspected Release build settings enabled coverage without an override.
       # Disable instrumentation at compilation, not by redirecting .profraw output.
       # Debug/test coverage remains available.
       ENABLE_CODE_COVERAGE: NO

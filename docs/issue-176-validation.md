@@ -6,7 +6,9 @@ On the local Xcode toolchain, `xcodebuild -showBuildSettings` for the unmodified
 Release configuration reports `ENABLE_CODE_COVERAGE = YES`. The project did not
 set a Release override. Release now explicitly sets it to NO at project scope,
 covering both the Swift app and the C launcher; Debug remains unchanged. Test
-build logs still contain Swift `-profile-generate` instrumentation.
+build logs still contain Swift `-profile-generate` instrumentation. This establishes
+an effective remedy, not the full provenance of the toolchain's default; the
+finished-binary gate independently verifies that instrumentation is absent.
 
 The finished-bundle gate checks every regular Mach-O (including all architecture
 slices inspected by otool/nm), not just a build setting. It rejects coverage
