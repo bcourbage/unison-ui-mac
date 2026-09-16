@@ -27,6 +27,13 @@ app="$(cd "$app" && pwd -P)"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# Release checks run with no profile-output redirection and with every child in
+# a disposable working directory. Debug smoke retains intentional test coverage.
+no_coverage="${2:-}"
+if [ "$no_coverage" = --no-coverage ]; then
+    unset LLVM_PROFILE_FILE LLVM_PROFILE_VERBOSE_LOG
+fi
+cd "$work" || exit 1
 fail=0
 check() {
 	if [ "$2" -eq 0 ]; then r=PASS; else r=FAIL; fail=1; fi
@@ -79,6 +86,12 @@ exited=0
 for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || { exited=1; break; }; sleep 1; done
 if [ "$exited" -ne 1 ]; then kill "$pid" 2>/dev/null; fi
 [ "$exited" -eq 1 ]; check "-server </dev/null: exits within 30s" $?
+
+if [ "$no_coverage" = --no-coverage ]; then
+    profiles=$(find "$work" -name '*.profraw' -print)
+    [ -z "$profiles" ]; check "CLI/client/server: no raw coverage files" $?
+    [ -z "$profiles" ] || printf '%s\n' "$profiles"
+fi
 
 if [ "$fail" -ne 0 ]; then echo "smoke-cli: FAIL" >&2; exit 1; fi
 echo "smoke-cli: PASS"

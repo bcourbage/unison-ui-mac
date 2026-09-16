@@ -3170,12 +3170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     @objc func openUiMacHelp(_ sender: Any?) {
-        // Help for THIS UI specifically. Points at MANUAL.md — the
-        // feature-by-feature user guide — rather than the README,
-        // which is more developer-oriented (build steps, architecture).
-        // The repo is public, so the link resolves without a sign-in prompt.
-        if let url = URL(string: "https://github.com/bcourbage/unison-ui-mac/blob/main/MANUAL.md") {
+        // Use the versioned user manual shipped with this exact app, even offline.
+        if let url = Bundle.main.url(forResource: "UIManual", withExtension: "html") {
             NSWorkspace.shared.open(url)
+        } else {
+            NSSound.beep()
+            log.write("Bundled UIManual.html is missing")
         }
     }
 

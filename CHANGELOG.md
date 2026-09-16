@@ -11,6 +11,15 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release builds no longer carry code-coverage instrumentation that writes
+  `default.profraw` when the bundled command or server exits. Release gates now
+  inspect the finished binaries and exercise CLI/server execution without coverage
+  output redirection.
+- Help now opens an offline copy of this app's user manual, including the corrected
+  command-line session documentation, shipped with the app.
+
 ## [0.10.0] — 2026-09-13
 
 ### Changed

@@ -445,3 +445,30 @@ Visually confirm in the release artifact, on a profile with nested-folder change
 
 > If any validation item fails, open a tracking issue and fix before release.
 > (This section supersedes the standalone icon issue #75.)
+
+### Release coverage and bundled user manual (#176)
+
+Before promoting the exact signed RC:
+
+- Run `scripts/verify-no-coverage.py <app>` against the extracted RC. It must
+  reject coverage sections/counters in every Mach-O, including the launcher and
+  embedded helpers. The regression fixtures compile real instrumented binaries;
+  a stripped instrumented binary must still fail.
+- Run `scripts/smoke-cli.sh <app> --no-coverage`. This unsets profile-output
+  redirection and executes CLI/client/server cases from a disposable directory;
+  no `.profraw` file may appear. Record the commands, results, revision and RC hash.
+- Run `scripts/verify-bundled-manual.py <app>` and open Help → the app's user
+  manual. Confirm the local HTML opens and documents session options, reconnect
+  scope, picker reopening, handoff outcomes and the sync decision. The online
+  manual is not evidence that the resource inside the RC is current.
+
+The user manual is generated from `MANUAL.md` into `Resources/UIManual.html`.
+After editing it, install the hash-pinned `requirements-site.txt` dependencies and
+run `python3 scripts/build-bundled-manual.py`. CI checks byte-for-byte regeneration;
+ordinary Xcode builds require no Markdown package. The upstream reference manual
+remains a separate vendored resource.
+
+For deployed documentation, verify each linked fragment exists in its destination
+(in particular `#the-unison-command`); HTTP 200 alone is insufficient. Record
+specific content checks against the reviewed wording. Stale-phrase searches are
+supplemental checks, not proof of semantic accuracy.

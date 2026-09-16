@@ -22,6 +22,13 @@ settings:
     # mechanics in Makefile.
     BLOB: ${BLOB}
 
+  configs:
+    Release:
+      # The inspected Release build settings enabled coverage without an override.
+      # Disable instrumentation at compilation, not by redirecting .profraw output.
+      # Debug/test coverage remains available.
+      ENABLE_CODE_COVERAGE: NO
+
 packages:
   # Sparkle 2 — in-app software updates. Pinned by REVISION, not tag, so a
   # moved `2.9.6` tag (e.g. after an upstream account compromise) cannot swap
@@ -83,6 +90,9 @@ targets:
       # a bare `xcodegen generate` can't inherit the Makefile default and fails on
       # the unset variable, so export UNISON_VERSION first if you run xcodegen by hand.
       - path: vendor/unison-manual-${UNISON_VERSION}.html
+        buildPhase: resources
+      # Offline user guide generated from MANUAL.md; freshness is checked in CI.
+      - path: Resources/UIManual.html
         buildPhase: resources
       # GPLv3 §5 obligation: a conveyed copy must "give all recipients
       # a copy of this License along with the Program." When the .app

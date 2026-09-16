@@ -354,6 +354,7 @@ build: check-ocaml-version $(BLOB) $(STRIPPED_ASMRUN) verify-runtime-minos gener
 		BLOB=$(BLOB) \
 		CODE_SIGN_IDENTITY="$$id" $${team:+DEVELOPMENT_TEAM="$$team"} \
 		build
+	@if [ "$(CONFIG)" = Release ]; then ./scripts/verify-no-coverage.py "$(BUILT_APP)" && ./scripts/verify-bundled-manual.py "$(BUILT_APP)"; fi
 
 .PHONY: run
 run: build
