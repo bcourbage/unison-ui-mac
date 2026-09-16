@@ -1168,8 +1168,9 @@ Standard: Minimize, Zoom, Bring All to Front.
 
 ### Help menu
 
-- `Unison-UI-Mac Help` (⌘?), opens this app's MANUAL (this document) on
-  GitHub in the browser.
+- `Unison-UI-Mac Help` (⌘?), opens the HTML user manual bundled with
+  this version of the app in your browser. The document works offline;
+  links to external references require an internet connection.
 - `Unison File Synchronizer Manual`, opens the full upstream Unison
   reference manual, rendered to HTML and bundled with the app (works
   offline). The HTML is the hevea-rendered output of upstream's
