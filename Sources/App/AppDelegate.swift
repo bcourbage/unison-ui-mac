@@ -3510,6 +3510,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    /// The project's GitHub repository. Shared by the Help menu's Star on
+    /// GitHub item and the About panel's star sentence.
+    static let repositoryURL = URL(string: "https://github.com/bcourbage/unison-ui-mac")!
+
+    /// Open the project's GitHub repository in the default browser, where a
+    /// star raises the project's visibility.
+    @objc func starOnGitHub(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.repositoryURL)
+    }
+
     /// Open the GitHub new-issue form with a pre-filled body. `context`
     /// (when set) prefills "What happened?" — used by the post-crash
     /// prompt to seed the report.
@@ -3622,11 +3632,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // so we use single-line paragraphs separated by blank lines and
         // let AppKit do the wrapping. Avoid hardcoded newlines inside a
         // paragraph — they produce mid-sentence breaks at narrow widths.
-        let credits = NSAttributedString(
+        // The star sentence carries a `.link` attribute on its leading clause;
+        // the standard About panel renders credits in a text view that opens
+        // links in the default browser.
+        let starLinkText = "Starring the project on GitHub"
+        let credits = NSMutableAttributedString(
             string: """
                 A native macOS UI for Unison File Synchronizer.
 
                 Embeds Unison \(unisonVersion).
+
+                \(starLinkText) helps others find it.
 
                 Software updates are provided by Sparkle, © the Sparkle Project, under the MIT License.
 
@@ -3637,6 +3653,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 .foregroundColor: NSColor.labelColor,
             ]
         )
+        let starRange = (credits.string as NSString).range(of: starLinkText)
+        if starRange.location != NSNotFound {
+            credits.addAttribute(.link, value: Self.repositoryURL, range: starRange)
+        }
         // Use the bundle's display name (CFBundleDisplayName → "Unison-UI-Mac")
         // rather than a hardcoded string so the About panel title follows
         // any future rename done through the plist.
