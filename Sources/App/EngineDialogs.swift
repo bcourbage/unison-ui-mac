@@ -124,12 +124,22 @@ enum EngineDialogs {
     }
 }
 
-/// The frame-based accessory container. Once the alert puts it on screen,
-/// the text is scrolled to its beginning: a text view laid out before its
-/// window exists can otherwise come up showing its last lines.
+/// The frame-based accessory container. The text opens at its beginning:
+/// NSAlert sizes and shows the accessory in several steps after it joins the
+/// window, and the text view's lazy layout grows the document during those
+/// steps, which otherwise left the alert showing the middle of the message.
+/// For a short time after joining the window every clip-bounds change is
+/// answered by scrolling back to the top; after that the scroll position is
+/// the user's.
 @MainActor
 final class DetailsAccessoryView: NSView {
     let scroll: NSScrollView
+    /// How long after joining the window the top is enforced.
+    static let settleInterval: TimeInterval = 0.75
+    private var pinTopUntil: Date?
+    /// Removed in deinit, which is nonisolated; the token is only ever
+    /// written on the main actor.
+    nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
 
     init(frame: NSRect, scroll: NSScrollView) {
         self.scroll = scroll
@@ -138,12 +148,38 @@ final class DetailsAccessoryView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
+    deinit {
+        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver); self.boundsObserver = nil }
+        guard window != nil else { return }
+        pinTopUntil = Date().addingTimeInterval(Self.settleInterval)
         scrollToTop()
+        let clip = scroll.contentView
+        clip.postsBoundsChangedNotifications = true
+        boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let until = self.pinTopUntil else { return }
+                if Date() < until {
+                    if self.scroll.contentView.bounds.origin.y != 0 { self.scrollToTop() }
+                } else {
+                    self.pinTopUntil = nil
+                }
+            }
+        }
     }
 
     func scrollToTop() {
+        // Glyph layout is lazy; lay the text out first so the document is at
+        // its final size before the scroll.
+        if let tv = scroll.documentView as? NSTextView, let tc = tv.textContainer {
+            tv.layoutManager?.ensureLayout(for: tc)
+        }
         // NSTextView is flipped, so its origin is the top of the text.
         scroll.contentView.scroll(to: .zero)
         scroll.reflectScrolledClipView(scroll.contentView)
