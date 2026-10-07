@@ -840,7 +840,7 @@ text. Pick another row's Diff to recover.</p>
 <hr>
 <h2 id="settings">Settings</h2>
 <p>Opens via <code>Unison-UI-Mac → Settings…</code> (⌘,). A toolbar-tab window
-(System Settings style) with six tabs that resize the window to fit:</p>
+(System Settings style) with seven tabs that resize the window to fit:</p>
 <ul>
 <li><strong>Saved State</strong>: <em>implicit</em> state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
@@ -861,6 +861,9 @@ text. Pick another row's Diff to recover.</p>
   checks for updates automatically and whether it sends an anonymous
   system profile with the check. Shown only when the Sparkle updater is
   present in the build.</li>
+<li><strong>Command Line</strong>: what <code>unison</code> resolves to on this Mac, the <strong>Default
+  interface</strong> preference for a bare <code>unison &lt;profile&gt;</code>, and adding the
+  app's command to PATH. See <a href="#command-line">Command Line</a>.</li>
 </ul>
 <p>Settings and the profile editor can't be open at the same time. Because a
 logging change here can rewrite <code>.prf</code> files, the <strong>Settings</strong> menu item is
