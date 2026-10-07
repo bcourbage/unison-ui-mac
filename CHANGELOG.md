@@ -11,6 +11,11 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+- **Help ▸ Star on GitHub** opens the project repository, grouped with Donate.
+  The About panel gains one linked sentence noting that a star helps others
+  find the project.
+
 ### Fixed
 - **Deleting a profile no longer offers to remove archive files that another
   profile still uses.** Unison names an archive by its root pair, so two
