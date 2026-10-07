@@ -659,6 +659,56 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                                ambiguous: signatures.count > 1)
     }
 
+    /// Whether any current profile other than `deleting` owns the archives
+    /// with these hashes. An unreadable profile directory yields a verdict
+    /// that does not permit removal.
+    private func archiveOwnership(deleting: String, hashes: [String]) -> ArchiveOwnership.Verdict {
+        ArchiveOwnership.evaluate(unisonDirectory: unisonDirectory, deleting: deleting, hashes: hashes)
+    }
+
+    /// Reset-confirmation paragraph naming the profiles that share the
+    /// archives about to be reset; empty when none do.
+    nonisolated static func sharedOwnersNote(_ owners: [String]) -> String {
+        guard !owners.isEmpty else { return "" }
+        let single = owners.count == 1
+        let names = owners.map { "“\($0)”" }.joined(separator: ", ")
+        let subject = single ? "The profile \(names) has" : "The profiles \(names) have"
+        let verb = single ? "shares" : "share"
+        let whose = single ? "its" : "their"
+        return "\n\(subject) the same roots and \(verb) these archive files, so " +
+            "\(whose) next sync will also rebuild from scratch.\n"
+    }
+
+    /// Delete-confirmation sentence for archives that stay in place because
+    /// another profile owns them or ownership could not be established.
+    nonisolated static func archivesKeptText(count: Int, ownership: ArchiveOwnership.Verdict) -> String {
+        let files = count == 1 ? "Its archive file" : "Its \(count) archive files"
+        if !ownership.otherOwners.isEmpty {
+            let names = ownership.otherOwners.map { "“\($0)”" }.joined(separator: ", ")
+            let who = ownership.otherOwners.count == 1
+                ? "the profile \(names), which has the same roots and"
+                : "the profiles \(names), which have the same roots and"
+            return "\(files) will be kept: \(who) still " +
+                "use\(ownership.otherOwners.count == 1 ? "s" : "") them " +
+                "to remember the last synchronization."
+        }
+        if ownership.enumerationFailed {
+            return "\(files) will be kept: the profile folder could not be read, " +
+                "so it is unknown whether another profile uses them. Use Settings, " +
+                "Maintenance, Clean Stale Archives to review them later."
+        }
+        if !ownership.unindexedHashes.isEmpty {
+            return "\(files) will be kept: an archive header could not be read, " +
+                "so it is unknown whether another profile uses them. Use Settings, " +
+                "Maintenance, Clean Stale Archives to review them later."
+        }
+        let names = ownership.unresolvedProfiles.map { "“\($0)”" }.joined(separator: ", ")
+        let that = ownership.unresolvedProfiles.count == 1 ? "that profile" : "those profiles"
+        return "\(files) will be kept: the roots of \(names) could not be " +
+            "resolved, so the archives may still be in use. Fix \(that) and " +
+            "use Settings, Maintenance, Clean Stale Archives to review them."
+    }
+
     /// The raw `root = …` values from a profile's `.prf`, in file order.
     private func profileRoots(_ profile: String) -> [String] {
         let url = profileURL(profile)
@@ -711,6 +761,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
               "matches couldn't be told apart automatically. Confirm the " +
               "roots above belong to this profile before resetting.\n"
             : ""
+        // A profile with the same roots shares these archive files, so a
+        // reset here is a reset for it too. Reset stays available (that is
+        // sometimes the intent), but the shared owner is named.
+        let sharedOwners = archiveOwnership(deleting: profile, hashes: location.hashes).otherOwners
+        let sharedNote = Self.sharedOwnersNote(sharedOwners)
 
         let fileList = files.map { "  • \($0.lastPathComponent)" }
             .joined(separator: "\n")
@@ -718,7 +773,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             "The following archive files will be moved to the Trash:\n\n" +
             "\(fileList)\n\n" +
             "Synchronizing roots:\n\(rootsBlock)\n" +
-            "\(ambiguityNote)\n" +
+            "\(ambiguityNote)\(sharedNote)\n" +
             "The next sync of this profile will rebuild reconciliation " +
             "state from scratch (full re-scan of both replicas). For " +
             "large replicas this can take a long time.\n\n" +
@@ -828,15 +883,24 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             archiveHashes = location.hashes
             archivesAmbiguous = location.ambiguous
         }
+        // Unison names an archive by its root pair, so another profile with
+        // the same roots uses these very files. Removal is offered only when
+        // no other current profile owns them; a profile whose roots could not
+        // be resolved counts as a possible owner. See ArchiveOwnership.
+        let ownership = archiveOwnership(deleting: profile, hashes: archiveHashes)
+        let offerArchiveRemoval = !archiveFiles.isEmpty && ownership.removalPermitted
 
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete profile “\(profile)”?"
+        let prfSentence = "The .prf file at \(url.path) will be moved to the Trash. "
         if archiveFiles.isEmpty {
-            alert.informativeText =
-                "The .prf file at \(url.path) will be moved to the Trash. " +
+            alert.informativeText = prfSentence +
                 "If you'd rather keep the file but hide it from the picker, " +
                 "use the eye icon next to the name instead."
+        } else if !offerArchiveRemoval {
+            alert.informativeText = prfSentence +
+                Self.archivesKeptText(count: archiveFiles.count, ownership: ownership)
         } else {
             let plural = archiveFiles.count == 1 ? "" : "s"
             let ambiguityNote = archivesAmbiguous
@@ -844,13 +908,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                   "so these archives couldn't be attributed with certainty; " +
                   "the box is left unchecked for safety."
                 : ""
-            alert.informativeText =
-                "The .prf file at \(url.path) will be moved to the Trash. " +
+            alert.informativeText = prfSentence +
                 "\(archiveFiles.count) archive file\(plural) for this profile " +
                 "(ar*, fp*, etc.) will also be moved if the box below is " +
-                "checked. They're useless without the profile that owns " +
-                "them. Uncheck if you plan to restore the .prf from Trash " +
-                "and resume syncing where you left off.\(ambiguityNote)"
+                "checked. No other profile uses them. Uncheck if you plan to " +
+                "restore the .prf from Trash and resume syncing where you " +
+                "left off.\(ambiguityNote)"
         }
 
         // Affirmative (destructive) button first → rightmost default
@@ -865,9 +928,10 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
         // Accessory checkbox: "Also delete N archive file(s)". Default-on
         // because orphan archives serve no purpose, but easy to uncheck.
-        // Suppressed entirely when there are no archives to clean up.
+        // Suppressed entirely when there are no archives to clean up or when
+        // another profile owns them.
         var archiveCheckbox: NSButton? = nil
-        if !archiveFiles.isEmpty {
+        if offerArchiveRemoval {
             let plural = archiveFiles.count == 1 ? "" : "s"
             let cb = NSButton(checkboxWithTitle:
                 "Also move \(archiveFiles.count) archive file\(plural) to Trash",
@@ -920,12 +984,17 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             } else if shouldCleanArchives && !archiveHashes.isEmpty {
                 // Route through the single mutation authority (lock, stage via
                 // rename, whole-dir Trash). The .prf is already gone; archives
-                // are removed under their locks.
+                // are removed under their locks. revalidate re-reads the
+                // remaining profiles under the lock and aborts if any of them
+                // owns the archives now, or if an archive has disappeared.
                 let result = ArchiveMaintenance.mutate(
                     operation: "delete-with-archives", hashes: archiveHashes,
                     unisonDirectory: unisonDirectory,
                     isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
-                    revalidate: { _ in true })
+                    revalidate: { [unisonDirectory] plan in
+                        ArchiveOwnership.revalidateDeletion(
+                            plan: plan, unisonDirectory: unisonDirectory, deleting: profile)
+                    })
                 switch result {
                 case .success(let out):
                     TraceLog.shared.write(
