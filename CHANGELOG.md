@@ -11,6 +11,11 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+- **Help ▸ Star on GitHub** opens the project repository, grouped with Donate.
+  The About panel gains one linked sentence noting that a star helps others
+  find the project.
+
 ## [0.10.1] — 2026-09-15
 
 ### Fixed
