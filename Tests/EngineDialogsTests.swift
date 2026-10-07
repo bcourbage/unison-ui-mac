@@ -121,6 +121,21 @@ final class EngineDialogsTests: XCTestCase {
         XCTAssertNotNil(copyButton(in: EngineDialogs.restartAlert(reason: "why", remoteCheckOffered: false)))
     }
 
+    func test_details_openAtTheTop_whenShownInAWindow() throws {
+        let long = (1...80).map { "line \($0)" }.joined(separator: "\n")
+        let view = try XCTUnwrap(EngineDialogs.detailsAccessory(text: long) as? DetailsAccessoryView)
+        // Scroll the clip view to the end as a stale layout might leave it.
+        let clip = view.scroll.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 5000))
+        view.scroll.reflectScrolledClipView(clip)
+        XCTAssertGreaterThan(clip.bounds.origin.y, 0, "precondition: scrolled away from the top")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView?.addSubview(view)
+        XCTAssertEqual(clip.bounds.origin.y, 0, "moving into a window scrolls Details to the top")
+        window.contentView?.subviews.forEach { $0.removeFromSuperview() }
+    }
+
     func test_summaryLine_skipsLeadingBlankLines() {
         XCTAssertEqual(EngineDialogs.summaryLine(of: "\n\n  first  \nsecond"), "first")
         XCTAssertEqual(EngineDialogs.summaryLine(of: "only"), "only")

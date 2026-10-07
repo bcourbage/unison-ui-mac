@@ -110,15 +110,43 @@ enum EngineDialogs {
         textView.textStorage?.setAttributedString(attributed)
         textView.setAccessibilityLabel("Details")
 
-        // Flipped coordinates are not in play: AppKit's origin is bottom-left,
-        // so the button sits at y = 0 and the scroll view above it.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height + gap + buttonHeight))
+        // AppKit's origin is bottom-left, so the button sits at y = 0 and the
+        // scroll view above it.
+        let container = DetailsAccessoryView(
+            frame: NSRect(x: 0, y: 0, width: width, height: height + gap + buttonHeight),
+            scroll: scroll)
         copy.frame = NSRect(x: 0, y: 0, width: copy.frame.width, height: buttonHeight)
         scroll.frame = NSRect(x: 0, y: buttonHeight + gap, width: width, height: height)
         scroll.autoresizingMask = [.width]
         container.addSubview(scroll)
         container.addSubview(copy)
         return container
+    }
+}
+
+/// The frame-based accessory container. Once the alert puts it on screen,
+/// the text is scrolled to its beginning: a text view laid out before its
+/// window exists can otherwise come up showing its last lines.
+@MainActor
+final class DetailsAccessoryView: NSView {
+    let scroll: NSScrollView
+
+    init(frame: NSRect, scroll: NSScrollView) {
+        self.scroll = scroll
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scrollToTop()
+    }
+
+    func scrollToTop() {
+        // NSTextView is flipped, so its origin is the top of the text.
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 }
 
