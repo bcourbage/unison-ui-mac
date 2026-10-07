@@ -107,15 +107,21 @@ appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
 ## What happens if the update signing key is lost or compromised?
 
-Updates are accepted only when they carry a valid signature from the project's
-signing key, and the feed itself is signed, with no fallback to an unsigned feed.
-That is deliberate: a compromised update server cannot push an update.
+An update is trusted two ways. The update feed is signed with the project's signing
+key, and the app accepts a feed only when that signature verifies, with no fallback
+to an unsigned feed; a compromised update server therefore cannot push an update.
+Each update itself is then accepted either by its own signature from that key or by
+Apple's Developer ID signature matching the installed app's. Sparkle uses the second
+path to rotate the signing key.
 
 If the key is ever compromised but still available, Sparkle's documented rotation
-path applies: one transition release, signed with the current key and delivered as
-a Developer ID-signed disk image, carries the new key, and updates continue
-automatically. If the key is lost, automatic updates cannot continue for existing
-installs: the recovery is to download the current signed and notarized app from
+applies: a transition release carries the new key and is signed with it, it is
+delivered as a Developer ID-signed disk image so existing installs accept it through
+the Developer ID signature, and the feed announcing it is still signed with the
+current key so those installs can read it. After installing it they trust the new
+key, and updates continue automatically. If the key is lost, the feed can no longer
+be signed for existing installs and automatic updates cannot continue: the recovery
+is to download the current signed and notarized app from
 [GitHub Releases]({{REPO}}/releases/latest) and replace the installed copy once;
 updates resume from there. An install that has been offline for a long time across
 a rotation may need the same one-time reinstall. Profiles and archives are never

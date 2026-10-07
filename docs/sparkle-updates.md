@@ -167,10 +167,21 @@ and `generate_keys` exports and imports it for exactly this purpose.
   production keychain is untouched: `./bin/generate_keys -f <file>` imports it;
   `./bin/generate_keys -p` must print the production public key, byte for byte
   equal to `SUPublicEDKey` in `project.yml`. Then sign a scratch file there with
-  `./bin/sign_update <scratch>` and check the printed signature verifies with
-  `./bin/sign_update --verify --ed-key-file - <scratch> <signature>` fed the
-  production **public** key on stdin (the same form `scripts/verify-appcast.py`
-  uses). Remove the throwaway keychain copy afterwards.
+  `./bin/sign_update <scratch>` and verify the printed signature against the
+  production public key. `sign_update --verify --ed-key-file` does not accept a
+  bare 32-byte public key; it reads the key from the last 32 bytes of a 96-byte
+  blob, which `scripts/make-verifier-key.py` builds from `SUPublicEDKey` with no
+  private material (the same construction `pages.yml` and
+  `scripts/verify-appcast.py` use):
+
+  ```bash
+  pub="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist)"
+  sig="$(./bin/sign_update -p <scratch>)"      # signature only, from the imported key
+  python3 scripts/make-verifier-key.py "$pub" \
+    | ./bin/sign_update --verify --ed-key-file - <scratch> "$sig" && echo verified
+  ```
+
+  Remove the throwaway keychain copy afterwards.
 - The export file is as sensitive as the keychain entry: it must never land in
   the repo, a shared drive, or a chat.
 

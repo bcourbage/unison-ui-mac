@@ -214,8 +214,11 @@ are in addition to "Every release".
       (or a VM), import it (`generate_keys -f <file>`) and confirm
       `generate_keys -p` prints the production public key, byte for byte equal
       to `SUPublicEDKey` in `project.yml`; then sign a scratch file with
-      `sign_update` there and verify the signature against the production public
-      key. Delete the throwaway account's keychain copy afterwards.
+      `sign_update` there and verify the signature with
+      `scripts/make-verifier-key.py "$pub" | sign_update --verify --ed-key-file -`
+      (the verifier needs the 96-byte blob that script builds, not the bare public
+      key; the exact commands are in `docs/sparkle-updates.md`, "Key custody").
+      Delete the throwaway account's keychain copy afterwards.
 - [ ] **(pre-tag)** `docs/sparkle-updates.md` ("Key rotation and recovery")
       describes the compromise-with-key-available path, the lost-key path, and the
       dormant-client outcome; the `project.yml` Sparkle comments agree with it.
