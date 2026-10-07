@@ -179,10 +179,14 @@ targets:
         #                            environment secret SPARKLE_ED_PRIVATE_KEY;
         #                            neither belongs in repo contents. NOT a
         #                            placeholder — it changes only on a key
-        #                            rotation, which the current one-key pipeline
-        #                            does NOT support in-band; on compromise, the
-        #                            recovery is manual reinstallation (see the
-        #                            "Key rotation" section of docs/sparkle-updates.md).
+        #                            rotation. A rotation uses Sparkle's Developer
+        #                            ID path (a transition release delivered as a
+        #                            Developer ID-signed DMG, feed signed with the
+        #                            current key); a LOST key cannot be rotated and
+        #                            the recovery is a one-time manual reinstall
+        #                            (see "Key rotation and recovery" in
+        #                            docs/sparkle-updates.md before touching this
+        #                            value or the SPARKLE_ED_PRIVATE_KEY secret).
         #                            Sparkle's validator accepts an
         #                            update when EITHER a valid EdDSA archive
         #                            signature OR a matching Apple Developer ID
@@ -230,10 +234,14 @@ targets:
         # SUSignedFeedFailureExpirationInterval seconds (default 1,728,000 = 20
         # days), a key-rotation escape hatch that also fails open. Set it to 0,
         # which the pinned 2.9.6 source treats as "never recover", so feed-level
-        # enforcement stays permanently fail-closed. Because 0 removes Sparkle's
-        # automatic recovery, EdDSA key rotation is NOT supported by the current
-        # one-key pipeline — see docs/sparkle-updates.md ("Key rotation") before
-        # ever changing SUPublicEDKey or the SPARKLE_ED_PRIVATE_KEY secret.
+        # enforcement stays permanently fail-closed. The consequence, accepted
+        # deliberately: a client that cannot validate the feed never recovers on
+        # its own, so a LOST signing key means a one-time manual reinstall for
+        # every existing install, and a client dormant across a rotation may need
+        # the same. A rotation with the key still available works through
+        # Sparkle's Developer ID path — see docs/sparkle-updates.md ("Key rotation
+        # and recovery") before ever changing SUPublicEDKey or the
+        # SPARKLE_ED_PRIVATE_KEY secret.
         SURequireSignedFeed: true
         SUSignedFeedFailureExpirationInterval: 0
         SUFeedURL: https://updates.courbage.net/unison-ui-mac/appcast.xml

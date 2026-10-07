@@ -105,6 +105,36 @@ with conflicts surfaced for review. This is Unison's model, not a one-way mirror
 Through [Sparkle](https://sparkle-project.org/), over a cryptographically signed
 appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
+## What happens if the update signing key is lost or compromised?
+
+An update is trusted two ways. The update feed is signed with the project's signing
+key, and the app accepts a feed only when that signature verifies, with no fallback
+to an unsigned feed; a compromised update server therefore cannot push an update.
+Each update itself is then accepted either by its own signature from that key or by
+Apple's Developer ID signature matching the installed app's. Sparkle uses the second
+path to rotate the signing key.
+
+If the key is ever compromised but still available, Sparkle's documented rotation
+applies: a transition release carries the new key and is signed with it, it is
+delivered as a Developer ID-signed disk image so existing installs accept it through
+the Developer ID signature, and the feed announcing it is still signed with the
+current key so those installs can read it. After installing it they trust the new
+key, and updates continue automatically. If the key is lost, the feed can no longer
+be signed for existing installs and automatic updates cannot continue: the recovery
+is to download the current signed and notarized app from
+[GitHub Releases]({{REPO}}/releases/latest) and replace the installed copy once;
+updates resume from there. An install that has been offline for a long time across
+a rotation may need the same one-time reinstall. Profiles and archives are never
+affected by either step.
+
+## What does version 1.0 promise?
+
+That the parts you build on stay stable until a 2.0: the `unison` command and its
+options, profiles and archives as Unison's own files, settings carrying forward
+across updates, signed updates, and macOS 15 or later on Apple Silicon. The project
+README states the promise in full. Internals such as the vendored engine patches
+are not part of it.
+
 ## What data does the app send?
 
 The app has no per-user tracking. When it checks for updates, the request goes to

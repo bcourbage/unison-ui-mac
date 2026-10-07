@@ -97,71 +97,99 @@ rotation; when it does, the value must equal `generate_keys -p` and match what
 the built bundle ships (verify with
 `/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist`).
 
-### Key rotation (EdDSA) — NOT supported by the current one-key pipeline
+### Key rotation and recovery
 
-**The current release pipeline cannot rotate the EdDSA key.** This is a real
-limitation, documented here so no one attempts a rotation that would strand
-clients. Treat the EdDSA private key as effectively un-rotatable and guard it
-accordingly.
+The feed policy is **fail-closed** (`SURequireSignedFeed: true` with
+`SUSignedFeedFailureExpirationInterval: 0`, see `project.yml`): a client accepts
+an appcast only when its feed-level signature verifies with the public key the
+client carries, and there is no fallback to unsigned-feed handling. That is
+deliberate and it stays. Everything below follows from it.
 
-**Why.** A rotation would have to ship a *transition* release that (a) carries the
-**new** `SUPublicEDKey` (to teach clients the new key) and (b) is still accepted by
-**existing** clients. Existing clients run a **fail-closed** feed policy
-(`SURequireSignedFeed: true` + `SUSignedFeedFailureExpirationInterval: 0`, see
-`project.yml`), so they accept an appcast only if its **feed-level** signature is
-made with the key they already trust — the **old** key — and there is no automatic
-recovery if that fails. But the pinned Sparkle 2.9.6 tools and a single-feed design
-make an in-band rotation impossible:
+Sparkle provides a supported rotation path for Developer ID-signed apps
+([Rotating signing keys](https://sparkle-project.org/documentation/#rotating-signing-keys)):
+an update may change **either** the EdDSA key **or** the Developer ID
+certificate, never both at once, and with `SUVerifyUpdateBeforeExtraction` an
+EdDSA change requires the update archive to be a **Developer ID-signed disk image
+(DMG)**. The project relies on that mechanism; it does not maintain a second
+feed.
 
-- `generate_appcast` emits an archive's `edSignature` **only when the archived
-  app's `SUPublicEDKey` matches the private key it is signing with**; on a mismatch
-  it prints `Warning: SUPublicEDKey in the app … does not match key EdDSA in the
-  Keychain` and emits **no** signature
-  ([Appcast.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_appcast/Appcast.swift#L178-L218)).
-  Our structural gate (`scripts/verify-appcast-signatures.sh`) then rejects the
-  feed. So a transition bundle carrying the **new** public key gets only a
-  **new-key** archive signature — existing clients must accept its archive via the
-  stable **Developer ID** path, not EdDSA.
-- A single appcast feed carries only **one** feed-level signature. `sign_update`
-  **can** re-sign a feed's XML directly with any key — it extracts the existing
-  content and writes the replacement atomically
-  ([sign_update main.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/sign_update/main.swift#L235-L249))
-  — so an old-key feed *or* a new-key feed is each producible. What is impossible is
-  **one** feed that satisfies **both** client generations: existing clients require
-  an old-key feed signature, while a client that has installed the transition app
-  trusts the **new** key and rejects an old-key feed.
-- `generate_keys` with the default account does not create a second key — it
-  **reuses** the existing keychain key; a distinct key needs a separate `--account`
-  (or explicit export/remove/import)
-  ([main.swift](https://github.com/sparkle-project/Sparkle/blob/ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a/generate_keys/main.swift#L159-L187)).
+**Rotate only when necessary**: a compromised key, a Developer ID certificate
+change (the current certificate expires 2031-08-22), or a Sparkle-mandated
+algorithm change. Never rotate routinely.
 
-**What a supported rotation would require (unimplemented).** Because the two client
-generations need different feed signatures, a correct rotation needs **two feed
-URLs**, not one: an **old-key-signed transition feed** kept at the current
-`SUFeedURL` for existing and dormant clients (whose archives they accept via the
-stable Developer ID path), and a **new-key-signed feed** at a NEW `SUFeedURL` baked
-into the transition app. The transition app ships both the new `SUPublicEDKey` and
-the new feed URL; once an existing client installs it, it follows the new feed
-thereafter. This needs the new key generated under its own keychain `--account`,
-each feed (re-)signed with `sign_update` under the appropriate key, the old feed
-retained as long as any dormant client may still poll it, and a fixture using two
-throwaway keys + the pinned Sparkle tools proving an **old-key** client validates
-the transition feed and a **new-key** client validates the new feed. None of that
-exists today. Until it does, do not rotate.
+#### The cases
 
-**If the key is ever compromised or lost.** Existing auto-update clients cannot be
-migrated in-band. Recovery is out-of-band: publish a fresh signed + notarized build
-to GitHub Releases and tell users (README + release notes) to **re-download and
-replace the app manually**. A manual install carries the new `SUPublicEDKey` and
-resumes normal auto-updates; clients that never re-download stay on the old key.
+| Situation | Outcome |
+| --- | --- |
+| Key A valid, normal update | Automatic. |
+| Key A **compromised but still available** | Automatic A → B rotation: one transition release whose bundle carries public key B, delivered as a Developer ID-signed DMG, listed in a feed signed with **A**. Clients install it through the Developer ID path and are anchored to B; the next release is signed with B. |
+| Client installed the transition, next release signed with B | Automatic. |
+| Key A **lost** | Automatic recovery is **impossible** by design (the client cannot validate any feed, and the expiration fallback is off). Recovery is a one-time manual reinstall from GitHub Releases; the fresh install carries the current key and updates resume. |
+| Dormant key-A client after the feed moves to B | It rejects the B-signed feed and never recovers on its own; a one-time manual reinstall is required. Accepted trade-off unless real-world usage shows a need for a legacy feed. |
+| Developer ID certificate change | Automatic through the same mechanism, with the EdDSA key **unchanged** in that release. No DMG requirement applies to this direction. |
+
+How the pinned 2.9.6 tools fit: `generate_appcast` signs an archive only when the
+archived app's `SUPublicEDKey` matches the signing key, so the transition archive
+(carrying B) can only be B-signed; existing clients accept it via Developer ID,
+which is why it must be a Developer ID-signed DMG. `sign_update` can re-sign a
+feed with either key. A second key needs its own keychain `--account`.
+
+#### Rotation procedure (compromise, key still available)
+
+Not yet rehearsed end to end; the fixture that proves each row above on a single
+feed is the post-1.0 half of #108 and is tracked in TODO.md. Until it exists,
+treat this as the plan, and expect to validate each step on a throwaway feed first.
+
+1. Generate key B under a new account: `generate_keys --account unison-ui-mac-b`.
+2. Build the transition release with `SUPublicEDKey` = B's public key and package
+   it as a **Developer ID-signed DMG** (the pipeline ships a ZIP today; this step
+   needs adding).
+3. Sign the transition archive with B; publish a feed listing it, with the feed
+   signed with **A** (`sign_update` under A's account).
+4. Leave that feed in place for a chosen migration period, publishing nothing
+   else. Clients that update during it move to B.
+5. Switch the feed to B-signed releases. Record in the release notes that an
+   install dormant across the period needs a one-time reinstall.
+6. Replace the `SPARKLE_ED_PRIVATE_KEY` secret with B only after step 5.
+
+Never change the EdDSA key and the Developer ID certificate in the same release.
+
+#### Key custody (the part that matters before 1.0)
+
+The lost-key row is survivable but costly, so prevent it operationally. Sparkle's
+own guidance is to keep the private key secure and away from the update host,
+and `generate_keys` exports and imports it for exactly this purpose.
+
+- Export the production key: `./bin/generate_keys -x <file>` (writes the base64
+  private key). Keep **two** offline copies, each encrypted, apart from the Mac
+  holding the keychain and from the update host.
+- Prove a copy is usable, on a throwaway macOS user account or a VM so the
+  production keychain is untouched: `./bin/generate_keys -f <file>` imports it;
+  `./bin/generate_keys -p` must print the production public key, byte for byte
+  equal to `SUPublicEDKey` in `project.yml`. Then sign a scratch file there with
+  `./bin/sign_update <scratch>` and verify the printed signature against the
+  production public key. `sign_update --verify --ed-key-file` does not accept a
+  bare 32-byte public key; it reads the key from the last 32 bytes of a 96-byte
+  blob, which `scripts/make-verifier-key.py` builds from `SUPublicEDKey` with no
+  private material (the same construction `pages.yml` and
+  `scripts/verify-appcast.py` use):
+
+  ```bash
+  pub="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist)"
+  sig="$(./bin/sign_update -p <scratch>)"      # signature only, from the imported key
+  python3 scripts/make-verifier-key.py "$pub" \
+    | ./bin/sign_update --verify --ed-key-file - <scratch> "$sig" && echo verified
+  ```
+
+  Remove the throwaway keychain copy afterwards.
+- The export file is as sensitive as the keychain entry: it must never land in
+  the repo, a shared drive, or a chat.
+
+This custody check is a 1.0 release gate in `docs/release-checklist.md`.
 
 **Do not casually touch the release secret.** Replacing `SPARKLE_ED_PRIVATE_KEY`
-*is* an EdDSA key change and — given the above — would break auto-updates for every
-existing client with no in-band recovery. It already lives only in the maintainer's
-login keychain and the reviewer-gated CI secret; keep it that way. (Separately, and
-for the same fail-closed reason, never change the EdDSA key and the Developer ID
-certificate together — but note that EdDSA rotation is not currently supported at
-all.)
+*is* an EdDSA key change: do it only as step 6 of a rotation that has shipped its
+transition release, never on its own.
 
 ## Getting the tools
 
