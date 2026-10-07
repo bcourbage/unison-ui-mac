@@ -17,6 +17,17 @@ across releases per Apple's bundle-version rules.
   find the project.
 
 ### Changed
+- **The Diff window names the file and reads the result.** Its title is
+  "Diff — file", the two compared files are shown beneath the header, the
+  command line is behind a Command… button, and for the standard `diff`
+  command the exit status is shown as "Differences found." instead of
+  "Exited with status 1". Another diff command's status is shown as reported.
+- **Small copy fixes.** The reconcile summary says "1 item" and "1 conflict";
+  help text in the Ignore and Advanced sections shows examples as code instead
+  of with backticks; Archive Maintenance describes exactly what it can remove
+  and says "No cleanup candidates were found." when there is nothing; the
+  Command Line setup paths are truncated in the middle with the full path as
+  a tooltip; the manual lists all seven Settings tabs.
 - **Engine warnings and errors are readable and complete.** An engine warning
   shows its first line and keeps the full text in a scrolling, selectable
   Details area with Copy Details; its buttons are Continue and Cancel. A fatal

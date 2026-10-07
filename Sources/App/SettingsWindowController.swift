@@ -328,9 +328,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let section7Desc = sectionDescription(
             "Unison keeps a reconciliation archive for each profile. Old " +
             "copies accumulate after a profile is deleted or this Mac is " +
-            "renamed. Scan for archives that no current profile uses and " +
-            "move them to the Trash (recoverable). Live archives are left " +
-            "untouched.")
+            "renamed. Scan for them: an older copy that a current profile " +
+            "has already replaced can be moved to the Trash (recoverable); " +
+            "other unused archives are listed for review only. Live " +
+            "archives are never touched.")
         cleanStaleButton.bezelStyle = .rounded
         cleanStaleButton.target = self
         cleanStaleButton.action = #selector(cleanStaleArchivesAction(_:))
@@ -400,6 +401,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             f.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
             f.textColor = .secondaryLabelColor
             f.isSelectable = true
+            // A long path is truncated in the middle rather than clipped at
+            // the edge; the tooltip (set with the value) carries it whole.
+            f.lineBreakMode = .byTruncatingMiddle
+            f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
         clActionFootnote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         clActionFootnote.textColor = .secondaryLabelColor
@@ -686,6 +691,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         clManualHeading.stringValue = manual ? "Manual setup" : ""
         clManualHeading.isHidden = !manual
         clManualDirField.stringValue = manual ? "Directory to add to PATH: \(report.thisBinDirectory)" : ""
+        clManualDirField.toolTip = manual ? report.thisBinDirectory : nil
         clManualDirField.isHidden = !manual
         let showFile = manual
             && report.fileChoice.destinationEstablished
@@ -693,6 +699,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             && report.fileChoice.file != nil
             && CommandLineSetupBlock.isRepresentable(directory: report.thisBinDirectory)
         clManualFileField.stringValue = showFile ? "File to edit: \(report.fileChoice.file ?? "")" : ""
+        clManualFileField.toolTip = showFile ? report.fileChoice.file : nil
         clManualFileField.isHidden = !showFile
         clCopySetupButton.isHidden = !showFile
         // The action footnote naming the mechanism and the file it edits.
@@ -915,9 +922,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         guard wc.hasStaleArchives else {
             let done = NSAlert()
             done.messageText = "No stale archives found"
-            done.informativeText =
-                "Every archive belongs to a current profile. Nothing to " +
-                "clean up."
+            done.informativeText = "No cleanup candidates were found."
             done.addButton(withTitle: "OK")
             done.runModal()
             return

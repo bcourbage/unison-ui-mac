@@ -855,7 +855,7 @@ text. Pick another row's Diff to recover.
 ## Settings
 
 Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
-(System Settings style) with six tabs that resize the window to fit:
+(System Settings style) with seven tabs that resize the window to fit:
 
 - **Saved State**: *implicit* state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
@@ -876,6 +876,9 @@ Opens via `Unison-UI-Mac → Settings…` (⌘,). A toolbar-tab window
   checks for updates automatically and whether it sends an anonymous
   system profile with the check. Shown only when the Sparkle updater is
   present in the build.
+- **Command Line**: what `unison` resolves to on this Mac, the **Default
+  interface** preference for a bare `unison <profile>`, and adding the
+  app's command to PATH. See [Command Line](#command-line).
 
 Settings and the profile editor can't be open at the same time. Because a
 logging change here can rewrite `.prf` files, the **Settings** menu item is
