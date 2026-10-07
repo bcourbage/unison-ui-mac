@@ -120,6 +120,31 @@ with conflicts surfaced for review. This is Unison's model, not a one-way mirror
 <h2 id="how-does-it-update-itself">How does it update itself?</h2>
 <p>Through <a href="https://sparkle-project.org/">Sparkle</a>, over a cryptographically signed
 appcast feed. Check manually any time from <strong>App menu ▸ Check for Updates</strong>.</p>
+<h2 id="what-happens-if-the-update-signing-key-is-lost-or-compromised">What happens if the update signing key is lost or compromised?</h2>
+<p>An update is trusted two ways. The update feed is signed with the project's signing
+key, and the app accepts a feed only when that signature verifies, with no fallback
+to an unsigned feed; a compromised update server therefore cannot push an update.
+Each update itself is then accepted either by its own signature from that key or by
+Apple's Developer ID signature matching the installed app's. Sparkle uses the second
+path to rotate the signing key.</p>
+<p>If the key is ever compromised but still available, Sparkle's documented rotation
+applies: a transition release carries the new key and is signed with it, it is
+delivered as a Developer ID-signed disk image so existing installs accept it through
+the Developer ID signature, and the feed announcing it is still signed with the
+current key so those installs can read it. After installing it they trust the new
+key, and updates continue automatically. If the key is lost, the feed can no longer
+be signed for existing installs and automatic updates cannot continue: the recovery
+is to download the current signed and notarized app from
+<a href="https://github.com/bcourbage/unison-ui-mac/releases/latest">GitHub Releases</a> and replace the installed copy once;
+updates resume from there. An install that has been offline for a long time across
+a rotation may need the same one-time reinstall. Profiles and archives are never
+affected by either step.</p>
+<h2 id="what-does-version-10-promise">What does version 1.0 promise?</h2>
+<p>That the parts you build on stay stable until a 2.0: the <code>unison</code> command and its
+options, profiles and archives as Unison's own files, settings carrying forward
+across updates, signed updates, and macOS 15 or later on Apple Silicon. The project
+README states the promise in full. Internals such as the vendored engine patches
+are not part of it.</p>
 <h2 id="what-data-does-the-app-send">What data does the app send?</h2>
 <p>The app has no per-user tracking. When it checks for updates, the request goes to
 the project's update endpoint. A record is created only when a check includes the
