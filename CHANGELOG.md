@@ -17,6 +17,13 @@ across releases per Apple's bundle-version rules.
   find the project.
 
 ### Changed
+- **Engine warnings and errors are readable and complete.** An engine warning
+  shows its first line and keeps the full text in a scrolling, selectable
+  Details area with Copy Details; its buttons are Continue and Cancel. A fatal
+  error is shown the same way, and the restart notice that follows no longer
+  repeats the error cut off mid-path: it states the recovery step and keeps
+  the complete error in Details. Error text is no longer shortened anywhere
+  on the way to these notices.
 - **Profiles window with nothing to run now says why and offers the next step.**
   With no profiles it shows "No profiles yet" and Create Profile…; with every
   profile hidden it shows "All profiles are hidden" and Manage Profiles…. Run is

@@ -900,16 +900,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func presentAppLevelRestartRequired(reason: String, remoteCheckProfile: String? = nil) {
         guard !restartAlertVisible else { return }
         restartAlertVisible = true
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Unison needs to be restarted"
-        var text = reason.isEmpty
-            ? "Quit Unison and open it again to continue."
-            : "\(reason)\n\nQuit Unison and open it again to continue."
-        if remoteCheckProfile != nil {
-            text += " You can check the remote command for this profile first."
-        }
-        alert.informativeText = text
+        // The body states the recovery; the error behind it (already shown by
+        // the fatal alert) is complete and selectable in Details, with Copy
+        // Details, instead of being repeated and cut short in the body.
+        let alert = EngineDialogs.restartAlert(reason: reason,
+                                               remoteCheckOffered: remoteCheckProfile != nil)
         alert.addButton(withTitle: "Quit Unison")
         alert.addButton(withTitle: "Later")
         if remoteCheckProfile != nil { alert.addButton(withTitle: "Check Remote Command…") }
@@ -1298,7 +1293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 self.reopenCurrentProfileFresh(
                     profile, failedReason: "retrying after deleting orphan archives")
             } else {
-                self.failCurrentOp(reason: "fatal error: \(msg.prefix(200))",
+                // The whole message: it is what the restart notice and the
+                // window's Details show, and a fatal often ends in the path
+                // the user needs.
+                self.failCurrentOp(reason: "fatal error: \(msg)",
                                    engineIsQuiescent: false)
             }
         }

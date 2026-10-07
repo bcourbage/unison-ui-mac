@@ -359,12 +359,14 @@ private func _swiftWarnTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMuta
     let text = msg.map { String(cString: $0) } ?? "<no message>"
     let opaqueBits = Int(bitPattern: opaque)
     DispatchQueue.main.async {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Unison warning"
-        alert.informativeText = text
-        alert.addButton(withTitle: "Proceed")
-        alert.addButton(withTitle: "Cancel sync")
+        // The engine's message can be long (the first-sync warning is several
+        // paragraphs); EngineDialogs shows its first line and keeps the whole
+        // text in a scrolling details area. The buttons are stage-neutral:
+        // a warning can arrive during a scan or a sync, and Cancel is routed
+        // by the handler below to whichever applies.
+        let alert = EngineDialogs.warningAlert(text: text)
+        alert.addButton(withTitle: EngineDialogs.continueButton)
+        alert.addButton(withTitle: EngineDialogs.cancelButton)
         let response = alert.runModal()
         let userCancelled = (response == .alertSecondButtonReturn)
         // NEVER answer the engine "exit". Unison's Cocoa-bridge warn
@@ -400,10 +402,9 @@ private func _swiftFatalTrampoline(msg: UnsafePointer<CChar>?, opaque: UnsafeMut
             UnisonBridge.fatalDismissedHandler?(text, false)
             return
         }
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = "Unison error"
-        alert.informativeText = text
+        // Summary line in the body, the complete message (paths included) in
+        // the scrolling details area with Copy Details.
+        let alert = EngineDialogs.fatalAlert(text: text)
 
         var shouldRetry = false
         var retryIgnoringArchives = false
