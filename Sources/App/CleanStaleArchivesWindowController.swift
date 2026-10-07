@@ -306,7 +306,7 @@ final class CleanStaleArchivesWindowController: NSWindowController,
         let reviewNote = reviewCount > 0
             ? "  ·  \(reviewCount) left unchecked for review" : ""
         summaryLabel.stringValue = rows.isEmpty
-            ? "No stale archives. Every archive belongs to a current profile."
+            ? "No cleanup candidates were found."
             : "\(archiveCount) archive\(archiveCount == 1 ? "" : "s"), " +
               "\(fileCount) file\(fileCount == 1 ? "" : "s"), \(total)\(reviewNote)"
         selectAllCheckbox.isEnabled = !rows.isEmpty

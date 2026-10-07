@@ -130,12 +130,12 @@ enum ReconcileSummary {
 
         var parts: [String] = []
         if let statusPrefix { parts.append(statusPrefix) }
-        parts.append("\(total) items")
+        parts.append("\(total) item\(total == 1 ? "" : "s")")
         if transferBytes > 0 {
             parts.append(ByteCountFormatter.string(
                 fromByteCount: transferBytes, countStyle: .file))
         }
-        if conflicts > 0 { parts.append("\(conflicts) conflicts") }
+        if conflicts > 0 { parts.append("\(conflicts) conflict\(conflicts == 1 ? "" : "s")") }
         // Direction breakdowns spell source AND destination so the
         // summary reads unambiguously without leaning on the column
         // headers for context. Arrow always points left-to-right in

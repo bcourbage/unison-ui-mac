@@ -24,6 +24,17 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private let textView = NSTextView()
     private let scrollView = NSScrollView()
     private let headerLabel = NSTextField(labelWithString: "")
+    /// The two compared files, selectable, beneath the header.
+    private let endpointsLabel = NSTextField(wrappingLabelWithString: "")
+    /// The command line the engine ran, on request.
+    private let commandButton = NSButton(title: "Command…", target: nil, action: nil)
+    /// The exit status, read for the user when the command is `diff`.
+    private let statusLabel = NSTextField(labelWithString: "")
+    private var commandPopover: NSPopover?
+    /// The row path given to `surfaceForLoading`, which names the window
+    /// once the result arrives (the engine's title is the command line).
+    private var currentPath = ""
+    private(set) var presentation: DiffPresentation?
 
     /// Called when the diff window closes, so the owner can cancel any diff
     /// request still in flight (drop its late result; unblock the next diff).
@@ -93,7 +104,33 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [headerLabel, scrollView])
+        endpointsLabel.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        endpointsLabel.textColor = .secondaryLabelColor
+        endpointsLabel.isSelectable = true
+        endpointsLabel.maximumNumberOfLines = 2
+        endpointsLabel.lineBreakMode = .byTruncatingMiddle
+        endpointsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        endpointsLabel.isHidden = true
+
+        commandButton.bezelStyle = .rounded
+        commandButton.controlSize = .small
+        commandButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        commandButton.target = self
+        commandButton.action = #selector(showCommand(_:))
+        commandButton.isHidden = true
+
+        statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.isHidden = true
+
+        let topRow = NSStackView(views: [headerLabel, commandButton])
+        topRow.orientation = .horizontal
+        topRow.spacing = 8
+        topRow.distribution = .fill
+        headerLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        commandButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [topRow, endpointsLabel, scrollView, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -106,10 +143,28 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
             stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            headerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
+            topRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
+            endpointsLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
             scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
             scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 400),
         ])
+    }
+
+    @objc private func showCommand(_ sender: NSButton) {
+        guard let command = presentation?.command else { return }
+        let text = NSAttributedString(string: command, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ])
+        let popover = DetailsPopover.make(text: text, width: 520)
+        commandPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    /// Secondary line beneath the header: the compared files when the
+    /// command line names them, otherwise nothing.
+    nonisolated static func endpointsText(_ endpoints: [String]) -> String? {
+        endpoints.isEmpty ? nil : endpoints.joined(separator: "\n")
     }
 
     // MARK: - Public API
@@ -121,23 +176,42 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     func surfaceForLoading(path: String) {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        window?.title = "Diff — \(path)"
+        currentPath = path
+        presentation = nil
+        window?.title = "Diff — \((path as NSString).lastPathComponent)"
         headerLabel.stringValue = "Generating diff for \(path)…"
         headerLabel.textColor = .secondaryLabelColor
+        endpointsLabel.isHidden = true
+        commandButton.isHidden = true
+        statusLabel.isHidden = true
         textView.string = ""
         clearTextStyling()
     }
 
-    /// Display a completed diff. `title` is typically the file's
-    /// relative path; `text` is the raw output from Unison's
-    /// configured `diff` command (default `diff -u`).
+    /// Display a completed diff. `title` is the command line the engine
+    /// ran; `text` is that command's output with the process status
+    /// appended. The window names the row's file, lists the compared
+    /// files, keeps the command line behind Command…, and reads a `diff`
+    /// exit status for the user (see `DiffPresentation`).
     func showDiff(title: String, text: String) {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        window?.title = "Diff — \(title)"
-        headerLabel.stringValue = title
+        let p = DiffPresentation.make(path: currentPath, command: title, output: text)
+        presentation = p
+        window?.title = p.title
+        headerLabel.stringValue = p.path
         headerLabel.textColor = .secondaryLabelColor
-        textView.string = text
+        if let endpoints = Self.endpointsText(p.endpoints) {
+            endpointsLabel.stringValue = endpoints
+            endpointsLabel.toolTip = endpoints
+            endpointsLabel.isHidden = false
+        } else {
+            endpointsLabel.isHidden = true
+        }
+        commandButton.isHidden = false
+        statusLabel.stringValue = p.status ?? ""
+        statusLabel.isHidden = (p.status == nil)
+        textView.string = p.body
         applyUnifiedDiffColoring()
     }
 
@@ -148,12 +222,24 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     func showError(_ message: String) {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        presentation = nil
         window?.title = "Diff — error"
         headerLabel.stringValue = "Diff failed"
         headerLabel.textColor = .systemRed
+        endpointsLabel.isHidden = true
+        commandButton.isHidden = true
+        statusLabel.isHidden = true
         textView.string = message
         clearTextStyling()
     }
+
+    // Test seams.
+    var windowTitleForTesting: String? { window?.title }
+    var headerForTesting: String { headerLabel.stringValue }
+    var endpointsForTesting: String? { endpointsLabel.isHidden ? nil : endpointsLabel.stringValue }
+    var statusForTesting: String? { statusLabel.isHidden ? nil : statusLabel.stringValue }
+    var bodyForTesting: String { textView.string }
+    var commandButtonVisibleForTesting: Bool { !commandButton.isHidden }
 
     // MARK: - Coloring
 

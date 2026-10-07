@@ -51,7 +51,7 @@ final class ReconcileSummaryTests: XCTestCase {
         // Ready state has no status word — count is the lede.
         let items = [item(direction: toSecond, size: 1_000_000)]
         let out = ReconcileSummary.text(items: items, phase: .ready)
-        XCTAssertTrue(out.hasPrefix("1 items"), out)
+        XCTAssertTrue(out.hasPrefix("1 item  ·  "), out)
         XCTAssertFalse(out.contains("Synchroniz"),
                        "ready state must not show any sync status word")
     }
@@ -62,7 +62,7 @@ final class ReconcileSummaryTests: XCTestCase {
         let items = [item(direction: toSecond, size: 1_000_000)]
         let out = ReconcileSummary.text(items: items, phase: .syncing)
         XCTAssertTrue(out.hasPrefix("Synchronizing  ·  "), out)
-        XCTAssertTrue(out.contains("1 items"),
+        XCTAssertTrue(out.contains("1 item  ·  "),
                       "breakdown must be preserved during sync: \(out)")
         XCTAssertTrue(out.contains("MB"),
                       "bytes must be preserved during sync: \(out)")
@@ -161,7 +161,7 @@ final class ReconcileSummaryTests: XCTestCase {
         ]
         let out = ReconcileSummary.text(items: items, phase: .ready)
         XCTAssertTrue(out.contains("4 items"))
-        XCTAssertTrue(out.contains("1 conflicts"))
+        XCTAssertTrue(out.contains("1 conflict  ·  "), out)
         XCTAssertTrue(out.contains("1 other"))
         XCTAssertTrue(out.contains("3 MB") || out.contains("3,0 MB"))
         XCTAssertFalse(out.contains("13 MB"))
@@ -196,7 +196,7 @@ final class ReconcileSummaryTests: XCTestCase {
         let items = [item(direction: toSecond, size: 1_500_000)]
         let out = ReconcileSummary.text(items: items, phase: .done(failures: 0))
         guard let statusPos = out.range(of: "Synchronization complete")?.lowerBound,
-              let itemsPos  = out.range(of: "1 items")?.lowerBound,
+              let itemsPos  = out.range(of: "1 item")?.lowerBound,
               let mbPos     = out.range(of: "MB")?.lowerBound,
               let dirPos    = out.range(of: "First → Second")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
@@ -209,7 +209,7 @@ final class ReconcileSummaryTests: XCTestCase {
         let items = [item(direction: toSecond, size: 1_500_000)]
         let out = ReconcileSummary.text(items: items, phase: .done(failures: 3))
         guard let errPos   = out.range(of: "3 errors")?.lowerBound,
-              let itemsPos = out.range(of: "1 items")?.lowerBound
+              let itemsPos = out.range(of: "1 item")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
         XCTAssertLessThan(errPos, itemsPos,
                           "the error count belongs in the lede, not buried")
@@ -221,7 +221,7 @@ final class ReconcileSummaryTests: XCTestCase {
         let items = [item(direction: toSecond, size: 1_500_000)]
         let out = ReconcileSummary.text(items: items, phase: .syncing)
         guard let statusPos = out.range(of: "Synchronizing")?.lowerBound,
-              let itemsPos  = out.range(of: "1 items")?.lowerBound
+              let itemsPos  = out.range(of: "1 item")?.lowerBound
         else { XCTFail("expected substrings missing: \(out)"); return }
         XCTAssertLessThan(statusPos, itemsPos)
     }

@@ -2972,6 +2972,9 @@ final class ListFieldView: NSView {
         labelField.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         helpField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         helpField.textColor = .secondaryLabelColor
+        // Backticked examples in the help render as code, not as backticks.
+        helpField.attributedStringValue = HelpText.attributed(
+            help, font: .systemFont(ofSize: NSFont.smallSystemFontSize), color: .secondaryLabelColor)
         helpField.lineBreakMode = .byWordWrapping
         // Unrestricted: the escape-grammar help needs 3–4 wrapped lines at the
         // default window width, and a 2-line cap hid the examples (round 4). The
@@ -3076,6 +3079,8 @@ final class IncludeListView: NSView {
         let helpField = NSTextField(wrappingLabelWithString: help)
         helpField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         helpField.textColor = .secondaryLabelColor
+        helpField.attributedStringValue = HelpText.attributed(
+            help, font: .systemFont(ofSize: NSFont.smallSystemFontSize), color: .secondaryLabelColor)
         helpField.maximumNumberOfLines = 0
         helpField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
