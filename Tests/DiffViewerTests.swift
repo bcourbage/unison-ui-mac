@@ -141,6 +141,21 @@ final class DiffPresentationTests: XCTestCase {
         XCTAssertTrue(DiffPresentation.isStandardDiff("diff -u -L 'x | y' '/a' '/b'"))
     }
 
+    func test_newline_separatesCommands_quotedAndContinuationDoNot() {
+        // Review finding: an unquoted newline is a command separator; the
+        // status of `diff …\ntrue` is true's.
+        let twoCommands = "diff -u '/a' '/b'\ntrue"
+        XCTAssertFalse(DiffPresentation.isStandardDiff(twoCommands))
+        XCTAssertEqual(DiffPresentation.interpret(statusLine: "Exited with status 0", command: twoCommands),
+                       "Exited with status 0")
+        XCTAssertFalse(DiffPresentation.isStandardDiff("diff -u '/a' '/b'\r\ntrue"))
+        // A newline inside quotes is text, and backslash-newline continues the line.
+        XCTAssertTrue(DiffPresentation.isStandardDiff("diff -u -L 'two\nlines' '/a' '/b'"))
+        XCTAssertTrue(DiffPresentation.isStandardDiff("diff -u \\\n'/a' '/b'"))
+        XCTAssertEqual(DiffPresentation.tokenize("diff \\\n-u").map(\.text), ["diff", "-u"])
+        XCTAssertEqual(DiffPresentation.fileOperands(in: "diff -u \\\n'/a' '/b'"), ["/a", "/b"])
+    }
+
     func test_tokenize_quotesAndOperators() {
         let t = DiffPresentation.tokenize("diff -u 'a b' \"c d\" e\\ f | cat")
         XCTAssertEqual(t.map(\.text), ["diff", "-u", "a b", "c d", "e f", "|", "cat"])

@@ -84,11 +84,22 @@ struct DiffPresentation: Equatable {
                 continue
             case "\\":
                 let next = command.index(after: i)
-                if next < command.endIndex { current.append(command[next]); i = command.index(after: next) }
-                else { i = next }
+                if next < command.endIndex {
+                    // Backslash-newline is a line continuation: no character.
+                    if command[next] != "\n" { current.append(command[next]) }
+                    i = command.index(after: next)
+                } else {
+                    i = next
+                }
                 continue
-            case " ", "\t", "\n":
+            case " ", "\t":
                 flush()
+            case "\n", "\r", "\r\n":   // CRLF is one Character in Swift
+                // An unquoted newline separates commands, like `;`. A quoted
+                // newline is text (handled in the quote branches above) and a
+                // backslash-newline continuation is consumed by the `\` case.
+                flush()
+                tokens.append(Token(text: "\n", quoted: false, isOperator: true))
             case "|", ";", "&", ">", "<", "`":
                 flush()
                 var op = String(c)
