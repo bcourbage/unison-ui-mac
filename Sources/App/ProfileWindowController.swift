@@ -14,7 +14,24 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
     private let onComplete: Completion
     /// Set by the owner: the context menu's Check Remote Command for a profile.
     var onRemoteCheckRequested: ((String) -> Void)?
+    /// Set by the owner: the empty-state button. `createNew` is true when
+    /// the directory has no profiles at all (Create Profile…), false when
+    /// every profile is hidden (Manage Profiles…).
+    var onManageProfiles: ((_ createNew: Bool) -> Void)?
     private var profiles: [String] = []
+    /// Where the hide/order preferences come from; tests inject a value so
+    /// they never touch the real defaults.
+    var preferencesLoader: () -> ProfilePreferences = { ProfilePreferences.load() }
+    /// Every `.prf` on disk, before the hide/order preferences are applied.
+    /// Distinguishes "no profiles" from "all profiles hidden".
+    private var availableCount = 0
+
+    // Empty state, shown over the list when it has no rows. The list is the
+    // only path into the app, so an empty list needs a next action rather
+    // than an empty striped view with an enabled Run button.
+    private let emptyLabel = NSTextField(labelWithString: "")
+    private let emptyButton = NSButton(title: "", target: nil, action: nil)
+    private let emptyStack = NSStackView()
     /// The row the context menu was opened on, or the selection when the
     /// menu came from the keyboard.
     private var contextRow: Int?
@@ -119,6 +136,20 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
 
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        emptyButton.bezelStyle = .rounded
+        emptyButton.target = self
+        emptyButton.action = #selector(emptyStateAction)
+        emptyStack.orientation = .vertical
+        emptyStack.alignment = .centerX
+        emptyStack.spacing = 10
+        emptyStack.addArrangedSubview(emptyLabel)
+        emptyStack.addArrangedSubview(emptyButton)
+        emptyStack.translatesAutoresizingMaskIntoConstraints = false
+        emptyStack.isHidden = true
+        contentView.addSubview(emptyStack)
+
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: contentView.topAnchor),
             stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -126,7 +157,33 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
+            emptyStack.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyStack.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
         ])
+    }
+
+    /// Show the empty state that matches why the list is empty, or hide it.
+    private func refreshEmptyState() {
+        if !profiles.isEmpty {
+            emptyStack.isHidden = true
+        } else if availableCount == 0 {
+            emptyLabel.stringValue = "No profiles yet"
+            emptyButton.title = "Create Profile…"
+            emptyStack.isHidden = false
+        } else {
+            emptyLabel.stringValue = "All profiles are hidden"
+            emptyButton.title = "Manage Profiles…"
+            emptyStack.isHidden = false
+        }
+    }
+
+    /// Run acts on the selection; with none there is nothing for it to do.
+    private func refreshRunEnabled() {
+        runButton.isEnabled = currentlySelectedProfile() != nil
+    }
+
+    @objc private func emptyStateAction() {
+        onManageProfiles?(availableCount == 0)
     }
 
     /// Reload the profile list from disk and re-apply the selection.
@@ -152,9 +209,11 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         // picker shows the filtered + reordered list. Hidden profiles
         // are deliberately excluded so they don't clutter the launch view;
         // the user can still unhide them from the Profile Editor.
-        let prefs = ProfilePreferences.load()
+        let prefs = preferencesLoader()
+        availableCount = available.count
         profiles = prefs.apply(to: available, includeHidden: false)
         tableView.reloadData()
+        refreshEmptyState()
 
         let targetIdx: Int? = {
             if let preferred = preferredSelection,
@@ -173,6 +232,7 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
         if let idx = targetIdx {
             tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         }
+        refreshRunEnabled()
         TraceLog.shared.write("ProfileWindow: \(profiles.count) profiles (of \(available.count) on disk) in \(unisonDirectory)")
     }
 
@@ -218,6 +278,21 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
     }
 
     var contextMenuTitlesForTesting: [String] { tableView.menu?.items.map(\.title) ?? [] }
+    var isRunEnabledForTesting: Bool { runButton.isEnabled }
+    /// The empty-state label and button titles, or nil when the list has rows.
+    var emptyStateForTesting: (text: String, button: String)? {
+        emptyStack.isHidden ? nil : (emptyLabel.stringValue, emptyButton.title)
+    }
+    func performEmptyStateActionForTesting() { emptyStateAction() }
+    func reloadForTesting() { reload() }
+    func selectRowForTesting(_ row: Int?) {
+        if let row { tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        else { tableView.deselectAll(nil) }
+        refreshRunEnabled()
+    }
+    func cellForTesting(row: Int) -> NSTableCellView? {
+        tableView(tableView, viewFor: tableView.tableColumns.first, row: row) as? NSTableCellView
+    }
 
     /// The profile a context-menu command acts on: the clicked row, else the
     /// selection.
@@ -279,17 +354,27 @@ extension ProfileWindowController: NSTableViewDelegate {
             let v = NSTableCellView()
             let tf = NSTextField(labelWithString: "")
             tf.translatesAutoresizingMaskIntoConstraints = false
+            // A name wider than the list is truncated in the middle, as in
+            // the Profile Editor, so names that differ only near the end stay
+            // tellable apart; the tooltip carries the whole name.
+            tf.lineBreakMode = .byTruncatingMiddle
+            tf.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             v.addSubview(tf)
             v.textField = tf
             v.identifier = identifier
             NSLayoutConstraint.activate([
                 tf.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 4),
-                tf.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+                tf.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -4),
                 tf.centerYAnchor.constraint(equalTo: v.centerYAnchor),
             ])
             return v
         }()
         cell.textField?.stringValue = profiles[row]
+        cell.textField?.toolTip = profiles[row]
         return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        refreshRunEnabled()
     }
 }

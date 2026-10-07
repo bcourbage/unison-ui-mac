@@ -64,6 +64,25 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     // first and second `root = …` lines in the .prf, in document order.
     // Either may be a local path or an ssh://… / socket://… URL.
     private let nameField = NSTextField(string: "")
+    /// Inline validation under the name field (P9); see refreshNameValidation.
+    private let nameValidationLabel = NSTextField(labelWithString: "")
+    /// True once the user has typed in the name field, so a new, still-empty
+    /// form does not open with an error showing.
+    private var nameEdited = false
+    /// Detail-pane content for a sidebar search with no matches (P3).
+    private let noMatchesLabel = NSTextField(wrappingLabelWithString: "")
+    private lazy var noMatchesStack: NSStackView = {
+        noMatchesLabel.textColor = .secondaryLabelColor
+        noMatchesLabel.alignment = .center
+        noMatchesLabel.maximumNumberOfLines = 0
+        let clear = NSButton(title: "Clear Search", target: self, action: #selector(clearSearchAction(_:)))
+        clear.bezelStyle = .rounded
+        let s = NSStackView(views: [noMatchesLabel, clear])
+        s.orientation = .vertical
+        s.alignment = .centerX
+        s.spacing = 10
+        return s
+    }()
     private let firstRootField = NSTextField(string: "")
     private let secondRootField = NSTextField(string: "")
 
@@ -519,7 +538,12 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         rootsHelp.maximumNumberOfLines = 0
         rootsHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let nameRow = labeledRow(label: "Profile name", control: nameField)
+        nameField.delegate = self
+        nameValidationLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        nameValidationLabel.textColor = .systemRed
+        nameValidationLabel.isHidden = true
+        let nameRow = labeledRow(label: "Profile name",
+                                 control: vstackTight([nameField, nameValidationLabel]))
         let firstRow = labeledRow(label: "First root",
                                   control: hstack([firstRootField, browseFirst]))
         let secondRow = labeledRow(label: "Second root",
@@ -1076,6 +1100,13 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         // compression, and the label then wrapped or clipped at random.
         statusRow.isHidden = true
         checkStatusRow = statusRow
+        // A profile that has not been saved yet cannot be checked (the check
+        // loads the .prf through Unison). Say so up front instead of after
+        // the click; the button is enabled once the profile exists.
+        if initialProfileName == nil {
+            checkRemoteButton.isEnabled = false
+            setCheckStatus(Self.unsavedCheckPrerequisite)
+        }
         let v = NSStackView(views: [controlsRow, statusRow, secondaryRow])
         v.orientation = .vertical; v.alignment = .leading; v.spacing = 4
         v.setHuggingPriority(Self.stackHug, for: .vertical)
@@ -1164,7 +1195,7 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         checkAdvancedAtStart = advancedView.values
         proposalChangedAdvanced = false
         guard let inputs = checkInputs() else {
-            setCheckStatus("Save the profile once before checking its remote command."); return nil
+            setCheckStatus(Self.unsavedCheckPrerequisite); return nil
         }
         let prepared: RemoteCheckFlow.Prepared
         switch RemoteCheckFlow.prepare(inputs) {
@@ -1399,6 +1430,8 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// A field that participates in the check's configuration changed: the
     /// displayed result no longer describes the form.
+    static let unsavedCheckPrerequisite = "Save the profile once before checking its remote command."
+
     private func invalidateCheckResult() {
         guard checkResult != nil || checkDiscovery != nil || checkTask != nil else { return }
         cancelCheck()
@@ -1524,6 +1557,17 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         s.orientation = .horizontal
         s.spacing = 6
         s.distribution = .fill
+        return s
+    }
+
+    /// A field with a small line beneath it (inline validation), both as
+    /// wide as the row's control column.
+    private func vstackTight(_ views: [NSView]) -> NSStackView {
+        let s = NSStackView(views: views)
+        s.orientation = .vertical
+        s.alignment = .leading
+        s.spacing = 2
+        for v in views { v.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true }
         return s
     }
 
@@ -1716,13 +1760,38 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
 
     /// Reflect `notEditableReason`: when set, disable Save so a profile that could
     /// not be faithfully loaded is never overwritten, and surface the reason.
+    /// Save also stays disabled while the profile name is missing or invalid,
+    /// so the predictable failure is visible at the field rather than as an
+    /// alert after the click. `saveAction` keeps its own guards: the button
+    /// state is a courtesy, the guard is the authority.
     private func applyEditability() {
         let editable = (notEditableReason == nil)
-        saveButton.isEnabled = editable
+        saveButton.isEnabled = editable && Self.nameProblem(nameField.stringValue) == nil
         if let reason = notEditableReason {
             let first = reason.split(separator: "\n").first.map(String.init) ?? reason
             setIncludesBanner(headline: "Read-only: " + first, details: first == reason ? [] : [reason])
         }
+    }
+
+    /// Why `name` cannot be a profile filename, or nil when it can. The same
+    /// two rules `saveAction` enforces.
+    nonisolated static func nameProblem(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Profile name required." }
+        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:")) != nil {
+            return "Profile names can't contain slashes or colons."
+        }
+        return nil
+    }
+
+    /// Inline validation under the name field: shown once the user has
+    /// edited the name (a fresh empty form is not an error yet), and Save
+    /// follows the result.
+    private func refreshNameValidation() {
+        let problem = Self.nameProblem(nameField.stringValue)
+        nameValidationLabel.stringValue = problem ?? ""
+        nameValidationLabel.isHidden = !(nameEdited && problem != nil)
+        applyEditability()
     }
 
     /// Strip a trailing `.prf` for display in the Includes combo — the user
@@ -2561,6 +2630,26 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
         popup.selectItem(at: state.rawValue)
     }
     var checkStatusForTesting: String? { checkStatusLabel.isHidden ? nil : checkStatusLabel.stringValue }
+    var isCheckRemoteEnabledForTesting: Bool { checkRemoteButton.isEnabled }
+    /// The detail pane's no-matches text, or nil when a section is shown.
+    var noMatchesTextForTesting: String? {
+        noMatchesStack.superview == nil ? nil : noMatchesLabel.stringValue
+    }
+    func setSearchForTesting(_ text: String) {
+        sidebarSearch.stringValue = text
+        filterSidebar()
+    }
+    func clearSearchForTesting() { clearSearchAction(nil) }
+    /// The inline name error, or nil when hidden.
+    var nameValidationTextForTesting: String? {
+        nameValidationLabel.isHidden ? nil : nameValidationLabel.stringValue
+    }
+    /// Type a name as the user would (marks the field edited).
+    func typeNameForTesting(_ name: String) {
+        nameField.stringValue = name
+        nameEdited = true
+        refreshNameValidation()
+    }
     var checkReportForTesting: [String] { checkReport }
     var checkAlternativesForTesting: [RemoteCheckFlow.AlternativeRow]? { checkDiscovery?.rows }
     var chooseButtonVisibleForTesting: Bool { !checkChooseButton.isHidden }
@@ -2679,10 +2768,34 @@ extension ProfileFormWindowController: NSTableViewDataSource, NSTableViewDelegat
             sidebarTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             showSection(target)
         } else {
-            // No matches — clear the detail so it's unambiguously "no results"
-            // rather than a stale section.
-            sectionContainer.subviews.forEach { $0.removeFromSuperview() }
+            // No matches: say so in the detail pane instead of leaving it
+            // blank, and offer the way back. The search field keeps focus.
+            showNoMatches(query: sidebarSearch.stringValue.trimmingCharacters(in: .whitespaces))
         }
+    }
+
+    private func showNoMatches(query: String) {
+        sectionContainer.subviews.forEach { $0.removeFromSuperview() }
+        shownSectionIndex = nil
+        noMatchesLabel.stringValue = Self.noMatchesText(query: query)
+        noMatchesStack.translatesAutoresizingMaskIntoConstraints = false
+        sectionContainer.addSubview(noMatchesStack)
+        NSLayoutConstraint.activate([
+            noMatchesStack.centerXAnchor.constraint(equalTo: sectionContainer.centerXAnchor),
+            noMatchesStack.centerYAnchor.constraint(equalTo: sectionContainer.centerYAnchor),
+            noMatchesStack.leadingAnchor.constraint(greaterThanOrEqualTo: sectionContainer.leadingAnchor, constant: 16),
+            noMatchesStack.trailingAnchor.constraint(lessThanOrEqualTo: sectionContainer.trailingAnchor, constant: -16),
+        ])
+    }
+
+    nonisolated static func noMatchesText(query: String) -> String {
+        "No settings match “\(query)”."
+    }
+
+    @objc private func clearSearchAction(_ sender: Any?) {
+        sidebarSearch.stringValue = ""
+        filterSidebar()
+        window?.makeFirstResponder(sidebarSearch)
     }
 
     /// The technical Unison pref keys a section owns, so search matches
@@ -2731,6 +2844,9 @@ extension ProfileFormWindowController: NSSearchFieldDelegate {
         let o = obj.object as AnyObject
         if o === sidebarSearch {
             filterSidebar()
+        } else if o === nameField {
+            nameEdited = true
+            refreshNameValidation()
         } else if o === logFolderField || o === logNameField {
             loggingDirty = true          // SF6: a logfile edit must be saved
         } else {
