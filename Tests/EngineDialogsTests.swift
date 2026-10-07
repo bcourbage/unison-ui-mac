@@ -47,9 +47,40 @@ final class EngineDialogsTests: XCTestCase {
                        "No archive files were found for these roots, whose canonical names are:")
         let tv = textView(in: a)
         XCTAssertNotNil(tv, "long warning text goes to the details area")
-        XCTAssertEqual(tv?.string, firstSyncWarning)
+        XCTAssertEqual(tv?.string, EngineDialogs.reflow(firstSyncWarning), "displayed text is the reflowed message")
+        XCTAssertTrue(tv?.string.contains("/Users/someone/Documents") ?? false)
         XCTAssertEqual(tv?.isEditable, false)
         XCTAssertEqual(tv?.isSelectable, true)
+        XCTAssertEqual(copyButton(in: a)?.text, firstSyncWarning, "Copy Details keeps the engine text as received")
+    }
+
+    // MARK: - Reflow
+
+    func test_reflow_joinsHardWrappedSentences_keepsParagraphsAndIndentedLines() {
+        let engine = "No archive files were found for these roots, whose canonical names are:\n"
+            + "\t/private/tmp/x/left\n\t/private/tmp/x/right\n"
+            + "This can happen either\nbecause this is the first time you have synchronized these roots,\n"
+            + "or because you have upgraded Unison to a new version with a different\narchive format.\n\n"
+            + "Update detection may take a while on this run if the replicas are\nlarge.\n"
+        XCTAssertEqual(EngineDialogs.reflow(engine),
+            "No archive files were found for these roots, whose canonical names are:\n"
+            + "    /private/tmp/x/left\n    /private/tmp/x/right\n"
+            + "This can happen either because this is the first time you have synchronized these roots, "
+            + "or because you have upgraded Unison to a new version with a different archive format.\n\n"
+            + "Update detection may take a while on this run if the replicas are large.")
+    }
+
+    func test_reflow_singleLine_unchanged() {
+        XCTAssertEqual(EngineDialogs.reflow("Archives are locked."), "Archives are locked.")
+    }
+
+    func test_reflow_collapsesRepeatedBlankLines_andTrimsEnds() {
+        XCTAssertEqual(EngineDialogs.reflow("\n\nfirst\nline\n\n\n\nsecond\n\n"), "first line\n\nsecond")
+    }
+
+    func test_reflow_spaceIndentedLine_staysOnItsOwnLine() {
+        XCTAssertEqual(EngineDialogs.reflow("Run this:\n  unison -ui text\nthen retry"),
+                       "Run this:\n    unison -ui text\nthen retry")
     }
 
     func test_warning_singleLine_hasNoDetailsArea() {
@@ -71,8 +102,8 @@ final class EngineDialogsTests: XCTestCase {
         let a = EngineDialogs.fatalAlert(text: msg)
         XCTAssertEqual(a.messageText, "Unison error")
         XCTAssertEqual(a.informativeText, "Archives are locked.")
-        XCTAssertEqual(textView(in: a)?.string, msg)
-        XCTAssertTrue(textView(in: a)?.string.contains(path) ?? false)
+        XCTAssertTrue(textView(in: a)?.string.contains(path) ?? false, "the complete path is displayed")
+        XCTAssertEqual(copyButton(in: a)?.text, msg)
     }
 
     // MARK: - Restart notice (P4)
@@ -84,7 +115,8 @@ final class EngineDialogsTests: XCTestCase {
         XCTAssertEqual(a.messageText, "Unison needs to be restarted")
         XCTAssertEqual(a.informativeText, "Quit Unison and open it again to continue.")
         XCTAssertFalse(a.informativeText.contains("path-segment"), "the body does not repeat the error")
-        XCTAssertEqual(textView(in: a)?.string, reason)
+        XCTAssertEqual(textView(in: a)?.string, reason, "a single long line is displayed whole")
+        XCTAssertEqual(copyButton(in: a)?.text, reason)
     }
 
     func test_restart_emptyReason_noDetails() {

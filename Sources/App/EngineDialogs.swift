@@ -57,6 +57,42 @@ enum EngineDialogs {
         return alert
     }
 
+    /// Unison hard-wraps its messages at about 70 columns for an 80-column
+    /// terminal, with newlines in the middle of sentences. Shown in a
+    /// proportional font in a box of a different width those breaks fall at
+    /// random. This joins the lines of a paragraph into one, keeping:
+    ///   - paragraph breaks (one or more blank lines),
+    ///   - indented lines (a tab or leading spaces: the canonical-path list,
+    ///     code), which stay on their own lines and keep their indent.
+    /// Only for display; Copy Details copies the engine text as received.
+    nonisolated static func reflow(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var out: [String] = []
+        var paragraph: [String] = []
+        func flush() {
+            if !paragraph.isEmpty {
+                out.append(paragraph.joined(separator: " "))
+                paragraph.removeAll()
+            }
+        }
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+            if line.isEmpty {
+                flush()
+                if out.last != "" { out.append("") }
+            } else if raw.first == "\t" || raw.hasPrefix("  ") {
+                flush()
+                out.append("    " + line)
+            } else {
+                paragraph.append(line)
+            }
+        }
+        flush()
+        while out.last == "" { out.removeLast() }
+        while out.first == "" { out.removeFirst() }
+        return out.joined(separator: "\n")
+    }
+
     /// First non-empty line of `text`, for an alert's summary line.
     nonisolated static func summaryLine(of text: String) -> String {
         text.split(whereSeparator: \.isNewline)
@@ -77,6 +113,8 @@ enum EngineDialogs {
 
     /// A scrolling, selectable, read-only text area holding `text` in full,
     /// with a Copy Details button beneath. Sized for an alert accessory.
+    /// The text is reflowed for display (see `reflow`) and set in the system
+    /// font, since it is prose; the Copy Details button copies the original.
     ///
     /// NSAlert lays its accessory out from the view's FRAME and widens the
     /// alert to fit it; an Auto Layout view with no frame is placed at its
@@ -85,9 +123,11 @@ enum EngineDialogs {
                                  width: CGFloat = 400,
                                  maxHeight: CGFloat = 200,
                                  pasteboard: NSPasteboard = .general) -> NSView {
-        let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        let attributed = NSAttributedString(string: text, attributes: [
-            .font: font, .foregroundColor: NSColor.labelColor,
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacing = 4
+        let attributed = NSAttributedString(string: reflow(text), attributes: [
+            .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph,
         ])
         let needed = attributed.boundingRect(
             with: NSSize(width: width - 24, height: .greatestFiniteMagnitude),
