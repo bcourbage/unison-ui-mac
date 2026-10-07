@@ -19,6 +19,8 @@
 file synchronization between local folders and remote machines over SSH,
 with visual conflict review before synchronized files are changed.
 
+[Website](https://bcourbage.github.io/unison-ui-mac/) · [Download](https://github.com/bcourbage/unison-ui-mac/releases/latest) · [FAQ](https://bcourbage.github.io/unison-ui-mac/faq/) · [Manual](MANUAL.md)
+
 <a id="system-requirements"></a>
 
 - **Requirements:** macOS 15 (Sequoia) or later, Apple Silicon.
@@ -36,18 +38,23 @@ Other install paths (signed `.app` download, build from source) are in
 ## Features
 
 - **Two-way synchronization** of files and folders, keeping both sides current.
-- **Local and remote roots over SSH** — sync a folder on this Mac against
+- **Local and remote roots over SSH**: sync a folder on this Mac against
   another machine.
-- **Conflict review** — every proposed change is shown before changes are
+- **Conflict review**: every proposed change is shown before changes are
   applied to either root, so you decide what wins.
-- **Per-item control** — flip the sync direction of any item, or skip it,
+- **Per-item control**: flip the sync direction of any item, or skip it,
   directly in the results.
-- **Native macOS GUI** — real menus, notifications, and keyboard control, with
+- **Native macOS GUI**: real menus, notifications, and keyboard control, with
   no terminal required.
-- **Self-contained** — the Unison File Synchronizer engine is embedded in the
+- **Self-contained**: the Unison File Synchronizer engine is embedded in the
   app, so the `unison` CLI does not have to be installed separately.
+- **Command-line integration**: `unison <profile>` opens the app on that
+  profile for review; `-ui text` runs the text interface for scripts.
 - **Built-in updates** through Sparkle from a cryptographically signed feed;
   release builds are Developer ID-signed and notarized.
+
+Update checks can include an optional, anonymous system profile; see
+[What data does the app send?](https://bcourbage.github.io/unison-ui-mac/faq/#what-data-does-the-app-send)
 
 ## Screenshots
 
