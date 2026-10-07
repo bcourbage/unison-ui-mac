@@ -16,6 +16,21 @@ across releases per Apple's bundle-version rules.
   The About panel gains one linked sentence noting that a star helps others
   find the project.
 
+### Changed
+- **Profiles window with nothing to run now says why and offers the next step.**
+  With no profiles it shows "No profiles yet" and Create Profile…; with every
+  profile hidden it shows "All profiles are hidden" and Manage Profiles…. Run is
+  disabled until a profile is selected. Long profile names are truncated in the
+  middle, with the full name as a tooltip, in the Profiles window and the
+  Profile Editor.
+- **Profile editor: a search with no matches says so** and offers Clear Search
+  instead of leaving the settings pane blank.
+- **Profile editor: the name is validated as you type.** Save stays disabled
+  until the name is present and valid, with the reason shown under the field.
+  For a profile that has not been saved yet, Check Remote Command is disabled
+  and its status line says the profile must be saved first, instead of
+  explaining after the click.
+
 ### Fixed
 - **Deleting a profile no longer offers to remove archive files that another
   profile still uses.** Unison names an archive by its root pair, so two

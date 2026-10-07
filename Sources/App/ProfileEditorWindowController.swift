@@ -368,6 +368,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         openForm(for: nil)
     }
 
+    /// Open the form for a new profile from outside this window (the
+    /// picker's empty-state Create Profile… button).
+    func presentNewProfileForm() {
+        openForm(for: nil)
+    }
+
     @objc private func editAction(_ sender: Any?) {
         guard let profile = selectedProfile() else { NSSound.beep(); return }
         openForm(for: profile)
@@ -1340,6 +1346,8 @@ extension ProfileEditorWindowController: NSTableViewDelegate {
             let v = NSTableCellView()
             let tf = NSTextField(labelWithString: "")
             tf.translatesAutoresizingMaskIntoConstraints = false
+            tf.lineBreakMode = .byTruncatingMiddle
+            tf.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             v.addSubview(tf)
             v.textField = tf
             v.identifier = id
@@ -1351,6 +1359,7 @@ extension ProfileEditorWindowController: NSTableViewDelegate {
             return v
         }()
         cell.textField?.stringValue = name
+        cell.textField?.toolTip = name
         cell.textField?.textColor = isHidden ? .tertiaryLabelColor : .labelColor
         return cell
     }

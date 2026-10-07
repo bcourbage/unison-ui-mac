@@ -1986,6 +1986,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         controller.onRemoteCheckRequested = { [weak self] profile in
             self?.checkRemoteCommand(forProfile: profile)
         }
+        controller.onManageProfiles = { [weak self] createNew in
+            guard let self else { return }
+            self.showProfileEditor(nil)
+            if createNew { self.profileEditorWindowController?.presentNewProfileForm() }
+        }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         // Apply explicit selection AFTER showing/keying — the
