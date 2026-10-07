@@ -26,10 +26,103 @@ struct DiffPresentation: Equatable {
         return DiffPresentation(
             title: "Diff — \(name.isEmpty ? path : name)",
             path: path,
-            endpoints: quotedArguments(in: command),
+            endpoints: fileOperands(in: command),
             command: command,
             body: body,
             status: statusLine.map { interpret(statusLine: $0, command: command) })
+    }
+
+    /// One shell word of the command line, with how it was written.
+    struct Token: Equatable {
+        let text: String
+        let quoted: Bool
+        /// An unquoted shell control operator (`|`, `;`, `&&`, `||`, `&`,
+        /// `>`, `<`, `` ` ``, `$(`): the command is more than one program.
+        let isOperator: Bool
+    }
+
+    /// Split a command line into shell words, honouring single quotes (with
+    /// the `'\''` escape the engine uses), double quotes and backslashes, and
+    /// marking control operators. Enough of the shell grammar to tell a
+    /// standalone program from a pipeline and a quoted file from an option.
+    static func tokenize(_ command: String) -> [Token] {
+        var tokens: [Token] = []
+        var current = ""
+        var quotedWord = false
+        var i = command.startIndex
+        func flush() {
+            if !current.isEmpty || quotedWord {
+                tokens.append(Token(text: current, quoted: quotedWord, isOperator: false))
+            }
+            current = ""; quotedWord = false
+        }
+        while i < command.endIndex {
+            let c = command[i]
+            switch c {
+            case "'":
+                quotedWord = true
+                i = command.index(after: i)
+                while i < command.endIndex {
+                    if command[i...].hasPrefix("'\\''") {
+                        current.append("'"); i = command.index(i, offsetBy: 4); continue
+                    }
+                    if command[i] == "'" { break }
+                    current.append(command[i]); i = command.index(after: i)
+                }
+                if i < command.endIndex { i = command.index(after: i) }
+                continue
+            case "\"":
+                quotedWord = true
+                i = command.index(after: i)
+                while i < command.endIndex, command[i] != "\"" {
+                    if command[i] == "\\", command.index(after: i) < command.endIndex {
+                        i = command.index(after: i)
+                    }
+                    current.append(command[i]); i = command.index(after: i)
+                }
+                if i < command.endIndex { i = command.index(after: i) }
+                continue
+            case "\\":
+                let next = command.index(after: i)
+                if next < command.endIndex { current.append(command[next]); i = command.index(after: next) }
+                else { i = next }
+                continue
+            case " ", "\t", "\n":
+                flush()
+            case "|", ";", "&", ">", "<", "`":
+                flush()
+                var op = String(c)
+                let next = command.index(after: i)
+                if next < command.endIndex, (c == "|" || c == "&" || c == ">") , command[next] == c {
+                    op.append(c); i = next
+                }
+                tokens.append(Token(text: op, quoted: false, isOperator: true))
+            case "$":
+                let next = command.index(after: i)
+                if next < command.endIndex, command[next] == "(" {
+                    flush()
+                    tokens.append(Token(text: "$(", quoted: false, isOperator: true))
+                    i = next
+                } else {
+                    current.append(c)
+                }
+            default:
+                current.append(c)
+            }
+            i = command.index(after: i)
+        }
+        flush()
+        return tokens
+    }
+
+    /// The two files the engine substituted into the command: the quoted
+    /// absolute paths. Exactly two must be present, or nothing is claimed,
+    /// since a quoted option value (`-L 'Original'`) is not a file.
+    static func fileOperands(in command: String) -> [String] {
+        let paths = tokenize(command)
+            .filter { $0.quoted && !$0.isOperator && $0.text.hasPrefix("/") }
+            .map(\.text)
+        return paths.count == 2 ? paths : []
     }
 
     /// The engine appends "\n\n" + one of `Exited with status N`, `Killed by
@@ -61,45 +154,14 @@ struct DiffPresentation: Equatable {
         }
     }
 
-    /// True when the command's program is `diff` (any path), so its exit
-    /// status has the documented meaning.
+    /// True when the command line is a single `diff` invocation (any path to
+    /// the program) with no shell operator, so the exit status is diff's
+    /// own. A pipeline such as `diff -u OLDER NEWER | cat` reports the
+    /// pipeline's status, which says nothing about differences.
     static func isStandardDiff(_ command: String) -> Bool {
-        let first = command.trimmingCharacters(in: .whitespaces)
-            .split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
-        let program = first.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
-        return (program as NSString).lastPathComponent == "diff"
-    }
-
-    /// The single-quoted arguments of a shell command line, unescaped. The
-    /// engine quotes each file path as `'…'` with an embedded quote written
-    /// as `'\''`.
-    static func quotedArguments(in command: String) -> [String] {
-        var out: [String] = []
-        var current = ""
-        var inQuote = false
-        var i = command.startIndex
-        while i < command.endIndex {
-            let c = command[i]
-            if inQuote {
-                if c == "'" {
-                    // `'\''` closes, escapes a quote, reopens.
-                    let rest = command[i...]
-                    if rest.hasPrefix("'\\''") {
-                        current.append("'")
-                        i = command.index(i, offsetBy: 4)
-                        continue
-                    }
-                    inQuote = false
-                    out.append(current)
-                    current = ""
-                } else {
-                    current.append(c)
-                }
-            } else if c == "'" {
-                inQuote = true
-            }
-            i = command.index(after: i)
-        }
-        return out
+        let tokens = tokenize(command)
+        guard let first = tokens.first, !first.isOperator,
+              !tokens.contains(where: \.isOperator) else { return false }
+        return (first.text as NSString).lastPathComponent == "diff"
     }
 }
