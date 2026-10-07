@@ -197,6 +197,69 @@ skipping it.
       decision, replacing the earlier "keeps the work in progress and tells you it
       did not start the new one" wording. Draft reviewed and approved before deploy.
 
+## 1.0.0
+
+The standard for 1.0 is that every known failure mode has a deliberate, tested,
+documented recovery path with a stated trade-off, and that the public contract
+(README, "What 1.0 commits to") is true of the shipped artifact. These gates
+are in addition to "Every release".
+
+### Signing-key custody (#108, pre-tag)
+
+- [ ] **(pre-tag)** The production EdDSA private key is exported from the login
+      keychain (`generate_keys -x <file>`) to **two** offline copies, each stored
+      encrypted and apart from the Mac that holds the keychain and from the
+      update host. Record where, not what.
+- [ ] **(pre-tag)** One copy is proven usable: on a throwaway macOS user account
+      (or a VM), import it (`generate_keys -f <file>`) and confirm
+      `generate_keys -p` prints the production public key, byte for byte equal
+      to `SUPublicEDKey` in `project.yml`; then sign a scratch file with
+      `sign_update` there and verify the signature against the production public
+      key. Delete the throwaway account's keychain copy afterwards.
+- [ ] **(pre-tag)** `docs/sparkle-updates.md` ("Key rotation and recovery")
+      describes the compromise-with-key-available path, the lost-key path, and the
+      dormant-client outcome; the `project.yml` Sparkle comments agree with it.
+
+### Attended verification on the signed RC (pre-promotion)
+
+From the 1.0 UI review; each is recorded with the RC version/build and macOS
+version, and a failure blocks promotion.
+
+- [ ] **Dialog ordering.** Reproduce: first-run engine warning pending →
+      background and foreground the app → queue a profile open from the picker
+      with ordinary interaction. The warning must stay reachable, and Close and
+      ⌘Q must work once it is answered. If a required warning becomes
+      inaccessible and prevents closing or quitting, that is a release blocker,
+      not a note.
+- [ ] **Shared archive ownership.** Two profiles with identical roots (direct and
+      through an include), both synced; delete one with the default choices; the
+      survivor keeps its archives and its next run propagates a deletion instead
+      of copying the file back. Also: a profile with an unresolved include or a
+      symlinked root makes the delete confirmation keep the files.
+- [ ] **Window sizes and layouts.** macOS 15 and the current macOS, at the
+      supported minimum window size and wide; flat, nested-collapsed and
+      nested-full layouts; a list with many conflicts and one substantially
+      larger than the 221-file review fixture.
+- [ ] **Accessibility.** Actual VoiceOver and Full Keyboard Access across the
+      picker, profile form, reconcile tree, toolbar, sheets and Settings; the
+      larger text-size and increased-contrast settings. Inspecting the
+      accessibility tree is not a substitute.
+- [ ] **Transfer lifecycle.** A sustained disposable transfer with Stop and each
+      close decision; a partial failure attributed to the right rows; fatal
+      recovery; an archive transaction interrupted and recovered.
+- [ ] **SSH credentials.** Controlled credential prompts, including a long server
+      prompt and cancellation, and a failing Check Remote Command.
+- [ ] **Updates and setup.** Sparkle permission, update-available,
+      no-update and failure dialogs against a test feed; the command-line setup
+      confirmation without altering a real shell configuration.
+
+### Copy (pre-tag)
+
+- [ ] **(pre-tag)** README "What 1.0 commits to" and the FAQ entries "What does
+      version 1.0 promise?" and "What happens if the update signing key is lost
+      or compromised?" are true of this RC's behavior, and the release notes lead
+      with the promise rather than the delta.
+
 ## 0.6.0
 
 Build **21** (v0.6.0), on top of 0.5.1 (build 20). No profile/settings migration.

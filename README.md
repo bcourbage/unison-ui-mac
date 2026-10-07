@@ -177,6 +177,28 @@ open. The top open item is upstreaming the connection close/reopen support
 (rebasing the vendored patches in dependency order); the remainder is mostly
 P3 hygiene.
 
+## What 1.0 commits to
+
+Version 1.0 is a compatibility promise, not a feature milestone. Until a
+2.0, these stay stable:
+
+- **The `unison` command.** `unison <profile>` opens the app on that profile
+  (or the text interface, if that is the saved default); `-ui text` runs the
+  text interface; `-path`, `-include` and `-source` scope a session; a request
+  to a running app is served, waits, or is refused with a stated reason, as the
+  [manual](MANUAL.md#the-unison-command) describes.
+- **Profiles and archives.** Profiles are Unison's own `.prf` files and
+  archives are Unison's own, in `~/Library/Application Support/Unison`, so
+  they stay interchangeable with command-line Unison and with upstream's app.
+- **Settings and updates.** Saved settings carry forward across updates, and
+  updates keep arriving through the signed Sparkle feed.
+- **Platform.** macOS 15 or later on Apple Silicon.
+
+Not promised: the set of vendored engine patches, the internal bridge API, and
+the Debug-only test hooks, all of which may change in any release. Known
+failure modes have a documented recovery; the signing-key cases are in the
+[FAQ](https://bcourbage.github.io/unison-ui-mac/faq/).
+
 ## Build and install
 
 For end-to-end install steps (Xcode/Homebrew prereqs, building, signing,

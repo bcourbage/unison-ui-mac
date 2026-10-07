@@ -6,6 +6,28 @@
       currently preselects the profile in the picker. Opening it straight away
       needs a picker bypass and a GUI answer for "profile not found".
 
+- [ ] **(1.1) Decide the primary workflow labels with user feedback.** The
+      1.0 UI review proposed Run → Scan or Review Changes and Go → Synchronize.
+      Run was chosen to match the CLI verb (`unison <profile>`), and Go plus a
+      Quit button are what upstream Unison's own app uses, so users coming from
+      Unison.app find the same controls. Relabeling touches the manual, site,
+      screenshots and tests; take it up in 1.1 on evidence from users rather
+      than on review taste. Keep the shortcuts whatever the labels become.
+
+- [ ] **(1.1) Decide whether Quit stays a default toolbar and picker button.**
+      The review proposed keeping Quit in the app menu and ⌘Q only, or as an
+      optional toolbar item. It matches upstream Unison.app today; revisit with
+      the labels above.
+
+- [ ] **(post-1.0) Rehearse signing-key recovery with a fixture (#108).** A
+      throwaway-key fixture with the pinned Sparkle tools proving, on a single
+      feed, the A → B transition through a Developer ID-signed DMG, the next
+      release under B, the Developer ID-certificate change, the lost-key and the
+      dormant-client outcomes. Needs a Developer ID-signed DMG packaging path for
+      the transition release (the pipeline ships a ZIP). The pre-1.0 half of
+      #108, the key backup and its documentation, is a release gate in
+      docs/release-checklist.md.
+
 - [ ] **Upstream the connection close/reopen support in dependency order.**
       First rebase vendored patch 0003 (`remote-close-and-drain`) onto current
       upstream master and propose it as the general engine contribution, retaining

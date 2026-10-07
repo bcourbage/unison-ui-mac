@@ -105,6 +105,30 @@ with conflicts surfaced for review. This is Unison's model, not a one-way mirror
 Through [Sparkle](https://sparkle-project.org/), over a cryptographically signed
 appcast feed. Check manually any time from **App menu ▸ Check for Updates**.
 
+## What happens if the update signing key is lost or compromised?
+
+Updates are accepted only when they carry a valid signature from the project's
+signing key, and the feed itself is signed, with no fallback to an unsigned feed.
+That is deliberate: a compromised update server cannot push an update.
+
+If the key is ever compromised but still available, Sparkle's documented rotation
+path applies: one transition release, signed with the current key and delivered as
+a Developer ID-signed disk image, carries the new key, and updates continue
+automatically. If the key is lost, automatic updates cannot continue for existing
+installs: the recovery is to download the current signed and notarized app from
+[GitHub Releases]({{REPO}}/releases/latest) and replace the installed copy once;
+updates resume from there. An install that has been offline for a long time across
+a rotation may need the same one-time reinstall. Profiles and archives are never
+affected by either step.
+
+## What does version 1.0 promise?
+
+That the parts you build on stay stable until a 2.0: the `unison` command and its
+options, profiles and archives as Unison's own files, settings carrying forward
+across updates, signed updates, and macOS 15 or later on Apple Silicon. The project
+README states the promise in full. Internals such as the vendored engine patches
+are not part of it.
+
 ## What data does the app send?
 
 The app has no per-user tracking. When it checks for updates, the request goes to
