@@ -4,7 +4,7 @@
 <title>Unison UI for macOS — User Manual</title>
 <style>html{color-scheme:light dark}body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}pre{overflow:auto;padding:1rem;background:#8882}table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.5rem}img{max-width:100%}a{color:light-dark(#065aba,#78baff)}</style>
 </head><body>
-<!-- MANUAL.md sha256: 7f222eb5f5ca231e3555ca37b01ec6e778ae08ab613ddacaa856332e3fe1ed1b -->
+<!-- MANUAL.md sha256: b8df8c283e2121c9c64c9476d35f2c517836e35a6ac4d9f5a5cb8bbe8b4469df -->
 <h1 id="unison-ui-mac-user-manual">Unison-UI-Mac, User Manual</h1>
 <p>A feature-by-feature guide to the macOS app. For install steps see
 <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>; for architecture overview and a build
@@ -809,7 +809,7 @@ text. Pick another row's Diff to recover.</p>
 <hr />
 <h2 id="settings">Settings</h2>
 <p>Opens via <code>Unison-UI-Mac → Settings…</code> (⌘,). A toolbar-tab window
-(System Settings style) with six tabs that resize the window to fit:</p>
+(System Settings style) with seven tabs that resize the window to fit:</p>
 <ul>
 <li><strong>Saved State</strong>: <em>implicit</em> state the app remembers and lets you
   reset: profile picker layout, SSH version-mismatch suppressions, and
@@ -830,6 +830,9 @@ text. Pick another row's Diff to recover.</p>
   checks for updates automatically and whether it sends an anonymous
   system profile with the check. Shown only when the Sparkle updater is
   present in the build.</li>
+<li><strong>Command Line</strong>: what <code>unison</code> resolves to on this Mac, the <strong>Default
+  interface</strong> preference for a bare <code>unison &lt;profile&gt;</code>, and adding the
+  app's command to PATH. See <a href="#command-line">Command Line</a>.</li>
 </ul>
 <p>Settings and the profile editor can't be open at the same time. Because a
 logging change here can rewrite <code>.prf</code> files, the <strong>Settings</strong> menu item is
