@@ -663,14 +663,20 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// with these hashes. An unreadable profile directory yields a verdict
     /// that does not permit removal.
     private func archiveOwnership(deleting: String, hashes: [String]) -> ArchiveOwnership.Verdict {
-        guard let others = ArchiveOwnership.otherProfiles(
-            unisonDirectory: unisonDirectory, excluding: deleting) else {
-            return ArchiveOwnership.Verdict(otherOwners: [], unresolvedProfiles: [],
-                                            enumerationFailed: true)
-        }
-        let index = ArchiveCleanup(unisonDirectory: unisonDirectory).indexArchives()
-        return ArchiveOwnership.verdict(hashes: hashes, others: others, index: index,
-                                        localHostname: ArchiveHash.systemHostname)
+        ArchiveOwnership.evaluate(unisonDirectory: unisonDirectory, deleting: deleting, hashes: hashes)
+    }
+
+    /// Reset-confirmation paragraph naming the profiles that share the
+    /// archives about to be reset; empty when none do.
+    nonisolated static func sharedOwnersNote(_ owners: [String]) -> String {
+        guard !owners.isEmpty else { return "" }
+        let single = owners.count == 1
+        let names = owners.map { "“\($0)”" }.joined(separator: ", ")
+        let subject = single ? "The profile \(names) has" : "The profiles \(names) have"
+        let verb = single ? "shares" : "share"
+        let whose = single ? "its" : "their"
+        return "\n\(subject) the same roots and \(verb) these archive files, so " +
+            "\(whose) next sync will also rebuild from scratch.\n"
     }
 
     /// Delete-confirmation sentence for archives that stay in place because
@@ -688,6 +694,11 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         }
         if ownership.enumerationFailed {
             return "\(files) will be kept: the profile folder could not be read, " +
+                "so it is unknown whether another profile uses them. Use Settings, " +
+                "Maintenance, Clean Stale Archives to review them later."
+        }
+        if !ownership.unindexedHashes.isEmpty {
+            return "\(files) will be kept: an archive header could not be read, " +
                 "so it is unknown whether another profile uses them. Use Settings, " +
                 "Maintenance, Clean Stale Archives to review them later."
         }
@@ -754,14 +765,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // reset here is a reset for it too. Reset stays available (that is
         // sometimes the intent), but the shared owner is named.
         let sharedOwners = archiveOwnership(deleting: profile, hashes: location.hashes).otherOwners
-        let sharedNote = sharedOwners.isEmpty
-            ? ""
-            : "\nThe profile\(sharedOwners.count == 1 ? "" : "s") " +
-              sharedOwners.map { "“\($0)”" }.joined(separator: ", ") +
-              " \(sharedOwners.count == 1 ? "has" : "have") the same roots and " +
-              "share\(sharedOwners.count == 1 ? "s" : "") these archive files, so " +
-              "\(sharedOwners.count == 1 ? "its" : "their") next sync will also " +
-              "rebuild from scratch.\n"
+        let sharedNote = Self.sharedOwnersNote(sharedOwners)
 
         let fileList = files.map { "  • \($0.lastPathComponent)" }
             .joined(separator: "\n")
@@ -988,12 +992,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     unisonDirectory: unisonDirectory,
                     isEngineIdle: { ArchiveMutationGate.isAllowed(NSApp.delegate as? EngineActivityProviding) },
                     revalidate: { [unisonDirectory] plan in
-                        let allPresent = plan.hashes.allSatisfy {
-                            FileManager.default.fileExists(
-                                atPath: (unisonDirectory as NSString).appendingPathComponent("ar" + $0))
-                        }
-                        return allPresent
-                            && self.archiveOwnership(deleting: profile, hashes: plan.hashes).removalPermitted
+                        ArchiveOwnership.revalidateDeletion(
+                            plan: plan, unisonDirectory: unisonDirectory, deleting: profile)
                     })
                 switch result {
                 case .success(let out):

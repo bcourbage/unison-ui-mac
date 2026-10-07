@@ -482,7 +482,8 @@ final class CleanStaleArchivesWindowController: NSWindowController,
     }
 
     private static func isLeafSymlink(_ path: String) -> Bool {
-        ArchiveOwnership.isLeafSymlink(path)
+        let expanded = (path as NSString).expandingTildeInPath
+        return (try? FileManager.default.destinationOfSymbolicLink(atPath: expanded)) != nil
     }
 
     // MARK: - Selection
