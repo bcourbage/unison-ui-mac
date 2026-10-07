@@ -94,12 +94,18 @@ enum MainMenu {
                      action: #selector(AppDelegate.reportIssue(_:)),
                      keyEquivalent: "")
 
-        // Donate — its own separator: supporting the project is a distinct
-        // category from reading docs or filing feedback. No ellipsis, matching
-        // the other URL-opening Help items; opens the GitHub Sponsors page.
+        // Donate and Star on GitHub — one group with its own separator:
+        // supporting the project is a distinct category from reading docs or
+        // filing feedback, and a star is the free form of the same ask, so the
+        // two sit together without a separator. No ellipsis, matching the
+        // other URL-opening Help items; Donate opens the GitHub Sponsors page,
+        // Star on GitHub opens the repository.
         menu.addItem(.separator())
         menu.addItem(withTitle: "Donate",
                      action: #selector(AppDelegate.donate(_:)),
+                     keyEquivalent: "")
+        menu.addItem(withTitle: "Star on GitHub",
+                     action: #selector(AppDelegate.starOnGitHub(_:)),
                      keyEquivalent: "")
 
         // Wire as the official Help menu so the system's "Help search"

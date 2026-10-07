@@ -11,6 +11,11 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+### Added
+- **Help ▸ Star on GitHub** opens the project repository, grouped with Donate.
+  The About panel gains one linked sentence noting that a star helps others
+  find the project.
+
 ### Changed
 - **Profiles window with nothing to run now says why and offers the next step.**
   With no profiles it shows "No profiles yet" and Create Profile…; with every
@@ -25,6 +30,18 @@ across releases per Apple's bundle-version rules.
   For a profile that has not been saved yet, Check Remote Command is disabled
   and its status line says the profile must be saved first, instead of
   explaining after the click.
+
+### Fixed
+- **Deleting a profile no longer offers to remove archive files that another
+  profile still uses.** Unison names an archive by its root pair, so two
+  profiles with the same roots share one set of archive files. Deleting one of
+  them used to default to moving those files to the Trash, which made the
+  surviving profile's next run a first synchronization. The confirmation now
+  names the profile that keeps them and leaves the files in place; the same
+  check runs again under the archive lock before anything is moved. When a
+  profile's roots cannot be resolved (a missing include, `rootalias`, a
+  symlinked root), the files are kept as well. Reset Archives names a profile
+  that shares the archives it is about to reset.
 
 ## [0.10.1] — 2026-09-15
 

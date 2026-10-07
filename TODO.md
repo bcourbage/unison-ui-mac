@@ -2,15 +2,6 @@
 
 ## To Do
 
-- [ ] **Cask installs the `unison` command.** Add to the `bcourbage/tap` cask
-      `binary "#{appdir}/unison-ui-mac.app/Contents/MacOS/cltool", target: "unison"`
-      so brew owns the PATH link. Homebrew's cask DSL has no formula conflict
-      stanza; with the formula linked the install fails at the binary artifact
-      and brew rolls the app back, so document `brew unlink unison` and the
-      zip-install alternative. Note in the manual that the brew prefix is not on
-      the PATH an incoming ssh command sees, so peers targeting a cask-installed
-      Mac set `servercmd`. (docs/cli-launcher-design.md, PR B)
-
 - [ ] **Open a command-line profile directly.** `unison -ui graphic <profile>`
       currently preselects the profile in the picker. Opening it straight away
       needs a picker bypass and a GUI answer for "profile not found".
@@ -42,6 +33,17 @@
 
 *Historical log of finished work, preserved for context. 40+ items
 landed across the bring-up and follow-on sessions.*
+
+### Command-line integration
+
+- [x] **Cask installs the `unison` command.** The `bcourbage/tap` cask
+      `unison-ui` links `Contents/MacOS/cltool` as `bin/unison` through a
+      `binary` stanza, declares `conflicts_with cask: "unison-app"`, and its
+      caveats give the `brew unlink unison && brew reinstall --cask unison-ui`
+      step for when the `unison` formula owns the link. MANUAL.md covers the
+      unlink step, the zip-install alternative, and `servercmd` for peers
+      targeting a cask-installed Mac, since the brew prefix is not on the PATH
+      an incoming ssh command sees. (docs/cli-launcher-design.md, PR B)
 
 ### Release validation
 
