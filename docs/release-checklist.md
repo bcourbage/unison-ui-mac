@@ -207,18 +207,19 @@ are in addition to "Every release".
 ### Signing-key custody (#108, pre-tag)
 
 - [ ] **(pre-tag)** The production EdDSA private key is exported from the login
-      keychain (`generate_keys -x <file>`) to **two** offline copies, each stored
-      encrypted and apart from the Mac that holds the keychain and from the
-      update host. Record where, not what.
-- [ ] **(pre-tag)** One copy is proven usable: on a throwaway macOS user account
-      (or a VM), import it (`generate_keys -f <file>`) and confirm
-      `generate_keys -p` prints the production public key, byte for byte equal
-      to `SUPublicEDKey` in `project.yml`; then sign a scratch file with
-      `sign_update` there and verify the signature with
-      `scripts/make-verifier-key.py "$pub" | sign_update --verify --ed-key-file -`
-      (the verifier needs the 96-byte blob that script builds, not the bare public
-      key; the exact commands are in `docs/sparkle-updates.md`, "Key custody").
-      Delete the throwaway account's keychain copy afterwards.
+      keychain (`generate_keys -x`) into an **encrypted disk image**, and at least
+      **two** copies of the image are kept in separate places, apart from the Mac that
+      holds the keychain and from the update host, each confirmed to match the
+      original by SHA-256. The image's passphrase is kept where it does not depend on
+      the same account as a copy and is recoverable without memory alone. Record
+      where the copies are, not what they contain.
+- [ ] **(pre-tag)** One copy is proven usable, per the "Key custody" procedure in
+      `docs/sparkle-updates.md`: mounted read-only at an explicit mount point,
+      imported under a throwaway Sparkle account (or a throwaway user or VM),
+      `generate_keys -p` equal to `SUPublicEDKey` in `project.yml`, a `sign_update`
+      signature verified with `scripts/make-verifier-key.py "$pub" | sign_update
+      --verify --ed-key-file -`, a tampered file failing the same check, and the test
+      item removed with the production key confirmed intact.
 - [ ] **(pre-tag)** `docs/sparkle-updates.md` ("Key rotation and recovery")
       describes the compromise-with-key-available path, the lost-key path, and the
       dormant-client outcome; the `project.yml` Sparkle comments agree with it.

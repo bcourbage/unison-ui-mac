@@ -160,30 +160,70 @@ The lost-key row is survivable but costly, so prevent it operationally. Sparkle'
 own guidance is to keep the private key secure and away from the update host,
 and `generate_keys` exports and imports it for exactly this purpose.
 
-- Export the production key: `./bin/generate_keys -x <file>` (writes the base64
-  private key). Keep **two** offline copies, each encrypted, apart from the Mac
-  holding the keychain and from the update host.
-- Prove a copy is usable, on a throwaway macOS user account or a VM so the
-  production keychain is untouched: `./bin/generate_keys -f <file>` imports it;
-  `./bin/generate_keys -p` must print the production public key, byte for byte
-  equal to `SUPublicEDKey` in `project.yml`. Then sign a scratch file there with
-  `./bin/sign_update <scratch>` and verify the printed signature against the
-  production public key. `sign_update --verify --ed-key-file` does not accept a
-  bare 32-byte public key; it reads the key from the last 32 bytes of a 96-byte
-  blob, which `scripts/make-verifier-key.py` builds from `SUPublicEDKey` with no
-  private material (the same construction `pages.yml` and
-  `scripts/verify-appcast.py` use):
+**Export into an encrypted image, never onto the plain disk.** The export file is
+the key in plaintext, so create an encrypted disk image first and export straight
+into it:
 
-  ```bash
-  pub="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' <app>/Contents/Info.plist)"
-  sig="$(./bin/sign_update -p <scratch>)"      # signature only, from the imported key
-  python3 scripts/make-verifier-key.py "$pub" \
-    | ./bin/sign_update --verify --ed-key-file - <scratch> "$sig" && echo verified
-  ```
+```bash
+hdiutil create -size 5m -fs HFS+J -encryption AES-256 -volname SparkleKeyBackup SparkleKeyBackup.dmg
+hdiutil attach SparkleKeyBackup.dmg -nobrowse -mountpoint /Volumes/SparkleKeyBackup
+./bin/generate_keys -x /Volumes/SparkleKeyBackup/sparkle-private-key.txt
+hdiutil detach /Volumes/SparkleKeyBackup
+```
 
-  Remove the throwaway keychain copy afterwards.
-- The export file is as sensitive as the keychain entry: it must never land in
-  the repo, a shared drive, or a chat.
+- The image's passphrase is the only protection once copies are online, so make it
+  long and random, and keep it **somewhere that does not depend on the same account
+  as a copy of the image** (an image in iCloud Drive and a passphrase in the same
+  Apple account fall together) and that is recoverable without your memory alone.
+- Keep **at least two copies** of the image in separate places, apart from the Mac
+  holding the keychain and from the update host. A copy on a medium that depends on
+  no online account is the most robust; cloud copies and a second machine are
+  acceptable. Record that each copy's SHA-256 matches the original.
+- The export file is as sensitive as the keychain entry: it must never land in the
+  repo, a shared drive, or a chat. Do not keep a plaintext copy on any disk.
+
+**Prove a copy restores.** Mount it only **read-only and at an explicit mount
+point**, so the image file's bytes cannot change (a synced copy would otherwise
+propagate the change) and a stale volume of the same name cannot be mistaken for
+it. Check first that nothing named `SparkleKeyBackup` is already mounted:
+
+```bash
+hdiutil attach SparkleKeyBackup.dmg -readonly -nobrowse -mountpoint /Volumes/custody-restore
+```
+
+Import the key under a separate Sparkle keychain account so the production item is
+never touched (`generate_keys` only adds items, and keys them by service and
+account), or on a throwaway macOS user or VM for the stricter test:
+
+```bash
+./bin/generate_keys --account custody-test -f /Volumes/custody-restore/sparkle-private-key.txt
+./bin/generate_keys --account custody-test -p
+```
+
+The second command must print the production public key, byte for byte equal to
+`SUPublicEDKey` in `project.yml`. Then sign a scratch file with the restored key and
+verify the signature. `sign_update --verify --ed-key-file` does not accept a bare
+32-byte public key; it reads the key from the last 32 bytes of a 96-byte blob, which
+`scripts/make-verifier-key.py` builds from `SUPublicEDKey` with no private material
+(the same construction `pages.yml` and `scripts/verify-appcast.py` use):
+
+```bash
+pub="$(sed -n 's/^ *SUPublicEDKey: //p' project.yml)"
+sig="$(./bin/sign_update --account custody-test -p scratch.txt)"   # signature only
+python3 scripts/make-verifier-key.py "$pub" \
+  | ./bin/sign_update --verify --ed-key-file - scratch.txt "$sig" && echo verified
+```
+
+Tamper with `scratch.txt` and run the verify command again: it must now fail
+(`Error: failed to pass signing verification.`), otherwise the check proves nothing.
+Then clean up, removing only the test item, and confirm the production key is
+intact:
+
+```bash
+security delete-generic-password -s "https://sparkle-project.org" -a custody-test
+./bin/generate_keys -p
+hdiutil detach /Volumes/custody-restore
+```
 
 This custody check is a 1.0 release gate in `docs/release-checklist.md`.
 
