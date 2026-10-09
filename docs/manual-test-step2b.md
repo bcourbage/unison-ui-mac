@@ -258,8 +258,10 @@ answered), and a sync that finishes while the sheet is up dismisses it.
 2. Repeat 3–4 times with different profiles (or the same one).
 3. After each return to the picker, check `pgrep -af ssh | grep -i <remote-host>`.
 
-**PASS =** at most one ssh child at a time; **zero** while sitting on the
-picker. (Pre-fix, these accumulated for the life of the app.)
+**PASS =** at most two ssh children at any moment (the short-lived version
+probe and the connection itself, while a profile opens); **zero** while sitting
+on the picker, and the count never grows from one open to the next. (Pre-fix,
+these accumulated for the life of the app.)
 
 ### TC9 — Engine-idle gate: pick a profile while the engine is still busy (step 3)
 
@@ -288,12 +290,12 @@ A transport that wedges mid-*sync* (connection died) can't be unblocked in-proce
 1. Open a **remote** profile with enough data to transfer for a while (a few hundred MB+).
 2. Start the sync. While it's transferring, kill the connection in a way that hangs rather than cleanly errors — e.g. on the remote host, `kill -STOP $(pgrep -f "server __new-rpc-mode")` to freeze the remote server (or pull the network / sleep the remote).
 3. Wait ~45 seconds with no progress.
-4. **Expect (UI):** the summary turns into an orange warning: *"Sync appears stuck: no progress for 45 seconds. The remote connection was likely lost. Quit Unison and reopen the profile to recover…"* The window stays responsive (you can still click around, quit).
-5. **Expect (log):** `sync stalled — no progress for 45s; surfacing quit+reopen hint`.
-6. **Recovery:** Quit Unison (should quit cleanly, no hang) and reopen the profile — it should connect fresh and work.
+4. **Expect (UI):** the summary turns into an orange advisory: *"No sync progress has been observed for 45 seconds."*, with *"The transfer may still be running; this will update if it resumes."* in Details. The notice is advisory only: it does not claim the connection was lost, and the sync is not aborted. The window stays responsive (you can still click around, quit).
+5. **Expect (log):** `sync: no progress observed for 45s — advisory notice (nonfatal; transfer may still be running)`.
+6. **Recovery:** thaw the server (`kill -CONT`) and the notice clears on the next progress. If the connection is really gone, Quit Unison (should quit cleanly, no hang) and reopen the profile; it should connect fresh and work.
 7. **No false positive:** a healthy but slow sync that keeps making progress must NOT trip the hint (progress resets the 45 s timer).
 
-**PASS =** the hint appears only on a genuine stall, the app stays responsive, and quit+reopen recovers cleanly. (On the remote, `kill -CONT` / `kill -9` the frozen server afterward.)
+**PASS =** the advisory appears only after 45 seconds without progress, clears when progress resumes, the app stays responsive, and quit+reopen recovers cleanly. (On the remote, `kill -CONT` / `kill -9` the frozen server afterward.)
 
 ---
 
@@ -305,7 +307,7 @@ Uses a **key** profile (authenticates with no prompt) whose transport freezes mi
 
 1. Open the **key** profile; it authenticates (no sheet) and enters the scan.
 2. While the scan is running, freeze the server on the remote: `kill -STOP $(pgrep -f "server __new-rpc-mode")`.
-3. **Expect:** within **120 s** the window shows *"Couldn't reach the remote (no scan progress for N seconds)… quit Unison and reopen"* and the app enters **restart-required**. No credential sheet.
+3. **Expect:** within **120 s** the window shows *"Unison must be restarted to continue."* and a *"Unison needs to be restarted"* alert (Details holds the engine's reason; Later dismisses it), and the app enters **restart-required**. No credential sheet. (The *"Could not connect to the remote."* headline appears only when the failure happens while connecting, before the scan.)
 4. During the frozen scan the leave control is **Profiles**; the **Stop** control is **disabled and neutral** (its title stays "Stop" and it does not move) — Stop is sync-only (issue #117). In v0.5.1 the in-place scan-interruption machinery has been **removed entirely** (#94): there is no policy gate or `.interruptingScan` state left, so **"Stop Scan"** never appears. (v0.4.0 shipped an in-place Stop Scan for qualified direct-SSH scans past remote-wait; it was withdrawn because forced-interruption engine reuse was never proven safe. See issue #53 / #94 and the CHANGELOG. Do not expect it here.)
 5. Click **Profiles** → returns to the picker; the scan winds down in the background; it is **not** cancelled; the retained scan-stall detector still drives the abandoned op to **restart-required**.
 6. **Recovery:** Quit + reopen connects fresh and scans. On the remote, `kill -CONT` / `kill -9` the frozen server afterward.
