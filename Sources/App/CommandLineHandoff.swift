@@ -336,8 +336,7 @@ enum CommandLineHandoff {
             case .requestAlreadyPending:
                 return .reply(.refused(message:
                     "unison-ui-mac is already handling another command-line request, so it did not start \(name). "
-                    + "Wait for that one to open, then run the command again, "
-                    + "or add -ui text to run it in the terminal."))
+                    + "Wait for that one to open, then run the command again."))
             }
         }
     }
@@ -358,7 +357,7 @@ enum CommandLineHandoff {
             ? .started
             : .refused(message:
                 "unison-ui-mac did not start \(name); it needs attention in the app first. "
-                + "Open the running app and choose \(name), or add -ui text to run it in the terminal.")
+                + "Open the running app and choose \(name) there.")
     }
 
     /// The reply when the primary accepted the request but the profile will open

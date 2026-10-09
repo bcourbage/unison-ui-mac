@@ -272,9 +272,9 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func quitApp() {
-        // NSApp.terminate runs applicationWillTerminate → clean OCaml
-        // bridge shutdown, identical to ⌘Q.
-        NSApp.terminate(nil)
+        // Same path as ⌘Q: terminate runs applicationWillTerminate → clean
+        // OCaml bridge shutdown, after any open sheet is dismissed.
+        AppQuit.quit()
     }
 
     var contextMenuTitlesForTesting: [String] { tableView.menu?.items.map(\.title) ?? [] }

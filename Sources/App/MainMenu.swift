@@ -48,7 +48,7 @@ enum MainMenu {
         // entries. Apple's own non-document apps (Calculator, System
         // Settings) ship without a File menu.
         let main = NSMenu()
-        main.addItem(makeAppMenu(appName: appName, updaterTarget: updaterTarget))
+        main.addItem(makeAppMenu(appName: appName, updaterTarget: updaterTarget, quitTarget: pickerTarget))
         main.addItem(makeEditMenu())
         main.addItem(makeActionMenu(pickerTarget: pickerTarget))
         main.addItem(makeWindowMenu())
@@ -115,7 +115,7 @@ enum MainMenu {
         return item
     }
 
-    private static func makeAppMenu(appName: String, updaterTarget: AnyObject) -> NSMenuItem {
+    private static func makeAppMenu(appName: String, updaterTarget: AnyObject, quitTarget: AnyObject) -> NSMenuItem {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu(title: appName)
 
@@ -167,9 +167,13 @@ enum MainMenu {
                         action: #selector(NSApplication.unhideAllApplications(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit \(appName)",
-                        action: #selector(NSApplication.terminate(_:)),
-                        keyEquivalent: "q")
+        // Targets the AppDelegate explicitly: its quit dismisses any open sheet
+        // first, which AppKit would otherwise answer by silently refusing to quit.
+        let quitItem = NSMenuItem(title: "Quit \(appName)",
+                                  action: #selector(AppDelegate.quitApplication(_:)),
+                                  keyEquivalent: "q")
+        quitItem.target = quitTarget
+        appMenu.addItem(quitItem)
 
         appMenuItem.submenu = appMenu
         return appMenuItem

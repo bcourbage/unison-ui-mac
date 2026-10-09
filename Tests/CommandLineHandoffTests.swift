@@ -269,9 +269,9 @@ final class CommandLineHandoffTests: XCTestCase {
     func test_decide_restartRequired_refuses_withRecoveryGuidance() {
         let out = CommandLineHandoff.decide(
             launch: .openProfile(name: "work"),
-            activity: .restartRequired(reason: "needs to be quit and reopened after a connection problem"))
+            activity: .restartRequired(reason: "needs to be restarted after an error"))
         guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
-        XCTAssertTrue(m.contains("needs to be quit and reopened"))
+        XCTAssertTrue(m.contains("needs to be restarted after an error"))
         XCTAssertTrue(m.contains("work"))
         XCTAssertTrue(m.contains("Quit and reopen it"))
         // No "-ui text" alternative: a restart must clear the uncertain runtime
@@ -286,6 +286,8 @@ final class CommandLineHandoffTests: XCTestCase {
         guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
         XCTAssertTrue(m.contains("already handling another command-line request"))
         XCTAssertTrue(m.contains("work"))
+        // Another process would compete with the request the app is about to open.
+        XCTAssertFalse(m.contains("-ui text"))
     }
 
     // MARK: open outcome (finding 4)
@@ -296,7 +298,7 @@ final class CommandLineHandoffTests: XCTestCase {
             return XCTFail("expected refusal when nothing opened")
         }
         XCTAssertTrue(m.contains("did not start w"))
-        XCTAssertTrue(m.contains("-ui text"))
+        XCTAssertFalse(m.contains("-ui text"), "the app owns the next step; a second process would compete with it")
     }
 
     func test_acceptedWaitingResponse_namesProfileAndReason() {

@@ -11,6 +11,12 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-10-07
+
+The first stable release. It carries the profile, dialog and Diff-window polish
+below, plus a fix for deleting a profile whose archive files another profile
+still uses.
+
 ### Added
 - **The README and the FAQ state what version 1.0 commits to**, and the FAQ
   explains what happens if the update signing key is lost or compromised.
