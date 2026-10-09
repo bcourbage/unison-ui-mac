@@ -492,7 +492,7 @@ version, and launcher path.
 - **TC15e — Restart-required: refused with recovery guidance.** Drive the app into
   the restart-required state (e.g. TC11's frozen-remote scan-stall). Run
   `"<RC launcher>" work`. **Expect:** refused, exit non-zero, with a message that
-  the app needs to be quit and reopened; no `-ui text` alternative is offered.
+  the app needs to be restarted after an error; no `-ui text` alternative is offered.
 - **TC15f — Synchronizing: the three-way decision (caller waits).** Open `remote`,
   click **Go**, and hold the sync open. In the second Terminal run
   `"<RC launcher>" work`. **Expect:** the command immediately prints that a
@@ -511,6 +511,10 @@ version, and launcher path.
     window. **Expect:** the sheet is dismissed, the command reports the request was
     not made in time (exit non-zero), and a later click cannot start `work`; the
     sync itself is unaffected.
+  - **Quit while the sheet is up** — ⌘Q, the Quit menu item, the toolbar Quit and
+    `osascript -e 'tell application "unison-ui-mac" to quit'` each quit the app
+    (the sheet is dismissed first; the waiting command reports `work` was **not**
+    started). Quit is never silently ignored.
   No command ever stops the sync or picks a sheet option on its own.
 - **TC15g — Background sync has no decision surface.** Set this up **independently
   of TC15f** (whose Close-let-run already leaves a request queued behind the

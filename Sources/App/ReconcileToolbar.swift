@@ -348,9 +348,9 @@ final class ReconcileToolbarDelegate: NSObject, NSToolbarDelegate {
     }
 
     @objc private func quitAction(_ sender: NSToolbarItem) {
-        // Route through NSApp.terminate so it behaves identically to ⌘Q
-        // (runs applicationWillTerminate → clean OCaml bridge shutdown).
-        NSApp.terminate(sender)
+        // Same path as ⌘Q: dismisses any open sheet, then terminates (runs
+        // applicationWillTerminate → clean OCaml bridge shutdown).
+        AppQuit.quit(sender: sender)
     }
 
     // MARK: - Validation

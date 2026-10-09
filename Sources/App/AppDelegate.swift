@@ -855,11 +855,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 failedWhileConnecting: failedWhileConnecting,
                 roots: RemoteCheckOfferPolicy.roots(profile: profile, unisonDirectory: unisonDirectory))
         }
+        // "Could not connect to the remote" is only true of a profile that has a
+        // remote root: a local profile that fails while opening (for example one
+        // that does not load) gets the plain headline.
         for (s, w) in windowBySession {
-            w.showRestartRequired(reason: reason, connectFailure: failedWhileConnecting,
-                                  offerRemoteCheck: profileBySession[s].map(offers) ?? false)
+            let remoteConnectFailure = profileBySession[s].map(offers) ?? false
+            w.showRestartRequired(reason: reason, connectFailure: remoteConnectFailure,
+                                  offerRemoteCheck: remoteConnectFailure)
         }
-        if let wc = waitingWindow?.controller { wc.showRestartRequired(reason: reason, connectFailure: failedWhileConnecting) }
+        if let wc = waitingWindow?.controller {
+            wc.showRestartRequired(reason: reason, connectFailure: lastAttemptedProfile.map(offers) ?? false)
+        }
         let offeredProfile = lastAttemptedProfile.flatMap { offers($0) ? $0 : nil }
         // Always surface a modal notice, not only the inline window text (issue
         // #35 correction 3): a fatal/restart condition must be unmissable even
@@ -1692,8 +1698,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         self?.handleScanStall(s, op)
     }
 
+    /// The Quit menu item and ⌘Q. See `AppQuit`: a sheet would otherwise make
+    /// AppKit silently refuse to terminate.
+    @objc func quitApplication(_ sender: Any?) {
+        AppQuit.quit(sender: sender)
+    }
+
+    /// The Quit Apple event (Dock Quit, `tell application … to quit`, logout).
+    @objc private func handleQuitEvent(_ event: NSAppleEventDescriptor,
+                                       withReplyEvent reply: NSAppleEventDescriptor) {
+        AppQuit.quit()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.write("applicationDidFinishLaunching start")
+        AppQuit.installQuitEventHandler(target: self, selector: #selector(handleQuitEvent(_:withReplyEvent:)))
 
         // Test isolation: when hosted by XCTest, redirect Unison's directory
         // (where it reads profiles and writes `ar*`/`fp*` archives) to a
@@ -2143,7 +2162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             } else if request != nil {
                 CommandLineEngineLaunch.writeStderr(
                     "unison-ui-mac: could not reach the running app. "
-                    + "Bring it to the front and choose the profile there, or add -ui text to run it in the terminal.")
+                    + "Bring it to the front and choose the profile there.")
                 exit(1)
             }
             log.write("handoff: another instance is primary; running without a listener")
@@ -2162,7 +2181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         if hasRequest {
             CommandLineEngineLaunch.writeStderr(
                 "unison-ui-mac: could not coordinate with a running instance. "
-                + "Try again in a moment, or add -ui text to run it in the terminal.")
+                + "Try again in a moment.")
             exit(1)
         }
         log.write("handoff: coordination unavailable; running without a listener")
@@ -2573,7 +2592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .diffing: return "showing a file difference"
         case .syncing: return "synchronizing"
         case .closing: return "finishing the previous run"
-        case .restartRequired: return "needs to be quit and reopened after a connection problem"
+        case .restartRequired: return "needs to be restarted after an error"
         }
     }
 
