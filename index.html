@@ -21,7 +21,7 @@
 <link rel="stylesheet" href="./style.css">
 <script>try{var t=localStorage.getItem("ui-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Unison UI for macOS","url":"https://bcourbage.github.io/unison-ui-mac/"}</script>
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Unison UI for macOS","operatingSystem":"macOS 15","applicationCategory":"UtilitiesApplication","softwareVersion":"1.0.0","url":"https://bcourbage.github.io/unison-ui-mac/","downloadUrl":"https://github.com/bcourbage/unison-ui-mac/releases/latest","softwareHelp":"https://bcourbage.github.io/unison-ui-mac/manual/","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.gnu.org/licenses/gpl-3.0.html","screenshot":["https://bcourbage.github.io/unison-ui-mac/assets/screenshot-sync-review.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-profile-editor.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-sync.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-reconcile.png"]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Unison UI for macOS","operatingSystem":"macOS 15","applicationCategory":"UtilitiesApplication","softwareVersion":"1.0.0","url":"https://bcourbage.github.io/unison-ui-mac/","downloadUrl":"https://github.com/bcourbage/unison-ui-mac/releases/latest","softwareHelp":"https://bcourbage.github.io/unison-ui-mac/manual/","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.gnu.org/licenses/gpl-3.0.html","screenshot":["https://bcourbage.github.io/unison-ui-mac/assets/screenshot-sync-review-light.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-profile-editor-light.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-sync-light.png","https://bcourbage.github.io/unison-ui-mac/assets/screenshot-settings-reconcile-light.png"]}</script>
 </head>
 <body>
 <header class="site-header">
@@ -54,19 +54,23 @@
 
 <section class="shots" aria-label="Screenshots">
   <figure>
-    <img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
+    <img class="shot-light" src="assets/screenshot-sync-review-light.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
+    <img class="shot-dark" src="assets/screenshot-sync-review-dark.png" alt="Reviewing changes before a sync, with a conflict and per-item direction" loading="lazy">
     <figcaption>Review changes before syncing, with conflicts and per-item direction.</figcaption>
   </figure>
   <figure>
-    <img src="assets/screenshot-profile-editor.png" alt="Editing a profile's two synchronization roots in the Profile Editor" loading="lazy">
+    <img class="shot-light" src="assets/screenshot-profile-editor-light.png" alt="Editing a profile's two synchronization roots in the Profile Editor" loading="lazy">
+    <img class="shot-dark" src="assets/screenshot-profile-editor-dark.png" alt="Editing a profile's two synchronization roots in the Profile Editor" loading="lazy">
     <figcaption>Set a profile's roots, local folders or remote (SSH) URLs, in the profile editor.</figcaption>
   </figure>
   <figure>
-    <img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion" loading="lazy">
+    <img class="shot-light" src="assets/screenshot-settings-sync-light.png" alt="Settings: notification and sound on sync completion" loading="lazy">
+    <img class="shot-dark" src="assets/screenshot-settings-sync-dark.png" alt="Settings: notification and sound on sync completion" loading="lazy">
     <figcaption>Sync-completion notifications in Settings.</figcaption>
   </figure>
   <figure>
-    <img src="assets/screenshot-settings-reconcile.png" alt="Settings: reconcile window layout options" loading="lazy">
+    <img class="shot-light" src="assets/screenshot-settings-reconcile-light.png" alt="Settings: reconcile window layout options" loading="lazy">
+    <img class="shot-dark" src="assets/screenshot-settings-reconcile-dark.png" alt="Settings: reconcile window layout options" loading="lazy">
     <figcaption>Reconcile display options in Settings.</figcaption>
   </figure>
 </section>
@@ -106,7 +110,7 @@ feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p
   <a href="./credits/">Credits</a> ·
   <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/CHANGELOG.md">Changelog</a></p>
 </footer>
-<script>window.__LB_SIZES={"screenshot-sync-review.png":[960,702],"screenshot-profile-editor.png":[620,512],"screenshot-settings-sync.png":[540,240],"screenshot-settings-reconcile.png":[540,258]};</script>
+<script>window.__LB_SIZES={"screenshot-sync-review-light.png":[960,702],"screenshot-sync-review-dark.png":[960,702],"screenshot-profile-editor-light.png":[620,512],"screenshot-profile-editor-dark.png":[620,512],"screenshot-settings-sync-light.png":[540,240],"screenshot-settings-sync-dark.png":[540,240],"screenshot-settings-reconcile-light.png":[540,258],"screenshot-settings-reconcile-dark.png":[540,258]};</script>
 <script>
 (function () {
   var ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
@@ -168,8 +172,14 @@ feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p
 (function () {
   var shots = document.querySelector(".shots");
   if (!shots) return;
-  var imgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
-  if (!imgs.length) return;
+  // Each figure holds a light and a dark image and CSS shows the one matching the
+  // page theme, so the viewer steps through whichever of them is displayed.
+  var allImgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
+  if (!allImgs.length) return;
+  var imgs = [];
+  function visibleImgs() {
+    return allImgs.filter(function (el) { return el.offsetParent !== null; });
+  }
 
   var overlay = document.createElement("div");
   overlay.className = "lightbox";
@@ -204,7 +214,10 @@ feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p
     overlay.scrollLeft = 0;
   }
   var opener = null;
-  function open(i) {
+  function open(el) {
+    imgs = visibleImgs();
+    var i = imgs.indexOf(el);
+    if (i < 0) return;
     opener = document.activeElement;
     show(i);
     overlay.hidden = false;
@@ -228,14 +241,14 @@ feature-by-feature guide, or the <a href="faq/">FAQ</a> for common questions.</p
     else if (order.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
   }
   // Each screenshot is a real, keyboard-operable control.
-  imgs.forEach(function (el, i) {
+  allImgs.forEach(function (el) {
     el.style.cursor = "zoom-in";
     el.setAttribute("role", "button");
     el.setAttribute("tabindex", "0");
     el.setAttribute("aria-label", (el.alt || "Screenshot") + " (view larger)");
-    el.addEventListener("click", function () { open(i); });
+    el.addEventListener("click", function () { open(el); });
     el.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(i); }
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(el); }
     });
   });
   prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
