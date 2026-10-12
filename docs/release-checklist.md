@@ -261,8 +261,9 @@ version, and a failure blocks promotion.
 
 - [ ] **(pre-tag)** README "What 1.0 commits to" and the FAQ entries "What does
       version 1.0 promise?" and "What happens if the update signing key is lost
-      or compromised?" are true of this RC's behavior, and the release notes lead
-      with the promise rather than the delta.
+      or compromised?" are true of this RC's behavior, and the release notes say
+      that existing profiles and settings carry forward (the promise itself lives
+      in the README and FAQ).
 
 ## 0.6.0
 
