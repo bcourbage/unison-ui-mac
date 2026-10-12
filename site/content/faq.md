@@ -127,14 +127,6 @@ updates resume from there. An install that has been offline for a long time acro
 a rotation may need the same one-time reinstall. Profiles and archives are never
 affected by either step.
 
-## What does version 1.0 promise?
-
-That the parts you build on stay stable until a 2.0: the `unison` command and its
-options, profiles and archives as Unison's own files, settings carrying forward
-across updates, signed updates, and macOS 15 or later on Apple Silicon. The project
-README states the promise in full. Internals such as the vendored engine patches
-are not part of it.
-
 ## What data does the app send?
 
 The app has no per-user tracking. When it checks for updates, the request goes to
