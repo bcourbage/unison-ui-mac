@@ -697,7 +697,7 @@ roots, a key-authenticated remote on the LAN, and, for the stall cases, a tagged
 (unified-log values are redacted); the window, `pgrep` and file state were the
 evidence. The interactive-password cases (TC3, TC4, TC5, TC12, TC13) are run by hand
 against the password-auth test VM (the key-only LAN host cannot offer password login)
-and are recorded below when run.
+and are recorded below.
 
 | Case | Behavior | PASS / FAIL | Notes |
 |---|---|---|---|
@@ -715,11 +715,11 @@ and are recorded below when run.
 | TC11 | post-auth scan wedge (frozen remote) | PASS | 1.0.0: restart-required with "Unison must be restarted to continue." and the restart alert (Details: no scan progress for 120 seconds; 152 s after opening, the rest being local hashing before the remote wait). Go, Stop and Rescan disabled; Profiles returned to the picker; a replacement open re-raised the alert; Quit Unison quit in 1 s and a fresh launch connected and synced. |
 | TC14 | CLI option scope | PASS | 1.0.0: all steps. `first -path Documents` listed only the inside change and kept it on Rescan; picker opens of `second` and `first` were unscoped; a plain relaunch and a no-profile `-path` launch behaved as specified; and for the remote profile a reconnecting Rescan after sync-end kept the scope while a picker reopen was unscoped. |
 | TC15 | running-instance requests | PASS | 1.0.0, all sub-cases: a idle opens now (exit 0, no output); b `-path`, repeated `-path` and `-ignore` delivered, later picker open unscoped; c(i) local takeover Started, c(ii) accepted-and-waiting for a remote session (connection closed, then `other` opened); d editor open refused naming the profile with the unsaved edit intact; e restart-required refused ("needs to be restarted after an error", no `-ui text`); f all three sync-decision choices and the 120 s timeout reported accurately and never acted on the sync by themselves; g windowless background sync accepted-and-waited with no sheet; h a second request refused as already handling one; i killing the app during a pending decision gave "could not confirm… check the app" with no retry and no second app; plus a request sent behind the first-synchronization warning timed out and did not open when the warning was dismissed. |
-| TC3 | interactive held through sync-end | pending | to be run by hand against the test VM on 1.0.0 |
-| TC4 | interactive Rescan no re-prompt | pending | to be run by hand against the test VM on 1.0.0 |
-| TC5 | interactive closes on leave | pending | to be run by hand against the test VM on 1.0.0 |
-| TC12 | interactive auth failure + cancel | pending | to be run by hand against the test VM on 1.0.0 |
-| TC13 | auth prompt field style (host-key plain / secrets masked) | pending | to be run by hand against the test VM on 1.0.0 |
+| TC3 | interactive held through sync-end | PASS | 1.0.0, test VM, password typed by hand: the sheet appeared before the scan, the first-synchronization warning was accepted, and the sync completed. The ssh child persisted for the whole session (about 9½ minutes) and was reaped only when the profile was left. |
+| TC4 | interactive Rescan no re-prompt | PASS | 1.0.0: Rescan on the held connection raised no second password sheet and ended at "Everything is up to date". |
+| TC5 | interactive closes on leave | PASS | 1.0.0: leaving the profile closed the connection; the ssh child count dropped to zero at once, in each of five runs. |
+| TC12 | interactive auth failure + cancel | PASS | 1.0.0, test VM: a wrong password re-prompted exactly once with "Permission denied, please try again." and the correct password then authenticated on that single entry; Cancel from the sheet returned cleanly to the picker with no ssh child left. |
+| TC13 | auth prompt field style (host-key plain / secrets masked) | PASS | 1.0.0, test VM, with a scratch known_hosts so the host-key question was asked: the yes/no question used a plain field and the password used a masked field; a mistyped password re-prompted once and the correct one authenticated. The combined host-key plus password chunk remains covered by the classifier unit tests. |
 
 ---
 
