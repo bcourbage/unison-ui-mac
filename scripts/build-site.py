@@ -60,13 +60,15 @@ UNISON_VERSION = unison_version()
 UNISON_TAG_URL = f"https://github.com/bcpierce00/unison/releases/tag/v{UNISON_VERSION}"
 
 # Screenshots shipped in the repo's assets/, reused by the landing page and the
-# SoftwareApplication JSON-LD.
-SCREENSHOTS = [
-    "screenshot-sync-review.png",
-    "screenshot-profile-editor.png",
-    "screenshot-settings-sync.png",
-    "screenshot-settings-reconcile.png",
+# SoftwareApplication JSON-LD. Each is captured twice, once per macOS appearance
+# (scripts/capture-site-screenshots.sh): `<name>-light.png` and `<name>-dark.png`.
+SCREENSHOT_NAMES = [
+    "screenshot-sync-review",
+    "screenshot-profile-editor",
+    "screenshot-settings-sync",
+    "screenshot-settings-reconcile",
 ]
+SCREENSHOTS = [f"{n}-{mode}.png" for n in SCREENSHOT_NAMES for mode in ("light", "dark")]
 
 
 def png_info(path):
@@ -132,7 +134,7 @@ SOFTWAREAPP_LD = {
     # software-app rich result requires a GENUINE rating, and none is fabricated.
     "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
     "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-    "screenshot": [f"{SITE_URL}/assets/{s}" for s in SCREENSHOTS],
+    "screenshot": [f"{SITE_URL}/assets/{n}-light.png" for n in SCREENSHOT_NAMES],
 }
 
 PAGES = [
@@ -302,8 +304,14 @@ COPY_SCRIPT = """<script>
 (function () {
   var shots = document.querySelector(".shots");
   if (!shots) return;
-  var imgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
-  if (!imgs.length) return;
+  // Each figure holds a light and a dark image and CSS shows the one matching the
+  // page theme, so the viewer steps through whichever of them is displayed.
+  var allImgs = Array.prototype.slice.call(shots.querySelectorAll("figure img"));
+  if (!allImgs.length) return;
+  var imgs = [];
+  function visibleImgs() {
+    return allImgs.filter(function (el) { return el.offsetParent !== null; });
+  }
 
   var overlay = document.createElement("div");
   overlay.className = "lightbox";
@@ -338,7 +346,10 @@ COPY_SCRIPT = """<script>
     overlay.scrollLeft = 0;
   }
   var opener = null;
-  function open(i) {
+  function open(el) {
+    imgs = visibleImgs();
+    var i = imgs.indexOf(el);
+    if (i < 0) return;
     opener = document.activeElement;
     show(i);
     overlay.hidden = false;
@@ -362,14 +373,14 @@ COPY_SCRIPT = """<script>
     else if (order.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
   }
   // Each screenshot is a real, keyboard-operable control.
-  imgs.forEach(function (el, i) {
+  allImgs.forEach(function (el) {
     el.style.cursor = "zoom-in";
     el.setAttribute("role", "button");
     el.setAttribute("tabindex", "0");
     el.setAttribute("aria-label", (el.alt || "Screenshot") + " (view larger)");
-    el.addEventListener("click", function () { open(i); });
+    el.addEventListener("click", function () { open(el); });
     el.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(i); }
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); open(el); }
     });
   });
   prev.addEventListener("click", function () { if (idx > 0) show(idx - 1); });
@@ -592,7 +603,7 @@ def build(outdir: str) -> None:
     with open(os.path.join(outdir, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write("\n".join(sm) + "\n")
     open(os.path.join(outdir, ".nojekyll"), "w").close()
-    print(f"wrote sitemap.xml, .nojekyll, {len(SCREENSHOTS)} screenshots")
+    print(f"wrote sitemap.xml, .nojekyll, {len(SCREENSHOT_NAMES)} screenshots (light and dark)")
 
 
 if __name__ == "__main__":
