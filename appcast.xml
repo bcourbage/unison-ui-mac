@@ -6,6 +6,35 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>1.0.0</title>
+            <pubDate>Mon, 12 Oct 2026 01:21:30 +0000</pubDate>
+            <sparkle:version>28</sparkle:version>
+            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 1.0.0</h1>
+<p>Unison UI for macOS reaches 1.0 with safer profile management, clearer diagnostics, and a more polished interface, from creating your first profile to reviewing differences and recovering from errors.</p>
+<p>Existing profiles and settings continue to work without migration. Requires macOS 15 or later on Apple Silicon.</p>
+<h2>Fixed</h2>
+<p>Deleting a profile now protects synchronization history that other profiles share. Profiles that use the same pair of roots share archive files, and deleting one of them could remove those archives, after which the other profile would forget earlier deletions and could copy a deleted file back. The app now recognizes shared archives, keeps them, and names the profile that uses them. It checks again under the archive lock before it moves anything, and it keeps the archives whenever it cannot tell whether another profile uses them. Reset Archives likewise names the other profiles whose synchronization history it will also reset.</p>
+<h2>Changed</h2>
+<p><strong>Warnings and errors.</strong> Warnings and failures now lead with a concise summary. The complete diagnostic sits in a scrolling, selectable Details area with a Copy Details button, so long paths stay intact. Warnings offer Continue and Cancel, and restart notices say what to do next.</p>
+<p><strong>Profile setup.</strong></p>
+<ul>
+<li>An empty Profiles window offers a Create Profile… button, or a Manage Profiles… button when every profile is hidden.</li>
+<li>Run is enabled only while a profile is selected, and long profile names keep their beginning and end, with the full name in a tooltip.</li>
+<li>A settings search with no matches offers a Clear Search button.</li>
+<li>Profile names are checked as you type, with the reason shown when a name is not valid.</li>
+<li>Check Remote Command is unavailable for a profile that has not been saved yet, and the editor says why.</li>
+</ul>
+<p><strong>Diff window.</strong> The Diff window now names the file being reviewed and, when it can identify them reliably, shows the two files being compared. The full command stays one click away behind a Command… button. For a standalone standard <code>diff</code> command, the result reads "Differences found." instead of "Exited with status 1". Custom commands and pipelines keep the status they reported.</p>
+<p><strong>Finishing touches.</strong> The reconcile summary uses correct singular wording, help examples display as code, and Archive Maintenance explains what it can clean up. Long Command Line setup paths are truncated in the middle, with the full path in a tooltip.</p>
+<h2>Added</h2>
+<p>Help ▸ Star on GitHub, next to Donate, opens the project page, and a linked sentence in the About window notes that a star helps others find Unison UI.</p>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v1.0.0/unison-ui-mac-1.0.0.app.zip" length="5242680" type="application/octet-stream" sparkle:edSignature="39slpvQned0G6+X59Xh7dN4duZAqSUZMQL4YQ+BrsJOcPnzkeIDS7PMKCn8uGJDtjqVvs9WoIQdG7U1ob94rBQ=="/>
+        </item>
+        <item>
             <title>0.10.1</title>
             <pubDate>Wed, 16 Sep 2026 05:26:12 +0000</pubDate>
             <sparkle:version>27</sparkle:version>
@@ -47,35 +76,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.10.0/unison-ui-mac-0.10.0.app.zip" length="5670671" type="application/octet-stream" sparkle:edSignature="yKA99lWHZpJmqFtNbWu2CGG/tIwDUxmUo+20te1M0crPjHgBJze+EtNDlCui72YejRBZw/NTubeL1y41INR4Dg=="/>
         </item>
-        <item>
-            <title>0.9.0</title>
-            <pubDate>Fri, 11 Sep 2026 14:24:52 +0000</pubDate>
-            <sparkle:version>25</sparkle:version>
-            <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.9.0</h1>
-<p>Version 0.9.0 makes the app's <code>unison</code> command open the graphical app by default and act on a profile you name. When you run <code>unison &lt;profile&gt;</code> without choosing an interface, it now follows a Default interface preference that is Graphical unless you set it to Text, and a graphical launch opens that profile and starts its connection and scan right away. Existing profiles and settings continue to work without migration.</p>
-<h2>Added</h2>
-<ul>
-<li><strong>Default interface for the <code>unison</code> command (Settings ▸ Command Line).</strong> A Graphical or Text control sets which interface <code>unison</code> uses when a command omits <code>-ui</code>. It defaults to Graphical, so typing <code>unison &lt;profile&gt;</code> opens this app. An explicit <code>-ui graphic</code> or <code>-ui text</code> always overrides the preference.</li>
-<li><strong>A profile on the command line opens and scans.</strong> In graphical mode, <code>unison &lt;profile&gt;</code> opens the app and starts that profile's connection and scan right away, without a further click. It stops at the reconciliation results, so nothing is applied until you act.</li>
-<li><strong>Requests reach a running instance.</strong> When the app is already running, <code>unison &lt;profile&gt;</code> is handled by that instance instead of starting a second one: it opens the profile when idle at the picker, and keeps its work and reports a clear refusal when a scan, reconciliation, sync, or a profile edit is in progress. The command returns a matching exit status.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>A bare <code>unison &lt;profile&gt;</code> now opens the app by default.</strong> Earlier versions ran Unison's text interface when <code>-ui</code> was omitted; the default is now Graphical for every account without a saved preference. If you relied on the text interface from a bare <code>unison &lt;profile&gt;</code>, set <strong>Default interface</strong> to Text in Settings ▸ Command Line, or pass <code>-ui text</code>.</li>
-</ul>
-<h2>Notes</h2>
-<ul>
-<li>Scripts and scheduled jobs should pass <code>-ui text</code> explicitly rather than depend on the default interface. With the Graphical default in effect, a headless <code>unison &lt;profile&gt;</code> (over ssh, from <code>cron</code>, or from <code>launchd</code>, with no graphical session) is refused with a message instead of running in the terminal.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.9.0/unison-ui-mac-0.9.0.app.zip" length="5613018" type="application/octet-stream" sparkle:edSignature="zSiioO2V6kIHXgeTu2heIRW1VKw3c/hjRoWfi9HmTVMN+4sfwAKAirjUGvjeeOEAtf00b8p7MyB9V+ThKQ64Cg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: Bh1sNR+ZU5GHZL4YuWPhP54OuoSARqk0nth0dUacJRou3NVuuxkx8ibke9vih0/TFhCBjx6KqCcZh7sx6ORTBg==
-length: 8404
+edSignature: PJNfnmEDUfv4E8NmdLvX3CChGIH/2l2Jo+CGFgwCwVLJ/B/c9qpvpECEwD/dvN6ja5JLE5CPwO+5MFTdgmL0Dg==
+length: 8725
 -->
