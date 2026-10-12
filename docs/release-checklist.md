@@ -200,8 +200,8 @@ skipping it.
 ## 1.0.0
 
 The standard for 1.0 is that every known failure mode has a deliberate, tested,
-documented recovery path with a stated trade-off, and that the public contract
-(README, "What 1.0 commits to") is true of the shipped artifact. These gates
+documented recovery path with a stated trade-off, and that the public
+documentation is true of the shipped artifact. These gates
 are in addition to "Every release".
 
 ### Signing-key custody (#108, pre-tag)
@@ -256,13 +256,6 @@ version, and a failure blocks promotion.
 - [ ] **Updates and setup.** Sparkle permission, update-available,
       no-update and failure dialogs against a test feed; the command-line setup
       confirmation without altering a real shell configuration.
-
-### Copy (pre-tag)
-
-- [ ] **(pre-tag)** README "What 1.0 commits to" and the FAQ entries "What does
-      version 1.0 promise?" and "What happens if the update signing key is lost
-      or compromised?" are true of this RC's behavior, and the release notes lead
-      with the promise rather than the delta.
 
 ## 0.6.0
 

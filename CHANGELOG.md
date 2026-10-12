@@ -18,8 +18,6 @@ below, plus a fix for deleting a profile whose archive files another profile
 still uses.
 
 ### Added
-- **The README and the FAQ state what version 1.0 commits to**, and the FAQ
-  explains what happens if the update signing key is lost or compromised.
 - **Help ▸ Star on GitHub** opens the project repository, grouped with Donate.
   The About panel gains one linked sentence noting that a star helps others
   find the project.
