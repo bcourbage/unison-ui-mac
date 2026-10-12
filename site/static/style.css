@@ -110,6 +110,16 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 .shots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin: 2rem 0; }
 .shots figure { margin: 0; }
 .shots img { border: 1px solid var(--border); border-radius: 10px; display: block; }
+/* Each screenshot is captured in both appearances. Show the one that matches the
+   page theme: the dark image when the theme is dark (chosen, or Auto on a dark
+   system), the light image otherwise. */
+.shots .shot-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shots .shot-light { display: none; }
+  :root:not([data-theme="light"]) .shots .shot-dark { display: block; }
+}
+:root[data-theme="dark"] .shots .shot-light { display: none; }
+:root[data-theme="dark"] .shots .shot-dark { display: block; }
 .shots figcaption { color: var(--muted); font-size: .9rem; margin-top: .4rem; text-align: center; }
 @media (max-width: 640px) { .shots { grid-template-columns: 1fr; } }
 

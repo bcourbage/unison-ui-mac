@@ -60,8 +60,8 @@ Update checks can include an optional, anonymous system profile; see
 
 | | |
 | :---: | :---: |
-| **Review changes before syncing**<br>conflicts and per-item direction<br><img src="assets/screenshot-sync-review.png" alt="Reviewing changes before a sync, including a conflict and per-item direction"> | **Configure a profile**<br>local and remote (SSH) roots<br><img src="assets/screenshot-profile-editor.png" alt="Editing a profile's two synchronization roots"> |
-| **Sync notifications**<br>Settings<br><img src="assets/screenshot-settings-sync.png" alt="Settings: notification and sound on sync completion"> | **Reconcile display**<br>Settings<br><img src="assets/screenshot-settings-reconcile.png" alt="Settings: reconcile window layout options"> |
+| **Review changes before syncing**<br>conflicts and per-item direction<br><picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-sync-review-dark.png"><img src="assets/screenshot-sync-review-light.png" alt="Reviewing changes before a sync, including a conflict and per-item direction"></picture> | **Configure a profile**<br>local or remote (SSH) roots<br><picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-profile-editor-dark.png"><img src="assets/screenshot-profile-editor-light.png" alt="Editing a profile's two synchronization roots"></picture> |
+| **Sync notifications**<br>Settings<br><picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-settings-sync-dark.png"><img src="assets/screenshot-settings-sync-light.png" alt="Settings: notification and sound on sync completion"></picture> | **Reconcile display**<br>Settings<br><picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-settings-reconcile-dark.png"><img src="assets/screenshot-settings-reconcile-light.png" alt="Settings: reconcile window layout options"></picture> |
 
 For a feature-by-feature guide, see [MANUAL.md](MANUAL.md).
 Release history is in [CHANGELOG.md](CHANGELOG.md).
