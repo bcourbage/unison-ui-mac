@@ -529,8 +529,11 @@ version, and launcher path.
   is accepted-and-waiting (TC15c) or awaiting the sync decision (TC15f), run a
   second `"<RC launcher>" other`. **Expect:** the second is refused as already
   handling another request (exit non-zero); the first is preserved. Separately,
-  while a command-line request is waiting, choosing a profile in the app’s picker
-  does **not** silently replace it (you are told it is waiting).
+  leaving the waiting window (**Profiles**, or **Action ▸ Show Profile Picker**)
+  cancels the waiting request, and a profile then chosen in the picker opens as an
+  ordinary open. A picker selection made while a request is still queued is
+  answered with "A command-line request is already waiting to open." and does not
+  replace it.
 - **TC15i — Outcome unconfirmed is not retried.** Simulate a lost final reply
   (e.g. quit the app during an awaited sync decision). **Expect:** the command
   reports the outcome could not be confirmed and to check the app before running
