@@ -683,25 +683,40 @@ followed by a password prompt is masked, never plain.
 
 ## Results
 
+Latest run: the signed, notarized 1.0.0 Release build (build 28), the exact bytes
+published to GitHub Releases, SHA-256
+`297159932ea7d0467332be68835ebeed9ee5bf2170f412b24287540bbf7d06e7`, on macOS 27.0.1
+(Apple Silicon), 2026-10-11. The launcher was the in-bundle
+`Contents/SharedSupport/bin/unison`. The Release build has no autotest hooks, so each
+case was driven through the real UI (System Events) and the launcher, over disposable
+roots, a key-authenticated remote on the LAN, and, for the stall cases, a tagged
+`unison -server` frozen with `kill -STOP`. Log-line expectations were not observed
+(unified-log values are redacted); the window, `pgrep` and file state were the
+evidence. The interactive-password cases (TC3, TC4, TC5, TC12, TC13) are run by hand
+against the password-auth test VM (the key-only LAN host cannot offer password login)
+and are recorded below when run.
+
 | Case | Behavior | PASS / FAIL | Notes |
 |---|---|---|---|
-| TC1 | non-interactive close on sync-end | PASS | live + automated regression |
-| TC2 | non-interactive Rescan reopens silently | PASS | live (Release): initial ssh child reaped on sync-end; Rescan reconnects with NO credential sheet and scan completes; connection reused across a further rescan (same pid) then reaped again on the next sync-end. Child lifecycle correct. |
-| TC3 | interactive held through sync-end | PASS | live (Release, user typed password, → .241 VM): connection authenticated; the ssh child **persisted** through the entire Go/sync and after "Synchronization complete" (3 items, 74 bytes) — held, NOT closed on sync-end (interactive-auth close policy). |
-| TC4 | interactive Rescan no re-prompt | PASS | live: same-session Rescan reused the held connection (same ssh pid, **no** second credential sheet), scan completed ("Everything is up to date"). |
-| TC5 | interactive closes on leave | PASS | live: clicking Profiles (leave) closed the connection and reaped the ssh child within ~1 s; returned to the picker. |
-| TC6a | Keep Window Open | | |
-| TC6b | Stop Syncing & Close | | |
-| TC6c | Continue in Background | | |
-| TC6d | sync finishes while sheet up | | |
-| TC7 | local-only sanity (detector never arms) | PASS | live + automated regression |
-| TC8 | no ssh pile-up | PASS | live regression |
-| TC9a | gate: pick during background sync | | |
-| TC9b | gate: pick during scan | | |
-| TC10 | wedged-sync stall hint | PASS | orange hint at 45s, responsive, clean quit+reopen |
-| TC11 | post-auth scan wedge (frozen remote) | PASS (stall mechanics); UI re-confirm pending for #117 | scan-stall detector fires at the 120 s bound → restart-required; the leave-to-picker path (now **Profiles**) drives restart-required via the retained detector; a replacement profile opened right after is carried to restart-required; clean targeted quit, app-owned ssh child reaped, fresh reopen succeeds. Exercised against a frozen remote (`kill -STOP`). Under #117 re-confirm the toolbar delta: **Profiles** leaves, **Stop** stays disabled/neutral (was the relabelled "Return to Profiles"). |
-| TC12 | interactive auth failure + cancel | PASS | live, user typed passwords → .241 VM. #63 fix validated 2026-07-26 (Debug build) across four sub-cases: correct-first-try (one sheet → auth → sync); wrong→correct (the retry sheet appears **once**, carrying the folded "Permission denied, please try again." message, and the correct password authenticates on that single entry — no phantom extra sheet); wrong→wrong→correct (one sheet per real attempt); Cancel-from-retry (clean return to the picker, ssh child reaped, verified 0 children). Earlier retry-recovery + cancellation runs were Release. |
-| TC13 | auth prompt field style (host-key plain / secrets masked) | | REQUIRED on the signed RC: host-key yes/no → plain field, password/passphrase/OTP → masked secure field. Combined host-key+password chunk covered by unit tests. |
+| TC1 | non-interactive close on sync-end | PASS | 1.0.0: the scan listed both differences, Go completed, the ssh child was gone while the results window stayed open, and both files propagated. |
+| TC2 | non-interactive Rescan reopens silently | PASS | 1.0.0: Rescan reconnected with no credential sheet (an ssh child reappeared) and listed the new change. |
+| TC6a | Keep Window Open | PASS | 1.0.0: the sheet closed, the window stayed, the sync kept running to completion. |
+| TC6b | Stop Syncing & Close | PASS | 1.0.0: the window closed and the ssh child was reaped within 1 s. |
+| TC6c | Continue in Background | PASS | 1.0.0: the window closed; the ssh child persisted for over 2 minutes of background sync, then was reaped. |
+| TC6d | sync finishes while sheet up | PASS | 1.0.0: the sheet dismissed itself (18 s), the window stayed on the completed results, and closed normally afterward. |
+| TC7 | local-only sanity (detector never arms) | PASS | 1.0.0: no ssh child at any point; sync, leave and a later remote open all clean. |
+| TC8 | no ssh pile-up | PASS | 1.0.0: five opens across three profiles; at most one ssh child at once and none at the picker after each leave. |
+| TC9a | gate: pick during background sync | PASS | 1.0.0: "Waiting for the previous operation to finish…" while the background sync ran (62 s), then the profile opened and scanned. |
+| TC9b | gate: pick during scan | PASS | 1.0.0: a content-hashing scan abandoned to the picker; the next profile waited (13 s), then opened and scanned. |
+| TC10 | wedged-sync stall hint | PASS | 1.0.0: with the remote server frozen mid-transfer, "No sync progress has been observed for 45 seconds." appeared, Stop stayed enabled, the notice cleared on thaw and the transfer completed. |
+| TC11 | post-auth scan wedge (frozen remote) | PASS | 1.0.0: restart-required with "Unison must be restarted to continue." and the restart alert (Details: no scan progress for 120 seconds; 152 s after opening, the rest being local hashing before the remote wait). Go, Stop and Rescan disabled; Profiles returned to the picker; a replacement open re-raised the alert; Quit Unison quit in 1 s and a fresh launch connected and synced. |
+| TC14 | CLI option scope | PASS | 1.0.0: all steps. `first -path Documents` listed only the inside change and kept it on Rescan; picker opens of `second` and `first` were unscoped; a plain relaunch and a no-profile `-path` launch behaved as specified; and for the remote profile a reconnecting Rescan after sync-end kept the scope while a picker reopen was unscoped. |
+| TC15 | running-instance requests | PASS | 1.0.0, all sub-cases: a idle opens now (exit 0, no output); b `-path`, repeated `-path` and `-ignore` delivered, later picker open unscoped; c(i) local takeover Started, c(ii) accepted-and-waiting for a remote session (connection closed, then `other` opened); d editor open refused naming the profile with the unsaved edit intact; e restart-required refused ("needs to be restarted after an error", no `-ui text`); f all three sync-decision choices and the 120 s timeout reported accurately and never acted on the sync by themselves; g windowless background sync accepted-and-waited with no sheet; h a second request refused as already handling one; i killing the app during a pending decision gave "could not confirm… check the app" with no retry and no second app; plus a request sent behind the first-synchronization warning timed out and did not open when the warning was dismissed. |
+| TC3 | interactive held through sync-end | pending | to be run by hand against the test VM on 1.0.0 |
+| TC4 | interactive Rescan no re-prompt | pending | to be run by hand against the test VM on 1.0.0 |
+| TC5 | interactive closes on leave | pending | to be run by hand against the test VM on 1.0.0 |
+| TC12 | interactive auth failure + cancel | pending | to be run by hand against the test VM on 1.0.0 |
+| TC13 | auth prompt field style (host-key plain / secrets masked) | pending | to be run by hand against the test VM on 1.0.0 |
 
 ---
 
@@ -710,21 +725,13 @@ followed by a password prompt is masked, never plain.
 Results above come from three evidence classes:
 
 - **Automated (XCTest, runs in CI):** the coordinator state machine and
-  `ScanStallTimer` behaviors — arm/reset/disarm, operation-bound firing,
+  `ScanStallTimer` behaviors: arm/reset/disarm, operation-bound firing,
   restart-required transition, late-completion suppression, retention across
-  abandonment, and the healthy-scan control — all against an injected fake
+  abandonment, and the healthy-scan control, all against an injected fake
   scheduler (no real timeouts).
-- **Live — unattended (Release build, this pass):** TC1/TC7/TC8 regression;
-  TC2 non-interactive close + silent reopen; TC10 sync-stall hint; TC11
-  frozen-remote wedge at the production 120 s bound (detector fires →
-  restart-required, clean quit, child reaped, fresh reopen). The healthy-scan
-  control was a fast scan with a wide margin; a genuinely ~120 s-silent healthy
-  scan was not constructed.
-- **Live — interactive (Release build, → .241 VM; password typed by hand, never
-  captured or stored):** TC3, TC4, TC5, and TC12 (retry-recovery and
-  cancellation runs). **TC13** (auth field style) is interactive and **required
-  on the signed v0.5.1 RC** — its host-key-plain and password-masked portions
-  are reproducible live; the combined host-key+password chunk stays unit-tested.
-
-Not yet re-run this pass: TC6a/b/c, TC9a/b, and TC13 (the last required on the
-signed v0.5.1 RC — see the release checklist).
+- **Live, unattended (signed Release build):** every non-interactive case above, on
+  the exact published artifact, driven through the real UI and the in-bundle
+  launcher.
+- **Live, interactive (signed Release build, test VM; password typed by hand, never
+  captured or stored):** TC3, TC4, TC5, TC12 and TC13. The combined host-key plus
+  password chunk of TC13 stays unit-tested.
