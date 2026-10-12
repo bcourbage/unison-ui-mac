@@ -257,12 +257,6 @@ version, and a failure blocks promotion.
       no-update and failure dialogs against a test feed; the command-line setup
       confirmation without altering a real shell configuration.
 
-### Copy (pre-tag)
-
-- [ ] **(pre-tag)** The FAQ entry "What happens if the update signing key is lost
-      or compromised?" is true of this RC's behavior and agrees with
-      `docs/sparkle-updates.md` ("Key rotation and recovery").
-
 ## 0.6.0
 
 Build **21** (v0.6.0), on top of 0.5.1 (build 20). No profile/settings migration.
