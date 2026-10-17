@@ -72,7 +72,7 @@ artifact is ever published.
 4. **Publish the same tested artifact, then update Sparkle and Homebrew.**
    Publish the exact bytes from step 1 (or the step 3 replacement), never a
    fresh rebuild: create the GitHub Release, then publish the appcast (Sparkle)
-   and bump the Homebrew cask.
+   and bump the Homebrew cask (merge the PR the automation opens in the tap).
 
 `release.yml` implements this sequence: **sign-rc** performs step 1 (signs,
 notarizes, staples, and uploads the unpublished signed RC as the
@@ -158,6 +158,14 @@ skipping it.
       `release-publish` (the signing/notarization steps that PRODUCE these are in-job
       gates in `sign-rc`; this inspection confirms the finished bytes before they
       ship).
+
+- [ ] **(post-publication)** The Homebrew cask is bumped. `brew bump-cask-pr`
+      opens the PR in `bcourbage/homebrew-tap` automatically, usually within a day,
+      and nothing notifies anyone, so look for it: confirm its version and `sha256`
+      match the published zip (`shasum -a 256`), merge it, and confirm
+      `brew info --cask bcourbage/tap/unison-ui` shows the new version. Until it
+      merges, `brew install` still offers the previous release. For 1.0.0 the PR sat
+      open for four days.
 
 ### Command-line option scope (#122)
 
