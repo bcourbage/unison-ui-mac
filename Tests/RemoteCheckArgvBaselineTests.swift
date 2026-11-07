@@ -36,6 +36,10 @@ final class RemoteCheckArgvBaselineTests: XCTestCase {
         let argvBeforeRemote: [String]
         /// The remote command's version part, the tail of the verification session's command.
         let versionCommand: String
+        /// The first entry of the discovery script's candidate list: the
+        /// configured executable when it is an absolute safe path, otherwise
+        /// the first well-known path (a bare name is reported as unprobed).
+        let discoveryFirstCandidate: String
     }
 
     /// The quoted `sshargs` case pins upstream's behavior as ported: words split
@@ -49,17 +53,20 @@ final class RemoteCheckArgvBaselineTests: XCTestCase {
                  servercmd: "/opt/homebrew/bin/unison", sshargs: "-i '/Users/me/my key' -o Foo=bar", addversionno: true,
                  argvBeforeRemote: fixedPrefix + ["-l", "bruno", "-p", "2222", "demeter", "-e", "none",
                                                   "-i", "'/Users/me/my", "key'", "-o", "Foo=bar"],
-                 versionCommand: "/opt/homebrew/bin/unison-2.54 -version"),
-            Case(name: "host only, defaults",
+                 versionCommand: "/opt/homebrew/bin/unison-2.54 -version",
+                 discoveryFirstCandidate: "/opt/homebrew/bin/unison-2.54"),
+            Case(name: "default remote settings, explicit ssh executable",
                  remoteRoot: "ssh://demeter//Users/bruno/Home",
                  servercmd: "", sshargs: "", addversionno: false,
                  argvBeforeRemote: fixedPrefix + ["demeter", "-e", "none"],
-                 versionCommand: "unison -version"),
+                 versionCommand: "unison -version",
+                 discoveryFirstCandidate: RemoteDiscovery.wellKnownCandidates[0]),
             Case(name: "multi-word servercmd",
                  remoteRoot: "ssh://bruno@demeter//Users/bruno/Home",
                  servercmd: "sudo -u unison /opt/unison/bin/unison", sshargs: "-i /k", addversionno: false,
                  argvBeforeRemote: fixedPrefix + ["-l", "bruno", "demeter", "-e", "none", "-i", "/k"],
-                 versionCommand: "sudo -u unison /opt/unison/bin/unison -version"),
+                 versionCommand: "sudo -u unison /opt/unison/bin/unison -version",
+                 discoveryFirstCandidate: RemoteDiscovery.wellKnownCandidates[0]),
         ]
     }
 
@@ -86,7 +93,12 @@ final class RemoteCheckArgvBaselineTests: XCTestCase {
             XCTAssertEqual(rec.configs.count, 1, c.name)
             XCTAssertEqual(cfg.executable, "/usr/bin/ssh", c.name)
             XCTAssertEqual(Array(cfg.arguments.dropLast()), c.argvBeforeRemote, c.name)
-            XCTAssertTrue(cfg.arguments.last?.hasPrefix("sh -c '") ?? false, c.name)
+            let script = try XCTUnwrap(cfg.arguments.last, c.name)
+            XCTAssertTrue(script.hasPrefix("sh -c '"), c.name)
+            // The configured executable (or, for a bare name, its absence) shows
+            // in the candidate list; the marker varies, this fragment does not.
+            XCTAssertTrue(script.contains("; for p in \(c.discoveryFirstCandidate) "), "\(c.name): \(script)")
+            XCTAssertTrue(script.contains("seen=\" \(c.discoveryFirstCandidate) "), "\(c.name): \(script)")
         }
     }
 
