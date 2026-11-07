@@ -561,8 +561,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // Compute the hash. Surface failures verbatim — these are the
         // user-actionable cases (profile file missing, no roots, no
         // local root) where we should NOT silently delete anything.
-        let result = ArchiveHash.computeAll(unisonDirectory: unisonDirectory,
-                                            profile: profile)
+        let result = Self.resetArchiveCandidates(profile: profile,
+                                                 unisonDirectory: unisonDirectory)
         switch result {
         case .failure(let why):
             let alert = NSAlert()
@@ -593,13 +593,64 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return
-        case .success(let computed):
-            confirmAndResetArchives(profile: profile, computed: computed)
+        case .success(let location):
+            confirmAndResetArchives(profile: profile, location: location)
         }
     }
 
+    /// What Reset Archives offers for a profile: the located archives, or the
+    /// reason none can be computed (the user-actionable cases, where nothing
+    /// is offered).
+    nonisolated static func resetArchiveCandidates(
+        profile: String,
+        unisonDirectory: String,
+        localHostname: String = ArchiveHash.systemHostname
+    ) -> Swift.Result<ArchiveLocation, ArchiveHash.Failure> {
+        ArchiveHash.computeAll(unisonDirectory: unisonDirectory, profile: profile, hostname: localHostname)
+            .map { locateArchives(profile: profile, unisonDirectory: unisonDirectory,
+                                  computed: $0, localHostname: localHostname) }
+    }
+
+    /// What Delete offers to do with a profile's archives: the located files
+    /// (none when the hash cannot be computed), who else owns them, and
+    /// whether removal is offered at all.
+    struct DeleteArchiveOffer: Equatable {
+        let files: [URL]
+        let hashes: [String]
+        let ambiguous: Bool
+        let ownership: ArchiveOwnership.Verdict
+        /// The checkbox that moves the archives to the Trash appears only
+        /// when there are archives and no other profile owns them.
+        var removalOffered: Bool { !files.isEmpty && ownership.removalPermitted }
+    }
+
+    nonisolated static func deleteArchiveOffer(
+        profile: String,
+        unisonDirectory: String,
+        localHostname: String = ArchiveHash.systemHostname
+    ) -> DeleteArchiveOffer {
+        var files: [URL] = []
+        var hashes: [String] = []
+        var ambiguous = false
+        if case .success(let computed) = ArchiveHash.computeAll(
+            unisonDirectory: unisonDirectory, profile: profile, hostname: localHostname) {
+            let location = locateArchives(profile: profile, unisonDirectory: unisonDirectory,
+                                          computed: computed, localHostname: localHostname)
+            files = location.files
+            hashes = location.hashes
+            ambiguous = location.ambiguous
+        }
+        // Unison names an archive by its root pair, so another profile with
+        // the same roots uses these very files. Removal is offered only when
+        // no other current profile owns them; a profile whose roots could not
+        // be resolved counts as a possible owner. See ArchiveOwnership.
+        let ownership = ArchiveOwnership.evaluate(unisonDirectory: unisonDirectory, deleting: profile,
+                                                  hashes: hashes, localHostname: localHostname)
+        return DeleteArchiveOffer(files: files, hashes: hashes, ambiguous: ambiguous, ownership: ownership)
+    }
+
     /// Result of locating a profile's local archive files.
-    private struct ArchiveLocation {
+    struct ArchiveLocation: Equatable {
         /// Files (ar + fp/tm/sc siblings; NEVER lk), deduped — for display/
         /// summary only. Mutation goes through the transaction by `hashes`.
         let files: [URL]
@@ -631,15 +682,17 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// genuinely different syncs. The caller surfaces this and the user
     /// confirms. Current-vs-stale copies of the *same* pair share a
     /// signature and are not ambiguous.
-    private func locateArchives(profile: String,
-                                computed: ArchiveHash.MultiResult) -> ArchiveLocation {
+    nonisolated static func locateArchives(profile: String,
+                                           unisonDirectory: String,
+                                           computed: ArchiveHash.MultiResult,
+                                           localHostname: String) -> ArchiveLocation {
         let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
-        let roots = profileRoots(profile)
+        let roots = profileRoots(profile, unisonDirectory: unisonDirectory)
         // Live generation only — Reset clears what the next sync uses;
         // stale hostname generations are left for "Clean stale archives".
         let matched = ArchiveMatcher.liveArchives(forProfileRoots: roots,
                                                   in: cleanup.indexArchives(),
-                                                  localHostname: ArchiveHash.systemHostname)
+                                                  localHostname: localHostname)
 
         // Collapse to distinct archive files (ar + fp/tm/sc siblings (never lk)),
         // deduped, in a stable order.
@@ -716,8 +769,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// The raw `root = …` values from a profile's `.prf`, in file order.
-    private func profileRoots(_ profile: String) -> [String] {
-        let url = profileURL(profile)
+    nonisolated private static func profileRoots(_ profile: String, unisonDirectory: String) -> [String] {
+        let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent("\(profile).prf")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return ProfileDocument.parse(text).values(forKey: "root")
     }
@@ -727,16 +780,15 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// verification, then perform the deletion via
     /// `NSFileManager.trashItem(at:)`.
     ///
-    /// `computed` carries one entry per *local* root. A local↔local
+    /// `location` covers one archive family per *local* root. A local↔local
     /// profile has two, so we gather and trash every local archive
     /// family — trashing only one would leave an inconsistent
     /// half-reset (one replica's archive gone, the other's intact).
     private func confirmAndResetArchives(profile: String,
-                                         computed: ArchiveHash.MultiResult) {
+                                         location: ArchiveLocation) {
         // Clear any stale keyboard first-responder state on the table so a
         // single Escape reliably cancels the alert (see the helper).
         refreshTableFirstResponder()
-        let location = locateArchives(profile: profile, computed: computed)
         let files = location.files
 
         let alert = NSAlert()
@@ -879,22 +931,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // compute fails (no roots, no local root, .prf already gone),
         // archive cleanup just isn't offered — the user can still hit
         // Reset Archives separately if needed.
-        var archiveFiles: [URL] = []
-        var archiveHashes: [String] = []
-        var archivesAmbiguous = false
-        if case .success(let computed) = ArchiveHash.computeAll(
-            unisonDirectory: unisonDirectory, profile: profile) {
-            let location = locateArchives(profile: profile, computed: computed)
-            archiveFiles = location.files
-            archiveHashes = location.hashes
-            archivesAmbiguous = location.ambiguous
-        }
-        // Unison names an archive by its root pair, so another profile with
-        // the same roots uses these very files. Removal is offered only when
-        // no other current profile owns them; a profile whose roots could not
-        // be resolved counts as a possible owner. See ArchiveOwnership.
-        let ownership = archiveOwnership(deleting: profile, hashes: archiveHashes)
-        let offerArchiveRemoval = !archiveFiles.isEmpty && ownership.removalPermitted
+        let offer = Self.deleteArchiveOffer(profile: profile, unisonDirectory: unisonDirectory)
+        let archiveFiles = offer.files
+        let archiveHashes = offer.hashes
+        let archivesAmbiguous = offer.ambiguous
+        let ownership = offer.ownership
+        let offerArchiveRemoval = offer.removalOffered
 
         let alert = NSAlert()
         alert.alertStyle = .warning
