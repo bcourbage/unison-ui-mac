@@ -11,6 +11,18 @@ final class ReopenGateTests: XCTestCase {
 
     private typealias C = EngineSessionCoordinator
 
+    /// These tests drive the real reopen, which would start real work on the
+    /// process-wide OCaml engine and leave it in flight for the next engine test.
+    /// The coordinator still changes state, which is what they assert.
+    override func setUp() async throws {
+        try await super.setUp()
+        AppDelegate.testSuppressEngineEffects = true
+    }
+    override func tearDown() async throws {
+        AppDelegate.testSuppressEngineEffects = false
+        try await super.tearDown()
+    }
+
     private func makeDirectory(profile: String, roots: [String]) throws -> String {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("rg-" + UUID().uuidString)
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

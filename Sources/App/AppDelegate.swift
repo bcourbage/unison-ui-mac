@@ -349,6 +349,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     private func execute(_ effect: EngineSessionCoordinator.Effect) {
+        // Hosted tests that exercise driver logic must not start real work on the
+        // process-wide OCaml engine: an operation left in flight completes into the
+        // next engine test's handlers and locks its archives.
+        if Self.testSuppressEngineEffects {
+            switch effect {
+            case .beginConnect, .beginScan, .beginSync, .beginDiff, .closeConnection, .abortSync:
+                return
+            default:
+                break
+            }
+        }
         switch effect {
         case .showSession(let s, let profile):
             driveShowSession(s, profile: profile)
@@ -829,6 +840,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Set by hosted tests to skip the interrupted-operation recovery prompt
     /// (its `runModal` would block the suite). Default false in production.
     static var testRecoveryPromptSuppressed = false
+
+    /// Set by hosted tests to skip the effects that drive the real OCaml engine
+    /// (connect, scan, sync, diff, close, abort). The coordinator still changes
+    /// state, so a test can assert the phase it reached. Default false in production.
+    static var testSuppressEngineEffects = false
 
     private func drivePickBlockedByCommandLineRequest(profile: String) {
         log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
