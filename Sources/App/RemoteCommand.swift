@@ -296,41 +296,30 @@ struct RemoteSettings: Equatable {
     }
 }
 
-/// The command line Unison builds for an ssh root, as `buildShellConnection`
-/// in `src/remote.ml` (lines 1811 ff.) builds it:
+/// What the guided remote check needs from an ssh root and the remote
+/// settings: the destination (host, user, port), the words of the ssh
+/// arguments, and the words naming the remote executable. Unison builds its
+/// own server command from the same settings (`buildShellConnection` in
+/// `src/remote.ml`); the check runs a different remote command, so it keeps
+/// only the pieces it sends.
 ///
-///     <sshcmd> [-l user] [-p port] <host> -e none <sshargs…> <servercmd|unison>[-<major>] -server __new-rpc-mode
-///
-/// Every piece after the ssh command is split into words with
-/// `PrefsTokenizer` before becoming a separate `execv` argument. OpenSSH then
-/// joins everything after the destination with single spaces and hands that
-/// string to the remote login shell.
+/// Every piece is split into words with `PrefsTokenizer`, as Unison splits it
+/// before `execv`. OpenSSH then joins everything after the destination with
+/// single spaces and hands that string to the remote login shell.
 struct RemoteCommand: Equatable {
 
-    static let rpcServerCmdlineOverride = "__new-rpc-mode"
     static let defaultServerName = "unison"
 
-    /// The ssh executable (the `sshcmd` setting).
-    let shellCommand: String
-    /// The `execv` arguments after the ssh command, exactly as upstream
-    /// builds them.
-    let upstreamArguments: [String]
-    /// The words of `<servercmd>[-<major>] -server __new-rpc-mode` after
-    /// tokenizing. The remote shell receives them joined by single spaces.
-    let remoteCommandWords: [String]
-    /// The words that name the remote executable (the remote command without
-    /// `-server __new-rpc-mode`); `-version` appended is what the check runs.
+    /// The words that name the remote executable: `<servercmd>[-<major>]`
+    /// tokenized. `-version` appended is what the check runs.
     let remoteExecutableWords: [String]
     let host: String
     let user: String?
     let port: String?
     let sshargsWords: [String]
 
-    /// The string Unison's `-server` request becomes on the remote shell.
-    var remoteCommandString: String { PrefsTokenizer.joinedForRemoteShell(remoteCommandWords) }
-
-    /// The remote command the check runs instead: the same executable words
-    /// with ` -version` in place of ` -server __new-rpc-mode`.
+    /// The remote command the check runs: the executable words followed by
+    /// `-version`, joined as the remote shell receives them.
     var versionCommandString: String {
         PrefsTokenizer.joinedForRemoteShell(remoteExecutableWords + ["-version"])
     }
@@ -340,31 +329,18 @@ struct RemoteCommand: Equatable {
     static func compose(settings: RemoteSettings, root: UnisonRoot, majorVersion: String) -> RemoteCommand? {
         guard case let .shell(shell, host, user, port, _) = root else { return nil }
         let serverName = settings.servercmd.isEmpty ? defaultServerName : settings.servercmd
-        let remoteCmd = serverName
-            + (settings.addversionno ? "-" + majorVersion : "")
-            + " -server " + rpcServerCmdlineOverride
-        let shellCmd = shell == "ssh" ? settings.sshcmd : shell
         let shellCmdArgs = shell == "ssh" ? settings.sshargs : ""
-        var preargs: [String] = []
-        if let user { preargs += ["-l", user] }
-        if let port { preargs += ["-p", port] }
-        preargs.append(host)
-        if shell == "ssh" { preargs.append("-e none") }
-        preargs += [shellCmdArgs, remoteCmd]
-        let args = preargs.flatMap { PrefsTokenizer.splitIntoWords($0) }
-        let executableWords = PrefsTokenizer.splitIntoWords(
-            serverName + (settings.addversionno ? "-" + majorVersion : ""))
-        return RemoteCommand(shellCommand: shellCmd,
-                             upstreamArguments: args,
-                             remoteCommandWords: PrefsTokenizer.splitIntoWords(remoteCmd),
-                             remoteExecutableWords: executableWords,
-                             host: host, user: user, port: port,
-                             sshargsWords: PrefsTokenizer.splitIntoWords(shellCmdArgs))
+        return RemoteCommand(
+            remoteExecutableWords: PrefsTokenizer.splitIntoWords(
+                serverName + (settings.addversionno ? "-" + majorVersion : "")),
+            host: host, user: user, port: port,
+            sshargsWords: PrefsTokenizer.splitIntoWords(shellCmdArgs))
     }
 
-    /// The check's own `ssh` argument vector: upstream's order with the
-    /// non-interactive options inserted first, and `remoteCommand` (one
-    /// string, already composed by the caller) as the final argument.
+    /// The check's own `ssh` argument vector: the non-interactive options,
+    /// then `[-l user] [-p port] <host> -e none <sshargs…>` as Unison orders
+    /// them, and `remoteCommand` (one string, already composed by the caller)
+    /// as the final argument.
     ///
     ///     -o BatchMode=yes -o ConnectTimeout=<t> -o StrictHostKeyChecking=yes [-l user] [-p port] <host> -e none <sshargs…> <remoteCommand>
     func checkArguments(connectTimeout: Int, remoteCommand: String) -> [String] {

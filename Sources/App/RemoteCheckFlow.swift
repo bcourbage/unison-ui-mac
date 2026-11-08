@@ -39,7 +39,6 @@ enum RemoteCheckFlow {
     }
 
     struct Prepared {
-        let effective: EffectiveProfile
         let settings: RemoteSettings
         let root: UnisonRoot
         let command: RemoteCommand
@@ -93,7 +92,7 @@ enum RemoteCheckFlow {
             form: .init(roots: inputs.roots, servercmd: inputs.servercmd, sshcmd: inputs.sshcmd,
                         sshargs: inputs.sshargs, addversionno: settings.addversionno),
             effective: effective, sessionID: inputs.sessionID)
-        return .success(Prepared(effective: effective, settings: settings, root: root, command: command,
+        return .success(Prepared(settings: settings, root: root, command: command,
                                  executable: executable, token: token, majorVersion: major,
                                  localVersion: localVersion, inputs: inputs))
     }

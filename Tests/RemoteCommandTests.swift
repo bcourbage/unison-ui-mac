@@ -127,47 +127,43 @@ final class RemoteCommandTests: XCTestCase {
 
     func test_compose_defaults() {
         let c = compose(RemoteSettings())
-        XCTAssertEqual(c.shellCommand, "ssh")
-        XCTAssertEqual(c.upstreamArguments, ["demeter", "-e", "none", "unison", "-server", "__new-rpc-mode"])
-        XCTAssertEqual(c.remoteCommandString, "unison -server __new-rpc-mode")
+        XCTAssertEqual(c.remoteExecutableWords, ["unison"])
         XCTAssertEqual(c.versionCommandString, "unison -version")
     }
 
     func test_compose_servercmdSet() {
         let c = compose(RemoteSettings(servercmd: "/opt/homebrew/bin/unison"))
-        XCTAssertEqual(c.remoteCommandString, "/opt/homebrew/bin/unison -server __new-rpc-mode")
         XCTAssertEqual(c.versionCommandString, "/opt/homebrew/bin/unison -version")
     }
 
     func test_compose_addversionno_appendsMajor() {
-        XCTAssertEqual(compose(RemoteSettings(addversionno: true)).remoteCommandString,
-                       "unison-2.54 -server __new-rpc-mode")
+        XCTAssertEqual(compose(RemoteSettings(addversionno: true)).versionCommandString,
+                       "unison-2.54 -version")
         XCTAssertEqual(compose(RemoteSettings(servercmd: "/usr/local/bin/unison", addversionno: true)).versionCommandString,
                        "/usr/local/bin/unison-2.54 -version")
     }
 
     func test_compose_escapedSpace_reachesRemoteShellUnescaped() {
         let c = compose(RemoteSettings(servercmd: "/Volumes/My\\ Disk/unison"))
-        XCTAssertEqual(c.remoteCommandWords, ["/Volumes/My Disk/unison", "-server", "__new-rpc-mode"])
-        XCTAssertEqual(c.remoteCommandString, "/Volumes/My Disk/unison -server __new-rpc-mode")
+        XCTAssertEqual(c.remoteExecutableWords, ["/Volumes/My Disk/unison"])
+        XCTAssertEqual(c.versionCommandString, "/Volumes/My Disk/unison -version")
     }
 
     func test_compose_quotedValue_isSplitAtSpaces_andRejoined() {
         let c = compose(RemoteSettings(servercmd: "\"/Volumes/My Disk\"/unison"))
-        XCTAssertEqual(c.remoteCommandWords, ["\"/Volumes/My", "Disk\"/unison", "-server", "__new-rpc-mode"])
-        XCTAssertEqual(c.remoteCommandString, "\"/Volumes/My Disk\"/unison -server __new-rpc-mode")
+        XCTAssertEqual(c.remoteExecutableWords, ["\"/Volumes/My", "Disk\"/unison"])
+        XCTAssertEqual(c.versionCommandString, "\"/Volumes/My Disk\"/unison -version")
     }
 
-    func test_compose_userPortAndSshargs_inUpstreamOrder() {
+    func test_compose_userPortAndSshargs_reachCheckArguments() {
         let c = compose(RemoteSettings(servercmd: "/opt/homebrew/bin/unison",
                                        sshcmd: "/usr/bin/ssh",
                                        sshargs: "-i /Users/me/.ssh/Demeter  -o ServerAliveInterval=30"),
                         root: fullRoot)
-        XCTAssertEqual(c.shellCommand, "/usr/bin/ssh")
-        XCTAssertEqual(c.upstreamArguments, [
+        XCTAssertEqual(c.checkArguments(connectTimeout: 5, remoteCommand: "R"), [
+            "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
             "-l", "alice", "-p", "2222", "demeter", "-e", "none",
-            "-i", "/Users/me/.ssh/Demeter", "-o", "ServerAliveInterval=30",
-            "/opt/homebrew/bin/unison", "-server", "__new-rpc-mode",
+            "-i", "/Users/me/.ssh/Demeter", "-o", "ServerAliveInterval=30", "R",
         ])
         XCTAssertEqual(c.sshargsWords, ["-i", "/Users/me/.ssh/Demeter", "-o", "ServerAliveInterval=30"])
     }
