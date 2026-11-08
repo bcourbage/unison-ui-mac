@@ -291,7 +291,6 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     private(set) var checkMenuAutoPresentedForTesting = false
     /// After layout, whether the status label stays inside its row and wraps
     /// rather than running past the column.
-    var checkStatusFitsForTesting: Bool { checkStatusGeometryForTesting.fits }
     var checkStatusGeometryForTesting: (fits: Bool, description: String) {
         // Wrapping labels settle their height on the pass after their width
         // is known, as they do in the running app.
@@ -947,13 +946,6 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
             if tries >= controls.count { break }
             target = KeyboardFocus.nextIndex(from: t, count: controls.count, backward: backward); tries += 1
         }
-    }
-
-    func keyNavAdvanceForTesting(backward: Bool = false) {
-        guard let idx = shownSectionIndex, let window else { return }
-        let controls = KeyboardFocus.focusables(in: sectionViews[idx].view)
-        let current = KeyboardFocus.indexOfResponder(window.firstResponder, in: controls)
-        moveKeyNavFocus(controls: controls, from: current, backward: backward)
     }
 
     private func showSection(_ index: Int) {
@@ -2653,13 +2645,10 @@ final class ProfileFormWindowController: NSWindowController, NSWindowDelegate {
     var checkReportForTesting: [String] { checkReport }
     var checkAlternativesForTesting: [RemoteCheckFlow.AlternativeRow]? { checkDiscovery?.rows }
     var chooseButtonVisibleForTesting: Bool { !checkChooseButton.isHidden }
-    var includesDetailsForTesting: [String] { includesDetails }
     var checkResultForTesting: RemoteCheckFlow.Verification? { checkResult }
-    var checkIsRunningForTesting: Bool { checkTask != nil }
     var advancedLinesForTesting: [String] { advancedView.values }
     func setAdvancedLinesForTesting(_ lines: [String]) { advancedView.values = lines }
     func setRootFieldForTesting(second value: String) { secondRootField.stringValue = value; invalidateCheckResult() }
-    var conflictSelectionIndexForTesting: Int { conflictPopup.indexOfSelectedItem }
     /// Index of the popup choice for (key, target), e.g. ("prefer", "second").
     func conflictChoiceIndexForTesting(key: String, target: String) -> Int? {
         Self.conflictChoices.firstIndex { $0.key == key && $0.target == target }

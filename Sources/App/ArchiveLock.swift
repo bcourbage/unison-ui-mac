@@ -21,9 +21,6 @@ enum ArchiveLock {
         case invalidHash    // not a 32-char lowercase-hex hash — refused
         case bridgeMissing  // callback not registered (old blob) — fail closed
 
-        /// True only for `.acquired`. Every other outcome must block mutation.
-        var didAcquire: Bool { self == .acquired }
-
         /// What an acquisition attempt established. Crucially, a failure to acquire
         /// is NOT proof the lock is absent: `.exception` (OCaml raised — patch 0006
         /// returns code 2 without checking state) and `.bridgeMissing`/`.invalidHash`

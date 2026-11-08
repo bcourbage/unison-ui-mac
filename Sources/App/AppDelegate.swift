@@ -66,9 +66,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func releaseSyncDecision(_ kind: SyncDecisionKind) {
         if activeSyncDecisionKind == kind { activeSyncDecisionKind = nil }
     }
-    /// Whether a command-line sync decision is currently open (consulted by the
-    /// ordinary window-close path so it never raises a second decision over one).
-    private func commandLineSyncDecisionActive() -> Bool { activeSyncDecisionKind == .commandLine }
 
     /// How long a sync-decision request stays admissible while awaiting the user's
     /// choice. Bounded so a decision made long after the request was sent cannot

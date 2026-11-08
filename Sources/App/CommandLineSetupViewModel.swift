@@ -110,14 +110,5 @@ enum CommandLineSetupViewModel {
 
     // MARK: Copy This App's Command Path
 
-    /// Whether a command path holds characters outside `A–Z a–z 0–9 . _ / + -`,
-    /// which need care in a profile's servercmd.
-    static func commandPathNeedsCare(_ path: String) -> Bool {
-        let safe = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/+-")
-        return !path.allSatisfy { safe.contains($0) }
-    }
-
     static let commandPathFootnote = "The full path, for servercmd in a profile on another machine."
-    static let commandPathCareNote =
-        "Contains characters that need care in a profile's servercmd; the remote check can assess it."
 }

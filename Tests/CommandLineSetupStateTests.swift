@@ -260,11 +260,6 @@ final class CommandLineSetupStateTests: XCTestCase {
         XCTAssertEqual(vm.actionTitle, "Remove Terminal Setup…")
     }
 
-    func test_viewModel_commandPathNeedsCare() {
-        XCTAssertFalse(CommandLineSetupViewModel.commandPathNeedsCare("/Applications/unison-ui-mac.app/Contents/SharedSupport/bin/unison"))
-        XCTAssertTrue(CommandLineSetupViewModel.commandPathNeedsCare("/Users/My Apps/unison.app/x"))
-    }
-
     func test_viewModel_actionFootnote() {
         XCTAssertEqual(CommandLineSetupViewModel.actionFootnote(action: .add, shell: .zsh, file: "/h/.zprofile"),
                        "Adds this app's command to your Terminal by writing one marked block to /h/.zprofile, the file your login shell reads.")

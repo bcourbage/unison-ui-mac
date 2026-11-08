@@ -60,9 +60,8 @@ enum ArchiveHash {
     /// a new archive format (a release-notes-level event).
     static let archiveFormat = 23
 
-    /// Successful hash result. The two canonical strings + raw input
-    /// are exposed so the UI can show them in the confirm dialog —
-    /// the user can cross-check against `unison -showArchiveName <profile>`.
+    /// Successful hash result: the digest and the canonical strings it was
+    /// computed from, for cross-checking against `unison -showArchiveName <profile>`.
     struct Result: Equatable {
         /// MD5 hex digest. The suffix used in archive filenames.
         let hash: String
@@ -70,9 +69,6 @@ enum ArchiveHash {
         let thisRoot: String
         /// The sorted, comma-joined canonical roots string.
         let rootsName: String
-        /// Raw MD5 input — `"<thisRoot>;<rootsName>;<archiveFormat>"`.
-        /// Useful for debugging hash mismatches.
-        let hashInput: String
     }
 
     /// All archive identities for a profile. Unison keeps a SEPARATE
@@ -86,12 +82,6 @@ enum ArchiveHash {
         let rootsName: String
         /// One `Result` per local root; always ≥1 on success.
         let entries: [Result]
-        /// True when EVERY root is local (no ssh/socket). Only then is
-        /// the hash computable exactly offline — a remote root's
-        /// canonical form (remote hostname + resolved path) is unknown
-        /// without connecting, so its hash can't be trusted. Header
-        /// matching (`ArchiveCleanup.indexArchives`) is used instead.
-        let allRootsLocal: Bool
         /// Convenience: just the hashes, in entry order.
         var hashes: [String] { entries.map(\.hash) }
     }
@@ -106,26 +96,12 @@ enum ArchiveHash {
         case rootsUnresolved
     }
 
-    /// Compute the hash for the given profile's roots. The profile
-    /// filename is intentionally NOT part of the input — renaming a
-    /// profile (without changing its roots) does not affect the hash,
-    /// which is why archives survive rename.
-    ///
-    /// `hostname` defaults to the system's `gethostname()` value, or
-    /// the `UNISONLOCALHOSTNAME` env var if set. Tests override this
-    /// to pin against known inputs.
-    static func compute(
-        unisonDirectory: String,
-        profile: String,
-        hostname: String = Self.systemHostname
-    ) -> Swift.Result<Result, Failure> {
-        computeAll(unisonDirectory: unisonDirectory,
-                   profile: profile,
-                   hostname: hostname).map { $0.entries[0] }
-    }
-
-    /// Like `compute`, but returns the archive identity for EVERY local
-    /// root, not just the first. Use this anywhere that deletes or scans
+    /// Compute the archive identity for EVERY local root of the profile. The
+    /// profile filename is intentionally NOT part of the input, so renaming a
+    /// profile (without changing its roots) does not affect the hash, which is
+    /// why archives survive rename. `hostname` defaults to the system's
+    /// `gethostname()` value, or `UNISONLOCALHOSTNAME` if set; tests override it.
+    /// Use this anywhere that deletes or scans
     /// archive files: a local↔local profile has two local archives and
     /// touching only one leaves an inconsistent half-reset behind.
     static func computeAll(
@@ -181,15 +157,6 @@ enum ArchiveHash {
         return .success(resolution.roots)
     }
 
-    /// Compute the (first local root's) hash from raw .prf text. Broken
-    /// out so tests can drive the function without writing temp files.
-    static func computeFromProfileText(
-        _ text: String,
-        hostname: String
-    ) -> Swift.Result<Result, Failure> {
-        computeAllFromProfileText(text, hostname: hostname).map { $0.entries[0] }
-    }
-
     /// Why a profile's roots cannot identify local archives, or nil when they
     /// can: there are no roots, or none of them is local. This is the gate
     /// every archive action applies before it touches anything; callers that
@@ -203,8 +170,7 @@ enum ArchiveHash {
     }
 
     /// Compute the archive identity for every local root from raw .prf
-    /// text. The single-root callers (`compute`/`computeFromProfileText`)
-    /// just take the first entry.
+    /// text, so tests can drive the function without writing temp files.
     static func computeAllFromProfileText(
         _ text: String,
         hostname: String
@@ -223,7 +189,6 @@ enum ArchiveHash {
 
         let canonicalForms = rootValues.map { canonicalize($0, hostname: hostname) }
         let localForms = canonicalForms.filter { $0.isLocal }
-        let allRootsLocal = localForms.count == canonicalForms.count
 
         // rootsName ordering: upstream uses OCaml's `compare`, which on
         // strings is byte-wise lexicographic. Swift's default String
@@ -238,12 +203,9 @@ enum ArchiveHash {
             let input = "\(thisRoot);\(rootsName);\(archiveFormat)"
             return Result(hash: md5Hex(input),
                           thisRoot: thisRoot,
-                          rootsName: rootsName,
-                          hashInput: input)
+                          rootsName: rootsName)
         }
-        return .success(MultiResult(rootsName: rootsName,
-                                    entries: entries,
-                                    allRootsLocal: allRootsLocal))
+        return .success(MultiResult(rootsName: rootsName, entries: entries))
     }
 
     // MARK: - Canonicalization

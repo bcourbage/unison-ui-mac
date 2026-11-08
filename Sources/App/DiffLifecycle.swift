@@ -185,5 +185,4 @@ final class DiffLifecycle {
     // MARK: - Test-visible state
     var isAwaitingResult: Bool { broker.isAwaitingResult }
     var isDraining: Bool { broker.isDraining }
-    var outstandingOwner: UInt64? { owner }
 }

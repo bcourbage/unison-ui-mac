@@ -47,7 +47,7 @@ struct ArchiveCleanup {
     /// to a profile by reading what Unison actually wrote, rather than
     /// recomputing a hash — which can't be derived offline for ssh roots
     /// (the remote hostname + resolved path are only known after a
-    /// connection). See `ArchiveHash.MultiResult.allRootsLocal`.
+    /// connection).
     struct ArchiveEntry: Equatable {
         let url: URL
         /// Filename suffix after the `ar` prefix; shared by siblings.

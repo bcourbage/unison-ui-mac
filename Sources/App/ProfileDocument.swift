@@ -375,12 +375,6 @@ struct ProfileDocument: Equatable {
         }
     }
 
-    /// True if the document contains a pass-through directive
-    /// (`source`/`include?`/`source?`) the Includes UI does not manage.
-    var hasPassThroughDirectives: Bool {
-        entries.contains { $0.isPassThroughDirective }
-    }
-
     /// True if any ordinary `include` names a file WITHOUT a `.prf` extension
     /// (e.g. `include common` or `include base.conf`). The Includes UI displays a
     /// name with `.prf` stripped and re-appends `.prf` on save, which would rewrite
