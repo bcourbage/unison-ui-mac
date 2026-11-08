@@ -21,13 +21,13 @@ final class ReopenGateTests: XCTestCase {
     }
 
     /// A scanned session for `profile`, awaiting the user (what the menu action requires).
-    private func openToReady(_ e: C, profile: String) {
+    private func openToReady(_ e: C, profile: String, remote: Bool = false) {
         func begin(_ eff: [C.Effect]) -> (C.SessionID, C.OperationID)? {
             for x in eff { if case let .beginConnect(s, op, _, _) = x { return (s, op) } }
             return nil
         }
         let (s, op) = begin(e.requestOpen(profile: profile))!
-        let scanning = e.connectFinished(s, op, result: .local)
+        let scanning = e.connectFinished(s, op, result: remote ? .remote(interactive: false) : .local)
         var scanOp: C.OperationID?
         for x in scanning { if case let .beginScan(_, o) = x { scanOp = o } }
         _ = e.scanCompleted(s, scanOp!)
@@ -63,6 +63,50 @@ final class ReopenGateTests: XCTestCase {
 
         if case .opening = e.phase { XCTFail("the reopen must not start a session for a profile whose archives are held") }
         XCTAssertNil(e.currentSession, "the stale session is released and nothing new is opened")
+        XCTAssertEqual(d.recoveryOffersForTesting, 0, "recovery is offered from the picker, not from the teardown")
+    }
+
+    /// A remote session's close can still be pending when the reopen is refused.
+    /// Recovery moves archive files, so it must not be offered then, and the
+    /// recovery action itself must refuse while the engine is not idle.
+    func test_blockedReopen_ofARemoteSession_doesNotOfferRecoveryWhileTheCloseIsPending() throws {
+        AppDelegate.testRecoveryPromptSuppressed = true
+        addTeardownBlock { @MainActor in AppDelegate.testRecoveryPromptSuppressed = false }
+
+        let base = try XCTUnwrap(ArchiveMatcher.realpathResolve(NSTemporaryDirectory()))
+        let a = base + "/rg-a-" + UUID().uuidString, b = base + "/rg-b-" + UUID().uuidString
+        for p in [a, b] { try FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        addTeardownBlock { for p in [a, b] { try? FileManager.default.removeItem(atPath: p) } }
+        let dir = try makeDirectory(profile: "P", roots: [a, "ssh://user@host//remote"])
+
+        let d = AppDelegate()
+        d.setUnisonDirectoryForTesting(dir)
+        let e = d.engineForTesting
+        openToReady(e, profile: "P", remote: true)
+        guard case .success(let hashes) = ArchiveHash.computeAll(forRoots: [a, "ssh://user@host//remote"],
+                                                                 hostname: ArchiveHash.systemHostname) else {
+            return XCTFail("fixture roots must hash")
+        }
+        let record = heldRecord(for: hashes.hashes)
+        d.setAbandonedStagingForTesting([record])
+
+        d.reopenCurrentProfileFreshForTesting("P")
+
+        XCTAssertFalse(e.allowsDestructiveArchiveMutation,
+                       "a released remote session is not idle yet (\(e.phase))")
+        XCTAssertEqual(d.recoveryOffersForTesting, 0)
+        d.offerRecoveryForTesting([record])
+        XCTAssertEqual(d.recoveryOffersForTesting, 0, "the recovery action must refuse while the engine is not idle")
+        if case .opening = e.phase { XCTFail("nothing may be opened for a blocked profile") }
+    }
+
+    func test_recoveryIsOfferedWhenTheEngineIsIdle() {
+        AppDelegate.testRecoveryPromptSuppressed = true
+        addTeardownBlock { @MainActor in AppDelegate.testRecoveryPromptSuppressed = false }
+        let d = AppDelegate()
+        XCTAssertTrue(d.engineForTesting.allowsDestructiveArchiveMutation)
+        d.offerRecoveryForTesting([heldRecord(for: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])])
+        XCTAssertEqual(d.recoveryOffersForTesting, 1)
     }
 
     /// Rescan Ignoring Archives edits the profile before it reopens. When the gate
