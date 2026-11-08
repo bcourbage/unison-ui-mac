@@ -3201,22 +3201,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
-    /// Help → "Report an Issue". Opens GitHub's new-issue form with
-    /// an Environment block pre-filled — app version, embedded Unison
-    /// version, macOS version, architecture. The repo's
-    /// `.github/ISSUE_TEMPLATE/bug_report.md` provides the rest of
-    /// the structure when the user clicks New Issue from the GitHub
-    /// UI directly; we override the body here because GitHub's URL
-    /// API can't combine `?template=` and `?body=` (body wins), and
-    /// the highest-value thing we can pre-fill is the version info
-    /// the user would otherwise have to look up.
-    // MARK: - Post-crash report prompt
+    // MARK: - Abandoned archive staging recovery
 
+    /// UserDefaults key for the post-crash report prompt below
+    /// (`checkForPriorCrashReport`); kept here so this section split moves no code.
     private static let crashReportMarkerKey = "crashReport.lastHandledDate"
 
-    /// Offer (once) to send a crash report if the app crashed since we last
-    /// asked. First run seeds the marker to "now" so reports predating this
-    /// feature are never surfaced.
     /// Fail-closed restart handling for an interrupted archive mutation
     /// (issue: crash-safe staging). This installs an APP-LEVEL profile block; it is
     /// NOT the same as a confirmed on-disk `lk`. A record blocks when it is
@@ -3370,6 +3360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    // MARK: - Command-line setup offer
+
     /// First-launch offer to set up unison in Terminal: shown once per launch,
     /// after the profile picker, when the preference is on, no block exists, and
     /// the state is row 11 or 12 (the offer startup behavior). Writes an
@@ -3449,6 +3441,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    // MARK: - Post-crash report prompt
+
+    /// Offer (once) to send a crash report if the app crashed since we last
+    /// asked. First run seeds the marker to "now" so reports predating this
+    /// feature are never surfaced.
     private func checkForPriorCrashReport(defaults: UserDefaults = .standard) {
         guard let marker = defaults.object(forKey: Self.crashReportMarkerKey) as? Date else {
             defaults.set(Date(), forKey: Self.crashReportMarkerKey)
@@ -3521,6 +3518,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         NSWorkspace.shared.activateFileViewerSelecting([toReveal])
     }
 
+    // MARK: - Issue report, About, and project links
+
+    /// Help → "Report an Issue". Opens GitHub's new-issue form with
+    /// an Environment block pre-filled — app version, embedded Unison
+    /// version, macOS version, architecture. The repo's
+    /// `.github/ISSUE_TEMPLATE/bug_report.md` provides the rest of
+    /// the structure when the user clicks New Issue from the GitHub
+    /// UI directly; we override the body here because GitHub's URL
+    /// API can't combine `?template=` and `?body=` (body wins), and
+    /// the highest-value thing we can pre-fill is the version info
+    /// the user would otherwise have to look up.
     @objc func reportIssue(_ sender: Any?) {
         openIssueReport()
     }
