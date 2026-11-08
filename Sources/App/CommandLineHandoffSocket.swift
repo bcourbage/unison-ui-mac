@@ -150,35 +150,13 @@ enum CommandLineHandoffSocket {
         return true
     }
 
-    /// Read one newline-terminated line (newline included) within the deadline, or
-    /// nil on timeout, EOF before a newline, or the size cap. A missing newline is
-    /// how a truncated, slow, or lost reply is detected. `fd` is non-blocking.
-    static func readLine(_ fd: Int32, deadline: Deadline) -> String? {
-        var buffer = [UInt8]()
-        var chunk = [UInt8](repeating: 0, count: 256)
-        while buffer.count < maxLineBytes {
-            guard waitReady(fd, events: Int16(POLLIN), deadline: deadline) else { return nil }
-            let want = min(chunk.count, maxLineBytes - buffer.count)
-            let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, want) }
-            if n > 0 {
-                for i in 0..<n {
-                    buffer.append(chunk[i])
-                    if chunk[i] == UInt8(ascii: "\n") { return String(decoding: buffer, as: UTF8.self) }
-                }
-                continue
-            }
-            if n < 0 && (errno == EINTR || errno == EAGAIN) { continue }
-            return nil   // 0 = EOF before newline; <0 = hard error
-        }
-        return nil
-    }
-
-    /// A stateful reader over one fd that preserves bytes read past a newline, so
-    /// consecutive `readLine` calls never lose data when several lines (e.g. a
-    /// two-phase interim and its final verdict) arrive in a single `read`. The
-    /// static `readLine` discards the tail of its last chunk, which is fine for a
-    /// server that reads exactly one line but loses the second line for a client
-    /// that reads two on one connection.
+    /// A buffered reader over one non-blocking fd. `readLine` returns one
+    /// newline-terminated line (newline included) within the deadline, or nil on
+    /// timeout, EOF before a newline, or the size cap; a missing newline is how a
+    /// truncated, slow, or lost message is detected. Bytes read past a newline are
+    /// kept for the next call, so several lines (e.g. a two-phase interim and its
+    /// final verdict) arriving in a single `read` are never lost. A reader used
+    /// for one line simply drops that remainder with itself.
     final class LineReader {
         private let fd: Int32
         private var buffer: [UInt8] = []
@@ -548,7 +526,7 @@ final class CommandLineHandoffServer: @unchecked Sendable {
         let ioDeadline = CommandLineHandoffSocket.Deadline(seconds: connectionTimeout)
         // A probe connection (election race detection) sends nothing and closes;
         // readLine returns nil within the deadline and we drop it.
-        guard let line = CommandLineHandoffSocket.readLine(conn, deadline: ioDeadline),
+        guard let line = CommandLineHandoffSocket.LineReader(conn).readLine(deadline: ioDeadline),
               let envelope = CommandLineHandoff.decodeEnvelope(line) else { return }
         let callerDeadline = CommandLineHandoffSocket.Deadline(uptimeNanos: envelope.deadlineUptimeNanos)
         switch handler(envelope.request, callerDeadline) {
