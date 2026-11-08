@@ -154,20 +154,30 @@ enum CommandLineSetupCoordinator {
             return .appendable
         }
         let resolved = fs.realPath(ofPath: file) ?? file
-        let wholeParses = env.parses(contents, account.loginShellPath)
+        return evaluateShellFile(contents: contents, resolvedPath: resolved,
+                                 shellPath: account.loginShellPath, env: env, defaults: defaults)
+    }
+
+    /// The complete zsh/bash editable bound on `contents`: whole-file and prefix
+    /// parse, heredoc, metadata and ownership. The status read and the write's
+    /// guarding read each call this on their own bytes, so the two evaluations
+    /// cannot drift apart while each still judges the content it will act on.
+    static func evaluateShellFile(contents: String, resolvedPath: String, shellPath: String,
+                                  env: CommandLineSetupEnvironment,
+                                  defaults: UserDefaults) -> CommandLineSetupBound.Evaluation {
+        let wholeParses = env.parses(contents, shellPath)
         let prefixText: String
         if case .single(let beginLine, _) = CommandLineSetupBlock.markerArrangement(inContents: contents) {
             prefixText = contents.components(separatedBy: "\n")[0..<beginLine].joined(separator: "\n")
         } else {
             prefixText = ""
         }
-        let prefixParses = prefixText.isEmpty ? true : env.parses(prefixText, account.loginShellPath)
-        let metadataOK = env.metadataOK(resolved)
+        let prefixParses = prefixText.isEmpty ? true : env.parses(prefixText, shellPath)
         return CommandLineSetupBound.evaluateExistingFile(
             contents: contents, wholeFileParses: wholeParses, prefixParses: prefixParses,
-            metadataOK: metadataOK,
+            metadataOK: env.metadataOK(resolvedPath),
             ownershipMatches: { blockText in
-                CommandLineSetupRecordStore.isOwned(path: resolved,
+                CommandLineSetupRecordStore.isOwned(path: resolvedPath,
                                                     blockHash: CommandLineSetupBlock.hash(ofBlockText: blockText),
                                                     defaults: defaults)
             })
@@ -252,22 +262,8 @@ enum CommandLineSetupCoordinator {
             return CommandLineSetupRecordStore.isOwned(
                 path: resolvedPath, blockHash: CommandLineSetupBlock.hash(ofBlockText: contents), defaults: defaults)
         }
-        let wholeParses = env.parses(contents, shellPath)
-        let prefixText: String
-        if case .single(let b, _) = CommandLineSetupBlock.markerArrangement(inContents: contents) {
-            prefixText = contents.components(separatedBy: "\n")[0..<b].joined(separator: "\n")
-        } else {
-            prefixText = ""
-        }
-        let prefixParses = prefixText.isEmpty ? true : env.parses(prefixText, shellPath)
-        let evaluation = CommandLineSetupBound.evaluateExistingFile(
-            contents: contents, wholeFileParses: wholeParses, prefixParses: prefixParses,
-            metadataOK: env.metadataOK(resolvedPath),
-            ownershipMatches: { block in
-                CommandLineSetupRecordStore.isOwned(path: resolvedPath,
-                                                    blockHash: CommandLineSetupBlock.hash(ofBlockText: block),
-                                                    defaults: defaults)
-            })
+        let evaluation = evaluateShellFile(contents: contents, resolvedPath: resolvedPath,
+                                           shellPath: shellPath, env: env, defaults: defaults)
         switch (intent, evaluation) {
         case (.append, .appendable): return true
         case (.rewrite, .rewritable): return true
