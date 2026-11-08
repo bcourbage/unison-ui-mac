@@ -345,9 +345,9 @@ enum VersionCheck {
         case launchFailed(String)
     }
 
-    /// Classified probe outcome — the distinct cases the review requires us to
-    /// tell apart (timeout, cancellation, host-key rejection, auth failure,
-    /// launch failure, malformed output) rather than collapsing to one string.
+    /// Classified probe outcome: the distinct cases to tell apart (timeout,
+    /// cancellation, host-key rejection, auth failure, launch failure,
+    /// malformed output) rather than collapsing to one string.
     enum ProbeOutcome: Equatable {
         case version(String)
         case timedOut
@@ -372,7 +372,7 @@ enum VersionCheck {
     /// exit), measured from just after the local `ssh` spawn returns — it does
     /// not include the (synchronous, fast) local launch. `ConnectTimeout=5`
     /// bounds only TCP/SSH connect; a wedged ProxyCommand or a hung remote
-    /// `servercmd -version` needs this outer bound (Finding #12).
+    /// `servercmd -version` needs this outer bound.
     static let defaultDeadline: TimeInterval = 20
     /// Grace between SIGTERM and SIGKILL when tearing a child down.
     static let terminateGrace: TimeInterval = 2
@@ -401,12 +401,12 @@ enum VersionCheck {
         // `--` ends SSH's OWN option parsing and must come BEFORE the
         // destination: ssh treats the first non-option token as the
         // destination and EVERYTHING after it as the remote command, verbatim.
-        // Putting `--` after the destination (the previous ordering) made the
-        // remote command literally `-- servercmd -version`, i.e. ssh asked the
-        // remote shell to run `--` — wrong. With `--` before the destination,
-        // ssh's options stop there, the next token is the destination, and the
-        // remote command is exactly `servercmd -version`. (`--` also protects a
-        // destination that begins with `-` from being read as an ssh option.)
+        // Placed after the destination, `--` would become part of the remote
+        // command, literally `-- servercmd -version`, so ssh would ask the remote
+        // shell to run `--`. Placed before it, ssh's options stop there, the next
+        // token is the destination, and the remote command is exactly
+        // `servercmd -version`. (`--` also protects a destination that begins
+        // with `-` from being read as an ssh option.)
         args.append("--")
         args.append(sshRoot.user.map { "\($0)@\(sshRoot.host)" } ?? sshRoot.host)
         args.append(servercmd)
