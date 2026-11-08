@@ -47,6 +47,10 @@ enum ProfileRootResolver {
         var reliable: Bool
         /// Why resolution was not reliable (empty ⇒ reliable). Order-preserving.
         var issues: [Issue]
+        /// Whether the top-level profile file itself was found, decided by the
+        /// same read that resolution used. A missing include is an `issue`, not
+        /// a missing profile.
+        var profileFound: Bool = true
     }
 
     enum Issue: Equatable {
@@ -79,9 +83,14 @@ enum ProfileRootResolver {
     /// Resolve `profile` (a profile name WITHOUT the `.prf` extension) within
     /// `unisonDirectory`. `read` is injectable for tests; it defaults to the
     /// filesystem.
+    ///
+    /// `exactTopLevelFile` reads exactly `profile` as the top-level file, with no
+    /// `.prf` fallback, for callers that act on one named file. Nested
+    /// `include`/`source` directives keep Unison's semantics either way.
     static func resolve(
         unisonDirectory: String,
         profile: String,
+        exactTopLevelFile: Bool = false,
         read: (String) -> ReadResult = ProfileRootResolver.filesystemRead
     ) -> Resolution {
         var roots: [String] = []
@@ -91,6 +100,7 @@ enum ProfileRootResolver {
         var openSet = Set<String>()
         var fileCount = 0
         var bounded = false
+        var profileFound = false
 
         func canonical(_ path: String) -> String {
             (path as NSString).standardizingPath
@@ -105,7 +115,7 @@ enum ProfileRootResolver {
 
         // Visit one directive/target. `addExt` mirrors upstream's `add_ext`
         // (`.prf` fallback), `required` mirrors non-`?` vs `?`.
-        func visit(token: String, addExt: Bool, required: Bool) {
+        func visit(token: String, addExt: Bool, required: Bool, isTopLevel: Bool = false) {
             if bounded { return }
 
             // Resolve the on-disk path exactly as `profilePathname` does.
@@ -125,6 +135,8 @@ enum ProfileRootResolver {
                     result = baseResult
                 }
             }
+
+            if isTopLevel { profileFound = result != .missing }
 
             switch result {
             case .missing:
@@ -194,12 +206,13 @@ enum ProfileRootResolver {
 
         // The top-level profile is read exactly like `include <profile>`
         // (add_ext, required).
-        visit(token: profile, addExt: true, required: true)
+        visit(token: profile, addExt: !exactTopLevelFile, required: true, isTopLevel: true)
 
         return Resolution(roots: roots,
                           rootaliases: aliases,
                           reliable: issues.isEmpty,
-                          issues: issues)
+                          issues: issues,
+                          profileFound: profileFound)
     }
 
     /// `Util.fileInUnisonDir` = `Filename.concat unisonDir token`, POSIX-

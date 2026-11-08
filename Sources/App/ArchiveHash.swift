@@ -155,7 +155,8 @@ enum ArchiveHash {
     /// itself: every archive action fails closed on it.
     ///
     /// `.profileFileMissing` means the profile file itself is absent. It is
-    /// decided by the top-level read, never by the resolver's issue list: a
+    /// decided by the resolver's own top-level read (`profileFound`), never by its
+    /// issue list and never by a second read that could disagree: a
     /// profile that exists but sources a file that is missing (even one named
     /// like itself) is unresolved, not missing.
     static func effectiveRoots(
@@ -164,14 +165,13 @@ enum ArchiveHash {
         lookup: ProfileLookup = .engine,
         read: (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead
     ) -> Swift.Result<[String], Failure> {
-        let token = lookup == .prfFile ? profile + ".prf" : profile
-        let base = ProfileRootResolver.fileInUnisonDir(unisonDirectory, token)
-        let withExt = ProfileRootResolver.fileInUnisonDir(unisonDirectory, token + ".prf")
-        if read(base) == .missing && read(withExt) == .missing {
-            return .failure(.profileFileMissing)
-        }
+        let exact = lookup == .prfFile
         let resolution = ProfileRootResolver.resolve(
-            unisonDirectory: unisonDirectory, profile: token, read: read)
+            unisonDirectory: unisonDirectory,
+            profile: exact ? profile + ".prf" : profile,
+            exactTopLevelFile: exact,
+            read: read)
+        guard resolution.profileFound else { return .failure(.profileFileMissing) }
         guard resolution.reliable else { return .failure(.rootsUnresolved) }
         return .success(resolution.roots)
     }

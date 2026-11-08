@@ -294,4 +294,25 @@ final class ProfileRootResolverTests: XCTestCase {
         XCTAssertTrue(r.issues.contains(.boundExceeded))
         XCTAssertLessThanOrEqual(n, R.maxFiles + R.maxDepth + 2, "traversal must be bounded")
     }
+
+    // MARK: exact top-level file and profileFound
+
+    func test_exactTopLevel_doesNotFallBackToAppendingPrf() throws {
+        try write("P.prf.prf", "root = /a\n")
+        let exact = R.resolve(unisonDirectory: dir, profile: "P.prf", exactTopLevelFile: true)
+        XCTAssertFalse(exact.profileFound)
+        XCTAssertEqual(exact.roots, [])
+        // The engine's lookup still falls back.
+        let engine = R.resolve(unisonDirectory: dir, profile: "P.prf")
+        XCTAssertTrue(engine.profileFound)
+        XCTAssertEqual(engine.roots, ["/a"])
+    }
+
+    func test_profileFound_isAboutTheTopLevelOnly() throws {
+        try write("P.prf", "source P\n")
+        let r = R.resolve(unisonDirectory: dir, profile: "P")
+        XCTAssertTrue(r.profileFound)
+        XCTAssertFalse(r.reliable)
+        XCTAssertFalse(R.resolve(unisonDirectory: dir, profile: "Nope").profileFound)
+    }
 }

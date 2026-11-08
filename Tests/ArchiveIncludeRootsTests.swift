@@ -147,6 +147,19 @@ final class ArchiveIncludeRootsTests: XCTestCase {
         XCTAssertEqual(reset("P"), .failure(.profileFileMissing))
     }
 
+    /// `P.prf` is absent but `P.prf.prf` exists. The engine's lookup would fall
+    /// back to it; the editor's actions name `P.prf`, so they must not.
+    func test_editorActions_doNotFallBackToADoublePrfFile() throws {
+        try archives("/Users/test/Prf/A", "/Users/test/Prf/B")
+        try write("P.prf.prf", "root = /Users/test/Prf/A\nroot = /Users/test/Prf/B\n")
+
+        XCTAssertEqual(reset("P"), .failure(.profileFileMissing))
+        let offer = deleteOffer("P")
+        XCTAssertTrue(offer.files.isEmpty)
+        XCTAssertTrue(offer.hashes.isEmpty)
+        XCTAssertFalse(offer.removalOffered)
+    }
+
     // MARK: Hashes
 
     func test_computeAll_followsIncludesLikeTheEquivalentDirectProfile() throws {
