@@ -100,6 +100,9 @@ enum ArchiveHash {
         case profileFileMissing
         case noRoots
         case noLocalRoot
+        /// The profile's roots depend on `include`/`source` files that cannot
+        /// be read or followed, so which archives it uses is unknown.
+        case rootsUnresolved
     }
 
     /// Compute the hash for the given profile's roots. The profile
@@ -129,12 +132,29 @@ enum ArchiveHash {
         profile: String,
         hostname: String = Self.systemHostname
     ) -> Swift.Result<MultiResult, Failure> {
-        let url = URL(fileURLWithPath: unisonDirectory)
-            .appendingPathComponent("\(profile).prf")
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+        switch effectiveRoots(unisonDirectory: unisonDirectory, profile: profile) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let roots): return computeAll(forRoots: roots, hostname: hostname)
+        }
+    }
+
+    /// The roots a profile actually uses, following `include` and `source`
+    /// the way Unison does (`ProfileRootResolver`). A profile whose include
+    /// graph cannot be followed completely is `.rootsUnresolved`, never
+    /// treated as having no roots or as having only the roots it spells out
+    /// itself: every archive action fails closed on it.
+    static func effectiveRoots(
+        unisonDirectory: String,
+        profile: String,
+        read: (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead
+    ) -> Swift.Result<[String], Failure> {
+        let resolution = ProfileRootResolver.resolve(
+            unisonDirectory: unisonDirectory, profile: profile, read: read)
+        if resolution.issues.contains(.missingRequired(token: profile)) {
             return .failure(.profileFileMissing)
         }
-        return computeAllFromProfileText(text, hostname: hostname)
+        guard resolution.reliable else { return .failure(.rootsUnresolved) }
+        return .success(resolution.roots)
     }
 
     /// Compute the (first local root's) hash from raw .prf text. Broken
@@ -165,8 +185,14 @@ enum ArchiveHash {
         _ text: String,
         hostname: String
     ) -> Swift.Result<MultiResult, Failure> {
-        let doc = ProfileDocument.parse(text)
-        let rootValues = doc.values(forKey: "root")
+        computeAll(forRoots: ProfileDocument.parse(text).values(forKey: "root"), hostname: hostname)
+    }
+
+    /// Compute the archive identity for every local root of `rootValues`.
+    static func computeAll(
+        forRoots rootValues: [String],
+        hostname: String
+    ) -> Swift.Result<MultiResult, Failure> {
         if let failure = eligibilityFailure(forRoots: rootValues, hostname: hostname) {
             return .failure(failure)
         }
