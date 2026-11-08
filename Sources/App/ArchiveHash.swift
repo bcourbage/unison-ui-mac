@@ -146,6 +146,18 @@ enum ArchiveHash {
         computeAllFromProfileText(text, hostname: hostname).map { $0.entries[0] }
     }
 
+    /// Why a profile's roots cannot identify local archives, or nil when they
+    /// can: there are no roots, or none of them is local. This is the gate
+    /// every archive action applies before it touches anything; callers that
+    /// need no digest use it directly instead of computing hashes.
+    static func eligibilityFailure(forRoots rootValues: [String], hostname: String) -> Failure? {
+        guard !rootValues.isEmpty else { return .noRoots }
+        guard rootValues.contains(where: { canonicalize($0, hostname: hostname).isLocal }) else {
+            return .noLocalRoot
+        }
+        return nil
+    }
+
     /// Compute the archive identity for every local root from raw .prf
     /// text. The single-root callers (`compute`/`computeFromProfileText`)
     /// just take the first entry.
@@ -155,11 +167,12 @@ enum ArchiveHash {
     ) -> Swift.Result<MultiResult, Failure> {
         let doc = ProfileDocument.parse(text)
         let rootValues = doc.values(forKey: "root")
-        guard !rootValues.isEmpty else { return .failure(.noRoots) }
+        if let failure = eligibilityFailure(forRoots: rootValues, hostname: hostname) {
+            return .failure(failure)
+        }
 
         let canonicalForms = rootValues.map { canonicalize($0, hostname: hostname) }
         let localForms = canonicalForms.filter { $0.isLocal }
-        guard !localForms.isEmpty else { return .failure(.noLocalRoot) }
         let allRootsLocal = localForms.count == canonicalForms.count
 
         // rootsName ordering: upstream uses OCaml's `compare`, which on

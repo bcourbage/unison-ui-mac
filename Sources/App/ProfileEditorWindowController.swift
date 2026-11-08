@@ -601,8 +601,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// What Reset Archives offers for a profile: the located archives, or the
     /// reason none can be computed (the user-actionable cases, where nothing
-    /// is offered). The profile file is read once: the same text feeds the
-    /// gate (`ArchiveHash`) and the roots the archives are matched against.
+    /// is offered). The profile file is read and parsed once: the roots feed
+    /// both the gate (`ArchiveHash.eligibilityFailure`) and the header matcher.
     nonisolated static func resetArchiveCandidates(
         profile: String,
         unisonDirectory: String,
@@ -612,10 +612,12 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             return .failure(.profileFileMissing)
         }
-        return ArchiveHash.computeAllFromProfileText(text, hostname: localHostname)
-            .map { _ in locateArchives(roots: ProfileDocument.parse(text).values(forKey: "root"),
-                                       unisonDirectory: unisonDirectory,
-                                       localHostname: localHostname) }
+        let roots = ProfileDocument.parse(text).values(forKey: "root")
+        if let failure = ArchiveHash.eligibilityFailure(forRoots: roots, hostname: localHostname) {
+            return .failure(failure)
+        }
+        return .success(locateArchives(roots: roots, unisonDirectory: unisonDirectory,
+                                       localHostname: localHostname))
     }
 
     /// What Delete offers to do with a profile's archives: the located files
