@@ -10,6 +10,12 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
 
     typealias Completion = @MainActor (_ profile: String) -> Void
 
+    /// The smallest content area the picker can be resized to: wide enough
+    /// that profile names stay distinguishable and Quit and Run are not
+    /// clipped, tall enough for the list's own minimum height and the
+    /// button row.
+    static let minimumContentSize = NSSize(width: 360, height: 260)
+
     private let unisonDirectory: String
     private let onComplete: Completion
     /// Set by the owner: the context menu's Check Remote Command for a profile.
@@ -53,12 +59,23 @@ final class ProfileWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered, defer: false
         )
         window.title = "Profiles"
+        window.contentMinSize = Self.minimumContentSize
         window.center()
         super.init(window: window)
         // setFrameAutosaveName must be set after the window is owned by a
         // controller; NSWindowController will then persist+restore frame
         // under this key in NSUserDefaults.
         windowFrameAutosaveName = "ProfileWindow"
+        // A frame saved before the minimum existed can be narrower than the
+        // window now allows; raise it, keeping the top-left corner in place.
+        let content = window.contentRect(forFrameRect: window.frame).size
+        let clamped = NSSize(width: max(content.width, Self.minimumContentSize.width),
+                             height: max(content.height, Self.minimumContentSize.height))
+        if clamped != content {
+            let top = window.frame.maxY
+            window.setContentSize(clamped)
+            window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
+        }
         window.delegate = self
         configure()
         reload()
