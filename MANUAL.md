@@ -1455,21 +1455,34 @@ The app emits diagnostic info to macOS Unified Logging under subsystem
 # Live tail of everything the app is logging:
 log stream --predicate 'subsystem == "net.courbage.unison-ui-mac"'
 
-# Filter to just bridge events (OCaml↔Swift):
-log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "bridge"'
+# Only the SSH version check that runs when a profile opens:
+log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "version-check"'
 
-# Or just the OCaml status messages forwarded from displayStatus:
-log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "ocaml-status"'
+# Only reconcile-window events (closing mid-sync, Stop, a stalled sync):
+log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "reconcile"'
 
 # Last hour of everything, in one shot:
 log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 1h
 ```
 
-Categories: `lifecycle` (app/window open-close), `bridge`
-(OCaml↔Swift events), `reconcile` (reconcile-window state),
-`ocaml-status` (status messages forwarded from Unison's
-`displayStatus`), `version-check` (the SSH version probe; see below),
-`general` (the legacy `TraceLog` catch-all).
+Messages are filed under three categories. `general` holds almost
+everything the app logs, including the status messages forwarded from
+Unison. `version-check` is the SSH version probe (see below), and
+`reconcile` covers closing a window mid-sync, pressing Stop, and a sync
+that has made no progress for a while.
+
+Most of what the app logs names a profile, a path, or a host, so Unified
+Logging redacts it. Every message in `general` appears as `<private>` in
+Console and in `log stream`, even in a Debug build. The category and the
+time stay visible, which is enough to see that something happened but not
+what. This protects the file names and servers in a log you share. To see
+the values on your own Mac, turn on private-data logging, which is a
+system-wide setting, and turn it off again afterward:
+
+```sh
+sudo log config --mode "private_data:on"
+sudo log config --mode "private_data:off"
+```
 
 Unified Logging gives you filterable categories, structured search, and
 persistence across reboots without the disk-hygiene problem of a stray
