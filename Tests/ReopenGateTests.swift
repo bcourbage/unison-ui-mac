@@ -13,14 +13,12 @@ final class ReopenGateTests: XCTestCase {
 
     /// These tests drive the real reopen, which would start real work on the
     /// process-wide OCaml engine and leave it in flight for the next engine test.
-    /// The coordinator still changes state, which is what they assert.
-    override func setUp() async throws {
-        try await super.setUp()
-        AppDelegate.testSuppressEngineEffects = true
-    }
-    override func tearDown() async throws {
-        AppDelegate.testSuppressEngineEffects = false
-        try await super.tearDown()
+    /// The delegate skips the engine effects; the coordinator still changes
+    /// state, which is what they assert.
+    private func makeDelegate() -> AppDelegate {
+        let d = AppDelegate()
+        d.suppressEngineEffectsForTesting = true
+        return d
     }
 
     private func makeDirectory(profile: String, roots: [String]) throws -> String {
@@ -62,7 +60,7 @@ final class ReopenGateTests: XCTestCase {
         addTeardownBlock { for p in [a, b] { try? FileManager.default.removeItem(atPath: p) } }
         let dir = try makeDirectory(profile: "P", roots: [a, b])
 
-        let d = AppDelegate()
+        let d = makeDelegate()
         d.setUnisonDirectoryForTesting(dir)
         let e = d.engineForTesting
         openToReady(e, profile: "P")                       // opened while nothing was held
@@ -93,7 +91,7 @@ final class ReopenGateTests: XCTestCase {
         addTeardownBlock { for p in [a, b] { try? FileManager.default.removeItem(atPath: p) } }
         let dir = try makeDirectory(profile: "P", roots: [a, "ssh://user@host//remote"])
 
-        let d = AppDelegate()
+        let d = makeDelegate()
         d.setUnisonDirectoryForTesting(dir)
         let e = d.engineForTesting
         openToReady(e, profile: "P", remote: true)
@@ -127,7 +125,7 @@ final class ReopenGateTests: XCTestCase {
     func test_recoveryIsOfferedWhenTheEngineIsIdle() {
         AppDelegate.testRecoveryPromptSuppressed = true
         addTeardownBlock { @MainActor in AppDelegate.testRecoveryPromptSuppressed = false }
-        let d = AppDelegate()
+        let d = makeDelegate()
         XCTAssertTrue(d.engineForTesting.allowsDestructiveArchiveMutation)
         d.offerRecoveryForTesting([heldRecord(for: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])])
         XCTAssertEqual(d.recoveryOffersForTesting, 1)
@@ -146,7 +144,7 @@ final class ReopenGateTests: XCTestCase {
         let dir = try makeDirectory(profile: "P", roots: [a, b])
         let original = try String(contentsOfFile: dir + "/P.prf", encoding: .utf8)
 
-        let d = AppDelegate()
+        let d = makeDelegate()
         d.setUnisonDirectoryForTesting(dir)
         openToReady(d.engineForTesting, profile: "P")
         guard case .success(let hashes) = ArchiveHash.computeAll(forRoots: [a, b], hostname: ArchiveHash.systemHostname) else {
@@ -163,7 +161,7 @@ final class ReopenGateTests: XCTestCase {
 
     func test_reopen_proceedsWhenNothingIsHeld() throws {
         let dir = try makeDirectory(profile: "P", roots: ["/Users/test/Documents", "/Users/test/Backup"])
-        let d = AppDelegate()
+        let d = makeDelegate()
         d.setUnisonDirectoryForTesting(dir)
         let e = d.engineForTesting
         openToReady(e, profile: "P")

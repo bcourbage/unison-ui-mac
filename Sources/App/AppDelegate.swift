@@ -88,6 +88,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Counts recovery offers a hosted test suppressed, so a test can tell an
     /// offer from a refusal. Not read in production.
     private(set) var recoveryOffersForTesting = 0
+    #if DEBUG
+    /// Set by a hosted test on the delegate it creates, to skip the effects that
+    /// drive the real OCaml engine (connect, scan, sync, diff, close, abort). The
+    /// coordinator still changes state, so the test can assert the phase reached.
+    var suppressEngineEffectsForTesting = false
+    #endif
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
     /// updater), in which case the Settings window omits the Updates tab.
     var updater: (any UpdatePreferences)?
@@ -349,10 +355,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     private func execute(_ effect: EngineSessionCoordinator.Effect) {
+        #if DEBUG
         // Hosted tests that exercise driver logic must not start real work on the
         // process-wide OCaml engine: an operation left in flight completes into the
         // next engine test's handlers and locks its archives.
-        if Self.testSuppressEngineEffects {
+        if suppressEngineEffectsForTesting {
             switch effect {
             case .beginConnect, .beginScan, .beginSync, .beginDiff, .closeConnection, .abortSync:
                 return
@@ -360,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 break
             }
         }
+        #endif
         switch effect {
         case .showSession(let s, let profile):
             driveShowSession(s, profile: profile)
@@ -840,11 +848,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Set by hosted tests to skip the interrupted-operation recovery prompt
     /// (its `runModal` would block the suite). Default false in production.
     static var testRecoveryPromptSuppressed = false
-
-    /// Set by hosted tests to skip the effects that drive the real OCaml engine
-    /// (connect, scan, sync, diff, close, abort). The coordinator still changes
-    /// state, so a test can assert the phase it reached. Default false in production.
-    static var testSuppressEngineEffects = false
 
     private func drivePickBlockedByCommandLineRequest(profile: String) {
         log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
