@@ -550,16 +550,16 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// from a sync crash mid-write) without having to wait for the
     /// reactive recovery to surface the "inconsistent state" fatal.
     ///
-    /// The archives are found by matching the roots recorded in each archive
-    /// header (`ArchiveMatcher`). `ArchiveHash`, which replicates upstream's
-    /// MD5 logic, decides only whether the profile can be reset at all: its
-    /// file is readable, it has roots, and one is local. The user can verify
-    /// against `unison -showArchiveName <profile>` if they want belt-and-
+    /// The profile's roots are validated first: the file must be readable,
+    /// have roots, and have at least one local root. The archives are then
+    /// found by matching those roots against the roots recorded in each
+    /// archive header (`ArchiveMatcher`); no archive name is computed. The
+    /// user can verify against `unison -showArchiveName <profile>` if they want belt-and-
     /// suspenders confirmation that we'd touch the right files.
     @objc private func resetArchivesAction(_ sender: Any?) {
         guard let profile = selectedProfile() else { NSSound.beep(); return }
 
-        // Compute the hash. Surface failures verbatim — these are the
+        // Validate the roots. Surface failures verbatim — these are the
         // user-actionable cases (profile file missing, no roots, no
         // local root) where we should NOT silently delete anything.
         let result = Self.resetArchiveCandidates(profile: profile,
