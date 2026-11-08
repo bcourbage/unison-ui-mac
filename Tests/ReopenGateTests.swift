@@ -64,6 +64,8 @@ final class ReopenGateTests: XCTestCase {
         if case .opening = e.phase { XCTFail("the reopen must not start a session for a profile whose archives are held") }
         XCTAssertNil(e.currentSession, "the stale session is released and nothing new is opened")
         XCTAssertEqual(d.recoveryOffersForTesting, 0, "recovery is offered from the picker, not from the teardown")
+        XCTAssertTrue(d.pickerStateForTesting.visible, "the picker is shown after a blocked reopen")
+        XCTAssertFalse(e.openRequestPending)
     }
 
     /// A remote session's close can still be pending when the reopen is refused.
@@ -95,9 +97,19 @@ final class ReopenGateTests: XCTestCase {
         XCTAssertFalse(e.allowsDestructiveArchiveMutation,
                        "a released remote session is not idle yet (\(e.phase))")
         XCTAssertEqual(d.recoveryOffersForTesting, 0)
+
+        // The user is left with the picker, the blocked profile selected.
+        let picker = d.pickerStateForTesting
+        XCTAssertTrue(picker.visible, "the notice must leave a picker to act from")
+        XCTAssertEqual(picker.selected, "P")
+
+        // Choosing it while the remote close is still pending refuses recovery and opens nothing.
+        XCTAssertFalse(d.profileSelectedForTesting("P", args: []))
+        XCTAssertEqual(d.recoveryOffersForTesting, 0, "recovery must refuse while the engine is not idle")
         d.offerRecoveryForTesting([record])
-        XCTAssertEqual(d.recoveryOffersForTesting, 0, "the recovery action must refuse while the engine is not idle")
+        XCTAssertEqual(d.recoveryOffersForTesting, 0)
         if case .opening = e.phase { XCTFail("nothing may be opened for a blocked profile") }
+        XCTAssertFalse(e.openRequestPending, "no reopen may be queued")
     }
 
     func test_recoveryIsOfferedWhenTheEngineIsIdle() {

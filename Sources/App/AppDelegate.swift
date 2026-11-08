@@ -1116,6 +1116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         if gate.blocksOpening {
             log.write("AppDelegate: reopen of '\(profile)' blocked by abandoned staging — returning to the picker")
             restoreIgnoreArchivesPrfIfNeeded()
+            // The picker was closed when the session opened; bring it back with the
+            // profile selected, so the notice has a window to act from.
+            showProfilePicker(select: profile)
             presentBlockedReopenNotice(profile: profile, gate: gate)
             return
         }
@@ -3796,6 +3799,11 @@ extension AppDelegate {
     /// test can check that it consults the open gate.
     func reopenCurrentProfileFreshForTesting(_ profile: String) {
         reopenCurrentProfileFresh(profile, failedReason: "test reopen")
+    }
+    /// Whether the picker is on screen, and which profile it has selected.
+    var pickerStateForTesting: (visible: Bool, selected: String?) {
+        (profileWindowController?.window?.isVisible ?? false,
+         profileWindowController?.currentlySelectedProfile())
     }
     /// The real recovery offer, so a test can check it refuses while the engine
     /// is not idle.
