@@ -81,6 +81,23 @@ final class ProfileStagingGateTests: XCTestCase {
         XCTAssertEqual(gate("Broken", []), .clear)
     }
 
+    /// `P.prf` sources `P`, which does not exist. The failed read is a missing
+    /// include, not a missing profile, so the profile must stay blocked.
+    func test_selfSourceWithNoSuchFile_isUnresolvedNotClear() throws {
+        try write("P.prf", "source P\n" + roots)
+        let r = record("/q/r", hashes: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
+        XCTAssertEqual(gate("P", [r]), .unresolved([r]))
+    }
+
+    /// The gate follows the engine's lookup: an extensionless `P` wins over `P.prf`.
+    func test_gate_usesTheEnginesProfileLookup() throws {
+        try write("P", roots)
+        try write("P.prf", "root = /Users/test/Other/A\nroot = /Users/test/Other/B\n")
+        let engineHashes = try hashes(of: "P")
+        let r = record("/q/r", hashes: engineHashes)
+        XCTAssertEqual(gate("P", [r]), .confirmed([r]))
+    }
+
     func test_includeCycle_isUnresolved() throws {
         try write("A.prf", "include B\n")
         try write("B.prf", "include A\n")

@@ -48,6 +48,21 @@ final class ArchiveIncludeRootsTests: XCTestCase {
         }
     }
 
+    /// Archives for a local pair at `a` and `b`, with their authentic names.
+    @discardableResult
+    private func archives(_ a: String, _ b: String) throws -> [String] {
+        let pair = [a, b].map { "//\(host)/\($0)" }.sorted().joined(separator: ", ")
+        return try [a, b].map { root in
+            let thisRoot = "//\(host)/\(root)"
+            let header = "Unison archive format 23\nArchive for root \(thisRoot) synchronizing roots \(pair)\nWritten at 2026-06-28 at 23:19:45 - Unicode case insensitive mode.\n"
+            var data = Data(header.utf8); data.append(contentsOf: [0xff, 0x00, 0xfe])
+            let hash = ArchiveHash.md5Hex("\(thisRoot);\(pair);23")
+            try data.write(to: URL(fileURLWithPath: "\(dir!)/ar\(hash)"))
+            try Data("fp".utf8).write(to: URL(fileURLWithPath: "\(dir!)/fp\(hash)"))
+            return hash
+        }
+    }
+
     private func reset(_ name: String) -> Swift.Result<ProfileEditorWindowController.ArchiveLocation, ArchiveHash.Failure> {
         ProfileEditorWindowController.resetArchiveCandidates(profile: name, unisonDirectory: dir, localHostname: host)
     }
@@ -111,6 +126,27 @@ final class ArchiveIncludeRootsTests: XCTestCase {
         XCTAssertTrue(text.contains("could not be resolved"), text)
     }
 
+    // MARK: Which file is the profile
+
+    /// An extensionless `p` and `p.prf` can both exist and describe different
+    /// replicas. The engine opens `p`, but the editor's Reset and Delete act on
+    /// the selected `p.prf` (the file Delete trashes), so they must read that file.
+    func test_editorActions_readTheSelectedPrfFile_notAnExtensionlessSibling() throws {
+        let prfHashes = try archives("/Users/test/Prf/A", "/Users/test/Prf/B")
+        try archives("/Users/test/Bare/A", "/Users/test/Bare/B")
+        try write("P.prf", "root = /Users/test/Prf/A\nroot = /Users/test/Prf/B\n")
+        try write("P", "root = /Users/test/Bare/A\nroot = /Users/test/Bare/B\n")
+
+        guard case .success(let location) = reset("P") else { return XCTFail("P.prf should resolve") }
+        XCTAssertEqual(location.hashes, prfHashes.sorted())
+        XCTAssertEqual(deleteOffer("P").hashes, prfHashes.sorted())
+    }
+
+    func test_editorActions_missingPrfIsProfileFileMissing_evenWithAnExtensionlessFile() throws {
+        try write("P", rootLines)
+        XCTAssertEqual(reset("P"), .failure(.profileFileMissing))
+    }
+
     // MARK: Hashes
 
     func test_computeAll_followsIncludesLikeTheEquivalentDirectProfile() throws {
@@ -127,6 +163,21 @@ final class ArchiveIncludeRootsTests: XCTestCase {
         try unresolved("Broken")
         XCTAssertEqual(ArchiveHash.computeAll(unisonDirectory: dir, profile: "Broken", hostname: host).failureValue,
                        .rootsUnresolved)
+    }
+
+    /// `p.prf` exists and sources `p`, which does not exist: that is a missing
+    /// include, not a missing profile.
+    func test_computeAll_selfSourceWithNoSuchFileIsUnresolvedNotMissing() throws {
+        try write("P.prf", "source P\n" + rootLines)
+        XCTAssertEqual(ArchiveHash.computeAll(unisonDirectory: dir, profile: "P", hostname: host).failureValue,
+                       .rootsUnresolved)
+    }
+
+    func test_resetWording_coversMalformedFilesAndCycles() {
+        let text = ProfileEditorWindowController.rootsUnresolvedResetText
+        XCTAssertTrue(text.contains("could not be resolved"), text)
+        XCTAssertTrue(text.contains("malformed"), text)
+        XCTAssertTrue(text.contains("loop"), text)
     }
 
     func test_computeAll_missingProfileIsStillProfileFileMissing() {

@@ -138,21 +138,40 @@ enum ArchiveHash {
         }
     }
 
+    /// Which file is "the profile" when a name could mean two.
+    enum ProfileLookup {
+        /// The engine's lookup: an extensionless file named `profile` wins,
+        /// else `profile.prf`. Use this to decide what the engine will open.
+        case engine
+        /// Exactly `profile.prf`. Use this for actions that name and act on
+        /// that file, such as the editor's Reset and Delete.
+        case prfFile
+    }
+
     /// The roots a profile actually uses, following `include` and `source`
     /// the way Unison does (`ProfileRootResolver`). A profile whose include
     /// graph cannot be followed completely is `.rootsUnresolved`, never
     /// treated as having no roots or as having only the roots it spells out
     /// itself: every archive action fails closed on it.
+    ///
+    /// `.profileFileMissing` means the profile file itself is absent. It is
+    /// decided by the top-level read, never by the resolver's issue list: a
+    /// profile that exists but sources a file that is missing (even one named
+    /// like itself) is unresolved, not missing.
     static func effectiveRoots(
         unisonDirectory: String,
         profile: String,
+        lookup: ProfileLookup = .engine,
         read: (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead
     ) -> Swift.Result<[String], Failure> {
-        let resolution = ProfileRootResolver.resolve(
-            unisonDirectory: unisonDirectory, profile: profile, read: read)
-        if resolution.issues.contains(.missingRequired(token: profile)) {
+        let token = lookup == .prfFile ? profile + ".prf" : profile
+        let base = ProfileRootResolver.fileInUnisonDir(unisonDirectory, token)
+        let withExt = ProfileRootResolver.fileInUnisonDir(unisonDirectory, token + ".prf")
+        if read(base) == .missing && read(withExt) == .missing {
             return .failure(.profileFileMissing)
         }
+        let resolution = ProfileRootResolver.resolve(
+            unisonDirectory: unisonDirectory, profile: token, read: read)
         guard resolution.reliable else { return .failure(.rootsUnresolved) }
         return .success(resolution.roots)
     }

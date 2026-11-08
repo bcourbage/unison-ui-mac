@@ -584,10 +584,7 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     "compute its archive hash. Edit the profile to add " +
                     "the two replica roots first."
             case .rootsUnresolved:
-                alert.informativeText =
-                    "The roots of this profile could not be resolved, because a " +
-                    "file it includes is missing or unreadable, so its archives " +
-                    "cannot be identified. Fix the profile's included files first."
+                alert.informativeText = Self.rootsUnresolvedResetText
             case .noLocalRoot:
                 alert.informativeText =
                     "Both of this profile's roots are remote (ssh:// or " +
@@ -615,7 +612,10 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         localHostname: String = ArchiveHash.systemHostname
     ) -> Swift.Result<ArchiveLocation, ArchiveHash.Failure> {
         let roots: [String]
-        switch ArchiveHash.effectiveRoots(unisonDirectory: unisonDirectory, profile: profile) {
+        // The selected `.prf` itself, not the engine's lookup: Delete trashes this
+        // file, so the archives it offers must come from this file's roots.
+        switch ArchiveHash.effectiveRoots(unisonDirectory: unisonDirectory, profile: profile,
+                                          lookup: .prfFile) {
         case .failure(let failure): return .failure(failure)
         case .success(let resolved): roots = resolved
         }
@@ -756,6 +756,14 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         return "\n\(subject) the same roots and \(verb) these archive files, so " +
             "\(whose) next sync will also rebuild from scratch.\n"
     }
+
+    /// Reset message when the profile's roots could not be resolved. The cause
+    /// is one of several (missing or unreadable include, malformed line, loop),
+    /// so the text names them all rather than guessing.
+    nonisolated static let rootsUnresolvedResetText =
+        "The roots of this profile could not be resolved, so its archives cannot be " +
+        "identified. An included file may be missing or unreadable, a line may be " +
+        "malformed, or the includes may loop back on themselves. Fix the profile first."
 
     /// Delete-confirmation sentence when the profile's own roots could not be
     /// resolved: which archives it uses is unknown, so none are offered.
