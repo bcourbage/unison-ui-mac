@@ -1145,6 +1145,15 @@ enum VersionCheck {
 
     // MARK: - Version string parsing
 
+    /// The strict form the remote check requires: a line that starts with
+    /// Unison's own label, `unison version X.Y[.Z]`, optionally followed by
+    /// more text such as `(ocaml 5.5.0)`. A bare number, or a number inside
+    /// another program's sentence, is not a Unison version line. Returns the
+    /// dotted version, or nil.
+    static func parseUnisonVersionLine(_ line: String) -> String? {
+        firstCapture(#"(?i)^\s*unison\s+version\s+(\d+\.\d+(?:\.\d+)?)(?:\s|$)"#, in: line)
+    }
+
     /// Extracts the dotted-numeric version from one of these shapes:
     ///   - "unison version 2.54.0"
     ///   - "unison version 2.54.0 (ocaml 5.4.1)"
@@ -1162,15 +1171,6 @@ enum VersionCheck {
     /// if no line carries that label do we accept a bare version, and then only a
     /// line that STARTS with it — the `2.54.0 (ocaml …)` form the local bridge
     /// returns (last such line wins). A dotted number mid-line is never accepted.
-    /// The strict form the remote check requires: a line that starts with
-    /// Unison's own label, `unison version X.Y[.Z]`, optionally followed by
-    /// more text such as `(ocaml 5.5.0)`. A bare number, or a number inside
-    /// another program's sentence, is not a Unison version line. Returns the
-    /// dotted version, or nil.
-    static func parseUnisonVersionLine(_ line: String) -> String? {
-        firstCapture(#"(?i)^\s*unison\s+version\s+(\d+\.\d+(?:\.\d+)?)(?:\s|$)"#, in: line)
-    }
-
     static func parseVersionString(_ raw: String) -> String? {
         let lines = raw.split(whereSeparator: \.isNewline).map(String.init)
         // Labelled lines first; the last one is the real command response.
