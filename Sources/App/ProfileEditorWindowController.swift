@@ -601,14 +601,20 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// What Reset Archives offers for a profile: the located archives, or the
     /// reason none can be computed (the user-actionable cases, where nothing
-    /// is offered).
+    /// is offered). The profile file is read once: the same text feeds the
+    /// gate (`ArchiveHash`) and the roots the archives are matched against.
     nonisolated static func resetArchiveCandidates(
         profile: String,
         unisonDirectory: String,
         localHostname: String = ArchiveHash.systemHostname
     ) -> Swift.Result<ArchiveLocation, ArchiveHash.Failure> {
-        ArchiveHash.computeAll(unisonDirectory: unisonDirectory, profile: profile, hostname: localHostname)
-            .map { _ in locateArchives(profile: profile, unisonDirectory: unisonDirectory,
+        let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent("\(profile).prf")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return .failure(.profileFileMissing)
+        }
+        return ArchiveHash.computeAllFromProfileText(text, hostname: localHostname)
+            .map { _ in locateArchives(roots: ProfileDocument.parse(text).values(forKey: "root"),
+                                       unisonDirectory: unisonDirectory,
                                        localHostname: localHostname) }
     }
 
@@ -633,10 +639,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         var files: [URL] = []
         var hashes: [String] = []
         var ambiguous = false
-        if case .success = ArchiveHash.computeAll(
-            unisonDirectory: unisonDirectory, profile: profile, hostname: localHostname) {
-            let location = locateArchives(profile: profile, unisonDirectory: unisonDirectory,
-                                          localHostname: localHostname)
+        if case .success(let location) = resetArchiveCandidates(
+            profile: profile, unisonDirectory: unisonDirectory, localHostname: localHostname) {
             files = location.files
             hashes = location.hashes
             ambiguous = location.ambiguous
@@ -683,11 +687,10 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// genuinely different syncs. The caller surfaces this and the user
     /// confirms. Current-vs-stale copies of the *same* pair share a
     /// signature and are not ambiguous.
-    nonisolated static func locateArchives(profile: String,
+    nonisolated static func locateArchives(roots: [String],
                                            unisonDirectory: String,
                                            localHostname: String) -> ArchiveLocation {
         let cleanup = ArchiveCleanup(unisonDirectory: unisonDirectory)
-        let roots = profileRoots(profile, unisonDirectory: unisonDirectory)
         // Live generation only — Reset clears what the next sync uses;
         // stale hostname generations are left for "Clean stale archives".
         let matched = ArchiveMatcher.liveArchives(forProfileRoots: roots,
@@ -766,13 +769,6 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         return "\(files) will be kept: the roots of \(names) could not be " +
             "resolved, so the archives may still be in use. Fix \(that) and " +
             "use Settings, Maintenance, Clean Stale Archives to review them."
-    }
-
-    /// The raw `root = …` values from a profile's `.prf`, in file order.
-    nonisolated private static func profileRoots(_ profile: String, unisonDirectory: String) -> [String] {
-        let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent("\(profile).prf")
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        return ProfileDocument.parse(text).values(forKey: "root")
     }
 
     /// Second-stage prompt: show the user the files we're about to
