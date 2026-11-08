@@ -88,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// must not be opened until explicit recovery. See checkForAbandonedArchiveStaging.
     private var blockedArchiveHashes: Set<String> = []
     private var abandonedStagings: [AbandonedStaging] = []
+    /// Counts recovery offers a hosted test suppressed, so a test can tell an
+    /// offer from a refusal. Not read in production.
+    private(set) var recoveryOffersForTesting = 0
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
     /// updater), in which case the Settings window omits the Updates tab.
     var updater: (any UpdatePreferences)?
@@ -1085,6 +1088,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
     /// to restart-required instead of reusing the runtime.
     private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
+        // The profile file is read again by the new session, so its roots can
+        // differ from what the open gate evaluated when this session started
+        // (it may have been edited meanwhile). Decide against the same gate as
+        // any other open, before anything is torn down.
+        var gate = profileStagingGate(profile)
         // Detach + close the stale window WITHOUT its onClose→abandon path;
         // we drive the coordinator explicitly below (and a replacement window
         // opens synchronously in the same turn, so the app never sees a
@@ -1101,7 +1109,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         } else {
             run(engine.abandon(reason: failedReason))
         }
+        // The stale session is released either way. A remote session's close can
+        // still be pending here, so recovery (which moves archive files) is NOT
+        // offered from this teardown: restore any temporary profile edit, tell the
+        // user, and leave recovery to the picker, where the engine is idle.
+        if gate.blocksOpening {
+            log.write("AppDelegate: reopen of '\(profile)' blocked by abandoned staging — returning to the picker")
+            restoreIgnoreArchivesPrfIfNeeded()
+            // The picker was closed when the session opened; bring it back with the
+            // profile selected, so the notice has a window to act from.
+            showProfilePicker(select: profile)
+            presentBlockedReopenNotice(profile: profile, gate: gate)
+            return
+        }
         run(engine.requestOpen(profile: profile))
+    }
+
+    /// Tell the user why a recovery reopen did not happen. Informational only: it
+    /// never touches archive files; recovery is offered when they pick the profile.
+    private func presentBlockedReopenNotice(profile: String, gate: ProfileStagingGate) {
+        if Self.testRecoveryPromptSuppressed { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(profile)” was not reopened"
+        alert.informativeText = gate.recoveryContext
+            + " Choose the profile in the picker to recover the interrupted operation first."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     // MARK: - Permanent bridge handlers (installed once at launch)
@@ -3268,7 +3303,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// is cleared. State is recomputed from disk afterward.
     private func presentAndRecoverAbandonedStaging(requested: [AbandonedStaging],
                                                    context: String) {
-        if Self.testRecoveryPromptSuppressed { return }
+        // Recovery moves archive files, so it runs only when the engine is idle:
+        // a released remote session can still be closing.
+        guard engine.allowsDestructiveArchiveMutation else {
+            log.write("recovery not offered: the engine is not idle")
+            if !Self.testRecoveryPromptSuppressed {
+                ArchiveMutationGate.presentBusyRefusal(title: "Recovery can't start yet", on: nil)
+            }
+            return
+        }
+        if Self.testRecoveryPromptSuppressed { recoveryOffersForTesting += 1; return }
         let dirs = requested.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
         let alert = NSAlert()
         alert.alertStyle = .critical
@@ -3296,6 +3340,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         confirm.addButton(withTitle: "No other Unison is running — recover")
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        // The dialogs above are modal, so recheck immediately before any file moves.
+        guard engine.allowsDestructiveArchiveMutation else {
+            log.write("recovery stopped: the engine is not idle")
+            ArchiveMutationGate.presentBusyRefusal(title: "Recovery can't start yet", on: nil)
+            return
+        }
 
         var problems: [String] = []      // still locked / refused → stay blocked
         var cleanupNotes: [String] = []  // unlocked, only a leftover folder to delete
@@ -3745,6 +3795,25 @@ extension AppDelegate {
         set { launchOverrides = newValue }
     }
     func setUnisonDirectoryForTesting(_ dir: String) { unisonDirectory = dir }
+    /// The real recovery reopen (fatal retry / Rescan Ignoring Archives), so a
+    /// test can check that it consults the open gate.
+    func reopenCurrentProfileFreshForTesting(_ profile: String) {
+        reopenCurrentProfileFresh(profile, failedReason: "test reopen")
+    }
+    /// Whether the picker is on screen, and which profile it has selected.
+    var pickerStateForTesting: (visible: Bool, selected: String?) {
+        (profileWindowController?.window?.isVisible ?? false,
+         profileWindowController?.currentlySelectedProfile())
+    }
+    /// The real recovery offer, so a test can check it refuses while the engine
+    /// is not idle.
+    func offerRecoveryForTesting(_ records: [AbandonedStaging]) {
+        presentAndRecoverAbandonedStaging(requested: records, context: "test")
+    }
+    /// The real Rescan Ignoring Archives path, including its one-shot `.prf` edit.
+    func rescanIgnoringArchivesForTesting(_ profile: String) {
+        rescanIgnoringArchives(profile: profile, failedReason: "test rescan")
+    }
     /// Seed the interrupted-operation state the open gate consults.
     func setAbandonedStagingForTesting(_ records: [AbandonedStaging]) {
         abandonedStagings = records
