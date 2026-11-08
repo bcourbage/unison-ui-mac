@@ -1085,6 +1085,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
     /// to restart-required instead of reusing the runtime.
     private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
+        // The profile file is read again by the new session, so its roots can
+        // differ from what the open gate evaluated when this session started
+        // (it may have been edited meanwhile). Decide against the same gate as
+        // any other open, before anything is torn down.
+        var gate = profileStagingGate(profile)
         // Detach + close the stale window WITHOUT its onClose→abandon path;
         // we drive the coordinator explicitly below (and a replacement window
         // opens synchronously in the same turn, so the app never sees a
@@ -1100,6 +1105,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                                        engineIsQuiescent: true))
         } else {
             run(engine.abandon(reason: failedReason))
+        }
+        // The stale session is released either way. When the gate blocks the
+        // profile, offer recovery and open only if that cleared the block.
+        if gate.blocksOpening {
+            log.write("AppDelegate: reopen of '\(profile)' blocked by abandoned staging — offering recovery")
+            presentAndRecoverAbandonedStaging(requested: gate.records, context: gate.recoveryContext)
+            gate = profileStagingGate(profile)
+            if gate.blocksOpening {
+                // A Retry Ignoring Archives edit made before this call is not
+                // left in the profile.
+                restoreIgnoreArchivesPrfIfNeeded()
+                return
+            }
         }
         run(engine.requestOpen(profile: profile))
     }
@@ -3745,6 +3763,15 @@ extension AppDelegate {
         set { launchOverrides = newValue }
     }
     func setUnisonDirectoryForTesting(_ dir: String) { unisonDirectory = dir }
+    /// The real recovery reopen (fatal retry / Rescan Ignoring Archives), so a
+    /// test can check that it consults the open gate.
+    func reopenCurrentProfileFreshForTesting(_ profile: String) {
+        reopenCurrentProfileFresh(profile, failedReason: "test reopen")
+    }
+    /// The real Rescan Ignoring Archives path, including its one-shot `.prf` edit.
+    func rescanIgnoringArchivesForTesting(_ profile: String) {
+        rescanIgnoringArchives(profile: profile, failedReason: "test rescan")
+    }
     /// Seed the interrupted-operation state the open gate consults.
     func setAbandonedStagingForTesting(_ records: [AbandonedStaging]) {
         abandonedStagings = records
