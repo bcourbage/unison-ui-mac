@@ -100,8 +100,9 @@ enum ArchiveHash {
         case profileFileMissing
         case noRoots
         case noLocalRoot
-        /// The profile's roots depend on `include`/`source` files that cannot
-        /// be read or followed, so which archives it uses is unknown.
+        /// The profile's roots cannot be determined: its file or an included
+        /// file is unreadable or malformed, includes loop or are missing, or it
+        /// uses `rootalias`. Which archives it uses is unknown.
         case rootsUnresolved
     }
 
@@ -172,7 +173,11 @@ enum ArchiveHash {
             exactTopLevelFile: exact,
             read: read)
         guard resolution.profileFound else { return .failure(.profileFileMissing) }
-        guard resolution.reliable else { return .failure(.rootsUnresolved) }
+        // A `rootalias` rewrites roots before Unison names the archive, so the
+        // archives of an aliased profile cannot be identified from its roots.
+        guard resolution.reliable, resolution.rootaliases.isEmpty else {
+            return .failure(.rootsUnresolved)
+        }
         return .success(resolution.roots)
     }
 

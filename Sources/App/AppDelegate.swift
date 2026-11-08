@@ -826,6 +826,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// drive `applySyncDecision` directly). Default false in production.
     static var testSyncDecisionSheetSuppressed = false
 
+    /// Set by hosted tests to skip the interrupted-operation recovery prompt
+    /// (its `runModal` would block the suite). Default false in production.
+    static var testRecoveryPromptSuppressed = false
+
     private func drivePickBlockedByCommandLineRequest(profile: String) {
         log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
         if Self.testPickBlockedModalSuppressed { return }
@@ -3264,6 +3268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// is cleared. State is recomputed from disk afterward.
     private func presentAndRecoverAbandonedStaging(requested: [AbandonedStaging],
                                                    context: String) {
+        if Self.testRecoveryPromptSuppressed { return }
         let dirs = requested.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
         let alert = NSAlert()
         alert.alertStyle = .critical
@@ -3740,6 +3745,11 @@ extension AppDelegate {
         set { launchOverrides = newValue }
     }
     func setUnisonDirectoryForTesting(_ dir: String) { unisonDirectory = dir }
+    /// Seed the interrupted-operation state the open gate consults.
+    func setAbandonedStagingForTesting(_ records: [AbandonedStaging]) {
+        abandonedStagings = records
+        blockedArchiveHashes = Set(records.flatMap { $0.manifest.hashes })
+    }
     func installWindowForTesting(_ s: EngineSessionCoordinator.SessionID, _ w: ReconcileWindowController) {
         windowBySession[s] = w
     }

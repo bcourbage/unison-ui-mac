@@ -758,19 +758,20 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// Reset message when the profile's roots could not be resolved. The cause
-    /// is one of several (missing or unreadable include, malformed line, loop),
-    /// so the text names them all rather than guessing.
+    /// is one of several (unreadable or malformed file, missing include, loop,
+    /// rootalias), so the text names them all rather than guessing.
     nonisolated static let rootsUnresolvedResetText =
         "The roots of this profile could not be resolved, so its archives cannot be " +
-        "identified. An included file may be missing or unreadable, a line may be " +
-        "malformed, or the includes may loop back on themselves. Fix the profile first."
+        "identified. The profile or a file it includes may be unreadable or malformed, " +
+        "an included file may be missing, the includes may loop back on themselves, " +
+        "or the profile may use rootalias. Fix the profile first."
 
     /// Delete-confirmation sentence when the profile's own roots could not be
     /// resolved: which archives it uses is unknown, so none are offered.
     nonisolated static let archivesUnverifiedText =
         "Its archive files will be kept: the roots of this profile could not be " +
-        "resolved, so it is unknown which archives it uses. Fix its included " +
-        "files and use Settings, Maintenance, Clean Stale Archives to review them later."
+        "resolved, so it is unknown which archives it uses. Fix the profile " +
+        "and use Settings, Maintenance, Clean Stale Archives to review them later."
 
     /// Delete-confirmation sentence for archives that stay in place because
     /// another profile owns them or ownership could not be established.

@@ -35,7 +35,7 @@ enum ProfileStagingGate: Equatable {
     var recoveryContext: String {
         switch self {
         case .clear, .confirmed:
-            return "This profile's archives are being recovered from an interrupted maintenance operation."
+            return "This profile's archives are held by an interrupted maintenance operation."
         case .unresolved:
             return "This profile's roots could not be resolved, so it may use archives held by an "
                 + "interrupted maintenance operation. Recover the interrupted operations first."
@@ -46,7 +46,7 @@ enum ProfileStagingGate: Equatable {
     func refusalMessage(profile name: String) -> String {
         switch self {
         case .clear, .confirmed:
-            return "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
+            return "unison-ui-mac did not start \(name); its archives are held by an interrupted "
                 + "operation. Complete that recovery in the running app, then run the command again."
         case .unresolved:
             return "unison-ui-mac did not start \(name); its roots could not be resolved, so it may use "
@@ -57,20 +57,41 @@ enum ProfileStagingGate: Equatable {
 
     /// `blockedHashes` and `blockingRecords` describe the interrupted operations
     /// that currently hold archives (`AbandonedStagingScan`).
+    ///
+    /// The profile is `.unresolved` whenever its archive hashes cannot be
+    /// trusted to match a held archive: its roots cannot be resolved, or a
+    /// local root is a symlink or cannot be resolved (Unison names an archive
+    /// from the canonical path, the hash here from the path as written).
+    /// `resolve` is the path resolver, injectable for tests.
     static func evaluate(
         profile: String,
         unisonDirectory: String,
         blockedHashes: Set<String>,
         blockingRecords: [AbandonedStaging],
-        hostname: String = ArchiveHash.systemHostname
+        hostname: String = ArchiveHash.systemHostname,
+        resolve: (String) -> String? = ArchiveMatcher.realpathResolve
     ) -> ProfileStagingGate {
         guard !blockedHashes.isEmpty else { return .clear }
         let roots: [String]
         switch ArchiveHash.effectiveRoots(unisonDirectory: unisonDirectory, profile: profile) {
-        case .success(let resolved): roots = resolved
-        case .failure(.rootsUnresolved): return .unresolved(blockingRecords)
-        case .failure: return .clear
+        case .success(let resolved):
+            roots = resolved
+        case .failure(let failure):
+            switch failure {
+            case .rootsUnresolved:
+                return .unresolved(blockingRecords)
+            case .profileFileMissing:
+                return .clear   // the engine cannot open a profile that does not exist
+            case .noRoots, .noLocalRoot:
+                return .clear   // no local archive exists for it to be held
+            }
         }
+        let specs = ArchiveMatcher.rootSpecs(forRoots: roots)
+        let pathsTrusted = zip(roots, specs).filter { $0.1.isLocal }.allSatisfy { raw, _ in
+            let r = ArchiveMatcher.localRootNeedsResolution(raw, resolve: resolve)
+            return r.resolvable && !r.differs
+        }
+        guard pathsTrusted else { return .unresolved(blockingRecords) }
         guard case .success(let computed) = ArchiveHash.computeAll(forRoots: roots, hostname: hostname),
               ArchiveStagingRecovery.isProfileBlocked(profileHashes: computed.hashes, blocked: blockedHashes)
         else { return .clear }

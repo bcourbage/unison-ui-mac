@@ -28,24 +28,32 @@ final class ProfileStagingGateTests: XCTestCase {
         return AbandonedStaging(quarantineDir: q, manifest: m)
     }
 
-    private func hashes(of profile: String) throws -> [String] {
-        guard case .success(let c) = ArchiveHash.computeAll(unisonDirectory: dir, profile: profile, hostname: host) else {
-            throw XCTSkip("fixture profile \(profile) must resolve")
-        }
-        return c.hashes
+    /// The archive hashes of a local pair, computed from the roots written out
+    /// here, never through the profile lookup under test, so a lookup regression
+    /// cannot change both sides of an assertion.
+    private func rootHashes(_ a: String, _ b: String) throws -> [String] {
+        let computed = try XCTUnwrap(
+            { () -> ArchiveHash.MultiResult? in
+                if case .success(let c) = ArchiveHash.computeAll(forRoots: [a, b], hostname: host) { return c }
+                return nil
+            }(), "fixture roots must yield archive hashes")
+        return computed.hashes
     }
+    private let docs = "/Users/test/Documents"
+    private let backup = "/Users/test/Backup/Documents"
 
-    private func gate(_ profile: String, _ records: [AbandonedStaging]) -> ProfileStagingGate {
+    private func gate(_ profile: String, _ records: [AbandonedStaging],
+                      resolve: (String) -> String? = { $0 }) -> ProfileStagingGate {
         let blocked = Set(records.flatMap { $0.manifest.hashes })
         return ProfileStagingGate.evaluate(profile: profile, unisonDirectory: dir, blockedHashes: blocked,
-                                           blockingRecords: records, hostname: host)
+                                           blockingRecords: records, hostname: host, resolve: resolve)
     }
 
     // MARK: confirmed
 
     func test_confirmedMatch_returnsOnlyTheMatchingRecords() throws {
         try write("Direct.prf", roots)
-        let mine = record("/q/mine", hashes: try hashes(of: "Direct"))
+        let mine = record("/q/mine", hashes: try rootHashes(docs, backup))
         let other = record("/q/other", hashes: ["feedfacefeedfacefeedfacefeedface"])
         XCTAssertEqual(gate("Direct", [mine, other]), .confirmed([mine]))
     }
@@ -54,7 +62,7 @@ final class ProfileStagingGateTests: XCTestCase {
         try write("Direct.prf", roots)
         try write("common.inc", roots)
         try write("Inc.prf", "include common.inc\n")
-        let mine = record("/q/mine", hashes: try hashes(of: "Direct"))
+        let mine = record("/q/mine", hashes: try rootHashes(docs, backup))
         XCTAssertEqual(gate("Inc", [mine]), gate("Direct", [mine]))
         XCTAssertEqual(gate("Inc", [mine]), .confirmed([mine]))
     }
@@ -93,9 +101,31 @@ final class ProfileStagingGateTests: XCTestCase {
     func test_gate_usesTheEnginesProfileLookup() throws {
         try write("P", roots)
         try write("P.prf", "root = /Users/test/Other/A\nroot = /Users/test/Other/B\n")
-        let engineHashes = try hashes(of: "P")
-        let r = record("/q/r", hashes: engineHashes)
+        let r = record("/q/r", hashes: try rootHashes(docs, backup))
         XCTAssertEqual(gate("P", [r]), .confirmed([r]))
+    }
+
+    /// `rootalias` rewrites the roots before Unison names the archive, so the
+    /// hash computed from the written roots cannot be trusted to match.
+    func test_rootalias_isUnresolvedNotClear() throws {
+        try write("Aliased.prf", roots + "rootalias = //Heracles//Users/test/Documents -> //Other//Users/test/Documents\n")
+        let r = record("/q/r", hashes: try rootHashes(docs, backup))
+        XCTAssertEqual(gate("Aliased", [r]), .unresolved([r]))
+    }
+
+    /// Unison names an archive from the canonical path; a symlinked local root
+    /// would hash differently here, so it cannot be matched and stays blocked.
+    func test_symlinkedLocalRoot_isUnresolvedNotClear() throws {
+        try write("Linked.prf", roots)
+        let r = record("/q/r", hashes: try rootHashes(docs, backup))
+        let resolve: (String) -> String? = { $0 == self.docs ? "/Users/test/Real/Documents" : $0 }
+        XCTAssertEqual(gate("Linked", [r], resolve: resolve), .unresolved([r]))
+    }
+
+    func test_unresolvableLocalRoot_isUnresolvedNotClear() throws {
+        try write("Gone.prf", roots)
+        let r = record("/q/r", hashes: try rootHashes(docs, backup))
+        XCTAssertEqual(gate("Gone", [r], resolve: { _ in nil }), .unresolved([r]))
     }
 
     func test_includeCycle_isUnresolved() throws {
@@ -131,8 +161,8 @@ final class ProfileStagingGateTests: XCTestCase {
     func test_cli_refusalWordingMatchesWhatIsKnown() {
         let confirmed = ProfileStagingGate.confirmed([]).refusalMessage(profile: "P")
         let unresolved = ProfileStagingGate.unresolved([]).refusalMessage(profile: "P")
-        XCTAssertTrue(confirmed.contains("its archives are being recovered"), confirmed)
-        XCTAssertFalse(unresolved.contains("its archives are being recovered"), unresolved)
+        XCTAssertTrue(confirmed.contains("its archives are held by"), confirmed)
+        XCTAssertFalse(unresolved.contains("its archives are held by"), unresolved)
         XCTAssertTrue(unresolved.contains("could not be resolved"), unresolved)
         XCTAssertTrue(unresolved.contains("Complete that recovery in the running app"), unresolved)
     }

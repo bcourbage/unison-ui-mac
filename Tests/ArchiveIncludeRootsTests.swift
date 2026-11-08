@@ -126,6 +126,17 @@ final class ArchiveIncludeRootsTests: XCTestCase {
         XCTAssertTrue(text.contains("could not be resolved"), text)
     }
 
+    // MARK: rootalias
+
+    func test_rootaliasProfile_isUnresolvedForResetAndDelete() throws {
+        _ = try archivePair()
+        try write("Aliased.prf", rootLines + "rootalias = //Heracles//\(docs) -> //Other//\(docs)\n")
+        XCTAssertEqual(reset("Aliased"), .failure(.rootsUnresolved))
+        let offer = deleteOffer("Aliased")
+        XCTAssertTrue(offer.rootsUnresolved)
+        XCTAssertFalse(offer.removalOffered)
+    }
+
     // MARK: Which file is the profile
 
     /// An extensionless `p` and `p.prf` can both exist and describe different
