@@ -291,26 +291,6 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
     }
 
-    func test_resetReconcileDisplay_clearsBothKeys() {
-        SettingsModel.setReconcileLayoutMode(.flat, in: defaults)
-        SettingsModel.setReconcileExpandPolicy(.all, in: defaults)
-        SettingsModel.resetReconcileDisplay(in: defaults)
-        // Back to defaults after reset.
-        XCTAssertEqual(SettingsModel.reconcileLayoutMode(in: defaults),
-                       .nestedCollapsed)
-        XCTAssertEqual(SettingsModel.reconcileExpandPolicy(in: defaults), .smart)
-    }
-
-    func test_resetReconcileDisplay_leavesOtherSettingsAlone() {
-        SettingsModel.setReconcileLayoutMode(.flat, in: defaults)
-        ProfilePreferences(hidden: ["x"], order: ["a"]).save(to: defaults)
-        SettingsModel.resetReconcileDisplay(in: defaults)
-        let (hidden, ordered) = SettingsModel.profilePickerCounts(in: defaults)
-        XCTAssertEqual(hidden, 1,
-                       "reconcile reset must not touch picker layout")
-        XCTAssertEqual(ordered, 1)
-    }
-
     // MARK: - Sync-completion cues
 
     func test_notifyOnSyncComplete_defaultsToTrue() {

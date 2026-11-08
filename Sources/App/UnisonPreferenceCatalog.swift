@@ -76,11 +76,6 @@ enum UnisonPreferenceCatalog {
                      isInternal: flags.contains(.internalCategory) || flags.contains(.pseudo))
     }
 
-    /// Every name a profile line may carry (registrations and aliases).
-    static var allNames: Set<String> {
-        Set(registrations.keys).union(aliases.keys)
-    }
-
     /// The registrations `unison -help` prints: every non-internal one.
     /// Aliases are registered as internal by `Prefs.alias` and are not printed.
     static var helpVisibleNames: Set<String> {

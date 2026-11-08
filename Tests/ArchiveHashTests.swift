@@ -106,6 +106,12 @@ final class ArchiveHashTests: XCTestCase {
 
     // MARK: - End-to-end hash from .prf text
 
+    /// The first local root's identity from raw `.prf` text, for the single-root
+    /// digest cases below; the product code computes every local root.
+    private func firstEntry(_ text: String, hostname: String) -> Swift.Result<ArchiveHash.Result, ArchiveHash.Failure> {
+        ArchiveHash.computeAllFromProfileText(text, hostname: hostname).map { $0.entries[0] }
+    }
+
     func test_compute_localAndSshProfile_matchesReferenceDigest() {
         // Reference computed with:
         //   echo -n "//mac.local//Users/bob/Documents;//mac.local//Users/bob/Documents, ssh://alice@server//data;23" | md5
@@ -113,7 +119,7 @@ final class ArchiveHashTests: XCTestCase {
             root = /Users/bob/Documents
             root = ssh://alice@server//data
             """
-        let result = ArchiveHash.computeFromProfileText(text, hostname: "mac.local")
+        let result = firstEntry(text, hostname: "mac.local")
         switch result {
         case .failure(let why):
             XCTFail("expected success, got \(why)")
@@ -134,7 +140,7 @@ final class ArchiveHashTests: XCTestCase {
             root = /tmp/a
             root = /tmp/b
             """
-        let result = ArchiveHash.computeFromProfileText(text, hostname: "host")
+        let result = firstEntry(text, hostname: "host")
         switch result {
         case .success(let r):
             XCTAssertEqual(r.thisRoot, "//host//tmp/a",
@@ -157,7 +163,7 @@ final class ArchiveHashTests: XCTestCase {
             root = /Volumes/Backup
             root = ssh://user@example.com//srv/data
             """
-        let result = ArchiveHash.computeFromProfileText(text, hostname: "host")
+        let result = firstEntry(text, hostname: "host")
         switch result {
         case .success(let r):
             XCTAssertEqual(r.hash, "7b602be9978e9adc4a9dc8ed0f1ca5cf")
@@ -173,7 +179,7 @@ final class ArchiveHashTests: XCTestCase {
             # All comment, no roots
             batch = true
             """
-        let result = ArchiveHash.computeFromProfileText(text, hostname: "h")
+        let result = firstEntry(text, hostname: "h")
         XCTAssertEqual(result, .failure(.noRoots))
     }
 
@@ -186,7 +192,7 @@ final class ArchiveHashTests: XCTestCase {
             root = ssh://a@host1//srv/a
             root = ssh://b@host2//srv/b
             """
-        let result = ArchiveHash.computeFromProfileText(text, hostname: "h")
+        let result = firstEntry(text, hostname: "h")
         XCTAssertEqual(result, .failure(.noLocalRoot))
     }
 
@@ -203,8 +209,8 @@ final class ArchiveHashTests: XCTestCase {
             """
         // Both calls use the same text — the profile name doesn't
         // enter the function. We compute the hash directly from text.
-        let a = ArchiveHash.computeFromProfileText(text, hostname: "h")
-        let b = ArchiveHash.computeFromProfileText(text, hostname: "h")
+        let a = firstEntry(text, hostname: "h")
+        let b = firstEntry(text, hostname: "h")
         XCTAssertEqual(a, b)
     }
 
@@ -227,7 +233,7 @@ final class ArchiveHashTests: XCTestCase {
         XCTAssertEqual(multi.entries[0].thisRoot, "//h//tmp/a")
         XCTAssertEqual(multi.entries[1].thisRoot, "//h//tmp/b")
         // compute() (singular) returns the first entry — back-compat.
-        let single = ArchiveHash.computeFromProfileText(text, hostname: "h")
+        let single = firstEntry(text, hostname: "h")
         XCTAssertEqual(try? single.get(), multi.entries[0])
     }
 

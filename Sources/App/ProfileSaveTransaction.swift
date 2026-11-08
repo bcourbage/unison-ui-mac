@@ -80,9 +80,6 @@ struct ProfileFileOpsError: Error, Equatable {
     let from: String
     let to: String
     let code: Int32
-    var localizedMessage: String {
-        "\(operation) \(from) -> \(to) failed: \(String(cString: strerror(code))) (errno \(code))"
-    }
 }
 
 /// A failure-safe, retry-consistent profile save/rename.

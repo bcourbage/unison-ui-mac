@@ -2032,7 +2032,6 @@ final class ReconcileWindowController: NSWindowController, NSWindowDelegate, NSM
     var clickedNodeProviderForTesting: (() -> ReconcileNode?)?
     var selectedNodesProviderForTesting: (() -> [ReconcileNode])?
 
-    var outlineViewForTesting: NSOutlineView { outlineView }
     var treeForTesting: ReconcileTree { tree }
     var contextMenuForTesting: NSMenu? { outlineView.menu }
     func isContextMenuItemForTesting(_ item: NSMenuItem?) -> Bool { isContextMenuItem(item) }

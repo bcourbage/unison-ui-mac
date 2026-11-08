@@ -101,8 +101,6 @@ struct StagingManifest: Codable, Equatable {
 
     /// A staging (pre-commit) record — its family may be split, so restore, not trash.
     var isPreCommit: Bool { phase == StagingManifest.phaseStaging }
-    /// An intent record: locks were being acquired but no payload was moved.
-    var isAcquiring: Bool { phase == StagingManifest.phaseAcquiring }
 
     static let knownPhases: Set<String> =
         [phaseAcquiring, phaseStaging, phaseCommitted, phaseAborted]

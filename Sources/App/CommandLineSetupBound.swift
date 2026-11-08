@@ -89,11 +89,4 @@ enum CommandLineSetupBound {
             return .rewritable(beginLine: beginLine, endLine: endLine, currentDirectory: directory)
         }
     }
-
-    /// Evaluate the bound for a file that does not exist: a creation may add the
-    /// block, provided the absence check and directory are handled by the writer.
-    /// Nothing to parse or clone yet, so the only outcome is `appendable`.
-    static func evaluateAbsentFile() -> Evaluation {
-        .appendable
-    }
 }

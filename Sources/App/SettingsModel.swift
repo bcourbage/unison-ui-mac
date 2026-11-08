@@ -202,15 +202,6 @@ enum SettingsModel {
         defaults.set(policy.rawValue, forKey: reconcileExpandPolicyKey)
     }
 
-    /// Drop both reconcile-display keys back to defaults. Used by the
-    /// Settings window's "Reset profile picker layout" cousin if/when
-    /// we extend the reset surface; for now it's exposed as the
-    /// counterpart to the picker-layout reset for symmetry.
-    static func resetReconcileDisplay(in defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: reconcileLayoutModeKey)
-        defaults.removeObject(forKey: reconcileExpandPolicyKey)
-    }
-
     // MARK: - Sync-completion cues
 
     /// UserDefaults key for "post a Notification Center banner when a
@@ -275,15 +266,6 @@ enum SettingsModel {
         } else {
             defaults.set(trimmed, forKey: defaultLogDirectoryKey)
         }
-    }
-
-    /// Suggested absolute `logfile` path for a profile: the default log
-    /// directory + `Unison-<profile>.log`.
-    static func suggestedLogfile(forProfile name: String,
-                                 in defaults: UserDefaults = .standard) -> String {
-        let safe = name.isEmpty ? "sync" : name
-        return (defaultLogDirectory(in: defaults) as NSString)
-            .appendingPathComponent("Unison-\(safe).log")
     }
 
     /// Default per-profile log file name.
