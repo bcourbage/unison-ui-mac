@@ -88,7 +88,7 @@ enum ProfileStagingGate: Equatable {
         }
         let specs = ArchiveMatcher.rootSpecs(forRoots: roots)
         let pathsTrusted = zip(roots, specs).filter { $0.1.isLocal }.allSatisfy { raw, _ in
-            let r = ArchiveMatcher.localRootNeedsResolution(raw, resolve: resolve)
+            let r = ArchiveMatcher.localRootNeedsResolution(lexicalLocalPath(raw), resolve: resolve)
             return r.resolvable && !r.differs
         }
         guard pathsTrusted else { return .unresolved(blockingRecords) }
@@ -97,5 +97,14 @@ enum ProfileStagingGate: Equatable {
         else { return .clear }
         let mine = Set(computed.hashes)
         return .confirmed(blockingRecords.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) })
+    }
+
+    /// A local root as the filesystem path it names, before any symlink
+    /// resolution: `file:///abs` is the path `/abs`, and surrounding whitespace
+    /// is not part of the path. The resolver compares this with its `realpath`.
+    private static func lexicalLocalPath(_ root: String) -> String {
+        let t = root.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("file://") else { return t }
+        return String(t.dropFirst("file://".count))
     }
 }

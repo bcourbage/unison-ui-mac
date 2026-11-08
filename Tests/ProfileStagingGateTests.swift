@@ -122,6 +122,38 @@ final class ProfileStagingGateTests: XCTestCase {
         XCTAssertEqual(gate("Linked", [r], resolve: resolve), .unresolved([r]))
     }
 
+    /// `file:///path` and `/path` name the same local root, so the symlink check
+    /// must give them the same decision: confirmed when the path is plain,
+    /// unresolved when it is a symlink.
+    func test_fileURLLocalRoot_getsTheSameDecisionAsThePlainPath() throws {
+        try write("Plain.prf", roots)
+        try write("Url.prf", "root = file://\(docs)\nroot = \(backup)\n")
+        let r = record("/q/r", hashes: try rootHashes(docs, backup))
+        XCTAssertEqual(gate("Url", [r]), gate("Plain", [r]))
+        XCTAssertEqual(gate("Url", [r]), .confirmed([r]))
+
+        let linked: (String) -> String? = { $0 == self.docs ? "/Users/test/Real/Documents" : $0 }
+        XCTAssertEqual(gate("Url", [r], resolve: linked), .unresolved([r]))
+        XCTAssertEqual(gate("Plain", [r], resolve: linked), .unresolved([r]))
+    }
+
+    /// The same scenario against the real filesystem and the real `realpath`: a
+    /// resolvable local root written as `file:///path` must not be blocked as
+    /// unresolved while unrelated staging exists.
+    func test_fileURLLocalRoot_onRealDirectories_isConfirmedLikeThePlainPath() throws {
+        let base = try XCTUnwrap(ArchiveMatcher.realpathResolve(dir))
+        let a = base + "/A", b = base + "/B"
+        try FileManager.default.createDirectory(atPath: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: b, withIntermediateDirectories: true)
+        try write("Plain.prf", "root = \(a)\nroot = \(b)\n")
+        try write("Url.prf", "root = file://\(a)\nroot = \(b)\n")
+        let r = record("/q/r", hashes: try rootHashes(a, b))
+
+        let real = ArchiveMatcher.realpathResolve
+        XCTAssertEqual(gate("Plain", [r], resolve: real), .confirmed([r]))
+        XCTAssertEqual(gate("Url", [r], resolve: real), .confirmed([r]))
+    }
+
     func test_unresolvableLocalRoot_isUnresolvedNotClear() throws {
         try write("Gone.prf", roots)
         let r = record("/q/r", hashes: try rootHashes(docs, backup))
