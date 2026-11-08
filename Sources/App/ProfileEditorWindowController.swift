@@ -554,8 +554,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
     /// have roots, and have at least one local root. The archives are then
     /// found by matching those roots against the roots recorded in each
     /// archive header (`ArchiveMatcher`); no archive name is computed. The
-    /// user can verify against `unison -showArchiveName <profile>` if they want belt-and-
-    /// suspenders confirmation that we'd touch the right files.
+    /// user can verify against `unison -showArchiveName <profile>` if they
+    /// want belt-and-suspenders confirmation that we'd touch the right files.
     @objc private func resetArchivesAction(_ sender: Any?) {
         guard let profile = selectedProfile() else { NSSound.beep(); return }
 
