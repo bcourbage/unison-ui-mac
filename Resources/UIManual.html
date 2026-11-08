@@ -4,7 +4,7 @@
 <title>Unison UI for macOS — User Manual</title>
 <style>html{color-scheme:light dark}body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}pre{overflow:auto;padding:1rem;background:#8882}table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.5rem}img{max-width:100%}a{color:light-dark(#065aba,#78baff)}</style>
 </head><body>
-<!-- MANUAL.md sha256: 166a0580fbd8eae5efb7c5a59603eaf50c5cb1c21f894ee70cc0d87e27bcb57f -->
+<!-- MANUAL.md sha256: ecfd2f13c1003592e55f46b450df86bbf51cd2de1d4e2160d94782ed122e255e -->
 <h1 id="unison-ui-mac-user-manual">Unison-UI-Mac, User Manual</h1>
 <p>A feature-by-feature guide to the macOS app. For install steps see
 <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>; for architecture overview and a build
@@ -1523,12 +1523,9 @@ that has made no progress for a while.</p>
 Logging redacts it. Every message in <code>general</code> appears as <code>&lt;private&gt;</code> in
 Console and in <code>log stream</code>, even in a Debug build. The category and the
 time stay visible, which is enough to see that something happened but not
-what. This protects the file names and servers in a log you share. To see
-the values on your own Mac, turn on private-data logging, which is a
-system-wide setting, and turn it off again afterward:</p>
-<pre><code class="language-sh">sudo log config --mode &quot;private_data:on&quot;
-sudo log config --mode &quot;private_data:off&quot;
-</code></pre>
+what. This protects the file names and servers in a log you share. The
+values show only when private-data logging has been deliberately enabled
+on the Mac, which is a system-wide setting that this app never changes.</p>
 <p>Unified Logging gives you filterable categories, structured search, and
 persistence across reboots without the disk-hygiene problem of a stray
 /tmp file.</p>

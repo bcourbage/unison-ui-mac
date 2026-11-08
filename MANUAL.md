@@ -1475,14 +1475,9 @@ Most of what the app logs names a profile, a path, or a host, so Unified
 Logging redacts it. Every message in `general` appears as `<private>` in
 Console and in `log stream`, even in a Debug build. The category and the
 time stay visible, which is enough to see that something happened but not
-what. This protects the file names and servers in a log you share. To see
-the values on your own Mac, turn on private-data logging, which is a
-system-wide setting, and turn it off again afterward:
-
-```sh
-sudo log config --mode "private_data:on"
-sudo log config --mode "private_data:off"
-```
+what. This protects the file names and servers in a log you share. The
+values show only when private-data logging has been deliberately enabled
+on the Mac, which is a system-wide setting that this app never changes.
 
 Unified Logging gives you filterable categories, structured search, and
 persistence across reboots without the disk-hygiene problem of a stray
