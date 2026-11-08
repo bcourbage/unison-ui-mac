@@ -826,6 +826,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// drive `applySyncDecision` directly). Default false in production.
     static var testSyncDecisionSheetSuppressed = false
 
+    /// Set by hosted tests to skip the interrupted-operation recovery prompt
+    /// (its `runModal` would block the suite). Default false in production.
+    static var testRecoveryPromptSuppressed = false
+
     private func drivePickBlockedByCommandLineRequest(profile: String) {
         log.write("picker selection '\(profile)' ignored: a command-line request is already waiting")
         if Self.testPickBlockedModalSuppressed { return }
@@ -2044,12 +2048,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // selection loads fresh and unscoped, the same as a plain app launch.
         // Fail closed: a profile whose archive is held by an interrupted
         // (pre-commit) mutation must not be opened until recovery.
-        if let blocking = abandonedStagingBlocking(profile) {
+        let gate = profileStagingGate(profile)
+        if gate.blocksOpening {
             log.write("AppDelegate: '\(profile)' blocked by abandoned staging — offering recovery")
-            presentAndRecoverAbandonedStaging(requested: blocking,
-                context: "This profile's archives are being recovered from an interrupted maintenance operation.")
+            presentAndRecoverAbandonedStaging(requested: gate.records, context: gate.recoveryContext)
             // If recovery cleared the block, open now; otherwise stay in the picker.
-            if abandonedStagingBlocking(profile) == nil {
+            if !profileStagingGate(profile).blocksOpening {
                 return runPickerOpen(profile: profile, args: args)
             }
             return false
@@ -2518,12 +2522,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         -> CommandLineHandoff.Response? {
         // A profile whose archives are held by an interrupted mutation is not
         // opened from a background request (no modal to a caller at the terminal).
-        if abandonedStagingBlocking(name) != nil {
+        let gate = profileStagingGate(name)
+        if gate.blocksOpening {
             // Do NOT offer -ui text here: running another Unison before the archives
             // are recovered is exactly what the safety block prevents.
-            return .refused(message:
-                "unison-ui-mac did not start \(name); its archives are being recovered from an interrupted "
-                + "operation. Complete that recovery in the running app, then run the command again.")
+            return .refused(message: gate.refusalMessage(profile: name))
         }
         // Final deadline check immediately before the open: nothing between here and
         // the caller's timeout may start a scan it was told did not start.
@@ -3240,16 +3243,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         return !abandonedStagings.isEmpty
     }
 
-    /// The abandoned stagings (if any) that block opening `profile`. nil when
-    /// nothing blocks it.
-    private func abandonedStagingBlocking(_ profile: String) -> [AbandonedStaging]? {
-        guard !blockedArchiveHashes.isEmpty else { return nil }
-        guard case .success(let computed) = ArchiveHash.computeAll(
-            unisonDirectory: unisonDirectory, profile: profile) else { return nil }
-        guard ArchiveStagingRecovery.isProfileBlocked(
-            profileHashes: computed.hashes, blocked: blockedArchiveHashes) else { return nil }
-        let mine = Set(computed.hashes)
-        return abandonedStagings.filter { !Set($0.manifest.hashes).isDisjoint(with: mine) }
+    /// Whether interrupted archive operations block opening `profile`, and
+    /// which records are presented for recovery. See `ProfileStagingGate`.
+    private func profileStagingGate(_ profile: String) -> ProfileStagingGate {
+        ProfileStagingGate.evaluate(profile: profile, unisonDirectory: unisonDirectory,
+                                    blockedHashes: blockedArchiveHashes,
+                                    blockingRecords: abandonedStagings)
     }
 
     /// Terminal-state recovery for an interrupted archive mutation. `requested` is
@@ -3269,6 +3268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// is cleared. State is recomputed from disk afterward.
     private func presentAndRecoverAbandonedStaging(requested: [AbandonedStaging],
                                                    context: String) {
+        if Self.testRecoveryPromptSuppressed { return }
         let dirs = requested.map { "  • \($0.quarantineDir)" }.joined(separator: "\n")
         let alert = NSAlert()
         alert.alertStyle = .critical
@@ -3745,6 +3745,11 @@ extension AppDelegate {
         set { launchOverrides = newValue }
     }
     func setUnisonDirectoryForTesting(_ dir: String) { unisonDirectory = dir }
+    /// Seed the interrupted-operation state the open gate consults.
+    func setAbandonedStagingForTesting(_ records: [AbandonedStaging]) {
+        abandonedStagings = records
+        blockedArchiveHashes = Set(records.flatMap { $0.manifest.hashes })
+    }
     func installWindowForTesting(_ s: EngineSessionCoordinator.SessionID, _ w: ReconcileWindowController) {
         windowBySession[s] = w
     }

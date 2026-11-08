@@ -100,6 +100,10 @@ enum ArchiveHash {
         case profileFileMissing
         case noRoots
         case noLocalRoot
+        /// The profile's roots cannot be determined: its file or an included
+        /// file is unreadable or malformed, includes loop or are missing, or it
+        /// uses `rootalias`. Which archives it uses is unknown.
+        case rootsUnresolved
     }
 
     /// Compute the hash for the given profile's roots. The profile
@@ -129,12 +133,52 @@ enum ArchiveHash {
         profile: String,
         hostname: String = Self.systemHostname
     ) -> Swift.Result<MultiResult, Failure> {
-        let url = URL(fileURLWithPath: unisonDirectory)
-            .appendingPathComponent("\(profile).prf")
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            return .failure(.profileFileMissing)
+        switch effectiveRoots(unisonDirectory: unisonDirectory, profile: profile) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let roots): return computeAll(forRoots: roots, hostname: hostname)
         }
-        return computeAllFromProfileText(text, hostname: hostname)
+    }
+
+    /// Which file is "the profile" when a name could mean two.
+    enum ProfileLookup {
+        /// The engine's lookup: an extensionless file named `profile` wins,
+        /// else `profile.prf`. Use this to decide what the engine will open.
+        case engine
+        /// Exactly `profile.prf`. Use this for actions that name and act on
+        /// that file, such as the editor's Reset and Delete.
+        case prfFile
+    }
+
+    /// The roots a profile actually uses, following `include` and `source`
+    /// the way Unison does (`ProfileRootResolver`). A profile whose include
+    /// graph cannot be followed completely is `.rootsUnresolved`, never
+    /// treated as having no roots or as having only the roots it spells out
+    /// itself: every archive action fails closed on it.
+    ///
+    /// `.profileFileMissing` means the profile file itself is absent. It is
+    /// decided by the resolver's own top-level read (`profileFound`), never by its
+    /// issue list and never by a second read that could disagree: a
+    /// profile that exists but sources a file that is missing (even one named
+    /// like itself) is unresolved, not missing.
+    static func effectiveRoots(
+        unisonDirectory: String,
+        profile: String,
+        lookup: ProfileLookup = .engine,
+        read: (String) -> ProfileRootResolver.ReadResult = ProfileRootResolver.filesystemRead
+    ) -> Swift.Result<[String], Failure> {
+        let exact = lookup == .prfFile
+        let resolution = ProfileRootResolver.resolve(
+            unisonDirectory: unisonDirectory,
+            profile: exact ? profile + ".prf" : profile,
+            exactTopLevelFile: exact,
+            read: read)
+        guard resolution.profileFound else { return .failure(.profileFileMissing) }
+        // A `rootalias` rewrites roots before Unison names the archive, so the
+        // archives of an aliased profile cannot be identified from its roots.
+        guard resolution.reliable, resolution.rootaliases.isEmpty else {
+            return .failure(.rootsUnresolved)
+        }
+        return .success(resolution.roots)
     }
 
     /// Compute the (first local root's) hash from raw .prf text. Broken
@@ -165,8 +209,14 @@ enum ArchiveHash {
         _ text: String,
         hostname: String
     ) -> Swift.Result<MultiResult, Failure> {
-        let doc = ProfileDocument.parse(text)
-        let rootValues = doc.values(forKey: "root")
+        computeAll(forRoots: ProfileDocument.parse(text).values(forKey: "root"), hostname: hostname)
+    }
+
+    /// Compute the archive identity for every local root of `rootValues`.
+    static func computeAll(
+        forRoots rootValues: [String],
+        hostname: String
+    ) -> Swift.Result<MultiResult, Failure> {
         if let failure = eligibilityFailure(forRoots: rootValues, hostname: hostname) {
             return .failure(failure)
         }

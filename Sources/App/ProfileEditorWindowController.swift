@@ -583,6 +583,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
                     "The profile has no `root = …` lines, so we can't " +
                     "compute its archive hash. Edit the profile to add " +
                     "the two replica roots first."
+            case .rootsUnresolved:
+                alert.informativeText = Self.rootsUnresolvedResetText
             case .noLocalRoot:
                 alert.informativeText =
                     "Both of this profile's roots are remote (ssh:// or " +
@@ -601,18 +603,22 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
 
     /// What Reset Archives offers for a profile: the located archives, or the
     /// reason none can be computed (the user-actionable cases, where nothing
-    /// is offered). The profile file is read and parsed once: the roots feed
-    /// both the gate (`ArchiveHash.eligibilityFailure`) and the header matcher.
+    /// is offered). The roots come from the profile with its includes
+    /// followed, and feed both the gate (`ArchiveHash.eligibilityFailure`)
+    /// and the header matcher.
     nonisolated static func resetArchiveCandidates(
         profile: String,
         unisonDirectory: String,
         localHostname: String = ArchiveHash.systemHostname
     ) -> Swift.Result<ArchiveLocation, ArchiveHash.Failure> {
-        let url = URL(fileURLWithPath: unisonDirectory).appendingPathComponent("\(profile).prf")
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            return .failure(.profileFileMissing)
+        let roots: [String]
+        // The selected `.prf` itself, not the engine's lookup: Delete trashes this
+        // file, so the archives it offers must come from this file's roots.
+        switch ArchiveHash.effectiveRoots(unisonDirectory: unisonDirectory, profile: profile,
+                                          lookup: .prfFile) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let resolved): roots = resolved
         }
-        let roots = ProfileDocument.parse(text).values(forKey: "root")
         if let failure = ArchiveHash.eligibilityFailure(forRoots: roots, hostname: localHostname) {
             return .failure(failure)
         }
@@ -628,6 +634,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         let hashes: [String]
         let ambiguous: Bool
         let ownership: ArchiveOwnership.Verdict
+        /// True when the profile's roots could not be resolved, so it is unknown
+        /// which archives it uses and none are offered.
+        var rootsUnresolved: Bool = false
         /// The checkbox that moves the archives to the Trash appears only
         /// when there are archives and no other profile owns them.
         var removalOffered: Bool { !files.isEmpty && ownership.removalPermitted }
@@ -641,11 +650,15 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         var files: [URL] = []
         var hashes: [String] = []
         var ambiguous = false
-        if case .success(let location) = resetArchiveCandidates(
+        var rootsUnresolved = false
+        switch resetArchiveCandidates(
             profile: profile, unisonDirectory: unisonDirectory, localHostname: localHostname) {
+        case .success(let location):
             files = location.files
             hashes = location.hashes
             ambiguous = location.ambiguous
+        case .failure(let failure):
+            rootsUnresolved = failure == .rootsUnresolved
         }
         // Unison names an archive by its root pair, so another profile with
         // the same roots uses these very files. Removal is offered only when
@@ -653,7 +666,8 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         // be resolved counts as a possible owner. See ArchiveOwnership.
         let ownership = ArchiveOwnership.evaluate(unisonDirectory: unisonDirectory, deleting: profile,
                                                   hashes: hashes, localHostname: localHostname)
-        return DeleteArchiveOffer(files: files, hashes: hashes, ambiguous: ambiguous, ownership: ownership)
+        return DeleteArchiveOffer(files: files, hashes: hashes, ambiguous: ambiguous,
+                                  ownership: ownership, rootsUnresolved: rootsUnresolved)
     }
 
     /// Result of locating a profile's local archive files.
@@ -742,6 +756,22 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         return "\n\(subject) the same roots and \(verb) these archive files, so " +
             "\(whose) next sync will also rebuild from scratch.\n"
     }
+
+    /// Reset message when the profile's roots could not be resolved. The cause
+    /// is one of several (unreadable or malformed file, missing include, loop,
+    /// rootalias), so the text names them all rather than guessing.
+    nonisolated static let rootsUnresolvedResetText =
+        "The roots of this profile could not be resolved, so its archives cannot be " +
+        "identified. The profile or a file it includes may be unreadable or malformed, " +
+        "an included file may be missing, the includes may loop back on themselves, " +
+        "or the profile may use rootalias. Fix the profile first."
+
+    /// Delete-confirmation sentence when the profile's own roots could not be
+    /// resolved: which archives it uses is unknown, so none are offered.
+    nonisolated static let archivesUnverifiedText =
+        "Its archive files will be kept: the roots of this profile could not be " +
+        "resolved, so it is unknown which archives it uses. Fix the profile " +
+        "and use Settings, Maintenance, Clean Stale Archives to review them later."
 
     /// Delete-confirmation sentence for archives that stay in place because
     /// another profile owns them or ownership could not be established.
@@ -940,7 +970,9 @@ final class ProfileEditorWindowController: NSWindowController, NSWindowDelegate 
         alert.alertStyle = .warning
         alert.messageText = "Delete profile “\(profile)”?"
         let prfSentence = "The .prf file at \(url.path) will be moved to the Trash. "
-        if archiveFiles.isEmpty {
+        if offer.rootsUnresolved {
+            alert.informativeText = prfSentence + Self.archivesUnverifiedText
+        } else if archiveFiles.isEmpty {
             alert.informativeText = prfSentence +
                 "If you'd rather keep the file but hide it from the picker, " +
                 "use the eye icon next to the name instead."
