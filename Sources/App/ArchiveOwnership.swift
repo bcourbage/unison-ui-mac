@@ -118,26 +118,37 @@ enum ArchiveOwnership {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: unisonDirectory) else {
             return nil
         }
-        return names
+        func profile(named name: String, shownAs shown: String) -> Profile {
+            let resolution = ProfileRootResolver.resolve(
+                unisonDirectory: unisonDirectory, profile: name)
+            let specs = ArchiveMatcher.rootSpecs(forRoots: resolution.roots)
+            let localRootsPlain = zip(resolution.roots, specs)
+                .filter { $0.1.isLocal }
+                .allSatisfy { raw, _ in
+                    let r = ArchiveMatcher.localRootNeedsResolution(raw, resolve: resolve)
+                    return r.resolvable && !r.differs
+                }
+            let reliable = resolution.reliable
+                && resolution.rootaliases.isEmpty
+                && localRootsPlain
+            return Profile(name: shown, roots: resolution.roots, rootsReliable: reliable)
+        }
+        var others = names
             .filter { ($0 as NSString).pathExtension == "prf" }
             .map { ($0 as NSString).deletingPathExtension }
             .filter { $0 != deleting }
             .sorted()
-            .map { name in
-                let resolution = ProfileRootResolver.resolve(
-                    unisonDirectory: unisonDirectory, profile: name)
-                let specs = ArchiveMatcher.rootSpecs(forRoots: resolution.roots)
-                let localRootsPlain = zip(resolution.roots, specs)
-                    .filter { $0.1.isLocal }
-                    .allSatisfy { raw, _ in
-                        let r = ArchiveMatcher.localRootNeedsResolution(raw, resolve: resolve)
-                        return r.resolvable && !r.differs
-                    }
-                let reliable = resolution.reliable
-                    && resolution.rootaliases.isEmpty
-                    && localRootsPlain
-                return Profile(name: name, roots: resolution.roots, rootsReliable: reliable)
-            }
+            .map { profile(named: $0, shownAs: $0) }
+        // Unison opens the profile `deleting` from an extensionless file of that
+        // name before it looks for `deleting.prf`, so such a file is a profile
+        // that outlives the deleted `.prf` and may use the same archives. Its
+        // roots are read through the same lookup the engine applies; a file that
+        // cannot be read counts as a possible owner.
+        let sibling = (unisonDirectory as NSString).appendingPathComponent(deleting)
+        if ProfileRootResolver.filesystemRead(sibling) != .missing {
+            others.append(profile(named: deleting, shownAs: "\(deleting) (file without .prf)"))
+        }
+        return others
     }
 
     /// The full verdict for deleting `deleting` along with the archives named
