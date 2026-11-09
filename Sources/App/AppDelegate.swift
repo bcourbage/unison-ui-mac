@@ -93,8 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// drive the real OCaml engine (connect, scan, sync, diff, close, abort). The
     /// coordinator still changes state, so the test can assert the phase reached.
     var suppressEngineEffectsForTesting = false
-    /// Every effect that reached `execute`, including ones the suppression seam
-    /// then skips; lets a test prove an effect was never dispatched.
+    /// Every effect that reached `execute` while the suppression seam is on,
+    /// including ones the seam then skips; lets a test prove an effect was never dispatched.
     private(set) var effectsReachedForTesting: [EngineSessionCoordinator.Effect] = []
     #endif
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
@@ -389,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     private func execute(_ effect: EngineSessionCoordinator.Effect) {
         #if DEBUG
-        effectsReachedForTesting.append(effect)
+        if suppressEngineEffectsForTesting { effectsReachedForTesting.append(effect) }
         // Hosted tests that exercise driver logic must not start real work on the
         // process-wide OCaml engine: an operation left in flight completes into the
         // next engine test's handlers and locks its archives.
