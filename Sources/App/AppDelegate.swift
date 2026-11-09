@@ -93,6 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// drive the real OCaml engine (connect, scan, sync, diff, close, abort). The
     /// coordinator still changes state, so the test can assert the phase reached.
     var suppressEngineEffectsForTesting = false
+    /// Every effect that reached `execute` while the suppression seam is on,
+    /// including ones the seam then skips; lets a test prove an effect was never dispatched.
+    private(set) var effectsReachedForTesting: [EngineSessionCoordinator.Effect] = []
     #endif
     /// Sparkle updater, injected from `main.swift`. Nil under XCTest (no live
     /// updater), in which case the Settings window omits the Updates tab.
@@ -331,8 +334,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Run coordinator effects in the order returned (order matters:
     /// showSession before beginConnect; presentSyncResults before
     /// closeConnection; a successful close before the queued session start).
-    private func run(_ effects: [EngineSessionCoordinator.Effect]) {
-        for effect in effects { execute(effect) }
+    ///
+    /// A batch that contains `.showSession` is a fresh open (the only emitter of
+    /// it, always paired with its `.beginConnect`; a reconnect returns
+    /// `.beginConnect` alone). The staging gate is evaluated here, just before
+    /// that open's effects execute, so an open that was admitted earlier (queued
+    /// behind a close, or decided moments before) is re-checked against the
+    /// profile's roots as they are now. A refusal skips the open's effects, fails
+    /// its operation (no bridge call was made, so the engine is quiescent), and is
+    /// returned so the caller can report what happened to this request.
+    @discardableResult
+    private func run(_ effects: [EngineSessionCoordinator.Effect]) -> FreshOpenRefusal? {
+        var batch = effects
+        var refusal: FreshOpenRefusal?
+        for case .showSession(let s, let profile) in effects {
+            let gate = profileStagingGate(profile)
+            guard gate.blocksOpening else { break }
+            var connectOp: OperationID?
+            for case .beginConnect(let cs, let op, _, _) in effects where cs == s { connectOp = op }
+            guard let op = connectOp else { break }
+            refusal = FreshOpenRefusal(session: s, operation: op, profile: profile, gate: gate)
+            batch = effects.filter {
+                switch $0 {
+                case .showSession(let x, _): return x != s
+                case .beginConnect(let x, _, _, _): return x != s
+                default: return true
+                }
+            }
+            break
+        }
+        for effect in batch { execute(effect) }
+        if let refusal { unwindRefusedFreshOpen(refusal) }
         // A pending sync decision whose sync has just ended/failed must be resolved
         // here (identity-bound, idempotent) so the caller is not left waiting to the
         // deadline while the sheet still says the sync is running (#4). Checked
@@ -345,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         // Stale window refreshes its destructive-action controls against the
         // new idle state.
         NotificationCenter.default.post(name: .engineActivityDidChange, object: self)
+        return refusal
     }
 
     /// `EngineActivityProviding`: the app-side mirror of the coordinator's
@@ -356,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     private func execute(_ effect: EngineSessionCoordinator.Effect) {
         #if DEBUG
+        if suppressEngineEffectsForTesting { effectsReachedForTesting.append(effect) }
         // Hosted tests that exercise driver logic must not start real work on the
         // process-wide OCaml engine: an operation left in flight completes into the
         // next engine test's handlers and locks its archives.
@@ -1141,15 +1175,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         run(engine.requestOpen(profile: profile))
     }
 
+    /// A fresh open the staging gate refused at the point its effects were due.
+    private struct FreshOpenRefusal {
+        let session: SessionID
+        let operation: OperationID
+        let profile: String
+        let gate: ProfileStagingGate
+    }
+
+    /// Undo the coordinator's side of a refused fresh open. Nothing was shown and
+    /// no bridge call was made, so the exact operation is failed with the engine
+    /// quiescent; the coordinator returns to idle and may start whatever was
+    /// queued behind it. A waiting window for the request is discarded, the picker
+    /// returns with the profile selected, and the user is told why. The notice is
+    /// scheduled rather than run here: this can be inside a command-line handler
+    /// whose caller is waiting for its reply.
+    private func unwindRefusedFreshOpen(_ r: FreshOpenRefusal) {
+        log.write("AppDelegate: open of '\(r.profile)' refused at start — blocked by abandoned staging")
+        if let waiting = waitingWindow {
+            waiting.controller.window?.delegate = nil
+            waiting.controller.close()
+            waitingWindow = nil
+        }
+        // A retry's temporary `ignorearchives` edit is normally removed when init1
+        // completes, which this open will never reach. Restore it here, but only
+        // when it is this profile's: an edit that belongs to an unrelated retry
+        // is left for that retry.
+        if let pending = ignoreArchivesPendingRestore,
+           pending.deletingPathExtension().lastPathComponent == r.profile {
+            restoreIgnoreArchivesPrfIfNeeded()
+        }
+        run(engine.operationFailed(r.session, r.operation,
+                                   reason: "profile blocked by abandoned staging",
+                                   engineIsQuiescent: true))
+        showProfilePicker(select: r.profile)
+        if Self.testRecoveryPromptSuppressed { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.presentBlockedReopenNotice(profile: r.profile, gate: r.gate, notOpened: true)
+        }
+    }
+
     /// Tell the user why a recovery reopen did not happen. Informational only: it
     /// never touches archive files; recovery is offered when they pick the profile.
-    private func presentBlockedReopenNotice(profile: String, gate: ProfileStagingGate) {
+    private func presentBlockedReopenNotice(profile: String, gate: ProfileStagingGate,
+                                            notOpened: Bool = false) {
         if Self.testRecoveryPromptSuppressed { return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "“\(profile)” was not reopened"
-        alert.informativeText = gate.recoveryContext
+        alert.messageText = notOpened ? "“\(profile)” was not opened" : "“\(profile)” was not reopened"
+        alert.informativeText = (notOpened ? "It became blocked before it could open. " : "")
+            + gate.recoveryContext
             + " Choose the profile in the picker to recover the interrupted operation first."
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -2120,12 +2196,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// then leaves them for the retry.
     private func runPickerOpen(profile: String, args: [String]) -> Bool {
         let effects = engine.requestOpen(profile: profile, args: args)
-        run(effects)
-        let blocked = effects.contains {
-            if case .pickBlockedByCommandLineRequest = $0 { return true }; return false
+        let refused = run(effects)
+        switch admissionOutcome(of: effects, refusal: refused) {
+        case .started, .waiting: return true
+        case .refused: return false
         }
-        return !blocked
     }
+
+    /// What happened to one request, derived from its own effects and the state
+    /// after they ran, not from what the engine happens to be doing.
+    private enum Admission: Equatable {
+        case started    // its fresh open is in an operation phase for exactly its session
+        case waiting    // queued behind a close or a pending request's turn
+        case refused    // blocked, refused by the gate, or its start failed
+    }
+
+    private func admissionOutcome(of effects: [EngineSessionCoordinator.Effect],
+                                  refusal: FreshOpenRefusal?) -> Admission {
+        if refusal != nil { return .refused }
+        var shown: SessionID?
+        var waiting = false
+        for effect in effects {
+            switch effect {
+            case .pickBlockedByCommandLineRequest, .restartRequired: return .refused
+            case .showSession(let s, _): shown = s
+            case .showWaiting: waiting = true
+            default: break
+            }
+        }
+        if let s = shown {
+            switch engine.phase {
+            case .opening(s, _), .scanning(s, _), .ready(s), .diffing(s, _), .syncing(s, _):
+                return .started
+            default:
+                // The start failed before init1 (for instance the session-args
+                // setter), so the coordinator is already back at idle or beyond.
+                return .refused
+            }
+        }
+        return waiting ? .waiting : .refused
+    }
+
 
     // MARK: - Running-instance handoff (req 5 of #122)
 
@@ -2308,10 +2419,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("handoff: accepting '\(name)' to open after current work"
                       + sessionArgsSuffix(request.sessionArgs))
             NSApp.activate(ignoringOtherApps: true)
-            let started = commandLineTakeover(name: name, args: request.sessionArgs)
-            return .reply(started
-                ? .started
-                : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason))
+            switch commandLineTakeover(name: name, args: request.sessionArgs) {
+            case .started: return .reply(.started)
+            case .waiting: return .reply(CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason))
+            case .refused(let response): return .reply(response)
+            }
         case .presentSyncDecision(let name):
             if let response = refusalForStagingOrDeadline(name: name, deadline: deadline) {
                 return .reply(response)
@@ -2328,21 +2440,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
     }
 
+    /// What a takeover did with its request, for the reply to a waiting caller.
+    private enum TakeoverOutcome {
+        case started
+        case waiting
+        case refused(response: CommandLineHandoff.Response)
+    }
+
     /// Take over from the currently visible, safely-leavable session: abandon it in
     /// the coordinator and queue this command-line request so the existing
     /// terminal-event → close → drain path opens it, and tear down the outgoing
     /// session's presentation so its window can no longer drive the engine against
     /// the replacement (P1). Returns whether the requested profile started opening
-    /// immediately (no asynchronous cleanup was needed). Shared by the
+    /// immediately (no asynchronous cleanup was needed), is waiting for cleanup, or
+    /// was refused by the staging gate when its effects were due (the outgoing
+    /// window is already gone by then). Shared by the
     /// accept-and-wait path and the sync decision's "leave the sync" choices.
     @discardableResult
-    private func commandLineTakeover(name: String, args: [String]) -> Bool {
+    private func commandLineTakeover(name: String, args: [String]) -> TakeoverOutcome {
         // Capture the outgoing session BEFORE admit advances the current session.
         let outgoing = engine.currentSession
         let (started, effects) = engine.admitCommandLineOpen(profile: name, args: args)
         if let outgoing { detachSessionPresentation(outgoing, closeWindow: true) }
-        run(effects)
-        return started
+        let refused = run(effects)
+        switch admissionOutcome(of: effects, refusal: refused) {
+        case .started: return .started
+        case .waiting: return .waiting
+        case .refused:
+            if let refused { return .refused(response: .refused(message: refused.gate.refusalMessage(profile: name))) }
+            return .refused(response: CommandLineHandoff.responseForOpenAttempt(enteredOpening: false, name: name))
+        }
     }
 
     /// How a pending sync decision was resolved.
@@ -2552,13 +2679,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("sync decision: choice arrived after the deadline; the request is inactive — '\(name)'")
             return CommandLineHandoff.syncDecisionExpiredResponse(name: name)
         }
+        // The target's roots can have changed since the request was admitted. Check
+        // again before anything is requested, so a refusal leaves the sync, its
+        // window and its exit intent exactly as they were. Reading the profile
+        // takes time, so the deadline is checked again after it.
+        let gate = profileStagingGate(name)
+        if gate.blocksOpening {
+            log.write("sync decision: '\(name)' became blocked by abandoned staging; not leaving the sync")
+            return .refused(message: gate.refusalMessage(profile: name))
+        }
+        guard DispatchTime.now() < p.deadline else {
+            log.write("sync decision: the deadline passed while checking '\(name)'; the request is inactive")
+            return CommandLineHandoff.syncDecisionExpiredResponse(name: name)
+        }
         let intent: EngineSessionCoordinator.SyncExitIntent =
             (outcome == .abortAndClose) ? .abortAndClose : .closeAndLetRun
         run(engine.requestSyncExit(intent))
-        let started = commandLineTakeover(name: name, args: p.request.sessionArgs)
-        return started
-            ? .started
-            : CommandLineHandoff.acceptedWaitingResponse(name: name, reason: "finishing the current synchronization")
+        switch commandLineTakeover(name: name, args: p.request.sessionArgs) {
+        case .started: return .started
+        case .waiting:
+            return CommandLineHandoff.acceptedWaitingResponse(name: name, reason: "finishing the current synchronization")
+        case .refused(let response): return response
+        }
     }
 
     /// The `-path`/`-ignore`/… token-count suffix for a handoff log line.
@@ -3911,6 +4053,24 @@ extension AppDelegate {
         return (ticket, { [weak self] in self?.applySyncDecision(pending, .keepSyncing) })
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
+    /// Run a coordinator batch through the real driver; true when the staging gate
+    /// refused the batch's fresh open.
+    func runForTesting(_ effects: [EngineSessionCoordinator.Effect]) -> Bool { run(effects) != nil }
+    func runPickerOpenForTesting(_ profile: String) -> Bool { runPickerOpen(profile: profile, args: []) }
+    /// The takeover's outcome as `(started, waiting, refusedMessage)`.
+    func commandLineTakeoverForTesting(name: String) -> (started: Bool, waiting: Bool, refusal: String?) {
+        switch commandLineTakeover(name: name, args: []) {
+        case .started: return (true, false, nil)
+        case .waiting: return (false, true, nil)
+        case .refused(let r):
+            if case .refused(let m) = r { return (false, false, m) }
+            return (false, false, "\(r)")
+        }
+    }
+    func admissionIsRefusedForTesting(effects: [EngineSessionCoordinator.Effect]) -> Bool {
+        admissionOutcome(of: effects, refusal: nil) == .refused
+    }
+    var hasWaitingWindowForTesting: Bool { waitingWindow != nil }
     func loadLaunchStateBeforeRoutingForTesting() { loadLaunchStateBeforeRouting() }
     func setPendingPasswordSheetForTesting(_ sheet: PasswordSheet?) { pendingPasswordSheet = sheet }
     var hasPendingPasswordSheetForTesting: Bool { pendingPasswordSheet != nil }
