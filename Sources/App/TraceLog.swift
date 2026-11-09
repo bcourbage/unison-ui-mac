@@ -8,9 +8,9 @@ import os
 /// instead of `/tmp/unison-ui-mac.log`.
 ///
 /// **For new code, prefer the structured `Log` namespace below** — it
-/// lets you pick a category (`Log.lifecycle`, `Log.bridge`, etc.) so
+/// lets you pick a category (`Log.reconcile`, `Log.versionCheck`) so
 /// you can filter live streams with
-/// `log stream --predicate 'category == "bridge"'` or similar.
+/// `log stream --predicate 'category == "version-check"'` or similar.
 ///
 /// **What you give up**: the at-rest text log file at /tmp. Unified
 /// Logging persists messages in a system store; you read it with
@@ -52,12 +52,13 @@ final class TraceLog {
     }
 }
 
-/// Structured logging namespace. One `Logger` per logical category —
-/// matches the kinds of events the app emits. Filtering examples in
-/// Console.app (subsystem field) and from the command line:
+/// Structured logging namespace. One `Logger` per logical category. A category
+/// exists only while something logs to it; `general` (the `TraceLog` shim above)
+/// carries everything else. Filtering examples in Console.app (subsystem field)
+/// and from the command line:
 ///
 ///     log stream --predicate 'subsystem == "net.courbage.unison-ui-mac"'
-///     log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "bridge"'
+///     log stream --predicate 'subsystem == "net.courbage.unison-ui-mac" AND category == "version-check"'
 ///     log show --predicate 'subsystem == "net.courbage.unison-ui-mac"' --last 1h
 ///
 /// PRIVACY POLICY (Finding #13): a message's string LITERAL is always public
@@ -73,28 +74,12 @@ enum Log {
     /// saved Console.app filters and stream predicates reference it.
     static let subsystem = "net.courbage.unison-ui-mac"
 
-    /// App lifecycle: launch, picker open, profile pick, reconcile
-    /// open/close, sync start/complete, app quit.
-    static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
-
-    /// OCaml↔Swift bridge events: callback registration, bridge call
-    /// failures, init1/init2 boundaries, ri-set ops, ignore actions.
-    static let bridge = Logger(subsystem: subsystem, category: "bridge")
-
-    /// Reconcile-window state changes: row redraws, direction
-    /// overrides applied, summary updates, sync UI resets.
+    /// Reconcile-window events a user acts on: closing the window mid-sync,
+    /// pressing Stop, and a sync that has made no progress for the stall
+    /// timeout. Low volume.
     static let reconcile = Logger(subsystem: subsystem, category: "reconcile")
 
-    /// Status messages forwarded from OCaml's `displayStatus`. High
-    /// volume during sync — filter on this category specifically to
-    /// see what Unison is doing without bridge noise mixed in.
-    static let ocamlStatus = Logger(subsystem: subsystem, category: "ocaml-status")
-
-    /// Version-check subprocess + result. Low volume (one per
-    /// profile open with a remote root).
+    /// The SSH version probe: start and outcome, logged for every profile open
+    /// (a profile with no ssh root logs that it was skipped). Low volume.
     static let versionCheck = Logger(subsystem: subsystem, category: "version-check")
-
-    /// Guided remote-profile check: the two ssh sessions and their
-    /// observations. Low volume (user-initiated).
-    static let remoteCheck = Logger(subsystem: subsystem, category: "remote-check")
 }
