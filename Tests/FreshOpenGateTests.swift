@@ -225,51 +225,33 @@ final class FreshOpenGateTests: XCTestCase {
         XCTAssertTrue(reachedConnect(d, for: s))
     }
 
-    // MARK: a retry's temporary profile edit
+    // MARK: a recovery retry refused at the gate
 
-    private func suffixed(_ dir: String, _ profile: String) throws -> (url: URL, original: String) {
-        let url = URL(fileURLWithPath: dir + "/" + profile + ".prf")
-        return (url, try String(contentsOf: url, encoding: .utf8))
-    }
-
-    /// A prepared retry passes admission (the edit is injected, its reopen is
-    /// queued behind the remote close), then the gate refuses it when it drains.
-    /// No init1 will run to clean the edit up, so the refusal restores it.
-    func test_retryRefusedAtTheFinalGate_leavesTheProfileUnchanged() throws {
+    /// A prepared retry passes admission (its reopen is queued behind the remote
+    /// close), then the gate refuses it when it drains. The override was this
+    /// request's own first-load argument, so nothing is left behind: the profile
+    /// file was never edited and a later open of the profile gets no override.
+    func test_retryRefusedAtTheFinalGate_leavesNothingBehind() throws {
         let (d, dir) = try makeDelegate()
         let e = d.engineForTesting
         _ = readyRemote(e, d, profile: "Broken")
-        let (url, original) = try suffixed(dir, "Broken")
+        let url = URL(fileURLWithPath: dir + "/Broken.prf")
+        let original = try String(contentsOf: url, encoding: .utf8)
 
-        d.rescanIgnoringArchivesForTesting("Broken")   // injects, closes, queues the reopen
-        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix(AppDelegate.ignoreArchivesInjectedSuffix),
-                      "the temporary edit is in place while the retry waits")
+        d.rescanIgnoringArchivesForTesting("Broken")   // closes, queues the reopen
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "the profile is never edited")
 
         d.setAbandonedStagingForTesting(held())
         guard case .closing(let cs, let cop, _) = e.phase else { return XCTFail("expected the close, got \(e.phase)") }
         XCTAssertTrue(d.runForTesting(e.closeCompleted(cs, cop, status: 0)), "the gate refuses the drained retry")
 
-        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "the profile file is back as it was")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original)
         XCTAssertEqual(e.phase, .idle)
-    }
-
-    /// An edit owned by a different retry is not this open's to restore.
-    func test_refusedOpen_doesNotRestoreAnUnrelatedRetrysEdit() throws {
-        let (d, dir) = try makeDelegate()
-        let e = d.engineForTesting
-        _ = readyRemote(e, d, profile: "Other")
-        d.rescanIgnoringArchivesForTesting("Other")   // Other's retry is waiting, its edit injected
-        let (url, original) = try suffixed(dir, "Other")
-        XCTAssertNotEqual(original, "")
-        d.setAbandonedStagingForTesting(held())
-
-        // A fresh open of a different profile is refused at the gate.
-        let s = C.SessionID(raw: 900), op = C.OperationID(raw: 901)
-        XCTAssertTrue(d.runForTesting([.showSession(s, profile: "Broken"),
-                                       .beginConnect(s, op, profile: "Broken", args: [])]))
-
-        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix(AppDelegate.ignoreArchivesInjectedSuffix),
-                      "Other's temporary edit is untouched")
+        d.setAbandonedStagingForTesting([])
+        _ = d.runForTesting(e.requestOpen(profile: "Broken", args: ["-path", "a"]))
+        let last = d.effectsReachedForTesting.reversed().compactMap { x -> [String]? in
+            if case .beginConnect(_, _, _, let args) = x { return args }; return nil }.first
+        XCTAssertEqual(last, ["-path", "a"], "a later open of the profile carries no override")
     }
 
     // MARK: the reply is tied to the request

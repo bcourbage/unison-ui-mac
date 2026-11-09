@@ -137,29 +137,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         },
         stallTimeout: 45)
 
-    /// Pending restore for a one-shot `-ignorearchives` rescan: the `.prf`
-    /// we temporarily appended the injected suffix to. Cleaned up the moment
-    /// init1 has loaded the pref into Unison's memory (the in-memory value
-    /// then survives init2 + the sync, so the archive still rebuilds — but the
-    /// file is left as the user has it). We deliberately store ONLY the URL,
-    /// not a saved copy of the original bytes: restoration re-reads the current
-    /// file and strips exactly the app-owned trailing suffix, so it preserves
-    /// any external edit made during the recovery window instead of clobbering
-    /// it with a stale snapshot. See `rescanIgnoringArchives`.
-    private var ignoreArchivesPendingRestore: URL?
-
-    /// Sentinel comment bracketing our injected line, so a stray copy
-    /// (e.g. left by a crash mid-rescan) can be detected + stripped on
-    /// next launch without touching a user's own `ignorearchives` line.
+    /// Sentinel comment bracketing the line that earlier versions injected into a
+    /// `.prf` for a one-shot rescan. The app no longer edits profiles for that;
+    /// a copy left behind by an earlier version (for example after a crash) is
+    /// detected and stripped on launch without touching a user's own
+    /// `ignorearchives` line.
     nonisolated static let ignoreArchivesMarker =
         "# unison-ui-mac: one-shot -ignorearchives (auto-removed)"
 
-    /// The EXACT block appended to a `.prf` for a one-shot rescan. Injection
-    /// (`rescanIgnoringArchives`) and crash cleanup
-    /// (`contentByStrippingInjectedSuffix`) BOTH derive from this single
-    /// definition so they can never drift. It is an app-owned suffix — a
-    /// leading `\n` separates it from the user's content, and a trailing `\n`
-    /// terminates the injected pref line.
+    /// The EXACT block earlier versions appended to a `.prf` for a one-shot
+    /// rescan; launch cleanup (`contentByStrippingInjectedSuffix`) removes it. It
+    /// is an app-owned suffix — a leading `\n` separates it from the user's
+    /// content, and a trailing `\n` terminates the injected pref line.
     nonisolated static var ignoreArchivesInjectedSuffix: String {
         "\n\(ignoreArchivesMarker)\nignorearchives = true\n"
     }
@@ -177,68 +166,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     nonisolated static func contentByStrippingInjectedSuffix(_ content: String) -> String? {
         guard content.hasSuffix(ignoreArchivesInjectedSuffix) else { return nil }
         return String(content.dropLast(ignoreArchivesInjectedSuffix.count))
-    }
-
-    /// The action `restoreIgnoreArchivesPrfIfNeeded` should take, decided purely
-    /// from the CURRENT on-disk content re-read at restore time (never from a
-    /// saved snapshot of the original). This is what makes restoration
-    /// external-edit-safe: it strips exactly the app-owned trailing suffix off
-    /// whatever the prefix currently is, so an edit made during the recovery
-    /// window is preserved character-for-character.
-    enum IgnoreArchivesRestoreAction: Equatable {
-        /// Current content ends with the exact injected suffix → write this
-        /// stripped content (its prefix is the current file's prefix verbatim).
-        case write(String)
-        /// Readable, but the injected suffix is already absent → no write, and
-        /// this is NOT a failure (nothing to restore).
-        case noWriteAbsent
-        /// The file could not be read → never write a saved original over it;
-        /// preserve the current file and log a cleanup FAILURE (not "restored").
-        case noWriteUnreadable
-    }
-
-    /// Pure restore decision. `currentContent` is the freshly re-read file
-    /// contents, or `nil` if the read failed. Reuses
-    /// `contentByStrippingInjectedSuffix` for the exact-suffix match so the
-    /// inject/cleanup/restore paths can never drift.
-    nonisolated static func ignoreArchivesRestoreAction(
-        currentContent: String?
-    ) -> IgnoreArchivesRestoreAction {
-        guard let content = currentContent else { return .noWriteUnreadable }
-        if let stripped = contentByStrippingInjectedSuffix(content) {
-            return .write(stripped)
-        }
-        return .noWriteAbsent
-    }
-
-    /// Outcome of a restore attempt, for accurate logging and testability.
-    enum IgnoreArchivesRestoreResult: Equatable {
-        case restored        // stripped current content written OK
-        case nothingToDo     // suffix already absent — no write, benign
-        case writeFailed     // decided to write but the write threw — suffix
-                             // left in place for launch-time cleanup; NOT restored
-        case readFailed      // file unreadable — current file preserved; NOT restored
-    }
-
-    /// Restore over injectable read/write seams so the full behavior (including
-    /// read-failure and write-failure) is deterministically testable without a
-    /// filesystem or an `AppDelegate` instance. `read` returns the current file
-    /// contents (or nil on read failure); `write` persists the stripped content
-    /// (throwing on write failure). Never writes anything except the stripped
-    /// current content, and only when the exact suffix is present.
-    nonisolated static func performIgnoreArchivesRestore(
-        read: () -> String?,
-        write: (String) throws -> Void
-    ) -> IgnoreArchivesRestoreResult {
-        switch ignoreArchivesRestoreAction(currentContent: read()) {
-        case .write(let stripped):
-            do { try write(stripped); return .restored }
-            catch { return .writeFailed }
-        case .noWriteAbsent:
-            return .nothingToDo
-        case .noWriteUnreadable:
-            return .readFailed
-        }
     }
 
     private let log = TraceLog.shared
@@ -1137,12 +1064,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// coordinator additionally gates the reopen on that close returning status
     /// 0 — an explicit terminal acknowledgement; any non-zero close escalates
     /// to restart-required instead of reusing the runtime.
-    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String) {
+    private func reopenCurrentProfileFresh(_ profile: String, failedReason: String,
+                                           firstLoadArgs: [String] = []) {
         // The profile file is read again by the new session, so its roots can
         // differ from what the open gate evaluated when this session started
         // (it may have been edited meanwhile). Decide against the same gate as
         // any other open, before anything is torn down.
         var gate = profileStagingGate(profile)
+        // The reopen is the same session recovering, so it keeps the options the
+        // session was opened with, exactly (read before the teardown clears them).
+        // A picker-opened session has none and reopens with none.
+        let carriedArgs = engine.sessionArgs
         // Detach + close the stale window WITHOUT its onClose→abandon path;
         // we drive the coordinator explicitly below (and a replacement window
         // opens synchronously in the same turn, so the app never sees a
@@ -1161,18 +1093,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         }
         // The stale session is released either way. A remote session's close can
         // still be pending here, so recovery (which moves archive files) is NOT
-        // offered from this teardown: restore any temporary profile edit, tell the
-        // user, and leave recovery to the picker, where the engine is idle.
+        // offered from this teardown: tell the user, and leave recovery to the
+        // picker, where the engine is idle.
         if gate.blocksOpening {
             log.write("AppDelegate: reopen of '\(profile)' blocked by abandoned staging — returning to the picker")
-            restoreIgnoreArchivesPrfIfNeeded()
             // The picker was closed when the session opened; bring it back with the
             // profile selected, so the notice has a window to act from.
             showProfilePicker(select: profile)
             presentBlockedReopenNotice(profile: profile, gate: gate)
             return
         }
-        run(engine.requestOpen(profile: profile))
+        run(engine.requestOpen(profile: profile, args: carriedArgs, firstLoadArgs: firstLoadArgs))
     }
 
     /// A fresh open the staging gate refused at the point its effects were due.
@@ -1196,14 +1127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             waiting.controller.window?.delegate = nil
             waiting.controller.close()
             waitingWindow = nil
-        }
-        // A retry's temporary `ignorearchives` edit is normally removed when init1
-        // completes, which this open will never reach. Restore it here, but only
-        // when it is this profile's: an edit that belongs to an unrelated retry
-        // is left for that retry.
-        if let pending = ignoreArchivesPendingRestore,
-           pending.deletingPathExtension().lastPathComponent == r.profile {
-            restoreIgnoreArchivesPrfIfNeeded()
         }
         run(engine.operationFailed(r.session, r.operation,
                                    reason: "profile blocked by abandoned staging",
@@ -1300,8 +1223,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             // branch finalizes `.local`). The scan stall detector (issue #24) is
             // remote-only, so record it before the scan starts.
             self.scanIsRemote = needsPrompt
-            // init1 loaded the profile; restore any one-shot ignorearchives .prf.
-            self.restoreIgnoreArchivesPrfIfNeeded()
             if needsPrompt {
                 self.drivePromptLoop(s, op)          // remote: connectFinished at "no more prompts"
             } else {
@@ -1438,10 +1359,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             }
         }
 
-        // "Retry Ignoring Archives" on an archive-inconsistency fatal: inject
-        // a one-shot `ignorearchives` override into the .prf and reopen the
-        // same profile fresh so init1 reads it. Routes through the same
-        // coordinator-driven reopen as the other recovery paths.
+        // "Retry Ignoring Archives" on an archive-inconsistency fatal: reopen the
+        // same profile fresh with a one-shot `ignorearchives` override on that
+        // reopen's first load. Routes through the same coordinator-driven reopen
+        // as the other recovery paths; the profile file is not edited.
         UnisonBridge.fatalRetryIgnoreArchivesHandler = { [weak self] in
             guard let self, let profile = self.lastAttemptedProfile else { return }
             self.log.write("fatal recovery: retry ignoring archives for '\(profile)'")
@@ -2933,87 +2854,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
 
     // MARK: - One-shot -ignorearchives recovery
 
-    /// Recover from an "archive inconsistency" by re-running the profile
-    /// once with `ignorearchives = true`. We temporarily append that line
-    /// to the profile's `.prf` (which `do_unisonInit1`'s `loadTheFile`
-    /// reads into Unison's in-memory prefs), re-run init1/init2, then
-    /// restore the original `.prf` the instant init1 has consumed it. The
-    /// in-memory pref outlives the file edit — init2 and the subsequent
-    /// sync still ignore the archive and rebuild it — but the profile on
-    /// disk is left character-for-character unchanged. No OCaml bridge change is
-    /// needed, which is why this is a `.prf` edit rather than a pref call.
+    /// Recover from an "archive inconsistency" by re-running the profile once with
+    /// `ignorearchives` on. The override is the first-load argument of THIS reopen
+    /// request, applied after the session's own options (session options apply
+    /// after the profile loads, and the last occurrence of an option wins, so it
+    /// also beats an explicit `-ignorearchives=false`). It belongs to the request:
+    /// if the request is refused, cancelled or replaced it is gone, and it is never
+    /// part of the options a later reconnect replays. The profile file is not
+    /// edited, so there is nothing to restore.
     /// `failedReason` labels the coordinator transition that releases the
     /// current session before the fresh reopen. It's carried through to
     /// `reopenCurrentProfileFresh`, which fails an in-flight op (fatal-retry
     /// path) or abandons a `.ready` one (menu path) as appropriate.
     private func rescanIgnoringArchives(profile: String, failedReason: String) {
-        let url = URL(fileURLWithPath: unisonDirectory)
-            .appendingPathComponent("\(profile).prf")
-        guard let original = try? String(contentsOf: url, encoding: .utf8) else {
-            log.write("ignorearchives: cannot read \(url.path)")
-            NSSound.beep()
-            return
-        }
-        // Same single definition the crash-cleanup transform strips, so the two
-        // can never drift.
-        let injected = original + Self.ignoreArchivesInjectedSuffix
-        // Bounded stale-read guard: this method reads `original` and then writes
-        // `injected` with no in-process suspension between, so an in-process
-        // change is impossible. Re-read immediately before the write to catch a
-        // cross-process edit that landed in the tiny window since our read, and
-        // abort rather than clobber it. This is best-effort — it cannot be
-        // cross-process atomic (an edit after this re-read but before the write
-        // still races), which is acceptable because a lost one-shot rescan is
-        // recoverable, whereas silently overwriting the user's edit is not.
-        if let recheck = try? String(contentsOf: url, encoding: .utf8), recheck != original {
-            log.write("ignorearchives: \(profile).prf changed under us before injection — aborting to avoid clobbering an external edit")
-            NSSound.beep()
-            return
-        }
-        do {
-            try injected.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            log.write("ignorearchives: write failed for \(url.path): \(error)")
-            NSSound.beep()
-            return
-        }
-        ignoreArchivesPendingRestore = url
-        log.write("ignorearchives: injected into \(profile).prf — reopening profile fresh")
-        // Reopen fresh so init1 re-reads the injected .prf; the injection is
-        // restored the instant init1 has consumed it (see the init1-complete
-        // handler → restoreIgnoreArchivesPrfIfNeeded).
-        reopenCurrentProfileFresh(profile, failedReason: failedReason)
-    }
-
-    /// Restore the `.prf` we injected into, if any. Idempotent — safe to call
-    /// from every completion/teardown path.
-    ///
-    /// External-edit-safe: it RE-READS the current file and strips exactly the
-    /// app-owned trailing suffix off whatever the prefix now is, rather than
-    /// writing back a saved snapshot. So an edit made during the recovery window
-    /// is preserved. It never writes a saved original over the current file:
-    /// - suffix still present → write the stripped current content;
-    /// - suffix already absent → no write (benign, nothing to restore);
-    /// - file unreadable → no write, logged as a FAILURE (not "restored");
-    /// - write fails → the injected suffix is left in place for the launch-time
-    ///   exact-suffix cleanup (`cleanupStrayIgnoreArchivesMarkers`), and is NOT
-    ///   reported as restored.
-    private func restoreIgnoreArchivesPrfIfNeeded() {
-        guard let url = ignoreArchivesPendingRestore else { return }
-        ignoreArchivesPendingRestore = nil
-        let result = Self.performIgnoreArchivesRestore(
-            read: { try? String(contentsOf: url, encoding: .utf8) },
-            write: { try $0.write(to: url, atomically: true, encoding: .utf8) })
-        switch result {
-        case .restored:
-            log.write("ignorearchives: restored \(url.lastPathComponent) (stripped injected suffix, current prefix preserved)")
-        case .nothingToDo:
-            log.write("ignorearchives: nothing to restore for \(url.lastPathComponent) — injected suffix already absent (no write)")
-        case .writeFailed:
-            log.write("ignorearchives: RESTORE WRITE FAILED for \(url.path) — injected suffix left for launch-time cleanup, NOT restored")
-        case .readFailed:
-            log.write("ignorearchives: RESTORE READ FAILED for \(url.path) — preserving current file, NOT writing a saved original, NOT restored")
-        }
+        log.write("ignorearchives: reopening '\(profile)' fresh with ignorearchives on for its first load")
+        reopenCurrentProfileFresh(profile, failedReason: failedReason,
+                                  firstLoadArgs: ["-ignorearchives=true"])
     }
 
     /// Action-menu entry point: confirm, then run the one-shot rescan for

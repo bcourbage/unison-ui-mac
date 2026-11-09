@@ -156,7 +156,10 @@ final class EngineSessionCoordinator {
     /// of the session so a reconnect (which re-runs init1) re-applies exactly the
     /// same scope. Empty for an unscoped session. Reset with the session.
     private var currentArgs: [String] = []
-    private var queued: (id: OpenRequestID, profile: String, args: [String], origin: OpenOrigin)?
+    /// The session options the current session was opened with (empty when it was
+    /// opened without any). A recovery reopen of this session carries them.
+    var sessionArgs: [String] { currentArgs }
+    private var queued: (id: OpenRequestID, profile: String, args: [String], firstLoadArgs: [String], origin: OpenOrigin)?
 
     /// A rescan requested while a non-interactive sync-end close is still in
     /// flight (`.closing(..., .backToReady)`). It cannot start until the close
@@ -257,7 +260,12 @@ final class EngineSessionCoordinator {
     /// here; nothing is applied to the engine until the request actually starts
     /// (`startFreshOpen` → `.beginConnect`), so a queued request can never mutate
     /// an active session's preferences.
-    func requestOpen(profile: String, args: [String] = []) -> [Effect] {
+    ///
+    /// `firstLoadArgs` are applied to this request's first load only, after `args`.
+    /// They belong to the request: they travel with it through the queue, and are
+    /// gone if it is refused, cancelled or replaced. They are never part of
+    /// `sessionArgs`, so a later reconnect replays `args` alone.
+    func requestOpen(profile: String, args: [String] = [], firstLoadArgs: [String] = []) -> [Effect] {
         // A pending command-line request has been acknowledged to an external
         // caller; an ordinary picker pick must not silently replace it. Reject
         // this pick and let the driver surface why (the command-line request
@@ -267,7 +275,7 @@ final class EngineSessionCoordinator {
         }
         switch phase {
         case .idle:
-            return startFreshOpen(profile: profile, args: args)
+            return startFreshOpen(profile: profile, args: args, firstLoadArgs: firstLoadArgs)
         case .restartRequired(let reason):
             return [.restartRequired(reason: reason)]
         case .closing(let s, let op, .backToReady):
@@ -276,12 +284,12 @@ final class EngineSessionCoordinator {
             // end, not return to its results window — upgrade the outcome so
             // the close idles and the queued open then starts.
             let id = mintRequest()
-            queued = (id, profile, args, origin: .picker)
+            queued = (id, profile, args, firstLoadArgs, origin: .picker)
             phase = .closing(s, op, .toIdle)
             return [.showWaiting(id, profile: profile)]
         default:
             let id = mintRequest()
-            queued = (id, profile, args, origin: .picker)   // last pick wins
+            queued = (id, profile, args, firstLoadArgs, origin: .picker)   // last pick wins
             return [.showWaiting(id, profile: profile)]
         }
     }
@@ -306,7 +314,7 @@ final class EngineSessionCoordinator {
     /// refused by the caller before reaching here.
     func admitCommandLineOpen(profile: String, args: [String]) -> (started: Bool, effects: [Effect]) {
         let id = mintRequest()
-        queued = (id, profile, args, origin: .commandLine)
+        queued = (id, profile, args, [], origin: .commandLine)
         // Leave the current view exactly as any abandonment does; the deferred
         // close (or immediate close, when there is no live connection) drains the
         // queue we just set.
@@ -572,7 +580,7 @@ final class EngineSessionCoordinator {
 
     // MARK: - Internal transitions (mutate, then return effects)
 
-    private func startFreshOpen(profile: String, args: [String] = []) -> [Effect] {
+    private func startFreshOpen(profile: String, args: [String] = [], firstLoadArgs: [String] = []) -> [Effect] {
         let s = mintSession()
         let op = mintOp()
         phase = .opening(s, op)
@@ -580,7 +588,8 @@ final class EngineSessionCoordinator {
         connection = .disconnected
         currentProfile = profile
         currentArgs = args
-        return [.showSession(s, profile: profile), .beginConnect(s, op, profile: profile, args: args)]
+        return [.showSession(s, profile: profile),
+                .beginConnect(s, op, profile: profile, args: args + firstLoadArgs)]
     }
 
     private func beginClose(_ session: SessionID, outcome: CloseOutcome) -> [Effect] {
@@ -609,7 +618,7 @@ final class EngineSessionCoordinator {
         rescanAfterClose = nil
         if let q = queued {
             queued = nil
-            return startFreshOpen(profile: q.profile, args: q.args)
+            return startFreshOpen(profile: q.profile, args: q.args, firstLoadArgs: q.firstLoadArgs)
         }
         return []
     }

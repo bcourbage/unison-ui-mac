@@ -61,15 +61,19 @@ final class RescanConfirmationTests: XCTestCase {
         return s
     }
 
-    func test_control_unchangedSession_confirms_editsTheProfile_andReopens() throws {
+    func test_control_unchangedSession_confirms_startsTheOneShotReopen_andLeavesTheProfileUnchanged() throws {
         let (d, dir) = try makeDelegate()
         let e = d.engineForTesting
+        let original = try prf(dir)
         let s = try openReady(d)
         let origin = try XCTUnwrap(d.rescanConfirmationOriginForTesting())
 
         d.completeRescanConfirmationForTesting(origin)
 
-        XCTAssertTrue(try prf(dir).hasSuffix(AppDelegate.ignoreArchivesInjectedSuffix), "the temporary edit is written")
+        XCTAssertEqual(try prf(dir), original, "the profile file is not edited")
+        let firstLoad = d.effectsReachedForTesting.reversed().compactMap { x -> [String]? in
+            if case .beginConnect(_, _, _, let args) = x { return args }; return nil }.first
+        XCTAssertEqual(firstLoad, ["-ignorearchives=true"], "the reopen carries the one-shot override")
         XCTAssertFalse(d.hasWindowForTesting(s), "the old window is torn down for the reopen")
         guard case .opening(let s2, _) = e.phase else { return XCTFail("a fresh open should have started, got \(e.phase)") }
         XCTAssertNotEqual(s2, s)
