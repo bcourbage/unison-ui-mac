@@ -2875,16 +2875,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     /// Action-menu entry point: confirm, then run the one-shot rescan for
     /// the profile currently open in the reconcile window.
     @objc func rescanIgnoringArchivesMenu(_ sender: Any?) {
-        guard currentReconcileWindow != nil,
-              let profile = lastAttemptedProfile else { NSSound.beep(); return }
-        // B7 authority boundary: menu validation is advisory (a key equivalent
-        // or programmatic send can reach here), so re-check that the engine is
-        // quiescent. reopenCurrentProfileFresh asserts engineIsQuiescent: true,
-        // which is sound only when no op is in flight (.ready).
-        guard RescanIgnoringArchivesGate.isAllowed(
-            phase: engine.phase,
-            hasReconcileWindow: currentReconcileWindow != nil,
-            hasProfile: lastAttemptedProfile != nil) else { NSSound.beep(); return }
+        // The confirmation belongs to the session and window it was raised from.
+        // Menu validation is advisory (a key equivalent or programmatic send can
+        // reach here), so the authority check is made here and again after the
+        // modal, which can outlive the session it was raised for.
+        guard let origin = rescanConfirmationOrigin() else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Rescan ignoring archives?"
@@ -2897,7 +2892,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         alert.addButton(withTitle: "Rescan Ignoring Archives")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        rescanIgnoringArchives(profile: profile,
+        completeRescanConfirmation(origin)
+    }
+
+    /// The session, window and profile a "Rescan Ignoring Archives" confirmation
+    /// was raised for.
+    struct RescanConfirmationOrigin {
+        fileprivate let session: EngineSessionCoordinator.SessionID
+        fileprivate let window: ReconcileWindowController
+        fileprivate let profile: String
+    }
+
+    /// The origin for a confirmation raised now, or nil when the action is not
+    /// allowed: the engine must be quiescent (`.ready`, which is what makes
+    /// `reopenCurrentProfileFresh`'s `engineIsQuiescent: true` sound) with a
+    /// reconcile window and a profile.
+    private func rescanConfirmationOrigin() -> RescanConfirmationOrigin? {
+        guard let session = engine.currentSession,
+              let window = windowBySession[session],
+              let profile = profileBySession[session] ?? lastAttemptedProfile,
+              RescanIgnoringArchivesGate.isAllowed(
+                phase: engine.phase, hasReconcileWindow: true, hasProfile: true)
+        else { return nil }
+        return RescanConfirmationOrigin(session: session, window: window, profile: profile)
+    }
+
+    /// Act on a confirmation only while it still describes the live state: the
+    /// same session is current and quiescent and still owns the same window. A
+    /// profile name is not enough, since a replacement session can show the same
+    /// profile. Otherwise nothing is edited, closed or reopened.
+    private func completeRescanConfirmation(_ origin: RescanConfirmationOrigin) {
+        guard let current = rescanConfirmationOrigin(),
+              current.session == origin.session,
+              current.window === origin.window else {
+            log.write("ignorearchives: the confirmation is stale (its session or window changed while it was open); doing nothing")
+            NSSound.beep()
+            return
+        }
+        rescanIgnoringArchives(profile: origin.profile,
                                failedReason: "rescan ignoring archives")
     }
 
@@ -3927,6 +3959,8 @@ extension AppDelegate {
         admissionOutcome(of: effects, refusal: nil) == .refused
     }
     var hasWaitingWindowForTesting: Bool { waitingWindow != nil }
+    func rescanConfirmationOriginForTesting() -> RescanConfirmationOrigin? { rescanConfirmationOrigin() }
+    func completeRescanConfirmationForTesting(_ origin: RescanConfirmationOrigin) { completeRescanConfirmation(origin) }
     func loadLaunchStateBeforeRoutingForTesting() { loadLaunchStateBeforeRouting() }
     func setPendingPasswordSheetForTesting(_ sheet: PasswordSheet?) { pendingPasswordSheet = sheet }
     var hasPendingPasswordSheetForTesting: Bool { pendingPasswordSheet != nil }
