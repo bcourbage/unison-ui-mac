@@ -1197,6 +1197,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             waiting.controller.close()
             waitingWindow = nil
         }
+        // A retry's temporary `ignorearchives` edit is normally removed when init1
+        // completes, which this open will never reach. Restore it here, but only
+        // when it is this profile's: an edit that belongs to an unrelated retry
+        // is left for that retry.
+        if let pending = ignoreArchivesPendingRestore,
+           pending.deletingPathExtension().lastPathComponent == r.profile {
+            restoreIgnoreArchivesPrfIfNeeded()
+        }
         run(engine.operationFailed(r.session, r.operation,
                                    reason: "profile blocked by abandoned staging",
                                    engineIsQuiescent: true))
@@ -2189,14 +2197,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     private func runPickerOpen(profile: String, args: [String]) -> Bool {
         let effects = engine.requestOpen(profile: profile, args: args)
         let refused = run(effects)
-        let blocked = effects.contains {
-            if case .pickBlockedByCommandLineRequest = $0 { return true }; return false
+        switch admissionOutcome(of: effects, refusal: refused) {
+        case .started, .waiting: return true
+        case .refused: return false
         }
-        // Admitted means this request started opening or is queued: not blocked by
-        // a waiting request, not refused by the gate at the start, and the
-        // coordinator did not fall straight back to idle (a failed start).
-        return !blocked && refused == nil && engine.phase != .idle
     }
+
+    /// What happened to one request, derived from its own effects and the state
+    /// after they ran, not from what the engine happens to be doing.
+    private enum Admission: Equatable {
+        case started    // its fresh open is in an operation phase for exactly its session
+        case waiting    // queued behind a close or a pending request's turn
+        case refused    // blocked, refused by the gate, or its start failed
+    }
+
+    private func admissionOutcome(of effects: [EngineSessionCoordinator.Effect],
+                                  refusal: FreshOpenRefusal?) -> Admission {
+        if refusal != nil { return .refused }
+        var shown: SessionID?
+        var waiting = false
+        for effect in effects {
+            switch effect {
+            case .pickBlockedByCommandLineRequest, .restartRequired: return .refused
+            case .showSession(let s, _): shown = s
+            case .showWaiting: waiting = true
+            default: break
+            }
+        }
+        if let s = shown {
+            switch engine.phase {
+            case .opening(s, _), .scanning(s, _), .ready(s), .diffing(s, _), .syncing(s, _):
+                return .started
+            default:
+                // The start failed before init1 (for instance the session-args
+                // setter), so the coordinator is already back at idle or beyond.
+                return .refused
+            }
+        }
+        return waiting ? .waiting : .refused
+    }
+
 
     // MARK: - Running-instance handoff (req 5 of #122)
 
@@ -2382,7 +2422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             switch commandLineTakeover(name: name, args: request.sessionArgs) {
             case .started: return .reply(.started)
             case .waiting: return .reply(CommandLineHandoff.acceptedWaitingResponse(name: name, reason: reason))
-            case .refused(let message): return .reply(.refused(message: message))
+            case .refused(let response): return .reply(response)
             }
         case .presentSyncDecision(let name):
             if let response = refusalForStagingOrDeadline(name: name, deadline: deadline) {
@@ -2401,10 +2441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
     }
 
     /// What a takeover did with its request, for the reply to a waiting caller.
-    private enum TakeoverOutcome: Equatable {
+    private enum TakeoverOutcome {
         case started
         case waiting
-        case refused(message: String)
+        case refused(response: CommandLineHandoff.Response)
     }
 
     /// Take over from the currently visible, safely-leavable session: abandon it in
@@ -2422,10 +2462,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         let outgoing = engine.currentSession
         let (started, effects) = engine.admitCommandLineOpen(profile: name, args: args)
         if let outgoing { detachSessionPresentation(outgoing, closeWindow: true) }
-        if let refused = run(effects) {
-            return .refused(message: refused.gate.refusalMessage(profile: name))
+        let refused = run(effects)
+        switch admissionOutcome(of: effects, refusal: refused) {
+        case .started: return .started
+        case .waiting: return .waiting
+        case .refused:
+            if let refused { return .refused(response: .refused(message: refused.gate.refusalMessage(profile: name))) }
+            return .refused(response: CommandLineHandoff.responseForOpenAttempt(enteredOpening: false, name: name))
         }
-        return started ? .started : .waiting
     }
 
     /// How a pending sync decision was resolved.
@@ -2655,7 +2699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
         case .started: return .started
         case .waiting:
             return CommandLineHandoff.acceptedWaitingResponse(name: name, reason: "finishing the current synchronization")
-        case .refused(let message): return .refused(message: message)
+        case .refused(let response): return response
         }
     }
 
@@ -2696,6 +2740,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             let desc = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
             return .editing(profileDescription: desc)
         }
+        // An SSH prompt (credential or host-key question) is waiting for the user. A takeover would
+        // close the window the sheet hangs from and strand the connection, so the
+        // request is refused and the prompt stays answerable.
+        if pendingPasswordSheet != nil { return .credentialPromptOpen }
         // One external request at a time: a second must not replace the first,
         // whether it is queued in the coordinator or awaiting the sync decision.
         if engine.openRequestPending || pendingSyncDecision != nil {
@@ -4001,10 +4049,17 @@ extension AppDelegate {
         switch commandLineTakeover(name: name, args: []) {
         case .started: return (true, false, nil)
         case .waiting: return (false, true, nil)
-        case .refused(let m): return (false, false, m)
+        case .refused(let r):
+            if case .refused(let m) = r { return (false, false, m) }
+            return (false, false, "\(r)")
         }
     }
+    func admissionIsRefusedForTesting(effects: [EngineSessionCoordinator.Effect]) -> Bool {
+        admissionOutcome(of: effects, refusal: nil) == .refused
+    }
     var hasWaitingWindowForTesting: Bool { waitingWindow != nil }
+    func setPendingPasswordSheetForTesting(_ sheet: PasswordSheet?) { pendingPasswordSheet = sheet }
+    var hasPendingPasswordSheetForTesting: Bool { pendingPasswordSheet != nil }
     /// The shared sync-decision slot, for the ownership/mutual-exclusion tests.
     @discardableResult
     func beginWindowCloseDecisionForTesting() -> Bool { acquireSyncDecision(.windowClose) }

@@ -290,6 +290,18 @@ final class CommandLineHandoffTests: XCTestCase {
         XCTAssertFalse(m.contains("-ui text"))
     }
 
+    func test_decide_credentialPromptOpen_refuses() {
+        let out = CommandLineHandoff.decide(
+            launch: .openProfile(name: "work"),
+            activity: .credentialPromptOpen)
+        guard case .reply(.refused(let m)) = out else { return XCTFail("expected refusal") }
+        XCTAssertTrue(m.contains("work"))
+        XCTAssertTrue(m.contains("an SSH prompt"))
+        XCTAssertTrue(m.contains("Answer or cancel it"))
+        // Another process would compete with the connection the prompt belongs to.
+        XCTAssertFalse(m.contains("-ui text"))
+    }
+
     // MARK: open outcome (finding 4)
 
     func test_responseForOpenAttempt() {

@@ -224,4 +224,85 @@ final class FreshOpenGateTests: XCTestCase {
         XCTAssertFalse(refused, "only a batch with .showSession is a fresh open")
         XCTAssertTrue(reachedConnect(d, for: s))
     }
+
+    // MARK: a retry's temporary profile edit
+
+    private func suffixed(_ dir: String, _ profile: String) throws -> (url: URL, original: String) {
+        let url = URL(fileURLWithPath: dir + "/" + profile + ".prf")
+        return (url, try String(contentsOf: url, encoding: .utf8))
+    }
+
+    /// A prepared retry passes admission (the edit is injected, its reopen is
+    /// queued behind the remote close), then the gate refuses it when it drains.
+    /// No init1 will run to clean the edit up, so the refusal restores it.
+    func test_retryRefusedAtTheFinalGate_leavesTheProfileUnchanged() throws {
+        let (d, dir) = try makeDelegate()
+        let e = d.engineForTesting
+        _ = readyRemote(e, d, profile: "Broken")
+        let (url, original) = try suffixed(dir, "Broken")
+
+        d.rescanIgnoringArchivesForTesting("Broken")   // injects, closes, queues the reopen
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix(AppDelegate.ignoreArchivesInjectedSuffix),
+                      "the temporary edit is in place while the retry waits")
+
+        d.setAbandonedStagingForTesting(held())
+        guard case .closing(let cs, let cop, _) = e.phase else { return XCTFail("expected the close, got \(e.phase)") }
+        XCTAssertTrue(d.runForTesting(e.closeCompleted(cs, cop, status: 0)), "the gate refuses the drained retry")
+
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original, "the profile file is back as it was")
+        XCTAssertEqual(e.phase, .idle)
+    }
+
+    /// An edit owned by a different retry is not this open's to restore.
+    func test_refusedOpen_doesNotRestoreAnUnrelatedRetrysEdit() throws {
+        let (d, dir) = try makeDelegate()
+        let e = d.engineForTesting
+        _ = readyRemote(e, d, profile: "Other")
+        d.rescanIgnoringArchivesForTesting("Other")   // Other's retry is waiting, its edit injected
+        let (url, original) = try suffixed(dir, "Other")
+        XCTAssertNotEqual(original, "")
+        d.setAbandonedStagingForTesting(held())
+
+        // A fresh open of a different profile is refused at the gate.
+        let s = C.SessionID(raw: 900), op = C.OperationID(raw: 901)
+        XCTAssertTrue(d.runForTesting([.showSession(s, profile: "Broken"),
+                                       .beginConnect(s, op, profile: "Broken", args: [])]))
+
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix(AppDelegate.ignoreArchivesInjectedSuffix),
+                      "Other's temporary edit is untouched")
+    }
+
+    // MARK: the reply is tied to the request
+
+    /// The coordinator's reply to a pick in `.restartRequired` is the restart
+    /// effect. The effects are classified without running them: running one
+    /// presents the restart notice, a real modal.
+    func test_pickInRestartRequired_isNotReportedAsAdmitted() throws {
+        let (d, _) = try makeDelegate()
+        let e = d.engineForTesting
+        let (s, op) = connectOp(e.requestOpen(profile: "A"))!
+        _ = e.operationFailed(s, op, reason: "wedged", engineIsQuiescent: false)   // .restartRequired, effects not run
+        XCTAssertNotEqual(e.phase, .idle, "a non-idle phase is not evidence the open was accepted")
+
+        let effects = e.requestOpen(profile: "Other")
+        XCTAssertTrue(d.admissionIsRefusedForTesting(effects: effects))
+    }
+
+    func test_startThatFailsBeforeInit1_isRefused_notReportedStarted() throws {
+        let (d, _) = try makeDelegate()
+        let e = d.engineForTesting
+        let effects = e.requestOpen(profile: "Other")   // .showSession + .beginConnect
+        let (s, op) = connectOp(effects)!
+        _ = e.operationFailed(s, op, reason: "session args failed", engineIsQuiescent: true)   // back at idle
+        XCTAssertEqual(e.phase, .idle)
+
+        XCTAssertTrue(d.admissionIsRefusedForTesting(effects: effects),
+                      "a start that ended before init1 is refused, whatever the coordinator reported earlier")
+    }
+
+    func test_startedOpen_isReportedStarted() throws {
+        let (d, _) = try makeDelegate()
+        let effects = d.engineForTesting.requestOpen(profile: "Other")
+        XCTAssertFalse(d.admissionIsRefusedForTesting(effects: effects))
+    }
 }

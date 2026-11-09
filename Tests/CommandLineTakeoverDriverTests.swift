@@ -126,6 +126,57 @@ final class CommandLineTakeoverDriverTests: XCTestCase {
         XCTAssertTrue(e.commandLineRequestPending, "B is the pending command-line request")
     }
 
+    // MARK: F — a credential prompt stays answerable
+
+    /// While a credential sheet is open, a handoff request is refused outright:
+    /// the sheet stays, the session and window stay, nothing is queued, and the
+    /// connection is not cancelled. Without the refusal the request is accepted
+    /// as busy-will-wait and its takeover closes the window the sheet hangs from.
+    func test_f_credentialPromptOpen_refusesRequest_andChangesNothing() {
+        let d = AppDelegate()
+        let dir = makeUnisonDir(profile: "B")
+        d.setUnisonDirectoryForTesting(dir)
+        let e = d.engineForTesting
+        let (aS, aOp) = connect(e.requestOpen(profile: "A"))!   // .opening(A), remote connect
+        installWindow(d, aS, profile: "A")
+        d.setPendingPasswordSheetForTesting(
+            PasswordSheet(prompt: "Password:", style: .secureCredential) { _ in })
+        let phaseBefore = e.phase
+
+        let resp = d.handleCommandLineHandoffForTesting(
+            req(given: "B", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+
+        guard case .reply(.refused(let m)) = resp else {
+            return XCTFail("expected an explicit refusal, got \(resp)")
+        }
+        XCTAssertTrue(m.contains("an SSH prompt"))
+        XCTAssertTrue(d.hasPendingPasswordSheetForTesting, "the prompt stays up and answerable")
+        XCTAssertTrue(d.hasWindowForTesting(aS), "the window the sheet hangs from is not torn down")
+        XCTAssertEqual(e.phase, phaseBefore, "the session is untouched")
+        XCTAssertFalse(e.commandLineRequestPending, "nothing is queued")
+        XCTAssertEqual(e.currentSession, aS)
+        _ = aOp
+    }
+
+    /// Control: with no credential prompt open, the same request is still accepted.
+    func test_f_control_noCredentialPrompt_stillAcceptsAndWaits() {
+        let d = AppDelegate()
+        let dir = makeUnisonDir(profile: "B")
+        d.setUnisonDirectoryForTesting(dir)
+        let e = d.engineForTesting
+        let (aS, aOp) = connect(e.requestOpen(profile: "A"))!
+        _ = e.connectFinished(aS, aOp, result: .remote(interactive: false))   // .scanning(A)
+        installWindow(d, aS, profile: "A")
+
+        let resp = d.handleCommandLineHandoffForTesting(
+            req(given: "B", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+
+        guard case .reply(.acceptedWaiting) = resp else {
+            return XCTFail("without a prompt the request is accepted and waits, got \(resp)")
+        }
+        XCTAssertTrue(e.commandLineRequestPending)
+    }
+
     // MARK: PR-B — sync-decision arming, single-pending, expiry, admission
 
     private func syncOp(_ e: [Effect]) -> C.OperationID? {
