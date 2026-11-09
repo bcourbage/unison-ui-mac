@@ -1536,20 +1536,27 @@ OCaml runtime setup. Subsequent launches reuse the same <code>.app</code> bundle
 <pre><code class="language-sh"># Live tail of everything the app is logging:
 log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot;'
 
-# Filter to just bridge events (OCaml↔Swift):
-log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;bridge&quot;'
+# Only the SSH version check that runs when a profile opens:
+log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;version-check&quot;'
 
-# Or just the OCaml status messages forwarded from displayStatus:
-log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;ocaml-status&quot;'
+# Only reconcile-window events (closing mid-sync, Stop, a stalled sync):
+log stream --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot; AND category == &quot;reconcile&quot;'
 
 # Last hour of everything, in one shot:
 log show --predicate 'subsystem == &quot;net.courbage.unison-ui-mac&quot;' --last 1h
 </code></pre>
-<p>Categories: <code>lifecycle</code> (app/window open-close), <code>bridge</code>
-(OCaml↔Swift events), <code>reconcile</code> (reconcile-window state),
-<code>ocaml-status</code> (status messages forwarded from Unison's
-<code>displayStatus</code>), <code>version-check</code> (the SSH version probe; see below),
-<code>general</code> (the legacy <code>TraceLog</code> catch-all).</p>
+<p>Messages are filed under three categories. <code>general</code> holds almost
+everything the app logs, including the status messages forwarded from
+Unison. <code>version-check</code> is the SSH version probe (see below), and
+<code>reconcile</code> covers closing a window mid-sync, pressing Stop, and a sync
+that has made no progress for a while.</p>
+<p>Most of what the app logs names a profile, a path, or a host, so Unified
+Logging redacts it. Every message in <code>general</code> appears as <code>&lt;private&gt;</code> in
+Console and in <code>log stream</code>, even in a Debug build. The category and the
+time stay visible, which is enough to see that something happened but not
+what. This protects the file names and servers in a log you share. The
+values show only when private-data logging has been deliberately enabled
+on the Mac, which is a system-wide setting that this app never changes.</p>
 <p>Unified Logging gives you filterable categories, structured search, and
 persistence across reboots without the disk-hygiene problem of a stray
 /tmp file.</p>
