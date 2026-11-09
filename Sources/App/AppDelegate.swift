@@ -2598,6 +2598,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             let desc = editingProfileName.map { "editing the profile \($0)" } ?? "editing an unsaved profile"
             return .editing(profileDescription: desc)
         }
+        // An SSH prompt (credential or host-key question) is waiting for the user. A takeover would
+        // close the window the sheet hangs from and strand the connection, so the
+        // request is refused and the prompt stays answerable.
+        if pendingPasswordSheet != nil { return .credentialPromptOpen }
         // One external request at a time: a second must not replace the first,
         // whether it is queued in the coordinator or awaiting the sync decision.
         if engine.openRequestPending || pendingSyncDecision != nil {
@@ -3894,6 +3898,8 @@ extension AppDelegate {
         return (ticket, { [weak self] in self?.applySyncDecision(pending, .keepSyncing) })
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
+    func setPendingPasswordSheetForTesting(_ sheet: PasswordSheet?) { pendingPasswordSheet = sheet }
+    var hasPendingPasswordSheetForTesting: Bool { pendingPasswordSheet != nil }
     /// The shared sync-decision slot, for the ownership/mutual-exclusion tests.
     @discardableResult
     func beginWindowCloseDecisionForTesting() -> Bool { acquireSyncDecision(.windowClose) }
