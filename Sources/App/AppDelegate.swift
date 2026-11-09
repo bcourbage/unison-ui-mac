@@ -1856,9 +1856,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
                 .expandingTildeInPath
         }
 
-        // Defensive: strip any stray one-shot `ignorearchives` line left in
-        // a .prf by a crash mid-rescan, so it never silently persists.
-        Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
+        // Everything the first admission decision reads is loaded before the
+        // handoff listener starts or the picker is shown.
+        loadLaunchStateBeforeRouting()
 
         // Running-instance routing (req 5 of #122): a graphical profile request
         // hands off to an already-running instance and this process exits with
@@ -2774,6 +2774,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EngineActivityProvidin
             log.write("scan watchdog: \(s)/\(op) silent \(Int(scanStallTimeout))s but not yet waiting on remote (local/TCC pause) — not fatal; continuing to wait")
             scanStall.arm(s, op)
         }
+    }
+
+    /// Launch-time state that must be in place before any open request can be
+    /// admitted, from the handoff listener or the picker. Only the recovery
+    /// dialog waits for the deferred launch checks.
+    private func loadLaunchStateBeforeRouting() {
+        // Defensive: strip any stray one-shot `ignorearchives` line left in
+        // a .prf by a crash mid-rescan, so it never silently persists.
+        Self.cleanupStrayIgnoreArchivesMarkers(in: unisonDirectory)
+        // Which archives interrupted operations hold, so the open gate has its
+        // inputs for the first request. The deferred launch check re-scans and
+        // presents the recovery dialog.
+        refreshBlockedArchiveState()
     }
 
     // MARK: - One-shot -ignorearchives recovery
@@ -3898,6 +3911,7 @@ extension AppDelegate {
         return (ticket, { [weak self] in self?.applySyncDecision(pending, .keepSyncing) })
     }
     var hasPendingSyncDecisionForTesting: Bool { pendingSyncDecision != nil }
+    func loadLaunchStateBeforeRoutingForTesting() { loadLaunchStateBeforeRouting() }
     func setPendingPasswordSheetForTesting(_ sheet: PasswordSheet?) { pendingPasswordSheet = sheet }
     var hasPendingPasswordSheetForTesting: Bool { pendingPasswordSheet != nil }
     /// The shared sync-decision slot, for the ownership/mutual-exclusion tests.

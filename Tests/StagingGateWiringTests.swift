@@ -62,4 +62,68 @@ final class StagingGateWiringTests: XCTestCase {
         XCTAssertEqual(d.engineForTesting.phase, .idle)
         XCTAssertFalse(d.engineForTesting.commandLineRequestPending)
     }
+
+    // MARK: launch ordering
+
+    /// A directory with a held staging record on disk, a profile that cannot be
+    /// resolved (so it is blocked while anything is held), and an unrelated one.
+    private func makeHeldDirectory() throws -> String {
+        let dir = try XCTUnwrap(ArchiveMatcher.realpathResolve(try makeDirectory()))
+        let q = dir + "/" + AbandonedStagingScan.quarantinePrefix + "held"
+        try FileManager.default.createDirectory(atPath: q, withIntermediateDirectories: true)
+        var m = StagingManifest(operation: "reset", hashes: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+                                payloadFiles: [], createdAtISO8601: "2026-11-01T00:00:00Z")
+        m.phase = StagingManifest.phaseStaging
+        try JSONEncoder().encode(m).write(to: URL(fileURLWithPath: q + "/" + AbandonedStagingScan.manifestName))
+        for r in ["ua", "ub"] {
+            try FileManager.default.createDirectory(atPath: dir + "/" + r, withIntermediateDirectories: true)
+        }
+        // The gate trusts a root only when its path is already canonical.
+        let real = dir
+        try "root = \(real)/ua\nroot = \(real)/ub\n".write(toFile: dir + "/Other.prf", atomically: true, encoding: .utf8)
+        return dir
+    }
+
+    private func request(_ name: String, dir: String) -> CommandLineHandoff.Request {
+        CommandLineHandoff.Request(given: name, rootsSet: 0, unisonDirectory: dir,
+                                   installationPath: Bundle.main.bundlePath, sessionArgs: [])
+    }
+
+    /// The launch-state load runs before the listener starts and the picker is
+    /// shown, so a request served first still sees the held archives. Without
+    /// the load the held record is invisible and the blocked profile opens.
+    func test_launchStateLoad_makesHeldArchivesVisibleToTheFirstRequest() throws {
+        suppressRecoveryPrompt()
+        let dir = try makeHeldDirectory()
+        let d = AppDelegate()
+        d.setUnisonDirectoryForTesting(dir)
+        d.loadLaunchStateBeforeRoutingForTesting()
+        // If a regression admits the request, do not start engine work on the
+        // shared hosted-test engine; the assertion below still fails on `.started`.
+        d.suppressEngineEffectsForTesting = true
+
+        let served = d.handleCommandLineHandoffForTesting(
+            request("Broken", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+        guard case .reply(.refused(let message)) = served else {
+            return XCTFail("the held profile must be refused from the first request, got \(served)")
+        }
+        XCTAssertTrue(message.contains("could not be resolved"), message)
+        XCTAssertEqual(d.engineForTesting.phase, .idle)
+    }
+
+    /// Control: a profile unrelated to the held archives is still admitted.
+    func test_launchStateLoad_doesNotBlockAnUnrelatedProfile() throws {
+        suppressRecoveryPrompt()
+        let dir = try makeHeldDirectory()
+        let d = AppDelegate()
+        d.setUnisonDirectoryForTesting(dir)
+        d.loadLaunchStateBeforeRoutingForTesting()
+        d.suppressEngineEffectsForTesting = true
+
+        let served = d.handleCommandLineHandoffForTesting(
+            request("Other", dir: dir), deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+        guard case .reply(.started) = served, d.engineForTesting.phase != .idle else {
+            return XCTFail("an unrelated profile must still open, got \(served)")
+        }
+    }
 }
