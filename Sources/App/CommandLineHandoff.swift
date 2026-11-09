@@ -211,6 +211,9 @@ enum CommandLineHandoff {
     ///  - `restartRequired`   → refuse; a recovery restriction is in effect.
     ///  - `requestAlreadyPending` → refuse; one external request is already
     ///                          waiting and must not be replaced.
+    ///  - `credentialPromptOpen` → refuse; an SSH prompt (password, passphrase or
+    ///                          host-key question) is waiting for the user, and a takeover would close
+    ///                          the window it hangs from.
     enum Activity: Equatable {
         case idleAtPicker
         case busyWillWait(reason: String)
@@ -218,6 +221,7 @@ enum CommandLineHandoff {
         case editing(profileDescription: String)
         case restartRequired(reason: String)
         case requestAlreadyPending
+        case credentialPromptOpen
     }
 
     /// What the primary should do with a request: reply only, open a profile now
@@ -333,6 +337,13 @@ enum CommandLineHandoff {
                 return .reply(.refused(message:
                     "unison-ui-mac \(reason), so it did not start \(name). "
                     + "Quit and reopen it, then run the command again."))
+            case .credentialPromptOpen:
+                // The user is mid-authentication. Taking over would close the
+                // window the prompt hangs from and strand the connection, so the
+                // prompt stays as it is until it is answered or cancelled.
+                return .reply(.refused(message:
+                    "unison-ui-mac is waiting for an SSH prompt, so it did not start \(name). "
+                    + "Answer or cancel it in the app, then run the command again."))
             case .requestAlreadyPending:
                 return .reply(.refused(message:
                     "unison-ui-mac is already handling another command-line request, so it did not start \(name). "
