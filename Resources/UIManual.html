@@ -4,7 +4,7 @@
 <title>Unison UI for macOS — User Manual</title>
 <style>html{color-scheme:light dark}body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}pre{overflow:auto;padding:1rem;background:#8882}table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.5rem}img{max-width:100%}a{color:light-dark(#065aba,#78baff)}</style>
 </head><body>
-<!-- MANUAL.md sha256: c93b583a53063196dbe75c80e45a422e83f92544b3151e983caa31f8e08401f5 -->
+<!-- MANUAL.md sha256: 65ec5f47b63be49fa5e6a8819b3b20b8e42cbdd9f84eba23eb8e5fd633379daa -->
 <h1 id="unison-ui-mac-user-manual">Unison-UI-Mac, User Manual</h1>
 <p>A feature-by-feature guide to the macOS app. For install steps see
 <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>; for architecture overview and a build
@@ -185,7 +185,8 @@ host-key question) is waiting for you (answer or cancel it first), and when the 
 needs to be quit and reopened after a connection problem, as is one from a different
 copy of the app or one that uses a different Unison directory. A profile whose
 archives are held by an interrupted operation is refused too, until that recovery is
-complete.</p>
+complete; this check works from the profile's local roots and does not yet recognize
+archives held for a profile with a remote root.</p>
 <p>A <em>Started</em> reply means the app began opening the profile; the open may still be
 connecting, and its scan has not necessarily begun. An <em>accepted and waiting</em> reply
 means the request was queued and will open when the app is free. The two are told

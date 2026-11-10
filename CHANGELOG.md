@@ -29,6 +29,8 @@ migration.
   changed to overlap a held archive. The check now also runs just before the open,
   and the command-line reply says what happened to that request. A refused open
   returns to the picker with a notice and leaves a running synchronization alone.
+  The check identifies a profile's archives from its roots, so it does not yet
+  recognize archives held for a profile that has an `ssh://` or `socket://` root.
 - **A recovery reopen consults the held-archive check.** The reopen re-reads the
   profile, whose roots may have changed since the session opened, and it skipped the
   check. It now evaluates it first and returns to the picker, with a notice, when the
