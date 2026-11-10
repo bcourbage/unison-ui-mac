@@ -164,8 +164,9 @@ host-key question) is waiting for you (answer or cancel it first), and when the 
 needs to be quit and reopened after a connection problem, as is one from a different
 copy of the app or one that uses a different Unison directory. A profile whose
 archives are held by an interrupted operation is refused too, until that recovery is
-complete; this check works from the profile's local roots and does not yet recognize
-archives held for a profile with a remote root.
+complete. That includes a profile with a remote root next to a local one: its
+archives cannot be identified before a connection, so it is refused whenever any
+interrupted operation holds archives.
 
 A *Started* reply means the app began opening the profile; the open may still be
 connecting, and its scan has not necessarily begun. An *accepted and waiting* reply
