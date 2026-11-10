@@ -11,6 +11,53 @@ across releases per Apple's bundle-version rules.
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-11-09
+
+A maintenance release. It closes gaps in how opening, retrying and archive
+recovery interact with command-line requests and with archives held by an
+interrupted operation. Existing profiles and settings continue to work without
+migration.
+
+### Fixed
+- **A command-line request no longer disturbs an open SSH prompt.** A request that
+  arrived while a password, passphrase or host-key prompt was waiting used to close
+  the window the prompt belongs to, report success, and never open the profile. The
+  request is now refused with a message, and the prompt stays up and answerable.
+- **Archives held by an interrupted operation are checked when an open actually
+  starts.** The check ran only when a request was made, so a profile queued behind a
+  close, or waiting on a synchronization decision, could still open after its roots
+  changed to overlap a held archive. The check now also runs just before the open,
+  and the command-line reply says what happened to that request. A refused open
+  returns to the picker with a notice and leaves a running synchronization alone.
+- **A recovery reopen consults the held-archive check.** The reopen re-reads the
+  profile, whose roots may have changed since the session opened, and it skipped the
+  check. It now evaluates it first and returns to the picker, with a notice, when the
+  profile is blocked.
+- **The held-archive state is loaded before a request can be served.** It used to
+  load after the command-line listener started and the picker appeared.
+- **Rescan Ignoring Archives acts only on the session you confirmed it for.** If a
+  command-line request replaced that session while the confirmation was open, the
+  confirmation used to close the replacement and reopen the old profile.
+- **A recovery reopen keeps the session's options.** Retry Ignoring Archives,
+  Delete Orphans and Retry, and Rescan Ignoring Archives reopened the profile
+  without the options it was opened with, so a session started with `-path` rescanned
+  the whole profile. They now keep the options, and later reconnects use them too.
+- **Retry Ignoring Archives no longer edits the profile file.** The one-shot setting
+  is applied to that reopen alone, and it also wins over an explicit
+  `-ignorearchives=false`. A recovery that is cancelled or replaced leaves nothing
+  behind.
+- **Reset Archives, Delete Profile and the open gate follow includes.** A profile
+  whose roots live in an included file no longer looks like it has none. Archive
+  removal is withheld, and opening is blocked while interrupted operations hold
+  archives, when the includes cannot be resolved. An extensionless profile of the
+  same name counts as another owner of the archives.
+- **The profile picker has a minimum size,** and a saved frame smaller than that is
+  raised when the window is restored.
+
+### Changed
+- Removed unused code and test hooks, split large source files, and tightened
+  tests. No behavior change.
+
 ## [1.0.0] — 2026-10-07
 
 The first stable release. It carries the profile, dialog and Diff-window polish

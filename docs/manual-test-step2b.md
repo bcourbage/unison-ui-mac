@@ -578,6 +578,38 @@ itself; a windowless background sync accepts-and-waits; only one request is pend
 at a time and the picker cannot silently replace it; and a lost reply is reported
 as unconfirmed without an automatic retry.
 
+### TC16 — Recovery keeps the session's options (v1.0.1)
+
+Verifies, on the signed release candidate, that Rescan Ignoring Archives (and the
+fatal-dialog retries) reopen the profile with the session's own options, that the
+one-shot setting applies to that first load only, and that the profile file is never
+edited. Use the TC14 setup (disposable `UNISON`, local roots `A`/`B`, profile
+`work`, a change inside `A/Documents` and one outside it), pre-synchronize `work`,
+then change one file inside `Documents` on one side only.
+
+- **TC16a — Scope is kept.** Open the profile through the launcher with
+  `"<RC launcher>" work -path Documents`. **Expect:** only the `Documents` change is
+  listed, as a one-sided change. Choose **Action ▸ Rescan Ignoring Archives…** and
+  confirm. **Expect:** only `Documents` is listed (the outside change stays out), and
+  the changed file now shows as a conflict, because the saved archive was ignored.
+- **TC16b — Explicit disable does not defeat the recovery.** Repeat TC16a with
+  `"<RC launcher>" work -path Documents -ignorearchives=false`. **Expect:** the same
+  result: still scoped to `Documents`, and the changed file shows as a conflict.
+- **TC16c — The profile file is untouched and a later open is ordinary.** After each
+  recovery, `shasum` the profile file before and after: identical, with no
+  `ignorearchives` line added. Return to the picker and open `work` normally.
+  **Expect:** an ordinary scan with both changes and the archive in effect (the
+  one-sided change is not a conflict).
+- **TC16d — A stale confirmation does nothing.** Open `work`, choose Rescan Ignoring
+  Archives…, and leave the confirmation open. From a second Terminal run
+  `"<RC launcher>" other`. **Expect:** `other` opens. Now confirm the open
+  confirmation. **Expect:** nothing happens (a beep); `other` stays on screen and
+  `work`'s profile file is unchanged.
+
+**PASS =** the recovery scan covers the same paths as the original session, ignores
+the saved archive once, leaves the profile file byte-identical, and a confirmation
+that outlived its session changes nothing.
+
 ### Interactive-password cases (run last)
 
 These cases need a person to type a real password (or answer a host-key
@@ -610,6 +642,17 @@ stable for cross-references, so they are out of sequence here by design.
 3. **Expect (ssh):** ssh child reaped after returning to the picker.
 
 **PASS =** the held connection closes when you leave the profile.
+
+### TC15j — A request while an SSH prompt is open is refused (v1.0.1)
+
+Needs the password profile from the prerequisites. Open it so the credential sheet
+appears, and leave the sheet unanswered. In a second Terminal run
+`"<RC launcher>" other`. **Expect:** the command exits non-zero and prints that the
+app is waiting for an SSH prompt; the sheet stays visible and answerable; no second
+window or waiting window appears. Answer the sheet normally and confirm the original
+profile opens, then repeat the request with no prompt open and confirm it is accepted
+as in TC15. **PASS =** a refusal that leaves the prompt, window and connection as
+they were.
 
 ### TC12 — Interactive auth failure (live)
 
