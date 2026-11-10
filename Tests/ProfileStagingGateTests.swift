@@ -180,6 +180,61 @@ final class ProfileStagingGateTests: XCTestCase {
         XCTAssertEqual(gate("Nope", [r]), .clear)
     }
 
+    // MARK: remote roots
+
+    // Unison names the archive of a profile with a remote root from the remote host
+    // name and resolved path, which are known only after a connection, so the hash
+    // computed here from the roots as typed matches no real archive. The record's
+    // hashes come from the real archive headers. Such a profile therefore cannot be
+    // recognized as held or not, and is blocked, without claiming any record.
+
+    /// Real header-derived hashes cannot be computed offline for an ssh root; this
+    /// one is any hash that no computation from the roots as typed can produce.
+    private let headerHash = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+    func test_localAndRemoteRoots_areBlockedWhileARecordHoldsArchives() throws {
+        try write("Remote.prf", "root = /Users/test/Documents\nroot = ssh://alice@server//data\n")
+        let r = record("/q/r", hashes: [headerHash])
+        XCTAssertEqual(gate("Remote", [r]), .remoteRoot([r]))
+        XCTAssertTrue(gate("Remote", [r]).blocksOpening)
+    }
+
+    func test_socketRoot_isBlockedToo() throws {
+        try write("Sock.prf", "root = /Users/test/Documents\nroot = socket://server:9999//data\n")
+        let r = record("/q/r", hashes: [headerHash])
+        XCTAssertEqual(gate("Sock", [r]), .remoteRoot([r]))
+    }
+
+    func test_remoteRootThroughAnInclude_isBlockedToo() throws {
+        try write("remote.inc", "root = /Users/test/Documents\nroot = ssh://alice@server//data\n")
+        try write("RemoteInc.prf", "include remote.inc\n")
+        let r = record("/q/r", hashes: [headerHash])
+        XCTAssertEqual(gate("RemoteInc", [r]), .remoteRoot([r]))
+    }
+
+    func test_localAndRemoteRoots_areClearWhenNothingIsHeld() throws {
+        try write("Remote.prf", "root = /Users/test/Documents\nroot = ssh://alice@server//data\n")
+        XCTAssertEqual(gate("Remote", []), .clear)
+    }
+
+    func test_twoRemoteRoots_haveNoLocalArchiveToHold_andStayClear() throws {
+        try write("Both.prf", "root = ssh://a@h//x\nroot = ssh://a@h//y\n")
+        let r = record("/q/r", hashes: [headerHash])
+        XCTAssertEqual(gate("Both", [r]), .clear)
+    }
+
+    func test_remoteRootWording_namesTheRemoteRootAndClaimsNoRecord() {
+        let context = ProfileStagingGate.remoteRoot([]).recoveryContext
+        let refusal = ProfileStagingGate.remoteRoot([]).refusalMessage(profile: "P")
+        for text in [context, refusal] {
+            XCTAssertTrue(text.contains("remote root"), text)
+            XCTAssertFalse(text.contains("could not be resolved"), text)
+            XCTAssertFalse(text.contains("its archives are held by"), text)
+        }
+        XCTAssertTrue(refusal.contains("Complete that recovery in the running app"), refusal)
+        XCTAssertTrue(refusal.contains("P"), refusal)
+    }
+
     // MARK: wording
 
     func test_picker_unresolvedContextDoesNotClaimTheProfilesOwnArchives() {

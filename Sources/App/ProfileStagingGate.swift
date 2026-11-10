@@ -17,6 +17,12 @@ enum ProfileStagingGate: Equatable {
     /// The profile's roots cannot be resolved; every blocking record is a
     /// possible overlap and none is attributed to it.
     case unresolved([AbandonedStaging])
+    /// The profile has a remote root next to a local one. Unison names the local
+    /// archive from the remote host name and resolved path, which are known only
+    /// after a connection, so the hash computed here from the roots as typed
+    /// matches no real archive and cannot show whether a record holds it. Every
+    /// blocking record is a possible overlap and none is attributed to it.
+    case remoteRoot([AbandonedStaging])
 
     var blocksOpening: Bool {
         if case .clear = self { return false }
@@ -27,7 +33,7 @@ enum ProfileStagingGate: Equatable {
     var records: [AbandonedStaging] {
         switch self {
         case .clear: return []
-        case .confirmed(let r), .unresolved(let r): return r
+        case .confirmed(let r), .unresolved(let r), .remoteRoot(let r): return r
         }
     }
 
@@ -39,6 +45,10 @@ enum ProfileStagingGate: Equatable {
         case .unresolved:
             return "This profile's roots could not be resolved, so it may use archives held by an "
                 + "interrupted maintenance operation. Recover the interrupted operations first."
+        case .remoteRoot:
+            return "This profile has a remote root, so the archives it uses cannot be identified from "
+                + "its roots, and it may use archives held by an interrupted maintenance operation. "
+                + "Recover the interrupted operations first."
         }
     }
 
@@ -52,6 +62,10 @@ enum ProfileStagingGate: Equatable {
             return "unison-ui-mac did not start \(name); its roots could not be resolved, so it may use "
                 + "archives held by an interrupted operation. Complete that recovery in the running app, "
                 + "then run the command again."
+        case .remoteRoot:
+            return "unison-ui-mac did not start \(name); it has a remote root, so its archives cannot be "
+                + "identified from its roots and it may use archives held by an interrupted operation. "
+                + "Complete that recovery in the running app, then run the command again."
         }
     }
 
@@ -87,6 +101,11 @@ enum ProfileStagingGate: Equatable {
             }
         }
         let specs = ArchiveMatcher.rootSpecs(forRoots: roots)
+        // A local archive next to a remote root is named from facts only a connection
+        // reveals, so it cannot be matched to a record from the roots as typed.
+        if specs.contains(where: { !$0.isLocal }) && specs.contains(where: { $0.isLocal }) {
+            return .remoteRoot(blockingRecords)
+        }
         let pathsTrusted = zip(roots, specs).filter { $0.1.isLocal }.allSatisfy { raw, _ in
             let r = ArchiveMatcher.localRootNeedsResolution(lexicalLocalPath(raw), resolve: resolve)
             return r.resolvable && !r.differs
