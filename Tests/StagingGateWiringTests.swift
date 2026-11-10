@@ -126,4 +126,35 @@ final class StagingGateWiringTests: XCTestCase {
             return XCTFail("an unrelated profile must still open, got \(served)")
         }
     }
+
+    /// A profile with a remote root is refused from a command-line request while
+    /// archives are held, because its archives cannot be identified from its roots.
+    func test_cli_remoteRootProfile_isRefusedWhileArchivesAreHeld() throws {
+        suppressRecoveryPrompt()
+        let dir = try makeDirectory()
+        try "root = /Users/test/Documents\nroot = ssh://alice@server//data\n"
+            .write(toFile: dir + "/Remote.prf", atomically: true, encoding: .utf8)
+        let d = delegate(holding: true, dir: dir)
+        let request = CommandLineHandoff.Request(given: "Remote", rootsSet: 0, unisonDirectory: dir,
+                                                 installationPath: Bundle.main.bundlePath, sessionArgs: [])
+        let served = d.handleCommandLineHandoffForTesting(
+            request, deadline: CommandLineHandoffSocket.Deadline(seconds: 30))
+
+        guard case .reply(.refused(let message)) = served else {
+            return XCTFail("expected a refusal, got \(served)")
+        }
+        XCTAssertTrue(message.contains("remote root"), message)
+        XCTAssertEqual(d.engineForTesting.phase, .idle)
+        XCTAssertFalse(d.engineForTesting.commandLineRequestPending)
+    }
+
+    func test_picker_remoteRootProfile_isNotOpenedWhileArchivesAreHeld() throws {
+        suppressRecoveryPrompt()
+        let dir = try makeDirectory()
+        try "root = /Users/test/Documents\nroot = ssh://alice@server//data\n"
+            .write(toFile: dir + "/Remote.prf", atomically: true, encoding: .utf8)
+        let d = delegate(holding: true, dir: dir)
+        XCTAssertFalse(d.profileSelectedForTesting("Remote", args: []))
+        XCTAssertEqual(d.engineForTesting.phase, .idle)
+    }
 }
