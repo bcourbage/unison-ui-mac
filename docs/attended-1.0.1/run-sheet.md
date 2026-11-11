@@ -63,7 +63,7 @@ Expect: every control is reachable and named, focus order is sensible, no contro
 | Area | Result | Evidence |
 | --- | --- | --- |
 | VoiceOver | Partial: picker, Profile Editor and reconcile tree pass; one finding (Bruno, 2026-11-10) | Picker: table and buttons, up and down the list, all read. Profile Editor: fields and buttons announced clearly, Cancel returned focus. Reconcile tree: passes. **Finding:** a sync ran and completed but VoiceOver did not speak the outcome. Source check: the status line is a plain label whose text changes silently; the app posts no accessibility announcement anywhere, and v1.0.0 has none either, so this is pre-existing and not a regression of the 1.0.1 changes. Decision (Bruno, 2026-11-10): ship 1.0.1 as is; tracked as #227. Rescan Ignoring Archives… (the Action menu item and its confirmation sheet): Pass (Bruno, 2026-11-10). Settings: Pass (Bruno, 2026-11-10). Toolbar: Pass (Bruno, 2026-11-10). Waived by Bruno, 2026-11-10: the remaining VoiceOver checks (the sync-decision sheet, the password sheet and the fatal dialog); no further VoiceOver testing for this candidate. |
-| Full Keyboard Access | Pass (Bruno, 2026-11-10) | Reported by Bruno; surfaces covered not itemized. |
+| Full Keyboard Access | Partial: picker and profile form pass (Bruno, 2026-11-10) | Picker and profile form: Pass. Reconcile window, toolbar, sheets and Settings: no result reported; accessibility testing was stopped before them. |
 | Larger text | Waived (Bruno, 2026-11-10) | Not run for this candidate. |
 | Increased contrast | Waived (Bruno, 2026-11-10) | Not run for this candidate. |
 
