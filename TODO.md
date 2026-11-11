@@ -2,22 +2,16 @@
 
 ## To Do
 
-- [ ] **Open a command-line profile directly.** `unison -ui graphic <profile>`
-      currently preselects the profile in the picker. Opening it straight away
-      needs a picker bypass and a GUI answer for "profile not found".
+Release candidates and attended checks are tracked in the
+[1.1 planning checklist](https://github.com/bcourbage/unison-ui-mac/issues/234).
 
-- [ ] **(1.1) Decide the primary workflow labels with user feedback.** The
+- [ ] **Review workflow labels and Quit placement with user feedback.** The
       1.0 UI review proposed Run → Scan or Review Changes and Go → Synchronize.
-      Run was chosen to match the CLI verb (`unison <profile>`), and Go plus a
-      Quit button are what upstream Unison's own app uses, so users coming from
-      Unison.app find the same controls. Relabeling touches the manual, site,
-      screenshots and tests; take it up in 1.1 on evidence from users rather
-      than on review taste. Keep the shortcuts whatever the labels become.
-
-- [ ] **(1.1) Decide whether Quit stays a default toolbar and picker button.**
-      The review proposed keeping Quit in the app menu and ⌘Q only, or as an
-      optional toolbar item. It matches upstream Unison.app today; revisit with
-      the labels above.
+      It also proposed keeping Quit in the app menu and ⌘Q, or making it an
+      optional toolbar item. Run matches the CLI verb (`unison <profile>`),
+      and Go and Quit match upstream Unison.app. Use feedback to decide
+      whether to change them. A label change affects the manual, site,
+      screenshots and tests. Keep the existing shortcuts.
 
 - [ ] **(post-1.0) Rehearse signing-key recovery with a fixture (#108).** A
       throwaway-key fixture with the pinned Sparkle tools proving, on a single
@@ -132,10 +126,8 @@ landed across the bring-up and follow-on sessions.*
 - [x] **Rescan button** in reconcile toolbar: re-runs `init2` against
       the current profile via `unison_bridge_init2()`, replaces `items`
       in place, indeterminate progress bar during the scan.
-- [x] **Return to profile picker:** `File → Open Profile` (now `Show
-      Profiles`) closes any open reconcile window and re-shows the
-      picker; closing the reconcile window also returns to picker via
-      `NSWindowDelegate.windowWillClose`.
+- [x] **Return to profile picker:** the reconcile window provides a way
+      back to the picker. Closing the reconcile window also returns to it.
 - [x] **Real mid-sync abort:** Stop button now triggers a true abort
       via a local-fork patch to `src/uimacbridge.ml` registering
       `Callback.register "abortAll" unisonAbortAll`. New
@@ -484,10 +476,8 @@ landed across the bring-up and follow-on sessions.*
 - [x] **Replace TraceLog with `os.Logger`:** `TraceLog.shared.write`
       forwards to `os.Logger` under subsystem
       `net.courbage.unison-ui-mac`, category `general`. The
-      `/tmp/unison-ui-mac.log` text file is gone. New structured
-      `Log.*` namespace with per-category loggers (lifecycle, bridge,
-      reconcile, ocaml-status, version-check) for filterable live
-      streams via `log stream --predicate ...`.
+      `/tmp/unison-ui-mac.log` text file is gone. See MANUAL.md for
+      the current log categories and filters.
 - [x] **Remove bring-up test artifacts:** `test-tiny.prf` trashed;
       `/tmp/unison-test-{a,b}` were already gone. Integration tests
       now build their own per-test fixtures under
@@ -566,25 +556,13 @@ landed across the bring-up and follow-on sessions.*
       "1.0" bug). 309 tests, all green. Release notes lead with
       a GitHub `[!IMPORTANT]` callout pointing bug reports at
       this repo, not upstream. Same line in README.
-- [x] **Homebrew tap: discoverability unlock**, `bcourbage/
-      homebrew-tap` published with `Casks/unison-ui-mac.rb`
-      pointing at the v0.1.1 release. Public install path is
-      `brew install --cask bcourbage/tap/unison-ui-mac`, verified
-      end-to-end (`brew uninstall --cask unison-ui-mac && brew
-      install --cask bcourbage/tap/unison-ui-mac && open
-      /Applications/unison-ui-mac.app`). INSTALL.md restructured
-      to lead with the brew command; manual zip-download path
-      demoted to the no-Homebrew fallback. README's install
-      blockquote updated to match. Maintainer-only runbook for
-      bumping the tap on future releases lives at
-      `HOMEBREW_TAP.md` (gitignored, kept on disk only).
+- [x] **Homebrew tap:** published the cask and verified install and launch.
+      See INSTALL.md for the current install command and ZIP alternative.
 
 ### Test suite
 
-- [x] **997 tests, ~1s** via `make test`, plus ad-hoc `make leaks`
-      for `leaks(1)`-based release checks. Coverage (illustrative,
-      counts are at-last-tally and grow with each pure-logic
-      extraction):
+- [x] **Automated tests** via `make test`, plus ad-hoc `make leaks`
+      for `leaks(1)`-based release checks. Historical coverage examples:
       - Pure-Swift units across StateItem, DirectionAction,
         StatusIconDescriptor, DirectionVisual (incl. forced-decision
         variants), ArchiveRecovery, IgnoreAction, ProfileDocument
