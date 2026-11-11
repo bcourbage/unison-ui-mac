@@ -6,6 +6,30 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>unison-ui-mac</title>
         <item>
+            <title>1.0.1</title>
+            <pubDate>Wed, 11 Nov 2026 01:57:34 +0000</pubDate>
+            <sparkle:version>29</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h1>Unison UI for macOS 1.0.1</h1>
+<p>Version 1.0.1 is a maintenance release. It makes opening a profile, retrying after an error and recovering archives behave consistently when a command-line request arrives at the same moment, and it keeps the protection around archives held by an interrupted operation in force until a profile actually opens. Existing profiles and settings continue to work without migration. Requires macOS 15 or later on Apple Silicon.</p>
+<h2>Fixed</h2>
+<ul>
+<li><strong>A command-line request no longer disturbs a password prompt.</strong> If you ran <code>unison &lt;profile&gt;</code> while a password, passphrase or host-key prompt was waiting, the app used to close the window the prompt belongs to and report success without opening anything. It now refuses the request with a message, and the prompt stays where it is until you answer or cancel it.</li>
+<li><strong>Profiles blocked by an interrupted operation stay blocked until they open.</strong> The app checked this only when a request was made. A profile queued behind another session, or waiting on your answer to a synchronization decision, could still open after its roots changed to overlap a held archive. The check now runs again just before the profile opens. A refused open returns to the profile picker with a notice, and a synchronization that is running is left alone. This now includes a profile that has a remote (<code>ssh://</code> or <code>socket://</code>) root next to a local one. The app cannot tell which archives such a profile uses until it connects, so it stays blocked while any interrupted operation holds archives, and it says why.</li>
+<li><strong>Rescan Ignoring Archives acts on the session you confirmed it for.</strong> If a command-line request replaced that session while the confirmation was open, confirming used to close the replacement and reopen the older profile.</li>
+<li><strong>Recovery keeps the options a session was opened with.</strong> Retry Ignoring Archives, Delete Orphans and Retry, and Rescan Ignoring Archives used to reopen the profile without options such as <code>-path</code>, so the recovery scan could cover the whole profile. They now keep the options, and later reconnects use them too.</li>
+<li><strong>Retry Ignoring Archives no longer edits your profile file.</strong> The setting applies to that one reopen. It also takes effect when the session was opened with <code>-ignorearchives=false</code>, and a recovery you cancel leaves nothing behind.</li>
+<li><strong>Reset Archives, Delete Profile and the open check follow includes.</strong> A profile whose roots live in an included file no longer looks like it has none. When the includes cannot be resolved, the app keeps archives in place and blocks opening while interrupted operations hold archives. A profile file without an extension that has the same name counts as another owner of the archives.</li>
+<li><strong>The profile picker has a minimum size,</strong> and a saved window size that is too small is raised when the picker is restored.</li>
+</ul>
+<h2>Under the hood</h2>
+<p>The app now loads the held-archive state before it answers command-line requests, and a recovery reopen checks the held-archive state first. Unused code was removed and several large source files were split, with no change in behavior.</p>
+]]></description>
+            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v1.0.1/unison-ui-mac-1.0.1.app.zip" length="5247173" type="application/octet-stream" sparkle:edSignature="m+IYv4pdYD1YFAIDGvP7WeQ2CoKp/iVP8BY5gYRl7GngjozXdNk8TEwSMaF1TGR4AS99sfVj9JBNLEpEILXfDw=="/>
+        </item>
+        <item>
             <title>1.0.0</title>
             <pubDate>Mon, 12 Oct 2026 01:21:30 +0000</pubDate>
             <sparkle:version>28</sparkle:version>
@@ -49,36 +73,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.10.1/unison-ui-mac-0.10.1.app.zip" length="5211485" type="application/octet-stream" sparkle:edSignature="oKcQfZ+d8QhhTF3OJjfNMCNaRGuw+IJJhRVjiuuwpbHjGNaVcKw6x9jBHaLi8gIZuLwD7b+b+w7aVnKhY/u0Cw=="/>
         </item>
-        <item>
-            <title>0.10.0</title>
-            <pubDate>Sun, 13 Sep 2026 16:15:10 +0000</pubDate>
-            <sparkle:version>26</sparkle:version>
-            <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h1>Unison UI for macOS 0.10.0</h1>
-<p>Version 0.10.0 completes how a <code>unison &lt;profile&gt;</code> request behaves when the app is already running. A request now carries its own command-line options to the running instance, waits for the app when it is busy instead of being turned away, and, when a synchronization is in progress, asks you how to handle it. Existing profiles and settings continue to work without migration.</p>
-<h2>Added</h2>
-<ul>
-<li><strong>Options are delivered to the running instance.</strong> <code>unison &lt;profile&gt; -path &lt;dir&gt;</code> handed to a running app opens that profile scoped to <code>&lt;dir&gt;</code>, exactly as the same command would at a fresh launch. <code>-include</code> and <code>-source</code> are carried too, with order, repeated options, and profile precedence preserved. How the running app was itself started no longer matters: each request is scoped only by its own options.</li>
-<li><strong>A busy app makes the request wait instead of turning it away.</strong> If the app is scanning, showing reconciliation results, or finishing a previous run, it accepts the request and opens the profile once that work and its cleanup finish. The command reports that it was accepted and is waiting, and the app shows it waiting.</li>
-<li><strong>A request during a synchronization asks how to handle the sync.</strong> When a sync is running, the app raises its Keep Syncing / Abort &amp; Close / Close (let it run) decision for the requested profile. The command prints that a synchronization is running and a decision is required in the app, then waits for your choice within a short window: stopping the sync or letting it finish in the background opens the requested profile; Keep Syncing leaves the sync untouched and does not open it. No command ever aborts a sync or makes that choice on its own.</li>
-</ul>
-<h2>Changed</h2>
-<ul>
-<li><strong>A request to a busy app is no longer simply refused.</strong> Earlier versions kept the work in progress and told you they did not start the new profile. Now the request waits (for a scan or cleanup) or asks you how to handle a running sync, and opens the profile when it can. The profile editor and a recovery/restart state still refuse, with a specific reason and the step to take.</li>
-</ul>
-<h2>Notes</h2>
-<ul>
-<li>Only one command-line request is handled at a time. A second request while one is waiting is refused with a clear message, and choosing a profile in the app never silently replaces a waiting command-line request.</li>
-<li>If a request cannot be confirmed (the reply was lost), the command says so and asks you to check the app before running it again, rather than retrying on its own; the original request may already have been accepted.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bcourbage/unison-ui-mac/releases/download/v0.10.0/unison-ui-mac-0.10.0.app.zip" length="5670671" type="application/octet-stream" sparkle:edSignature="yKA99lWHZpJmqFtNbWu2CGG/tIwDUxmUo+20te1M0crPjHgBJze+EtNDlCui72YejRBZw/NTubeL1y41INR4Dg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: PJNfnmEDUfv4E8NmdLvX3CChGIH/2l2Jo+CGFgwCwVLJ/B/c9qpvpECEwD/dvN6ja5JLE5CPwO+5MFTdgmL0Dg==
-length: 8725
+edSignature: lcS2cAu3ZVRCIKC8/CxMXXs5LtEI5pZgA2qVJd//i0H8GRjsCkuMkyqvr4midaGzVtwmrG/rLFrWM6x/7MVWCQ==
+length: 9276
 -->
