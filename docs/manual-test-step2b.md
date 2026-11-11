@@ -595,11 +595,13 @@ then change one file inside `Documents` on one side only.
 - **TC16b — Explicit disable does not defeat the recovery.** Repeat TC16a with
   `"<RC launcher>" work -path Documents -ignorearchives=false`. **Expect:** the same
   result: still scoped to `Documents`, and the changed file shows as a conflict.
-- **TC16c — The profile file is untouched and a later open is ordinary.** After each
-  recovery, `shasum` the profile file before and after: identical, with no
+- **TC16c — The profile file is untouched and a later open carries no options.** After
+  each recovery, `shasum` the profile file before and after: identical, with no
   `ignorearchives` line added. Return to the picker and open `work` normally.
-  **Expect:** an ordinary scan with both changes and the archive in effect (the
-  one-sided change is not a conflict).
+  **Expect:** an unscoped scan that lists both changes, from a session with no
+  options and no override. The recovery scan rebuilt the saved archive from the
+  replicas, so the changed file can still show as a conflict until it is resolved
+  or synchronized; that is expected, not a regression.
 - **TC16d — A stale confirmation does nothing.** Open `work`, choose Rescan Ignoring
   Archives…, and leave the confirmation open. From a second Terminal run
   `"<RC launcher>" other`. **Expect:** `other` opens. Now confirm the open
@@ -607,8 +609,8 @@ then change one file inside `Documents` on one side only.
   `work`'s profile file is unchanged.
 
 **PASS =** the recovery scan covers the same paths as the original session, ignores
-the saved archive once, leaves the profile file byte-identical, and a confirmation
-that outlived its session changes nothing.
+the saved archive on that load, leaves the profile file byte-identical, and a
+confirmation that outlived its session changes nothing.
 
 ### Interactive-password cases (run last)
 
