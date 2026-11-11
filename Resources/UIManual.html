@@ -4,7 +4,7 @@
 <title>Unison UI for macOS — User Manual</title>
 <style>html{color-scheme:light dark}body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}pre{overflow:auto;padding:1rem;background:#8882}table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.5rem}img{max-width:100%}a{color:light-dark(#065aba,#78baff)}</style>
 </head><body>
-<!-- MANUAL.md sha256: fcb06c84532e8a9d6238918db53133032f4ba63675690a41832efe446c30e626 -->
+<!-- MANUAL.md sha256: 5fae262aeb76919474312fe68af25f8e54b1e516caf24b89239098e9cc5e90ad -->
 <h1 id="unison-ui-mac-user-manual">Unison-UI-Mac, User Manual</h1>
 <p>A feature-by-feature guide to the macOS app. For install steps see
 <a href="https://github.com/bcourbage/unison-ui-mac/blob/main/INSTALL.md">INSTALL.md</a>; for architecture overview and a build
@@ -1331,14 +1331,14 @@ Shortcuts → App Shortcuts if you want them.</p>
 crashed sync). A modal alert appears with the offending archive list,
 offering two recoveries:</p>
 <ul>
-<li><strong>Retry Ignoring Archives</strong>: always available. Unison rebuilds its
-  state by comparing the two replicas directly, ignoring the saved
-  archive for one scan. Use this when the missing or extra archive is
-  on the remote host (nothing local to delete), or whenever you just
-  want to get going again. The scan may show more rows than usual, so
-  review them before you sync. Your profile file is not changed, and a session
-  that was opened with command-line options such as <code>-path</code> keeps them for the
-  retry.</li>
+<li><strong>Retry Ignoring Archives</strong>: always available. It compares the two
+  replicas directly, ignoring the saved archive for the recovery scan.
+  That scan can rebuild the archive, so later scans may still show
+  changes or conflicts found during recovery. Review the results before
+  syncing. Use this when the missing or extra archive is on the remote
+  host (nothing local to delete), or whenever you just want to get going
+  again. Your profile file is not changed, and a session that was opened
+  with command-line options such as <code>-path</code> keeps them for the retry.</li>
 <li><strong>Delete N Orphan Archive(s) and Retry</strong>: shown only when orphaned
   archive files exist on this Mac. Removes them and retries.</li>
 </ul>

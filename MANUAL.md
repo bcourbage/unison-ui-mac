@@ -1232,14 +1232,14 @@ Unison detected that its archive files are out of sync (typically from a
 crashed sync). A modal alert appears with the offending archive list,
 offering two recoveries:
 
-- **Retry Ignoring Archives**: always available. Unison rebuilds its
-  state by comparing the two replicas directly, ignoring the saved
-  archive for one scan. Use this when the missing or extra archive is
-  on the remote host (nothing local to delete), or whenever you just
-  want to get going again. The scan may show more rows than usual, so
-  review them before you sync. Your profile file is not changed, and a session
-  that was opened with command-line options such as `-path` keeps them for the
-  retry.
+- **Retry Ignoring Archives**: always available. It compares the two
+  replicas directly, ignoring the saved archive for the recovery scan.
+  That scan can rebuild the archive, so later scans may still show
+  changes or conflicts found during recovery. Review the results before
+  syncing. Use this when the missing or extra archive is on the remote
+  host (nothing local to delete), or whenever you just want to get going
+  again. Your profile file is not changed, and a session that was opened
+  with command-line options such as `-path` keeps them for the retry.
 - **Delete N Orphan Archive(s) and Retry**: shown only when orphaned
   archive files exist on this Mac. Removes them and retries.
 
