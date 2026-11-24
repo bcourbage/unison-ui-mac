@@ -44,10 +44,9 @@ the lifeline while leaving its completion guarantee and retirement protocol unqu
 
 ## Evidence and experimental scope
 
-The preserved experimental sources are at
-/Users/bcourbage/Documents/Codex/2026-11-06/do-you-recall-the-finding-in/engine-process-evidence/lifeline/.
-Read review-result.md, nanny.c, harness.py and the token probes. The original sources also
-exist in the reviewer's session scratch directory. Preserve these as experimental evidence.
+Prototype sources and results are kept with the spike reports. The historical v1 archive
+contains review-result.md, nanny.c, harness.py and the token probes. Preserve those sources
+as experimental evidence, without treating the old harness as current qualification.
 The author independently ran only the normal-exit/stubborn-descendant regression. The other
 prototype measurements remain attributed to their original run.
 

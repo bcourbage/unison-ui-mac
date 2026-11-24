@@ -169,15 +169,16 @@ these records. The implementation must validate complete record delivery and par
 | D nonce transport-wait-status | Group termination was observed, the transport's status was collected, and this helper has completed cleanup. |
 
 A complete S write is a prerequisite to transport creation. Handle EINTR, EPIPE, malformed FDs
-and other errors explicitly. A failed or incomplete S write cannot be followed by fork. A
-failed D write leaves S unmatched and cleanup unknown. Ignore SIGPIPE in the helper before
-any status write so a closed reader produces EPIPE rather than terminating the cleanup owner.
-An EPIPE on S forbids fork. An EPIPE on U or D disables that failed reporting endpoint while
-the helper continues group cleanup and eventually preserves the transport's status. Losing a
-reader never authorizes the helper to abandon its group. Save the SIGPIPE disposition the
-helper inherited before ignoring it, and restore that inherited disposition in the transport
-child just before exec. This preserves an engine's ignored disposition as well as the default.
-Records fit the qualified PIPE_BUF atomic bound. A helper cannot discard failed status writes and continue as if they succeeded.
+and other errors explicitly. A failed or incomplete S write cannot be followed by fork. A failed
+D write leaves S unmatched and cleanup unknown. Ignore SIGPIPE in the helper before any status
+write so a closed reader produces EPIPE rather than terminating the cleanup owner. An EPIPE on S
+forbids fork. An EPIPE on U or D disables that failed reporting endpoint while the helper
+continues group cleanup and eventually preserves the transport's status. Losing a reader never
+authorizes the helper to abandon its group. Save the SIGPIPE disposition the helper inherited
+before ignoring it, and restore that inherited disposition in the transport child just before
+exec. This preserves an engine's ignored disposition as well as the default. Records fit the
+qualified PIPE_BUF atomic bound. A helper cannot discard failed status writes and continue as if
+they succeeded.
 
 Engine exit, a stop signal, or ordinary transport exit starts the same group cleanup. Send
 SIGTERM to G, wait a bounded grace interval, then enter the KILL phase if needed. While live
@@ -218,9 +219,10 @@ modals and blocked OCaml work cannot fill it. Pending status writes and malforme
 explicit failure behavior. The GUI sets O_NONBLOCK on the status writer when it creates the
 channel, before passing copies to the engine or helpers. They share that open-file description;
 a helper must not silently change the flags for all writers. A full pipe must not block cleanup
-indefinitely. Use a qualified bounded/nonblocking reporting path. Failure to publish S prevents launch, while U/D reporting
-failure preserves cleanup ownership and an unknown reporting outcome. Test the reader closing
-during S, U and D, and test a live reader that stops draining. Test inherited-writer leaks, premature closure and backpressure.
+indefinitely. Use a qualified bounded/nonblocking reporting path. Failure to publish S prevents
+launch, while U/D reporting failure preserves cleanup ownership and an unknown reporting
+outcome. Test the reader closing during S, U and D, and test a live reader that stops draining.
+Test inherited-writer leaks, premature closure and backpressure.
 
 ### Actual transport exit and reconnect barriers
 
@@ -239,16 +241,17 @@ is initially available. A missing/broken evidence channel means unknown, never e
 SSH is still waiting for a password or that cleanup finished.
 
 Update the #35 consumer to consult actual TransportExited evidence for the current connection.
-Attach the engine's current correlated transport-evidence state and ordering information to
-each prompt when it is sent. Prompt and TransportExited notifications can arrive in either order;
+Attach the engine's current correlated transport-evidence state and ordering information to each
+prompt when it is sent. Prompt and TransportExited notifications can arrive in either order;
 absence of an exit notification is unknown, not positive evidence of a live transport. Do not
 present ambiguous leftover output as a credential request on that basis. The spike must qualify
-a bounded refresh/defer decision for unknown evidence while keeping genuine prompts usable.
-Keep fatal-text classification as a supplementary check. Positive exit evidence suppresses
-stale credential output immediately while helper cleanup continues. Terminal-evidence channel
-failure produces connection failure/cleanup rather than a new password prompt. Qualify login-grace timeout and broken pipe with a lingering descendant,
-plus normal password retry, successful authentication and Cancel controls. Record prompt/exit
-arrival order in the login-grace case and force both orders in integration tests.
+a bounded refresh/defer decision for unknown evidence while keeping genuine prompts usable. Keep
+fatal-text classification as a supplementary check. Positive exit evidence suppresses stale
+credential output immediately while helper cleanup continues. Terminal-evidence channel failure
+produces connection failure/cleanup rather than a new password prompt. Qualify login-grace
+timeout and broken pipe with a lingering descendant, plus normal password retry, successful
+authentication and Cancel controls. Record prompt/exit arrival order in the login-grace case and
+force both orders in integration tests.
 
 A reused live engine must retire its previous connection completely before creating another
 transport. The GUI waits for matching D records for earlier helpers, and the engine checks its
@@ -313,21 +316,22 @@ the author. Its EOF rule and self-killing group topology are superseded by v2 ab
 The reviewer reports three unprivileged v2 runs on Heracles/macOS 27.2.1 covering ordinary and
 signal exit status, engine death before registration, PTY foreground group setup, stubborn
 descendants and S/D/EOF verification. The reviewer also reports that external helper SIGKILL
-leaves an unmatched S, as required for unknown cleanup. Those exact v2 runs were not independently
-repeated by this author; later v3 checks are recorded separately with the spike evidence. Source inspection found unchecked writes/setup and fixed-buffer
-membership observation in the prototype. Those are implementation/qualification tasks, not
-properties established by the reported successful cases.
+leaves an unmatched S, as required for unknown cleanup. Those exact v2 runs were not
+independently repeated by this author; later v3 checks are recorded separately with the spike
+evidence. Source inspection found unchecked writes/setup and fixed-buffer membership observation
+in the prototype. Those are implementation/qualification tasks, not properties established by
+the reported successful cases.
 
-Experimental sources are preserved in the author's workspace under
-engine-process-evidence/lifeline and engine-process-evidence/lifeline-v2, outside the repository.
-A later reviewer probe reproduced SIGPIPE termination after closing the status reader. Source
-inspection also found that the current terminal-evidence API would watch the helper, and v2
-issues group SIGKILL only once. These findings add qualification cases beyond the original v2
-runs. The author verified the source paths. Later v3 closed-reader checks are recorded separately with the spike evidence.
-Transfer reviewed sources/harnesses into a development branch before relying on them. Fix the
-startup signal-registration race, SIGPIPE/reporting failure behavior, actual-transport exit
-notifications, repeated KILL observation, reconnect barrier, setup error handling and complete
-group observation before treating v2 as the spike implementation.
+Prototype sources and results are kept with the spike reports. The historical v1 and v2 source
+archives are retained there so the cited failures and limitations remain inspectable. A later
+reviewer probe reproduced SIGPIPE termination after closing the status reader. Source inspection
+also found that the current terminal-evidence API would watch the helper, and v2 issues group
+SIGKILL only once. These findings add qualification cases beyond the original v2 runs. The
+author verified the source paths. Later v3 closed-reader checks are recorded separately with the
+spike evidence. Transfer reviewed sources/harnesses into a development branch before relying on
+them. Fix the startup signal-registration race, SIGPIPE/reporting failure behavior,
+actual-transport exit notifications, repeated KILL observation, reconnect barrier, setup error
+handling and complete group observation before treating v2 as the spike implementation.
 
 The corrected reviewer v3 sources and later standalone checks belong to the spike evidence,
 not this design's qualification claims. Successful cases do not establish integrated engine,
