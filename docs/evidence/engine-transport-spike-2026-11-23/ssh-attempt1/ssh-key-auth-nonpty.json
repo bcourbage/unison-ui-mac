@@ -1,0 +1,38 @@
+{
+  "case": "ssh-key-auth-nonpty",
+  "returncode": 0,
+  "elapsed": 0.1225,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007418,
+      "line": "S f86525727cc69c6a 26532"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.008303,
+      "line": "TransportStarted f86525727cc69c6a 26533 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.091835,
+      "line": "TransportExited f86525727cc69c6a 26533 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.116223,
+      "line": "CleanupComplete f86525727cc69c6a 26533 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.116253,
+      "line": "D f86525727cc69c6a 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": "authenticated-spike"
+}

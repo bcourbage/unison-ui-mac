@@ -1,0 +1,38 @@
+{
+  "case": "ordinary-exit",
+  "returncode": 7,
+  "elapsed": 0.2259,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.179988,
+      "line": "S d43e1fc0fc249057 26348"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.180632,
+      "line": "TransportStarted d43e1fc0fc249057 26349 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.201187,
+      "line": "TransportExited d43e1fc0fc249057 26349 1792"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.224995,
+      "line": "CleanupComplete d43e1fc0fc249057 26349 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.225007,
+      "line": "D d43e1fc0fc249057 1792"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

@@ -1,0 +1,38 @@
+{
+  "case": "pty-foreground",
+  "returncode": 0,
+  "elapsed": 0.0905,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.014593,
+      "line": "S 805aa537c441bef6 26464"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.015713,
+      "line": "TransportStarted 805aa537c441bef6 26465 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.057808,
+      "line": "TransportExited 805aa537c441bef6 26465 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.083684,
+      "line": "CleanupComplete 805aa537c441bef6 26465 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.083717,
+      "line": "D 805aa537c441bef6 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": "PTY 26465 26465\r\n"
+}

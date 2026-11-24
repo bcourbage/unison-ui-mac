@@ -1,0 +1,13 @@
+{
+  "case": "ssh-login-grace-lingering-descendant",
+  "error": "AssertionError requiring returncode 255 and matched cleanup",
+  "observed_value": "Not recorded by first harness; do not infer which part failed.",
+  "passed_before_failure": [
+    "ssh-key-auth-nonpty",
+    "ssh-pty-correct-passphrase",
+    "ssh-pty-wrong-then-correct",
+    "ssh-pty-cancel-prompt"
+  ],
+  "harness_sha256": "a25be53b1048ef0d4ff6be03f05813b25b77a716800f8f6817642c0977d85abb",
+  "correction": "Persist login-grace outcome before assertions and add a selector to rerun only that unresolved case."
+}

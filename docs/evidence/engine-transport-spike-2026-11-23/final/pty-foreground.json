@@ -1,0 +1,44 @@
+{
+  "case": "pty-foreground",
+  "returncode": 0,
+  "elapsed": 0.0694,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.012062,
+      "line": "S f17fc280ecd4cfa3 27128"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.01295,
+      "line": "TransportStarted f17fc280ecd4cfa3 27129 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.034008,
+      "line": "TransportExited f17fc280ecd4cfa3 27129 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.055926,
+      "line": "CleanupComplete f17fc280ecd4cfa3 27129 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.055942,
+      "line": "D f17fc280ecd4cfa3 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.030749,
+      "bytes": 17
+    }
+  ],
+  "output": "PTY 27129 27129\r\n"
+}

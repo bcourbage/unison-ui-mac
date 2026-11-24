@@ -1,0 +1,156 @@
+{
+  "base_commit": "db353a8e3921da4df0f9e3ad47b28a287fd13e51",
+  "merged_pr": {
+    "number": 243,
+    "merge_commit": "db353a8e3921da4df0f9e3ad47b28a287fd13e51",
+    "tested_head": "9497004322194d6e18a223e63d49202fdcb94bb3",
+    "build_test": "passed",
+    "product_site": "passed"
+  },
+  "platform": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131\n",
+  "architecture": "arm64",
+  "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)\nTarget: arm64-apple-darwin27.2.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+  "ssh_version": "OpenSSH_10.5p1, LibreSSL 3.3.6",
+  "compile_flags": [
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-std=gnu11",
+    "-DLIFELINE_SPIKE_FAULTS",
+    "-O2",
+    "-mmacosx-version-min=15.0"
+  ],
+  "signed_helper_identifier": "net.courbage.unison-ui-mac.engine-transport-spike.lifeline",
+  "components": {
+    "transport-v1": {
+      "sha256": "c6c630a54be7a608ba339253973eb1fa809807edc17c68e7ed4e0262fde06453",
+      "signature": "Executable=lifeline\nIdentifier=net.courbage.unison-ui-mac.engine-transport-spike.lifeline\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=358 flags=0x10000(runtime) hashes=4+2 location=embedded\nVersionPlatform=1\nVersionMin=983040\nVersionSDK=1769984\nHash type=sha256 size=32\nCandidateCDHash sha256=f24996254a8a32013b1582212d6ed9aad56835f9\nCandidateCDHashFull sha256=f24996254a8a32013b1582212d6ed9aad56835f988d3380e8a07ddd11c19cabf\nHash choices=sha256\nCMSDigest=f24996254a8a32013b1582212d6ed9aad56835f988d3380e8a07ddd11c19cabf\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=16384\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=f24996254a8a32013b1582212d6ed9aad56835f9\nSignature size=9049\nAuthority=Developer ID Application: Bruno Courbage (QJXKM5Q4WH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 23, 2026 at 10:27:42\u202fPM\nInfo.plist=not bound\nTeamIdentifier=QJXKM5Q4WH\nRuntime Version=27.2.0\nSealed Resources=none\nInternal requirements count=1 size=220\nTotal signatures=1\nChosen signature=1\n",
+      "verify": "lifeline: valid on disk\nlifeline: satisfies its Designated Requirement\n",
+      "build": "lifeline:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform MACOS\n    minos 15.0\n      sdk 27.2\n   ntools 1\n     tool LD\n  version 27106.1\n"
+    },
+    "transport-v2": {
+      "sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+      "signature": "Executable=lifeline\nIdentifier=net.courbage.unison-ui-mac.engine-transport-spike.lifeline\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=358 flags=0x10000(runtime) hashes=4+2 location=embedded\nVersionPlatform=1\nVersionMin=983040\nVersionSDK=1769984\nHash type=sha256 size=32\nCandidateCDHash sha256=b85e5a95b3acba59ad3d419b161204cd2da2a40c\nCandidateCDHashFull sha256=b85e5a95b3acba59ad3d419b161204cd2da2a40cc1bbdbde5c317d4ac54d1cbf\nHash choices=sha256\nCMSDigest=b85e5a95b3acba59ad3d419b161204cd2da2a40cc1bbdbde5c317d4ac54d1cbf\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=16384\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=b85e5a95b3acba59ad3d419b161204cd2da2a40c\nSignature size=9048\nAuthority=Developer ID Application: Bruno Courbage (QJXKM5Q4WH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 23, 2026 at 10:41:10\u202fPM\nInfo.plist=not bound\nTeamIdentifier=QJXKM5Q4WH\nRuntime Version=27.2.0\nSealed Resources=none\nInternal requirements count=1 size=220\nTotal signatures=1\nChosen signature=1\n",
+      "verify": "lifeline: valid on disk\nlifeline: satisfies its Designated Requirement\n",
+      "build": "lifeline:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform MACOS\n    minos 15.0\n      sdk 27.2\n   ntools 1\n     tool LD\n  version 27106.1\n"
+    }
+  },
+  "qualification_source": {
+    "run.py": "8d56713c2e288906e8901614a1858150f162f819158a7ca536b387fe85b13724",
+    "extra-controls.py": "08116584bb971d247a548b8dd155a38a9c87ffbf85c6196427ba14ebef7490ae",
+    "ssh_fixture.py": "09a65dbf9afe7d6c446efeb4251e0929cd2f9dc612cf047508d3bd2d7390db73",
+    "lifeline.c": "fc522bb6f6a0a91c6ac26c84554ab704dec38dc5b1e67f3de956a0fd39d566ea",
+    "env-probe.c": "efccf08501ce12d773df8d70219f6270f31166e88a023ba8bf846de73df83e54"
+  },
+  "runs": {
+    "final": {
+      "passed": 22,
+      "artifact": "transport-v2",
+      "harness_snapshot": "harness-used-normal.py"
+    },
+    "final-deferred": {
+      "passed": 1,
+      "artifact": "transport-v2",
+      "consumer_delivery_deferred": true
+    },
+    "extra": {
+      "passed": 5,
+      "artifact": "transport-v2"
+    },
+    "exploratory": [
+      "attempt1",
+      "core",
+      "ssh-attempt1",
+      "ssh-grace-attempt2",
+      "ssh-grace",
+      "ssh-grace-deferred"
+    ]
+  },
+  "limits": [
+    "Helper signed/hardened, not notarized. Parent actor is a Python harness, not the production GUI/OCaml engine.",
+    "300 ms cleanup grace used by test builds; after-release injection uses 1000 ms; source default is 2000 ms.",
+    "Test fault hooks are compiled in; no product build or actual app permission changes."
+  ],
+  "cleanup": {
+    "known_helpers_and_transports_remaining": [],
+    "probe_helper_or_fixture_listener_processes_remaining": [],
+    "method": "Read-only process metadata after all owned-case cleanup; no name-based signals."
+  },
+  "python_version": "3.15.2 (main, Oct 25 2026, 16:57:51) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "final_passed_observations": 28,
+  "source_references": {
+    "libproc": "https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c",
+    "openssh_grace": "https://github.com/openssh/openssh-portable/blob/master/sshd-session.c",
+    "limit": "Source context is distinct from qualification of the installed Apple build."
+  },
+  "evidence_sha256": {
+    "harness-used-normal.py": "7c5d01055041060075e4f8694f89a59dbec91431c507d24720f12e6461a39cb5",
+    "group-observation.json": "64d493b8c7fe798eb81ef5e4a36d3975292d00b5bef175720252ec07dd0ca5d7",
+    "group-observation.c": "f65f0b7d04db31c596008b005bba6176b958ba762eedae3215086610e2958fb2",
+    "core/startup-child-setup.json": "3501f882349f9acc51d3337959614dbdf2f5dfe49efb4a40912896a10fe2d7c3",
+    "core/summary.json": "33b0ba178fc18fcb175b2816dfb16c5c93f7ba35c8aaa12bea242eaa50fcc7de",
+    "core/closed-lifecycle-reader.json": "83e0223c9ab6992cebbf079a8d617dc74606ff774504cad2c2a754384862b2fc",
+    "core/growing-membership-buffer.json": "70b29a8945608357996cad52f146fcd981a28e613d72c164fd6959f45509d74d",
+    "core/inherited-sigchld-ignore.json": "427cd55b1bd07094d31040f8cf10137eb5efe5c7a1451bade524206a31cab771",
+    "core/exit-before-cleanup.json": "c047f436af9078695e11ba26feec99ae0547b5d5155daf615c4bcb081c811445",
+    "core/startup-after-release.json": "bcbd78b2996086bd9d1685ab0f3dc56753beed14543ee1d59a2abd208eb7cbff",
+    "core/ordinary-exit.json": "76a992aa2c6e4bc49cd5395911f9a5eab7f176241b80e13c8a6bc60c0bc85451",
+    "core/exec-failure.json": "7f3a2691ab6c96580b0dcde619f6497757c8af63b8008aeec6957fa3349232a7",
+    "core/unknown-membership-blocks.json": "ff1e8290603b4b46752714f2051b5db299c7f650226af834e3f8f8d6930b5254",
+    "core/simulated-engine-death.json": "27adfb54ba643b68f6acadd916bd695bedcb25a26373d088b02101910d941ee9",
+    "core/startup-release-eof.json": "411147bcd59738e6060a944aed825dface1d3bd58a994b2abe43321ced6790f2",
+    "core/closed-status-reader.json": "445f12757c52e672a4582c46c0231965203eb0ea36bea100773198cb67339e15",
+    "core/startup-before-fork.json": "61c3fd832acb1b3e1a701549c7fd3b1337702f76dba4487c4cac1f21395b52c0",
+    "core/startup-before-watch.json": "e37abdcfe69bf5aa949edd3dfaeb70339cb1c39cdd94523f4eb0afe3dfe6c847",
+    "core/harness-identity.json": "8d650f2a81027b3f2d98822f7929237b607fefcd059daf52d0b5f03d13064491",
+    "core/full-start-pipe.json": "2b44bd803e1e0e5f1986c6320149ab43f2751fec05b86430fc761d7797a930e4",
+    "core/startup-before-start.json": "e8bfe8ea80b49d94fff2109e9efd3e13f605f01a94e1dc1427263be85e28dda2",
+    "core/pty-foreground.json": "9a5aa6cf2c4988c41310bbeec91942ddf0d9b7ec8a5f21de77f2dc09cffff9b8",
+    "ssh-attempt1/failure.json": "77c35ffdb3a9821223624831cd6fbcf7260265790ad54592485217489a68e6eb",
+    "ssh-attempt1/ssh-pty-wrong-then-correct.json": "961ac469fba24323ac799cd5b40c72fab7809054261eca0b4bd55ce430745270",
+    "ssh-attempt1/ssh-pty-cancel-prompt.json": "42ca2a19adfce6f8c486884a6a767e177bada7a39a9b9337db676bf6936830ec",
+    "ssh-attempt1/ssh-pty-correct-passphrase.json": "3bdd03f9f0b71edfdbdef79ccb3fe1c927a9a783519e1a544966743192440a30",
+    "ssh-attempt1/ssh-key-auth-nonpty.json": "e8f0f53236ab8efc45cf06421e87f22cf7e969d067e89c215b0e365225cc558b",
+    "final-deferred/summary.json": "b6fe60bbc75106ba81ae02d730e9099a7ff8db70c70971623a8356e309559acb",
+    "final-deferred/ssh-login-grace-lingering-descendant.json": "8de0294c543b150184f2f8a8dfc06e25ea071d857133f18bc76201cb6d64a4e7",
+    "final-deferred/login-grace-observed.json": "2572f06f0e166e3c231e5233b499a72f5d40c4b7a13007cfc536457da8b9fb88",
+    "extra/fork-failure.json": "35c07207494d71ff8fd4142ff922a7956d1502fb02efcb508ad79944d51e7591",
+    "extra/sigpipe-default-environment.json": "faf30abc876d8970bd96c1c659dc9d9fe0063f30af500733eb2cfcba448b836f",
+    "extra/missing-lifecycle.json": "e9b1004593fa7e2023aa1027e076ff97da90c778feb259af53a2252668977520",
+    "extra/pty-setup-failure.json": "3e8a8538e539fcf8372e44ef7658045f4c36c9d1422c8a08cab1989b5ecbcaa2",
+    "extra/sigpipe-ignored-environment.json": "09a31bc6b10a794aca03ef15a12f8e1726d4829c75bfb102d73810231d769eda",
+    "ssh-grace-attempt2/login-grace-observed.json": "6479c6c09e84098af47e0f1659c9d52be2fc348fa5379a95a3c2a7e987204db2",
+    "ssh-grace-attempt2/interpretation.json": "459d2187467681ee8a383592df62777bdb25a022aa770f2ffd88b34f4b218962",
+    "ssh-grace-deferred/failure.json": "bf43e0d07ebe267820e30021ed4095eb000c229149763438ca2d4c47bdffc831",
+    "final/startup-child-setup.json": "3c5bdae7fc1be54abfbef8e51883d4eefb4715ce6ba1fd06d36e0ab886cb7a47",
+    "final/summary.json": "2e67d20cb76b5bdb1b66b116ff466754cb07072e634a399a91fe027f557fa374",
+    "final/closed-lifecycle-reader.json": "1040ad5670ca0830277ec959213044f283c120ec2d4129a10a1302e022e9d35b",
+    "final/growing-membership-buffer.json": "40388ee53274d8585259785b9433573c9aa4977c87455a0efb4bb7a3dd2556df",
+    "final/inherited-sigchld-ignore.json": "1298e4ef4f12f98a4fd20b06e859b8d22ce4db8c75701d2e5a9a772e81ff540f",
+    "final/exit-before-cleanup.json": "b2a47b2a5aa6d9142e785714e960ec6f52d290c6e2013888a6cdd4fde606c746",
+    "final/startup-after-release.json": "be6a8d052084a29d6e17ef5f6f22ac82732615dba9a14b25910e9a298c7ca9fe",
+    "final/ssh-login-grace-lingering-descendant.json": "9f27c57d3ff74afe49b483477648c5ac7c6ba5eec949406170a9e126a2317744",
+    "final/ordinary-exit.json": "3d9dcc458f3b9376481da6f61424249425e871b203955d65c51250a952536988",
+    "final/exec-failure.json": "ac8dd053faa59d0e8582f7ed93fa682b6f18061e2cc1bf6de4d09cf3cef703cb",
+    "final/login-grace-observed.json": "51935e1b27979d5ff4e30b9bb4dbc65429731dc96d5b885784d5b70b2629c947",
+    "final/unknown-membership-blocks.json": "57dbf3504966cb1b340983b41d76c2e5640fe83b7d12a036e6b2b61c62d7d2ab",
+    "final/simulated-engine-death.json": "d418d790355903cfc1173467d9958301234b1ff8580bbe0e9f62d68b24af7476",
+    "final/startup-release-eof.json": "86b6870c8210c117e7203b25013fa46e1df23df58d0a1f03df20b94d0cc7021d",
+    "final/closed-status-reader.json": "e61a01600d6add716f8619dc2139ec61a1b6cf1adf262fa391b4eecb137524e4",
+    "final/startup-before-fork.json": "7b70d74c56a393d15018225eba21706f18cdfda1e97fec73ea80446a2fab233c",
+    "final/startup-before-watch.json": "63bf18dace00af9009f73db83b19c064577a2b3626d5a5a084d6d7cd81544b82",
+    "final/full-start-pipe.json": "4fd5b60106231e210b9e0251ce95efd9a8cf12c6aace110bed86f370cd95ff03",
+    "final/ssh-pty-wrong-then-correct.json": "01e8c8e3c8d08dc4a545a453d8c537db89dfe51e2f61483fbd5e550f2b2f6419",
+    "final/ssh-pty-cancel-prompt.json": "0f9b2733fff2124835489aafdf10d4df4a11de6e1722f9e356b797c36e2875bd",
+    "final/ssh-pty-correct-passphrase.json": "74718f4256c661d56cbb4606de3a91987e595b3e47a7fcd04d45b0e5e8bd2051",
+    "final/startup-before-start.json": "f7ffd70a47865e1eb7b94e148274d9794e6a335f9f37202efe7c1e4b3ba61588",
+    "final/pty-foreground.json": "292499ce5815c51ad996899beb8dc13d1d5cc6d0cf2ffadae4c2df3794315247",
+    "final/ssh-key-auth-nonpty.json": "66163ec8e16d053ef72cceb6da8bba4b6610d9430d5c2bd695f63b5502d75c2b",
+    "attempt1/ordinary-exit.json": "eeaaa8780d77e5af0d84751c17045524e2a152aa152e1f28b4da81ef21020d4a",
+    "attempt1/exec-failure.json": "f38eb18dd02c79339a263673596139f642d7f139ca36001fa9be35db72d9a102",
+    "attempt1/failure.json": "961639f5a7dd7607d0c2edd675caa40ce98e6e0fdd7467c98b8a29a7823924d6",
+    "ssh-grace/summary.json": "b6fe60bbc75106ba81ae02d730e9099a7ff8db70c70971623a8356e309559acb",
+    "ssh-grace/ssh-login-grace-lingering-descendant.json": "530b5c581569aef24b38098c4cdace62b694f63a32d4c1f1ca53b12b7cb62050",
+    "ssh-grace/login-grace-observed.json": "50871e9d0a1dfbfcebf76b5793ef53e034a08d41c5303c4005ae6584a0c64510"
+  }
+}

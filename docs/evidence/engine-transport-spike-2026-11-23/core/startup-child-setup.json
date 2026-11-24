@@ -1,0 +1,33 @@
+{
+  "case": "startup-child-setup",
+  "returncode": 70,
+  "elapsed": 0.0377,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005003,
+      "line": "S 57536877371b0712 26421"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.005969,
+      "line": "TransportExited 57536877371b0712 26422 17920"
+    },
+    {
+      "channel": "status",
+      "time": 0.026913,
+      "line": "D 57536877371b0712 17920"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.026933,
+      "line": "CleanupComplete 57536877371b0712 26422 17920"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

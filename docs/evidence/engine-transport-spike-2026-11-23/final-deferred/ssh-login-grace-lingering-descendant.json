@@ -1,0 +1,65 @@
+{
+  "case": "ssh-login-grace-lingering-descendant",
+  "returncode": 255,
+  "elapsed": 6.6275,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005771,
+      "line": "S d8cc2567a0e9ab96 27722"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006201,
+      "line": "TransportStarted d8cc2567a0e9ab96 27723 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.253267,
+      "line": "TransportExited d8cc2567a0e9ab96 27723 65280"
+    },
+    {
+      "channel": "status",
+      "time": 6.578386,
+      "line": "U d8cc2567a0e9ab96 1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.621947,
+      "line": "CleanupComplete d8cc2567a0e9ab96 27723 65280"
+    },
+    {
+      "channel": "status",
+      "time": 6.622012,
+      "line": "D d8cc2567a0e9ab96 65280"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.049535,
+      "delivery_time": 0.049535,
+      "bytes": 1
+    },
+    {
+      "time": 0.055831,
+      "delivery_time": 0.055831,
+      "bytes": 77
+    },
+    {
+      "time": 6.059147,
+      "delivery_time": 6.257327,
+      "bytes": 2
+    },
+    {
+      "time": 6.257312,
+      "delivery_time": 6.257327,
+      "bytes": 44
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nConnection closed by 127.0.0.1 port 50786\r\r\n"
+}

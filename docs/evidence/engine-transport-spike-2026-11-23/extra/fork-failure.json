@@ -1,0 +1,29 @@
+{
+  "case": "fork-failure",
+  "returncode": 70,
+  "elapsed": 0.015,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "lifecycle",
+      "time": 0.006147,
+      "line": "CleanupComplete b5d47934abbe7e59 0 17920"
+    },
+    {
+      "channel": "status",
+      "time": 0.006167,
+      "line": "S b5d47934abbe7e59 28786"
+    },
+    {
+      "channel": "status",
+      "time": 0.00617,
+      "line": "D b5d47934abbe7e59 17920"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

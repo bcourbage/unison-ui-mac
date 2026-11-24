@@ -1,0 +1,45 @@
+{
+  "case": "sigpipe-ignored-environment",
+  "returncode": 0,
+  "elapsed": 0.0608,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.006756,
+      "line": "S 22fddd57581b8733 28792"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.007267,
+      "line": "TransportStarted 22fddd57581b8733 28793 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.028294,
+      "line": "TransportExited 22fddd57581b8733 28793 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.052757,
+      "line": "CleanupComplete 22fddd57581b8733 28793 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.05277,
+      "line": "D 22fddd57581b8733 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.014163,
+      "delivery_time": 0.014163,
+      "bytes": 30
+    }
+  ],
+  "output": "SIGPIPE=ignored HELPER_ENV=0\r\n"
+}

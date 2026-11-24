@@ -1,0 +1,7 @@
+{
+  "observed": "Authentication succeeded after a 1.5-second pause; helper cleanup was verified.",
+  "harness_sha256": "65ec386465e3451531b16e91328b73994e0089bbf46a11e4e6e38691b211fc35",
+  "correction": "Increase only the login-grace fixture delay to 6 seconds and the lingering test descendant lifetime to 20 seconds. No helper or signed artifact change.",
+  "primary_source": "https://github.com/openssh/openssh-portable/blob/master/sshd-session.c",
+  "source_context": "Upstream adds up to four seconds of jitter to LoginGraceTime. This explains why the short pause was not a reliable expiry test; it is not proof of the exact Apple binary implementation."
+}

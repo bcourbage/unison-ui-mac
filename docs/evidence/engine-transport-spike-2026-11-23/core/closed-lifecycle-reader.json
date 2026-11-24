@@ -1,0 +1,38 @@
+{
+  "case": "closed-lifecycle-reader",
+  "returncode": 7,
+  "elapsed": 0.534,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.011647,
+      "line": "S 412db5fde8ca3408 26435"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.012902,
+      "line": "TransportStarted 412db5fde8ca3408 26436 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.160248,
+      "line": "TransportExited 412db5fde8ca3408 26436 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.480045,
+      "line": "U 412db5fde8ca3408 1"
+    },
+    {
+      "channel": "status",
+      "time": 0.525994,
+      "line": "D 412db5fde8ca3408 1792"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

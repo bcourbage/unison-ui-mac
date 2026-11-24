@@ -1,0 +1,38 @@
+{
+  "case": "ssh-pty-cancel-prompt",
+  "returncode": -15,
+  "elapsed": 0.1162,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007245,
+      "line": "S 8c54e6942807ddff 26552"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.00774,
+      "line": "TransportStarted 8c54e6942807ddff 26553 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.08078,
+      "line": "TransportExited 8c54e6942807ddff 26553 15"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.106008,
+      "line": "CleanupComplete 8c54e6942807ddff 26553 15"
+    },
+    {
+      "channel": "status",
+      "time": 0.106024,
+      "line": "D 8c54e6942807ddff 15"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\n"
+}

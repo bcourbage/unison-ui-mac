@@ -1,0 +1,7 @@
+{
+  "error": "Timed out waiting for TransportExited while the harness disabled PTY draining; owned-case cleanup wait also reported incomplete.",
+  "harness_sha256": "7c5d01055041060075e4f8694f89a59dbec91431c507d24720f12e6461a39cb5",
+  "status": "Not a passed case. Original instance state was not persisted, so no exact wait status is inferred.",
+  "correction": "Keep reading PTY output; defer only its delivery to the hypothetical prompt consumer. Restore draining before cleanup on any failure.",
+  "interpretation": "The original experiment introduced I/O backpressure instead of merely reversing notification delivery. No kernel-level cause is claimed."
+}

@@ -1,0 +1,10 @@
+{
+  "phase": "harness setup, before another helper spawn",
+  "error": "dict() got multiple values for keyword argument LIFELINE_TEST_GRACE_MS",
+  "passed_before_failure": [
+    "ordinary-exit",
+    "exec-failure"
+  ],
+  "harness_sha256": "3cf764eaac9e427e25b02f32efe91517e0d9800ad2213ab4a370bcd68f7a47dd",
+  "correction": "Construct defaults first, then update the extra environment."
+}

@@ -1,0 +1,38 @@
+{
+  "case": "ssh-pty-wrong-then-correct",
+  "returncode": 0,
+  "elapsed": 0.4999,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.006089,
+      "line": "S 495a7d47e163433c 26545"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006614,
+      "line": "TransportStarted 495a7d47e163433c 26546 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.466807,
+      "line": "TransportExited 495a7d47e163433c 26546 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.491684,
+      "line": "CleanupComplete 495a7d47e163433c 26546 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.491698,
+      "line": "D 495a7d47e163433c 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\n\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nauthenticated-spike"
+}

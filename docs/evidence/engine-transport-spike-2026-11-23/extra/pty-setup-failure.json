@@ -1,0 +1,34 @@
+{
+  "case": "pty-setup-failure",
+  "returncode": 70,
+  "elapsed": 0.0761,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.017194,
+      "line": "S 5ecc8129e4e111c0 28788"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.038226,
+      "line": "TransportExited 5ecc8129e4e111c0 28789 17920"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.063427,
+      "line": "CleanupComplete 5ecc8129e4e111c0 28789 17920"
+    },
+    {
+      "channel": "status",
+      "time": 0.063445,
+      "line": "D 5ecc8129e4e111c0 17920"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}
