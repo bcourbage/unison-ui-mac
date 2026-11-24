@@ -1,5 +1,9 @@
 # Review prompt for the engine-process design
 
+Historical review prompt for the first lifeline proposal. Its questions and evidence summary
+describe that review point, not the current qualification status. Retained for context; use
+the updated design and separate spike reports for current requirements and results.
+
 Review docs/engine-process-design.md and docs/engine-process-brief.md as a report-only adversarial
 review. Leave priorities and release versions open. The maintainer requires lifeline-based
 transport supervision as the first topology to qualify and has rejected forwarded numeric-PID

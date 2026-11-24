@@ -13,8 +13,9 @@ Phase 2 adds resource claims and the engine preparation boundary they require.
 The choices below are proposals for review. Numeric bounds are hypotheses pending baseline measurements.
 TCC attribution, transport supervision, remote root identity, and the cost of separating
 profile preparation from connection setup require experiments before production implementation.
-The architecture has not been qualified. A supplied lifeline prototype was inspected and one
-additional isolated regression was run. The measurements and limits are recorded in section 4.
+The architecture has not been qualified. Standalone unsigned prototype checks have begun;
+qualification reports and experimental evidence are maintained separately from this design.
+The remaining guarantees and limits are recorded in section 4.
 No signed-build, authenticated-SSH or macOS 15 experiment was performed by this author.
 
 ## 1. Outcomes and scope
@@ -52,6 +53,13 @@ Therefore a process group containing the engine cannot be assumed to contain its
 That source reading establishes candidate interim recovery paths. It does not qualify reuse
 after the November incidents or prove that the local checkout matches every published blob.
 Record upstream revision, patch set, and blob checksum with the spike.
+
+Incident qualification must establish the process that ran each sync, process continuity
+between the November failures, and whether restart-required was entered or dismissed after
+the first failure. A process appearing in unified logs does not by itself identify the writer
+of the shared sync log or establish the coordinator's state. Do not assume independent fresh
+engines or use nearby framework activity as an exact failure timestamp. Distinguish observed
+process/timing evidence from the stale-connection, sleep and retained-state hypotheses.
 
 ## 3. Ownership and process layout
 
@@ -126,13 +134,20 @@ The engine supplies its actual PID. Before creating the transport, the helper ar
 EVFILT_PROC/NOTE_EXIT for that PID and then verifies getppid still matches. A dead engine during
 pre-exec setup is caught by the watch or parent check. Reading getppid alone can select launchd
 after early engine death. Block the handled stop signals before installing handlers and kqueue
-filters, then unblock after registration. Test a stop arriving in each startup interval.
+filters, then unblock after registration. Preserve a handled stop in durable sig_atomic_t state and
+check it before publishing S/forking and at the wait boundary; registration alone must not
+lose a stop already delivered to a handler. Test a stop arriving in each startup interval.
 
 The helper stays outside the transport's process group. Its child becomes leader of a separate
 group G and waits behind a setup handshake. On the PTY path the helper remains the session
 leader and explicitly gives G foreground terminal ownership. Verify group setup, terminal
 handoff and the release handshake before allowing transport exec. EOF or a failed handshake
-must abort the waiting child. Parent-watch/group/pipe failures are checked and fail closed.
+must abort the waiting child. Reset the transport child's SIGTERM, SIGHUP and SIGINT
+handlers to default immediately after fork, before group setup or waiting for the handshake;
+it must not consume a group stop through the helper's handler before exec. The qualified
+handshake must ensure child signal setup is complete before the group is released. Inject
+a stop after handshake release and before exec, as well as at the other startup boundaries.
+Parent-watch/group/pipe failures are checked and fail closed.
 Remove helper-only environment variables from the transport and close private status/liveness
 FDs before exec. Test the authenticated prompt path rather than relying on a tty-only probe.
 
@@ -159,9 +174,10 @@ failed D write leaves S unmatched and cleanup unknown. Ignore SIGPIPE in the hel
 any status write so a closed reader produces EPIPE rather than terminating the cleanup owner.
 An EPIPE on S forbids fork. An EPIPE on U or D disables that failed reporting endpoint while
 the helper continues group cleanup and eventually preserves the transport's status. Losing a
-reader never authorizes the helper to abandon its group. Restore the transport's intended
-SIGPIPE disposition before exec so this helper policy does not change SSH/tool behavior. Records fit the qualified PIPE_BUF
-atomic bound. A helper cannot discard failed status writes and continue as if they succeeded.
+reader never authorizes the helper to abandon its group. Save the SIGPIPE disposition the
+helper inherited before ignoring it, and restore that inherited disposition in the transport
+child just before exec. This preserves an engine's ignored disposition as well as the default.
+Records fit the qualified PIPE_BUF atomic bound. A helper cannot discard failed status writes and continue as if they succeeded.
 
 Engine exit, a stop signal, or ordinary transport exit starts the same group cleanup. Send
 SIGTERM to G, wait a bounded grace interval, then enter the KILL phase if needed. While live
@@ -199,8 +215,10 @@ Close GUI writer duplicates. The engine retains a writer while further helper sp
 possible, closes it on disposal/exit, and never lets the actual transport inherit it. Each
 helper keeps its writer through cleanup. Keep draining the pipe on a dedicated reader so GUI
 modals and blocked OCaml work cannot fill it. Pending status writes and malformed streams have
-explicit failure behavior. A full pipe must not block cleanup indefinitely. Use a qualified
-bounded/nonblocking reporting path. Failure to publish S prevents launch, while U/D reporting
+explicit failure behavior. The GUI sets O_NONBLOCK on the status writer when it creates the
+channel, before passing copies to the engine or helpers. They share that open-file description;
+a helper must not silently change the flags for all writers. A full pipe must not block cleanup
+indefinitely. Use a qualified bounded/nonblocking reporting path. Failure to publish S prevents launch, while U/D reporting
 failure preserves cleanup ownership and an unknown reporting outcome. Test the reader closing
 during S, U and D, and test a live reader that stops draining. Test inherited-writer leaks, premature closure and backpressure.
 
@@ -221,10 +239,16 @@ is initially available. A missing/broken evidence channel means unknown, never e
 SSH is still waiting for a password or that cleanup finished.
 
 Update the #35 consumer to consult actual TransportExited evidence for the current connection.
-Positive exit evidence suppresses stale credential output immediately while helper cleanup
-continues. Terminal-evidence channel failure produces connection failure/cleanup rather than a
-new password prompt. Qualify login-grace timeout and broken pipe with a lingering descendant,
-plus normal password retry, successful authentication and Cancel controls.
+Attach the engine's current correlated transport-evidence state and ordering information to
+each prompt when it is sent. Prompt and TransportExited notifications can arrive in either order;
+absence of an exit notification is unknown, not positive evidence of a live transport. Do not
+present ambiguous leftover output as a credential request on that basis. The spike must qualify
+a bounded refresh/defer decision for unknown evidence while keeping genuine prompts usable.
+Keep fatal-text classification as a supplementary check. Positive exit evidence suppresses
+stale credential output immediately while helper cleanup continues. Terminal-evidence channel
+failure produces connection failure/cleanup rather than a new password prompt. Qualify login-grace timeout and broken pipe with a lingering descendant,
+plus normal password retry, successful authentication and Cancel controls. Record prompt/exit
+arrival order in the login-grace case and force both orders in integration tests.
 
 A reused live engine must retire its previous connection completely before creating another
 transport. The GUI waits for matching D records for earlier helpers, and the engine checks its
@@ -289,8 +313,8 @@ the author. Its EOF rule and self-killing group topology are superseded by v2 ab
 The reviewer reports three unprivileged v2 runs on Heracles/macOS 27.2.1 covering ordinary and
 signal exit status, engine death before registration, PTY foreground group setup, stubborn
 descendants and S/D/EOF verification. The reviewer also reports that external helper SIGKILL
-leaves an unmatched S, as required for unknown cleanup. Those runs have not been independently
-repeated by this author. Source inspection found unchecked writes/setup and fixed-buffer
+leaves an unmatched S, as required for unknown cleanup. Those exact v2 runs were not independently
+repeated by this author; later v3 checks are recorded separately with the spike evidence. Source inspection found unchecked writes/setup and fixed-buffer
 membership observation in the prototype. Those are implementation/qualification tasks, not
 properties established by the reported successful cases.
 
@@ -299,11 +323,16 @@ engine-process-evidence/lifeline and engine-process-evidence/lifeline-v2, outsid
 A later reviewer probe reproduced SIGPIPE termination after closing the status reader. Source
 inspection also found that the current terminal-evidence API would watch the helper, and v2
 issues group SIGKILL only once. These findings add qualification cases beyond the original v2
-runs. The author verified the source paths but has not repeated that SIGPIPE probe.
+runs. The author verified the source paths. Later v3 closed-reader checks are recorded separately with the spike evidence.
 Transfer reviewed sources/harnesses into a development branch before relying on them. Fix the
 startup signal-registration race, SIGPIPE/reporting failure behavior, actual-transport exit
 notifications, repeated KILL observation, reconnect barrier, setup error handling and complete
 group observation before treating v2 as the spike implementation.
+
+The corrected reviewer v3 sources and later standalone checks belong to the spike evidence,
+not this design's qualification claims. Successful cases do not establish integrated engine,
+authenticated-SSH, signed-build or supported-platform behavior. Keep exact source identities,
+unsuccessful attempts and remaining gates with each spike report.
 
 Outstanding gates include signal registration, start/completion write failures, membership
 truncation/errors/churn, group/terminal handshake failures, actual patch 0004 and #35 integration, closed/non-draining status readers, same-engine reconnect,
@@ -740,7 +769,7 @@ Estimates must be replaced after the first spike establishes the actual bridge w
 
 | Step | Deliverable and review boundary | Initial effort range |
 |---|---|---|
-| A | Qualify November failures and a narrow interim remedy. Record log/pmset correlation, versions, cleanup evidence, and current Home-profile plus synthetic-list performance. | 2–4 engineering days |
+| A | Qualify November failures and a narrow interim remedy. Record log/pmset correlation, process continuity and restart-state behavior, versions, cleanup evidence, and current Home-profile plus synthetic-list performance. | 2–4 engineering days |
 | A1 (conditional) | Implement and qualify the interim remedy selected by A, then release and record it independently if authorized. Skip if no remedy qualifies. | Budget after A sizes the chosen fix. A narrow qualified fix provisionally needs 2–5 additional days. |
 | B | Signed engine/lifeline launch, TCC, parent watches, retire/shutdown adaptation, completion proof and failure injection. Measure normal/stubborn descendants, engine/GUI/helper death, PTY prompts and packaging. | 6–12 days |
 | C | Versioned codec and fake worker, snapshots, backpressure, operation/prompt identities and cancellation. Implement current messages only. | 3–6 days |

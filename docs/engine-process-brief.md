@@ -17,8 +17,9 @@ upstream's GTK interface shows the same errors and then offers Rescan (`uigtk3.m
 
 The cost is real on the maintainer's own machines. The Unison log on Heracles shows the
 Pictures-to-Demeter profile losing its connection at the very start of a sync on Nov 19 and on
-Nov 22, 2026. Both failures fall under the restart rule. After the Nov 22 restart, the same sync
-completed.
+Nov 22, 2026. Whether each failure entered restart-required, and whether the same GUI process
+ran both syncs, remain unverified. Step A must establish that history before choosing an
+interim remedy. After the reported Nov 22 relaunch, a later sync completed.
 
 A related limitation follows from the same cause. Only one profile can be open at a time.
 Profiles that share nothing, such as Pictures and FlightSim, still have to run one after the
