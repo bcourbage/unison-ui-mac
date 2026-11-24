@@ -1,0 +1,44 @@
+{
+  "source": "~/Library/Application Support/Unison/Unison-Sync.log",
+  "source_bytes": 164105668,
+  "source_sha256": "3b9369365a3e7fa36fc86d39dd150d56c9e1de7e0ac3915d0d942cdf3d8061e8",
+  "privacy": "Only selected headers, counters and fixed error text. Paths excluded; log not copied.",
+  "windows": [
+    {
+      "header_line": 1004972,
+      "header": "Unison 2.54.0 (ocaml 5.5.0) started propagating changes at 09:41:51.45 on 19 Nov 2026",
+      "events": [
+        {
+          "line": 1005038,
+          "kind": "failed_item",
+          "message": "Lost connection with the server"
+        },
+        {
+          "line": 1005039,
+          "kind": "connection_error",
+          "message": "Lost connection with the server"
+        }
+      ],
+      "copy_starts": 65,
+      "copy_ends": 0
+    },
+    {
+      "header_line": 1005042,
+      "header": "Unison 2.54.0 (ocaml 5.5.0) started propagating changes at 14:24:28.86 on 22 Nov 2026",
+      "events": [
+        {
+          "line": 1005108,
+          "kind": "failed_item",
+          "message": "Lost connection with the server"
+        },
+        {
+          "line": 1005109,
+          "kind": "connection_error",
+          "message": "Lost connection with the server"
+        }
+      ],
+      "copy_starts": 65,
+      "copy_ends": 0
+    }
+  ]
+}

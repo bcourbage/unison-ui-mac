@@ -1,0 +1,54 @@
+Iteration 1, exit 0
+[
+  {
+    "variant": "lifeline-early-stop",
+    "returncode": 0,
+    "seconds": 2.011,
+    "records": [
+      "S 271299c0789393a3 17735",
+      "D 271299c0789393a3 0"
+    ]
+  },
+  {
+    "variant": "lifeline-blocked-stop",
+    "returncode": 143,
+    "seconds": 0.009,
+    "records": []
+  }
+]
+Iteration 2, exit 0
+[
+  {
+    "variant": "lifeline-early-stop",
+    "returncode": 0,
+    "seconds": 2.016,
+    "records": [
+      "S 6aa4578f478f8ad8 17743",
+      "D 6aa4578f478f8ad8 0"
+    ]
+  },
+  {
+    "variant": "lifeline-blocked-stop",
+    "returncode": 143,
+    "seconds": 0.009,
+    "records": []
+  }
+]
+Iteration 3, exit 0
+[
+  {
+    "variant": "lifeline-early-stop",
+    "returncode": 0,
+    "seconds": 2.018,
+    "records": [
+      "S 07883dcb8f5adc10 17747",
+      "D 07883dcb8f5adc10 0"
+    ]
+  },
+  {
+    "variant": "lifeline-blocked-stop",
+    "returncode": 143,
+    "seconds": 0.009,
+    "records": []
+  }
+]

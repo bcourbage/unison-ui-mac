@@ -1,0 +1,17 @@
+[
+  {
+    "variant": "lifeline-early-stop",
+    "returncode": 0,
+    "seconds": 2.015,
+    "records": [
+      "S 90256fa3cd56a1c1 17584",
+      "D 90256fa3cd56a1c1 0"
+    ]
+  },
+  {
+    "variant": "lifeline-blocked-stop",
+    "returncode": 143,
+    "seconds": 0.148,
+    "records": []
+  }
+]

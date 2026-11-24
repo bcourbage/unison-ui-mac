@@ -1,0 +1,5 @@
+A reader closed during cleanup: helper exit 7, survivors=[]
+B full pipe before S (65536 bytes queued): helper exit 71, transport ran=False
+C non-draining reader (65511 filler bytes): helper exit 7 after 0.29s, records=['S'] -> UNKNOWN
+D helper inherited SIGPIPE default: transport sees default
+D helper inherited SIGPIPE ignored: transport sees ignored

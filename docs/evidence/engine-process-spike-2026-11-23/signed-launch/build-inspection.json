@@ -1,0 +1,30 @@
+{
+  "bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+  "source_sha256": {
+    "LaunchProbe.m": "2bd719b27a7ccb23f2990264fdb0244dcc339b02c47a3f2656a8a02926e652a3",
+    "lifeline.c": "76131d9c74e931ca81543dabbce132307c9c21e4cf0bcf0109ca8bfcfc74d32a",
+    "build.py": "6621d6609144c71ac957dd161bfa754c2bf4140c5059ed9c0143aba48dff0078"
+  },
+  "codesign_verify": "--prepared:Unison Engine Launch Spike.app/Contents/MacOS/lifeline\n--validated:Unison Engine Launch Spike.app/Contents/MacOS/lifeline\nUnison Engine Launch Spike.app: valid on disk\nUnison Engine Launch Spike.app: satisfies its Designated Requirement\n",
+  "components": {
+    "EngineLaunchProbe": {
+      "signature": "Executable=Unison Engine Launch Spike.app/Contents/MacOS/EngineLaunchProbe\nIdentifier=net.courbage.unison-ui-mac.engine-launch-spike\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=410 flags=0x10000(runtime) hashes=5+3 location=embedded\nVersionPlatform=1\nVersionMin=983040\nVersionSDK=1769984\nHash type=sha256 size=32\nCandidateCDHash sha256=e2a866269452a15ad4d5990aaee71767e960b178\nCandidateCDHashFull sha256=e2a866269452a15ad4d5990aaee71767e960b178d0469d56134c3beaf9004d4e\nHash choices=sha256\nCMSDigest=e2a866269452a15ad4d5990aaee71767e960b178d0469d56134c3beaf9004d4e\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=32768\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=e2a866269452a15ad4d5990aaee71767e960b178\nSignature size=9049\nAuthority=Developer ID Application: Bruno Courbage (QJXKM5Q4WH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 23, 2026 at 9:29:48\u202fPM\nInfo.plist entries=11\nTeamIdentifier=QJXKM5Q4WH\nRuntime Version=27.2.0\nSealed Resources version=2 rules=13 files=1\nInternal requirements count=1 size=208\nTotal signatures=1\nChosen signature=1\n",
+      "build": "Unison Engine Launch Spike.app/Contents/MacOS/EngineLaunchProbe:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform MACOS\n    minos 15.0\n      sdk 27.2\n   ntools 1\n     tool LD\n  version 27106.1\n",
+      "entitlements": "Executable=Unison Engine Launch Spike.app/Contents/MacOS/EngineLaunchProbe\nwarning: Specifying ':' in the path is deprecated and will not work in a future release\n",
+      "sha256": "afefc5f0f1aec21fbbcab88a5d177da2618e8b21f82ea11b7da79e8d7eab8218"
+    },
+    "lifeline": {
+      "signature": "Executable=Unison Engine Launch Spike.app/Contents/MacOS/lifeline\nIdentifier=lifeline\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=308 flags=0x10000(runtime) hashes=4+2 location=embedded\nVersionPlatform=1\nVersionMin=983040\nVersionSDK=1769984\nHash type=sha256 size=32\nCandidateCDHash sha256=6deb7484c914052b42d2a6f6137867f1e7c8eb95\nCandidateCDHashFull sha256=6deb7484c914052b42d2a6f6137867f1e7c8eb95c0af9791523e5e3331184ea0\nHash choices=sha256\nCMSDigest=6deb7484c914052b42d2a6f6137867f1e7c8eb95c0af9791523e5e3331184ea0\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=16384\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=6deb7484c914052b42d2a6f6137867f1e7c8eb95\nSignature size=9049\nAuthority=Developer ID Application: Bruno Courbage (QJXKM5Q4WH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 23, 2026 at 9:29:48\u202fPM\nInfo.plist=not bound\nTeamIdentifier=QJXKM5Q4WH\nRuntime Version=27.2.0\nSealed Resources=none\nInternal requirements count=1 size=168\nTotal signatures=1\nChosen signature=1\n",
+      "build": "Unison Engine Launch Spike.app/Contents/MacOS/lifeline:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform MACOS\n    minos 15.0\n      sdk 27.2\n   ntools 1\n     tool LD\n  version 27106.1\n",
+      "entitlements": "Executable=Unison Engine Launch Spike.app/Contents/MacOS/lifeline\nwarning: Specifying ':' in the path is deprecated and will not work in a future release\n",
+      "sha256": "28e8177b935251a23afce70cba72d4652bb2c422e9790825279033fc4c90cf26"
+    }
+  },
+  "qualification": "Developer ID + hardened runtime, local build. Not notarized, not installed product, no OCaml/SSH authentication/TCC qualification yet.",
+  "source_snapshots": {
+    "build.py": "build-used.py"
+  },
+  "evidence_redactions": [
+    "Artifact-directory prefix removed from recorded verification diagnostics. Component hashes, signing facts and tested source hashes unchanged."
+  ]
+}

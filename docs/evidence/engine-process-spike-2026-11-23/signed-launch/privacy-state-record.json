@@ -1,0 +1,21 @@
+{
+  "bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+  "target_labels": [
+    "photos-library-directory",
+    "mail-directory"
+  ],
+  "method": "CUA accessibility state and probe JSON; no screenshots or directory entry names retained.",
+  "sequence": [
+    "Fresh identity absent from Full Disk Access list; both roles denied with EPERM.",
+    "User authenticated the OS sheet; only the probe app was selected and added.",
+    "UI verified probe on; both roles could enumerate both targets on first launch and relaunch.",
+    "UI verified probe off; both roles denied with EPERM after relaunch.",
+    "Probe entry selected and removed; final UI verified it absent.",
+    "Installed Unison FDA switch remained on throughout."
+  ],
+  "existing_entries_changed": false,
+  "probe_entry_removed": true,
+  "tcc_database_edited_directly": false,
+  "probe_processes_remaining": false,
+  "system_settings_closed_after_test": true
+}

@@ -1,0 +1,112 @@
+{
+  "command_template": "/usr/bin/log show --style json --start START --end END --predicate 'process == \"unison-ui-mac\"' --info",
+  "privacy": "Only timing/process metadata and an exact fixed framework message are retained. Owner-only raw temporary query files were removed after extraction.",
+  "limits": [
+    "No process birth identifier in exported records; matching PID/boot/image supports continuity but does not exclude PID reuse by itself.",
+    "Process activity alone does not identify the writer of a shared sync log.",
+    "Framework activity is not a fatal, modal or coordinator-state event.",
+    "These selected queries contain no own-subsystem records; they do not establish that such records were absent at all times."
+  ],
+  "windows": [
+    {
+      "label": "nov19",
+      "query_start": "2026-11-19 09:40:00",
+      "query_end": "2026-11-19 09:43:05",
+      "record_count": 31,
+      "pid_counts": {
+        "97809": 31
+      },
+      "boot_uuids": [
+        "9DF1CEF5-5B39-4D3C-856D-10EDA39082A9"
+      ],
+      "executable_uuids": [
+        "A7DE9A8A-221F-32A5-A612-73A08E8DA94F"
+      ],
+      "first_record": "2026-11-19 09:42:09.584604-0800",
+      "last_record": "2026-11-19 09:42:55.118100-0800",
+      "own_subsystem_records": 0,
+      "records_by_second": {
+        "2026-11-19 09:42:09": 12,
+        "2026-11-19 09:42:10": 2,
+        "2026-11-19 09:42:13": 2,
+        "2026-11-19 09:42:19": 1,
+        "2026-11-19 09:42:42": 1,
+        "2026-11-19 09:42:52": 5,
+        "2026-11-19 09:42:55": 8
+      },
+      "selected_framework_records": [
+        {
+          "timestamp": "2026-11-19 09:42:09.828230-0800",
+          "processID": 97809,
+          "subsystem": "com.apple.UserNotifications",
+          "category": "Connections",
+          "eventMessage": "[net.courbage.unison-ui-mac] Creating a user notification center"
+        }
+      ],
+      "raw_query_sha256": "9291a2e306834c452ebd0dc3b22f5bdc56e674ca1b78e2702989e74d73665904"
+    },
+    {
+      "label": "nov22",
+      "query_start": "2026-11-22 14:23:00",
+      "query_end": "2026-11-22 14:27:00",
+      "record_count": 6,
+      "pid_counts": {
+        "97809": 6
+      },
+      "boot_uuids": [
+        "9DF1CEF5-5B39-4D3C-856D-10EDA39082A9"
+      ],
+      "executable_uuids": [
+        "A7DE9A8A-221F-32A5-A612-73A08E8DA94F"
+      ],
+      "first_record": "2026-11-22 14:24:26.568601-0800",
+      "last_record": "2026-11-22 14:24:31.106967-0800",
+      "own_subsystem_records": 0,
+      "records_by_second": {
+        "2026-11-22 14:24:26": 2,
+        "2026-11-22 14:24:29": 2,
+        "2026-11-22 14:24:31": 2
+      },
+      "selected_framework_records": [],
+      "raw_query_sha256": "e48103cf94cd45af38ad3edc41fe88ab366a47bdd4ee868d2c318a22c159e329"
+    },
+    {
+      "label": "relaunch",
+      "query_start": "2026-11-22 15:42:00",
+      "query_end": "2026-11-22 15:44:00",
+      "record_count": 25,
+      "pid_counts": {
+        "61068": 25
+      },
+      "boot_uuids": [
+        "9DF1CEF5-5B39-4D3C-856D-10EDA39082A9"
+      ],
+      "executable_uuids": [
+        "A7DE9A8A-221F-32A5-A612-73A08E8DA94F"
+      ],
+      "first_record": "2026-11-22 15:43:07.252191-0800",
+      "last_record": "2026-11-22 15:43:44.825386-0800",
+      "own_subsystem_records": 0,
+      "records_by_second": {
+        "2026-11-22 15:43:07": 14,
+        "2026-11-22 15:43:08": 1,
+        "2026-11-22 15:43:10": 2,
+        "2026-11-22 15:43:13": 1,
+        "2026-11-22 15:43:17": 1,
+        "2026-11-22 15:43:42": 2,
+        "2026-11-22 15:43:43": 2,
+        "2026-11-22 15:43:44": 2
+      },
+      "selected_framework_records": [
+        {
+          "timestamp": "2026-11-22 15:43:07.430450-0800",
+          "processID": 61068,
+          "subsystem": "com.apple.UserNotifications",
+          "category": "Connections",
+          "eventMessage": "[net.courbage.unison-ui-mac] Creating a user notification center"
+        }
+      ],
+      "raw_query_sha256": "7004bea51989f646b437296b9f00e572d2ede7a34b495e4a65b67d8fa22f60bc"
+    }
+  ]
+}

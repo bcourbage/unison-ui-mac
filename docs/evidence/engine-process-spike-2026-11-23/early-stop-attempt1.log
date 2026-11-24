@@ -1,0 +1,25 @@
+[
+  {
+    "variant": "lifeline-early-stop",
+    "returncode": 0,
+    "seconds": 2.192,
+    "records": [
+      "S a84e5b0d3f2cbe08 17512",
+      "D a84e5b0d3f2cbe08 0"
+    ]
+  },
+  {
+    "variant": "lifeline-blocked-stop",
+    "returncode": 0,
+    "seconds": 2.154,
+    "records": [
+      "S 68e0caa261c49ac1 17525",
+      "D 68e0caa261c49ac1 0"
+    ]
+  }
+]
+Traceback (most recent call last):
+  File "early-stop.py", line 22, in <module>
+    assert results[1]['returncode']==-signal.SIGTERM, 'blocking must retain the early stop'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: blocking must retain the early stop

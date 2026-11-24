@@ -1,0 +1,28 @@
+{
+  "purpose": "Documentation PR validation; not prototype qualification.",
+  "pull_request": 242,
+  "checked_head": "bf8e5870c4239a09720e8d9fa8f576e33b06ffbb",
+  "state_at_check": "OPEN",
+  "checks": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-24T05:18:02Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/bcourbage/unison-ui-mac/actions/runs/45331618539/job/138233916886",
+      "name": "Build + test",
+      "startedAt": "2026-11-24T05:12:13Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-24T05:12:21Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/bcourbage/unison-ui-mac/actions/runs/45331618539/job/138233916356",
+      "name": "Build product site",
+      "startedAt": "2026-11-24T05:12:12Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ]
+}

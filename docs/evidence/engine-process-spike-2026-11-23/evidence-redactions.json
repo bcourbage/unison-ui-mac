@@ -1,0 +1,15 @@
+{
+  "scope": "Portable presentation of two recorded diagnostics; experimental observations and signed binaries unchanged.",
+  "files": [
+    {
+      "path": "early-stop-attempt1.log",
+      "original_sha256": "f46c3a0e1042733e5410763188506321cf8bf655639e8a5cbca73d3ab78e06cf",
+      "change": "Traceback filename reduced to evidence-relative early-stop.py; assertion and outcome unchanged."
+    },
+    {
+      "path": "signed-launch/build-inspection.json",
+      "original_sha256": "2cc8095f62dcace35a404d29a117bc70f172371ed379a04ef473a8a9554b5f9f",
+      "change": "Verification output made bundle-relative; tested build script archived unchanged as build-used.py."
+    }
+  ]
+}
