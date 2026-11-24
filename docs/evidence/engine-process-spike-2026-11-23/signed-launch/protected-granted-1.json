@@ -1,0 +1,75 @@
+{
+  "cleanup": {
+    "completions": 1,
+    "eof": true,
+    "reader_failed": false,
+    "records": "S b82c7f0184d811e7 22463\nD b82c7f0184d811e7 15\n",
+    "starts": 1,
+    "valid": true,
+    "verified": true
+  },
+  "elapsed_seconds": 0.11210550006944686,
+  "engine": {
+    "bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+    "engine_pid": 22462,
+    "executable": "Unison Engine Launch Spike.app/Contents/MacOS/EngineLaunchProbe",
+    "helper_reaped": true,
+    "helper_spawn_errno": 0,
+    "helper_transport_ready": true,
+    "helper_wait_status": 15,
+    "nonce": "B3036D71-BDD0-4AC3-9A9C-D42B26E6D470",
+    "parent_pid": 22460,
+    "targets": [
+      {
+        "directory": true,
+        "label": "photos-library-directory",
+        "open_errno": 0,
+        "open_ok": 1,
+        "read_errno": 0,
+        "read_ok": true,
+        "stat_errno": 0,
+        "stat_ok": 1
+      },
+      {
+        "directory": true,
+        "label": "mail-directory",
+        "open_errno": 0,
+        "open_ok": 1,
+        "read_errno": 0,
+        "read_ok": true,
+        "stat_errno": 0,
+        "stat_ok": 1
+      }
+    ]
+  },
+  "engine_reaped": true,
+  "engine_spawn_errno": 0,
+  "engine_wait_status": 0,
+  "identity_bound": true,
+  "parent_bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+  "parent_pid": 22460,
+  "parent_targets": [
+    {
+      "directory": true,
+      "label": "photos-library-directory",
+      "open_errno": 0,
+      "open_ok": 1,
+      "read_errno": 0,
+      "read_ok": true,
+      "stat_errno": 0,
+      "stat_ok": 1
+    },
+    {
+      "directory": true,
+      "label": "mail-directory",
+      "open_errno": 0,
+      "open_ok": 1,
+      "read_errno": 0,
+      "read_ok": true,
+      "stat_errno": 0,
+      "stat_ok": 1
+    }
+  ],
+  "platform": "Version 27.2.1 (Build 26B131)",
+  "scenario": "protected-granted-first-launch"
+}

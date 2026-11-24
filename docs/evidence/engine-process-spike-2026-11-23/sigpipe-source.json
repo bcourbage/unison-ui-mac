@@ -1,0 +1,13 @@
+{
+  "commit": "91421d0617b0fb543c0eee51bcb4d4791d8b0631",
+  "path": "src/remote.ml",
+  "source_sha256": "2d02d3eedf64507b0bc20ffd85714d95fa2c7f505188fe6b5f7af6342a6e14ea",
+  "line_start": 31,
+  "line_end": 33,
+  "excerpt": [
+    "let _ =",
+    "  if Sys.unix || Sys.cygwin then",
+    "    ignore(Sys.set_signal Sys.sigpipe Sys.Signal_ignore)"
+  ],
+  "qualification": "Immutable-source verification. Does not add a new runtime test."
+}

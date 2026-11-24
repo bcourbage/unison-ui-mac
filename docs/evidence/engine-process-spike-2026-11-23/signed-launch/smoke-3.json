@@ -1,0 +1,95 @@
+{
+  "cleanup": {
+    "completions": 1,
+    "eof": true,
+    "reader_failed": false,
+    "records": "S 699477f6fe913662 22169\nD 699477f6fe913662 15\n",
+    "starts": 1,
+    "valid": true,
+    "verified": true
+  },
+  "elapsed_seconds": 0.13273579173255712,
+  "engine": {
+    "bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+    "engine_pid": 22168,
+    "executable": "Unison Engine Launch Spike.app/Contents/MacOS/EngineLaunchProbe",
+    "helper_reaped": true,
+    "helper_spawn_errno": 0,
+    "helper_transport_ready": true,
+    "helper_wait_status": 15,
+    "nonce": "9F74F771-8C41-4B07-A7F2-08B779353EE2",
+    "parent_pid": 22166,
+    "targets": [
+      {
+        "directory": true,
+        "label": "temporary-directory",
+        "open_errno": 0,
+        "open_ok": 1,
+        "read_errno": 0,
+        "read_ok": true,
+        "stat_errno": 0,
+        "stat_ok": 1
+      },
+      {
+        "directory": false,
+        "label": "temporary-file",
+        "open_errno": 0,
+        "open_ok": 1,
+        "read_errno": 0,
+        "read_ok": true,
+        "stat_errno": 0,
+        "stat_ok": 1
+      },
+      {
+        "directory": false,
+        "label": "missing-control",
+        "open_errno": 2,
+        "open_ok": 0,
+        "read_errno": 0,
+        "read_ok": false,
+        "stat_errno": 2,
+        "stat_ok": 0
+      }
+    ]
+  },
+  "engine_reaped": true,
+  "engine_spawn_errno": 0,
+  "engine_wait_status": 0,
+  "identity_bound": true,
+  "parent_bundle_id": "net.courbage.unison-ui-mac.engine-launch-spike",
+  "parent_pid": 22166,
+  "parent_targets": [
+    {
+      "directory": true,
+      "label": "temporary-directory",
+      "open_errno": 0,
+      "open_ok": 1,
+      "read_errno": 0,
+      "read_ok": true,
+      "stat_errno": 0,
+      "stat_ok": 1
+    },
+    {
+      "directory": false,
+      "label": "temporary-file",
+      "open_errno": 0,
+      "open_ok": 1,
+      "read_errno": 0,
+      "read_ok": true,
+      "stat_errno": 0,
+      "stat_ok": 1
+    },
+    {
+      "directory": false,
+      "label": "missing-control",
+      "open_errno": 2,
+      "open_ok": 0,
+      "read_errno": 0,
+      "read_ok": false,
+      "stat_errno": 2,
+      "stat_ok": 0
+    }
+  ],
+  "platform": "Version 27.2.1 (Build 26B131)",
+  "scenario": "signed-unprotected-smoke"
+}

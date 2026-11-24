@@ -1,0 +1,11 @@
+PASS  1 ordinary exit, stubborn descendant: verdict=verified, transport status=[7], live at D/EOF=[], records closed after 2.27s (grace 2 s)
+PASS  2 engine killed: group before=[(17321, ['sleep', '42']), (17322, ['sleep', '41'])], verdict=verified, live at EOF=[]
+PASS  3 engine dies before watch: records=[], stray=[]
+PASS  4 retire by SIGTERM: verdict=verified, transport terminated by signal 15, live at EOF=[]
+PASS  5 failed exec: verdict=verified, status=127
+PASS  6 lifeline SIGKILLed externally: verdict=UNKNOWN, transport still live=[(17359, 'sleep 45')] (expected: orphaned, reported unknown)
+  case 7 records: verified
+PASS  7 PTY foreground: output=['/dev/ttys000', '17365', '17365'] (pgid == tpgid means the transport group owns the terminal)
+PASS  8 ssh + ProxyCommand: group before=[(17371, '/usr/bin/ssh'), (17372, 'sleep')], verdict=verified, live at EOF=[]
+PASS  9 escaped descendant (limit): verdict=verified, recorded escaped child=[(17379, 17379)]
+leftover in recorded groups (ended now): [(17359, [(17359, 'sleep 45')])]

@@ -1,0 +1,230 @@
+{
+  "query": "/usr/bin/log show --style json --last 20m --info --debug --predicate [subsystem=com.apple.TCC AND eventMessage contains probe bundle identifier]",
+  "raw_export_sha256": "5dab35245ac553391cedb9ecfc14f7e80dad9cef1a564c222fa9bec34c2f4d9e",
+  "privacy": "Only role identifiers, PIDs, timestamps, service names and authorization outcomes retained; raw paths/messages removed.",
+  "matched_query_record_count": 104,
+  "correlated_records": [
+    {
+      "timestamp": "2026-11-23 21:37:13.786156-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:13.802206-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:13.808634-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.139816-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22462
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.144569-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22462
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.172155-0800",
+      "service": "kTCCServiceSystemPolicyAllFiles",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22460
+      },
+      "authorization": "Allowed (System Set)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.395407-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.415250-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.423592-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.670112-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22468
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.670575-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22468
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:37:14.693951-0800",
+      "service": "kTCCServiceSystemPolicyAllFiles",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22466
+      },
+      "authorization": "Allowed (System Set)"
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.472490-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.488014-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.495688-0800",
+      "service": "kTCCServiceListenEvent",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "authorization": "Unknown (None)"
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.862871-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22554
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.863370-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22554
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.884878-0800",
+      "service": "kTCCServiceSystemPolicyAllFiles",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "authorization": "Denied (System Set)"
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.885631-0800",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "accessing": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22554
+      },
+      "requesting": {
+        "identifier": "com.apple.sandboxd",
+        "pid": 422
+      }
+    },
+    {
+      "timestamp": "2026-11-23 21:38:27.896875-0800",
+      "service": "kTCCServicePhotos",
+      "responsible": {
+        "identifier": "net.courbage.unison-ui-mac.engine-launch-spike",
+        "pid": 22552
+      },
+      "authorization": "Unknown (None)"
+    }
+  ]
+}
