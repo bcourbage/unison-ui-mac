@@ -26,6 +26,12 @@ fails before there is a child, Complete has childPID 0 and a synthetic setup sta
 that is not evidence that an SSH process exited. These are experimental line
 records, not the final engine codec or a production prompt-classification API.
 
+Terminal reads paused during a credential sheet are a separate qualification case.
+`trace-unread-pty.py` retains process state and independent kernel/helper exit events,
+then compares resumed reads with owned-helper stop while the PTY remains unread.
+Use `--sample` to retain sanitized SSH call stacks. Its loopback fixture covers a
+client-key passphrase only, not server-password authentication or the AppKit bridge.
+
 Membership queries grow their buffer on saturation, require complete proc info,
 and treat zero/error results or a missing unreaped leader as unknown. Two empty
 observations are required, with no signaling after reaping. Capacity is bounded;
@@ -48,6 +54,10 @@ codesign --force --options runtime --timestamp \
 python3 run.py --helper "$transport_artifact/lifeline" --output '<new normal-results directory>'
 python3 run.py --helper "$transport_artifact/lifeline" \
   --login-grace-only --defer-terminal --output '<new ordering-results directory>'
+python3 trace-unread-pty.py --helper "$transport_artifact/lifeline" \
+  --repeats 2 --output '<new unread-PTY results directory>'
+python3 trace-unread-pty.py --helper "$transport_artifact/lifeline" \
+  --sample --output '<new sampled unread-PTY results directory>'
 xcrun clang -Wall -Wextra -Werror -mmacosx-version-min=15.0 \
   env-probe.c -o "$transport_artifact/env-probe"
 python3 extra-controls.py --helper "$transport_artifact/lifeline" \

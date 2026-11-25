@@ -246,9 +246,30 @@ prompt when it is sent. Prompt and TransportExited notifications can arrive in e
 absence of an exit notification is unknown, not positive evidence of a live transport. Do not
 present ambiguous leftover output as a credential request on that basis. The spike must qualify
 a bounded refresh/defer decision for unknown evidence while keeping genuine prompts usable. Keep
-fatal-text classification as a supplementary check. Positive exit evidence suppresses stale
-credential output immediately while helper cleanup continues. Terminal-evidence channel failure
-produces connection failure/cleanup rather than a new password prompt. Qualify login-grace
+fatal-text classification as a supplementary check. Once actual exit evidence is received,
+reject stale credential output while helper cleanup continues. This does not promise that SSH
+can finish exiting while its terminal is unread. The current bridge requests the next terminal
+read only after a sheet answer; unlike upstream's continuously reading prompt loop, a pending
+sheet can therefore withhold PTY drainage. **Phase 1 retains paused reading while the sheet
+is open.** Actual SSH exit evidence can be delayed until reads resume or teardown forces
+termination. This preserves today's prompt behavior; an independent bounded PTY reader is a
+later improvement outside phase 1, not a prerequisite for engine isolation. Do not infer a live
+connection from missing exit evidence or impose an automatic human-answer deadline.
+
+For a transport stalled in this state, expect Cancel/teardown to consume the helper's full TERM
+grace and end with SIGKILL, followed by verified group cleanup. SIGKILL is an expected result of
+that deliberate teardown, not itself a cleanup defect. The source default grace is 2 seconds;
+the component experiments used 300 ms and did not measure the production-setting delay.
+Measure end-to-end Cancel and teardown at the intended production setting during qualification,
+including observation/UI overhead. The explanation that readpassphrase catches SIGTERM and
+blocks again restoring terminal settings remains a hypothesis: the samples locate
+readpassphrase -> tcsetattr -> ioctl, not the exact signal-handling sequence. A prompt-specific
+immediate-KILL policy is outside this phase 1 change and would need a separate decision.
+
+Retain process state, kernel exit notifications and helper events in qualification with reads
+paused, then resume reads or stop the owned helper and observe its reserved-group escalation.
+Terminal-evidence channel failure produces connection failure/cleanup rather than a new
+password prompt. Qualify login-grace
 timeout and broken pipe with a lingering descendant, plus normal password retry, successful
 authentication and Cancel controls. Record prompt/exit arrival order in the login-grace case and
 force both orders in integration tests.
@@ -773,7 +794,7 @@ Estimates must be replaced after the first spike establishes the actual bridge w
 
 | Step | Deliverable and review boundary | Initial effort range |
 |---|---|---|
-| A | Qualify November failures and a narrow interim remedy. Record log/pmset correlation, process continuity and restart-state behavior, versions, cleanup evidence, and current Home-profile plus synthetic-list performance. | 2–4 engineering days |
+| A | Qualify November failures and a narrow interim remedy. Record log/pmset correlation, process continuity and restart-state behavior, versions, cleanup evidence, and current Home-profile plus synthetic-list performance. At Sync after an idle completed scan, record whether the exact SSH child is already terminated; assess a pre-Sync liveness check separately from recovery after failure. | 2–4 engineering days |
 | A1 (conditional) | Implement and qualify the interim remedy selected by A, then release and record it independently if authorized. Skip if no remedy qualifies. | Budget after A sizes the chosen fix. A narrow qualified fix provisionally needs 2–5 additional days. |
 | B | Signed engine/lifeline launch, TCC, parent watches, retire/shutdown adaptation, completion proof and failure injection. Measure normal/stubborn descendants, engine/GUI/helper death, PTY prompts and packaging. | 6–12 days |
 | C | Versioned codec and fake worker, snapshots, backpressure, operation/prompt identities and cancellation. Implement current messages only. | 3–6 days |
@@ -819,7 +840,7 @@ subject to explicit cleanup of owned processes and interrupted transactions.
 | TCC | Photos library and FDA paths, existing and fresh grants, denial, signed launch topology and prompt attribution recorded. Test intended user paths with permission and disposable payloads. |
 | Process ownership | Kill engine during spawn/auth/scan/sync/close and kill GUI/engine together. Exercise pre-watch/pre-fork/post-fork intervals, startup signal races, failed S/D writes, group/PTY handshake errors, membership truncation/errors/churn and repeated KILL, stubborn descendants, helper SIGKILL, delayed retire, closed S/U/D readers, non-draining readers, same-engine reconnect barriers, inherited FDs/environment/signal dispositions and tool escapes. Require engine reaping plus complete S/D matching plus EOF. Verify preserved transport status and no unrelated signal. |
 | Protocol | Split/coalesced/truncated/oversize frames, malformed values, sequence violations, late/duplicate terminal and prompt replies, EOF in each phase, full bulk queue with timely cancellation. |
-| Prompt terminal evidence | #35 login-grace timeout/broken pipe with SSH exited and a lingering descendant. Keep actual transport exit distinct from helper liveness. Cover broken lifecycle channels, wrong-password retry, authentication and Cancel. |
+| Prompt terminal evidence | #35 login-grace timeout/broken pipe with SSH exited and a lingering descendant. Keep actual transport exit distinct from helper liveness. Retain state with PTY reads paused during a pending answer and after answering; compare resumed reads and owned-helper stop/escalation. Cover broken lifecycle channels, server-password retry (#63), authentication and Cancel; client-key passphrase tests do not qualify server-password authentication. |
 | Profile and argv | Includes, lookup collision, quoted/repeated options, persistent -path, explicit ignorearchives false/true, request-owned override through queue replacement/cancel and later real remote reconnect. |
 | Rows and tools | Direction/force/revert/ignore partial failures, changedFromDefault, stale-generation rejection, local/remote Diff and merge completion/cancel, plus non-UTF-8 remote names that display lossily but retain working row actions. |
 | Failure presentation | Connect, scan, diff, sync and close failure, retained results, unknown partial outcomes, abandoned-window late fatal, user-authorized rescan, engine-independent GUI remains responsive. |

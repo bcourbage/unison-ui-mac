@@ -1,0 +1,91 @@
+{
+  "case": "resume-read",
+  "returncode": 255,
+  "elapsed": 8.6859,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007258,
+      "line": "S 2ffa035be4ae5b09 91601"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.008012,
+      "line": "TransportStarted 2ffa035be4ae5b09 91602 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 8.30217,
+      "line": "TransportExited 2ffa035be4ae5b09 91602 65280"
+    },
+    {
+      "channel": "status",
+      "time": 8.621154,
+      "line": "U 2ffa035be4ae5b09 1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 8.668623,
+      "line": "CleanupComplete 2ffa035be4ae5b09 91602 65280"
+    },
+    {
+      "channel": "status",
+      "time": 8.668673,
+      "line": "D 2ffa035be4ae5b09 65280"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.049791,
+      "delivery_time": 0.049791,
+      "bytes": 1
+    },
+    {
+      "time": 0.056067,
+      "delivery_time": 0.056067,
+      "bytes": 77
+    },
+    {
+      "time": 8.095965,
+      "delivery_time": 8.095965,
+      "bytes": 2
+    },
+    {
+      "time": 8.293122,
+      "delivery_time": 8.293122,
+      "bytes": 44
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nConnection closed by 127.0.0.1 port 51715\r\r\n",
+  "observations": [
+    {
+      "label": "before-answer",
+      "time": 6.076593,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91601 91469 91601 Ss   -     \n91602 91601 91602 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "two-seconds-after-answer",
+      "time": 8.095909,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91601 91469 91601 Ss   -     \n91602 91601 91602 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    }
+  ],
+  "repeat": 2,
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "scope": "Signed helper; loopback key-passphrase SSH, not server-password or app prompt reader.",
+  "result": "observed"
+}
