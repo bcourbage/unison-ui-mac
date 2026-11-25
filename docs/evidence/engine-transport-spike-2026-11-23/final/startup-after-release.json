@@ -1,0 +1,39 @@
+{
+  "case": "startup-after-release",
+  "returncode": -15,
+  "elapsed": 0.3515,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.006161,
+      "line": "S 2be770bb0388da69 27093"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.00715,
+      "line": "TransportStarted 2be770bb0388da69 27094 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.323167,
+      "line": "TransportExited 2be770bb0388da69 27094 15"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.348361,
+      "line": "CleanupComplete 2be770bb0388da69 27094 15"
+    },
+    {
+      "channel": "status",
+      "time": 0.348383,
+      "line": "D 2be770bb0388da69 15"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

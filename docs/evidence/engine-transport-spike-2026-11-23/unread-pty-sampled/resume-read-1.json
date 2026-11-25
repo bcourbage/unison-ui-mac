@@ -1,0 +1,96 @@
+{
+  "case": "resume-read",
+  "returncode": 255,
+  "elapsed": 10.535,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007194,
+      "line": "S 21d4104562027183 91705"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.007682,
+      "line": "TransportStarted 21d4104562027183 91706 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 10.163301,
+      "line": "TransportExited 21d4104562027183 91706 65280"
+    },
+    {
+      "channel": "status",
+      "time": 10.479843,
+      "line": "U 21d4104562027183 1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 10.524763,
+      "line": "CleanupComplete 21d4104562027183 91706 65280"
+    },
+    {
+      "channel": "status",
+      "time": 10.524804,
+      "line": "D 21d4104562027183 65280"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.057019,
+      "delivery_time": 0.057019,
+      "bytes": 1
+    },
+    {
+      "time": 0.063287,
+      "delivery_time": 0.063287,
+      "bytes": 77
+    },
+    {
+      "time": 9.989593,
+      "delivery_time": 9.989593,
+      "bytes": 2
+    },
+    {
+      "time": 10.157429,
+      "delivery_time": 10.157429,
+      "bytes": 44
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nConnection closed by 127.0.0.1 port 51741\r\r\n",
+  "observations": [
+    {
+      "label": "before-answer",
+      "time": 6.086607,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91705 91659 91705 Ss   -     \n91706 91705 91706 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "two-seconds-after-answer",
+      "time": 8.125054,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91705 91659 91705 Ss   -     \n91706 91705 91706 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false,
+      "sample": {
+        "returncode": 0,
+        "call_graph": "856 Thread_14593125   DispatchQueue_1: com.apple.main-thread  (serial)\n      856 start  (in dyld) + 6652  [0x183538d7c]\n        856 ???  (in ssh)  load address 0x100ab8000 + 0x1ac50  [0x100ad2c50]\n          856 ???  (in ssh)  load address 0x100ab8000 + 0x21498  [0x100ad9498]\n            856 ???  (in ssh)  load address 0x100ab8000 + 0x239f0  [0x100adb9f0]\n              856 ???  (in ssh)  load address 0x100ab8000 + 0x5a0b8  [0x100b120b8]\n                856 ???  (in ssh)  load address 0x100ab8000 + 0x5a048  [0x100b12048]\n                  856 ???  (in ssh)  load address 0x100ab8000 + 0x27134  [0x100adf134]\n                    856 ???  (in ssh)  load address 0x100ab8000 + 0x265bc  [0x100ade5bc]\n                      856 ???  (in ssh)  load address 0x100ab8000 + 0x25f7c  [0x100addf7c]\n                        856 ???  (in ssh)  load address 0x100ab8000 + 0x7098c  [0x100b2898c]\n                          856 readpassphrase  (in libsystem_c.dylib) + 848  [0x1836795b4]\n                            856 tcsetattr  (in libsystem_c.dylib) + 172  [0x183657da0]\n                              856 ioctl  (in libsystem_kernel.dylib) + 36  [0x1835cc330]\n                                856 __ioctl  (in libsystem_kernel.dylib) + 8  [0x1835cc344]\n\nTotal number in stack (recursive counted multiple, when >=5):\n\nSort by top of stack, same collapsed (when >= 5):\n        __ioctl  (in libsystem_kernel.dylib)        856",
+        "stderr": "Sampling process 91706 for 1 second with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 91706 written to file <path>\n"
+      }
+    }
+  ],
+  "repeat": 1,
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "scope": "Signed helper; loopback key-passphrase SSH, not server-password or app prompt reader.",
+  "result": "observed"
+}

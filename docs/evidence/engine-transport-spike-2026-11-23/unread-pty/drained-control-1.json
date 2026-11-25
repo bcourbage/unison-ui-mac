@@ -1,0 +1,98 @@
+{
+  "case": "drained-control",
+  "returncode": 255,
+  "elapsed": 8.1379,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.030946,
+      "line": "S 4fb13972dbf5676e 91483"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.03176,
+      "line": "TransportStarted 4fb13972dbf5676e 91485 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.312219,
+      "line": "TransportExited 4fb13972dbf5676e 91485 65280"
+    },
+    {
+      "channel": "status",
+      "time": 6.625677,
+      "line": "U 4fb13972dbf5676e 1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.676849,
+      "line": "CleanupComplete 4fb13972dbf5676e 91485 65280"
+    },
+    {
+      "channel": "status",
+      "time": 6.677089,
+      "line": "D 4fb13972dbf5676e 65280"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.080729,
+      "delivery_time": 0.080729,
+      "bytes": 1
+    },
+    {
+      "time": 0.087007,
+      "delivery_time": 0.087007,
+      "bytes": 77
+    },
+    {
+      "time": 6.122397,
+      "delivery_time": 6.122397,
+      "bytes": 2
+    },
+    {
+      "time": 6.320331,
+      "delivery_time": 6.320331,
+      "bytes": 44
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nConnection closed by 127.0.0.1 port 51578\r\r\n",
+  "observations": [
+    {
+      "label": "before-answer",
+      "time": 6.109781,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91483 91469 91483 Ss   -     \n91485 91483 91485 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "two-seconds-after-answer",
+      "time": 8.137561,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91483 91469 91483 Z    -",
+      "ps_returncode": 0,
+      "note_exit": [
+        {
+          "pid": 91485,
+          "flags": 32817,
+          "fflags": 2147483648,
+          "data": 0
+        }
+      ],
+      "transport_exited": true,
+      "cleanup_complete": true
+    }
+  ],
+  "repeat": 1,
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "scope": "Signed helper; loopback key-passphrase SSH, not server-password or app prompt reader.",
+  "result": "observed"
+}

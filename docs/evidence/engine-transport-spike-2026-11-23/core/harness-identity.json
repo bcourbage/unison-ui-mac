@@ -1,0 +1,4 @@
+{
+  "tested_sha256": "efe3a83f8fa6d9ee4dc8be70841c2578ecd8d11dab7fa8de819a32e5d37520a4",
+  "later_change": "Added --only-ssh selection guard to run new SSH cases without repeating the 17 passed controls. Helper source and binary unchanged."
+}

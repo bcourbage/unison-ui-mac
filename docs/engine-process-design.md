@@ -54,12 +54,13 @@ That source reading establishes candidate interim recovery paths. It does not qu
 after the November incidents or prove that the local checkout matches every published blob.
 Record upstream revision, patch set, and blob checksum with the spike.
 
-Incident qualification must establish the process that ran each sync, process continuity
-between the November failures, and whether restart-required was entered or dismissed after
-the first failure. A process appearing in unified logs does not by itself identify the writer
-of the shared sync log or establish the coordinator's state. Do not assume independent fresh
-engines or use nearby framework activity as an exact failure timestamp. Distinguish observed
-process/timing evidence from the stale-connection, sleep and retained-state hypotheses.
+The maintainer reports the workflow for step A: a long remote scan completed while they were
+away; after hours idle, Sync failed and explicitly required restart. An intervening timeout is
+a hypothesis. Reproduce that ready/idle/Sync sequence with a disposable connection and record
+SSH liveness immediately before Sync, the actual failure, coordinator state and acknowledged
+cleanup. Exact historical process continuity, log-writer attribution and log/pmset correlation
+are not prerequisites for selecting a remedy. Retain the earlier incident evidence and its
+limits, but do not make additional historical forensics a gate for A.
 
 ## 3. Ownership and process layout
 
@@ -246,9 +247,30 @@ prompt when it is sent. Prompt and TransportExited notifications can arrive in e
 absence of an exit notification is unknown, not positive evidence of a live transport. Do not
 present ambiguous leftover output as a credential request on that basis. The spike must qualify
 a bounded refresh/defer decision for unknown evidence while keeping genuine prompts usable. Keep
-fatal-text classification as a supplementary check. Positive exit evidence suppresses stale
-credential output immediately while helper cleanup continues. Terminal-evidence channel failure
-produces connection failure/cleanup rather than a new password prompt. Qualify login-grace
+fatal-text classification as a supplementary check. Once actual exit evidence is received,
+reject stale credential output while helper cleanup continues. This does not promise that SSH
+can finish exiting while its terminal is unread. The current bridge requests the next terminal
+read only after a sheet answer; unlike upstream's continuously reading prompt loop, a pending
+sheet can therefore withhold PTY drainage. **Phase 1 retains paused reading while the sheet
+is open.** Actual SSH exit evidence can be delayed until reads resume or teardown forces
+termination. This preserves today's prompt behavior; an independent bounded PTY reader is a
+later improvement outside phase 1, not a prerequisite for engine isolation. Do not infer a live
+connection from missing exit evidence or impose an automatic human-answer deadline.
+
+For a transport stalled in this state, expect Cancel/teardown to consume the helper's full TERM
+grace and end with SIGKILL, followed by verified group cleanup. SIGKILL is an expected result of
+that deliberate teardown, not itself a cleanup defect. The source default grace is 2 seconds;
+the component experiments used 300 ms and did not measure the production-setting delay.
+Measure end-to-end Cancel and teardown at the intended production setting during qualification,
+including observation/UI overhead. The explanation that readpassphrase catches SIGTERM and
+blocks again restoring terminal settings remains a hypothesis: the samples locate
+readpassphrase -> tcsetattr -> ioctl, not the exact signal-handling sequence. A prompt-specific
+immediate-KILL policy is outside this phase 1 change and would need a separate decision.
+
+Retain process state, kernel exit notifications and helper events in qualification with reads
+paused, then resume reads or stop the owned helper and observe its reserved-group escalation.
+Terminal-evidence channel failure produces connection failure/cleanup rather than a new
+password prompt. Qualify login-grace
 timeout and broken pipe with a lingering descendant, plus normal password retry, successful
 authentication and Cancel controls. Record prompt/exit arrival order in the login-grace case and
 force both orders in integration tests.
@@ -773,10 +795,10 @@ Estimates must be replaced after the first spike establishes the actual bridge w
 
 | Step | Deliverable and review boundary | Initial effort range |
 |---|---|---|
-| A | Qualify November failures and a narrow interim remedy. Record log/pmset correlation, process continuity and restart-state behavior, versions, cleanup evidence, and current Home-profile plus synthetic-list performance. | 2–4 engineering days |
+| A | Reproduce completed remote scan, hours idle or controlled connection loss, then Sync. Record exact SSH liveness before Sync, failure/restart state, versions and acknowledged cleanup. Compare a pre-Sync prevention check, safe reconnect/rescan and Relaunch and Reopen; select and size a narrow interim remedy. Historical attribution and the broad performance baseline are not A gates. | 2–4 engineering days |
 | A1 (conditional) | Implement and qualify the interim remedy selected by A, then release and record it independently if authorized. Skip if no remedy qualifies. | Budget after A sizes the chosen fix. A narrow qualified fix provisionally needs 2–5 additional days. |
 | B | Signed engine/lifeline launch, TCC, parent watches, retire/shutdown adaptation, completion proof and failure injection. Measure normal/stubborn descendants, engine/GUI/helper death, PTY prompts and packaging. | 6–12 days |
-| C | Versioned codec and fake worker, snapshots, backpressure, operation/prompt identities and cancellation. Implement current messages only. | 3–6 days |
+| C | After the quiet baseline and relevant B/study reviews, implement the versioned codec and fake worker, snapshots, backpressure, operation/prompt identities and cancellation. Implement current messages only. | 3–6 days |
 | D | Audit and retain parent parsing/metadata/archive calls. Add role routing and persistent/one-shot argv parity controls. No prepare/connect split here. | 1–3 days |
 | E | Real EngineClient for connect/scan/rows/diff/sync, per-session reducer and registry with one global lease. | 6–12 days |
 | F | Failure recovery, leave-scan disposal, cooperative/forced Sync Stop, cleanup-blocked presentation and existing maintenance exclusion. | 4–8 days |
@@ -796,9 +818,15 @@ adapters and process qualification, with vendor-level uncertainty. Removing the 
 could add another 4–8 days for bootstrap/maintenance routing and compatibility checks. These
 alternatives need evidence and a new estimate before entering scope.
 
-The overlap investigation starts during A/B because it checks that phase 1's session and
-ownership contracts can support phase 2. Preparation messages and the resource scheduler are
-implemented with phase 2. Phase 1 uses its global lease without unused reserved fields.
+Run two engineering lanes, A and B. Combine the parent-runtime boundary audit and phase 2
+overlap investigation in one read-only study during A/B; it checks that phase 1's session and
+ownership contracts can support phase 2, rather than creating a third implementation lane.
+Preparation messages and the resource scheduler are implemented with phase 2. Phase 1 uses
+its global lease without unused reserved fields. Capture the broad current-app performance
+baseline in a quiet session immediately before C, after the relevant B and study findings;
+do not measure it alongside failure-injection load. Small timing observations required by
+A or B remain part of those experiments. Follow the milestone gates in the
+[work plan](engine-process-work-plan.md).
 
 Retain pure reducer/model tests where their contracts persist. Replace singleton session
 callback seams with injected EngineClient and supervisor clients. Fake clients never drive the
@@ -819,14 +847,14 @@ subject to explicit cleanup of owned processes and interrupted transactions.
 | TCC | Photos library and FDA paths, existing and fresh grants, denial, signed launch topology and prompt attribution recorded. Test intended user paths with permission and disposable payloads. |
 | Process ownership | Kill engine during spawn/auth/scan/sync/close and kill GUI/engine together. Exercise pre-watch/pre-fork/post-fork intervals, startup signal races, failed S/D writes, group/PTY handshake errors, membership truncation/errors/churn and repeated KILL, stubborn descendants, helper SIGKILL, delayed retire, closed S/U/D readers, non-draining readers, same-engine reconnect barriers, inherited FDs/environment/signal dispositions and tool escapes. Require engine reaping plus complete S/D matching plus EOF. Verify preserved transport status and no unrelated signal. |
 | Protocol | Split/coalesced/truncated/oversize frames, malformed values, sequence violations, late/duplicate terminal and prompt replies, EOF in each phase, full bulk queue with timely cancellation. |
-| Prompt terminal evidence | #35 login-grace timeout/broken pipe with SSH exited and a lingering descendant. Keep actual transport exit distinct from helper liveness. Cover broken lifecycle channels, wrong-password retry, authentication and Cancel. |
+| Prompt terminal evidence | #35 login-grace timeout/broken pipe with SSH exited and a lingering descendant. Keep actual transport exit distinct from helper liveness. Retain state with PTY reads paused during a pending answer and after answering; compare resumed reads and owned-helper stop/escalation. Cover broken lifecycle channels, server-password retry (#63), authentication and Cancel; client-key passphrase tests do not qualify server-password authentication. |
 | Profile and argv | Includes, lookup collision, quoted/repeated options, persistent -path, explicit ignorearchives false/true, request-owned override through queue replacement/cancel and later real remote reconnect. |
 | Rows and tools | Direction/force/revert/ignore partial failures, changedFromDefault, stale-generation rejection, local/remote Diff and merge completion/cancel, plus non-UTF-8 remote names that display lossily but retain working row actions. |
 | Failure presentation | Connect, scan, diff, sync and close failure, retained results, unknown partial outcomes, abandoned-window late fatal, user-authorized rescan, engine-independent GUI remains responsive. |
 | Archives | Kill at deterministic acquisition/staging/rollback/commit boundaries and actual engine archive write. Test foreign/replaced locks, missing/invalid manifests, external repair while fatal confirmation is open, and blocked reconnect. Never test by deleting real archives. |
 | Phase 2 exclusion | Equal roots, ancestor paths, symlinks, path case, includes, effective options, host aliases, socket roots, unknown roots, changed profiles while queued, effective profile and CLI path selections, shared-log append behavior, maintenance exclusion, and external Unison contention. |
 | Phase 2 isolation | Pictures/FlightSim and disjoint Home/Pictures equivalents, one crashes/stops/prompts without changing the other, shared log integrity, separate row generations, background windows, several CLI requests and Quit races. Test two first, then more sessions to size any resource limit. |
-| Performance | Record current app numbers for the Home profile and a reproducible 100k-row fixture in A/B. Compare scan-to-display, control latency, summed RSS, process startup and recovery overhead on the same machine and fixture. Separate root scan/network cost from IPC delivery. |
+| Performance | Capture current-app numbers for a representative Home-profile equivalent and a reproducible 100k-row fixture in a quiet session immediately before C, not during A/B failure injection. Obtain permission for any real profile measurement. Compare scan-to-display, control latency, summed RSS, process startup and recovery overhead on the same machine and fixture as integrated artifacts become available. Separate root scan/network cost from IPC delivery. |
 | Crash reporting | Distinguish GUI, engine, helper and expected fault-injection reports, delayed report arrival, failed correlation, deduplication and startup after tests. Test parentProc classification before relying on it. |
 | Attended behavior | Keyboard/VoiceOver prompt focus, sync outcome, background completion, cancellation, signed protected-path access and real remote recovery. Link existing #197 candidates and explicitly choose their disposition. |
 
@@ -892,8 +920,11 @@ The following remain open, rather than being implied complete by the prototype r
   per-connection barrier before reconnecting within a live engine.
 - Qualify password-authenticated SSH, Developer ID/hardened/notarized packaging, macOS 15 and
   TCC under the actual topology. Validate crash-report role classification and test isolation.
-- Perform step A's incident qualification and baseline measurements. Select and size any
-  interim remedy, then review numeric deadlines, performance targets and effort estimates.
+- Perform step A's controlled ready/idle/Sync reproduction, including pre-Sync SSH liveness,
+  failure state and acknowledged cleanup. Select and size any interim remedy without requiring
+  further historical attribution. Capture the broad performance baseline in a separate quiet
+  session immediately before C; then review performance targets and effort estimates. Qualify
+  A/B-specific timings, including production-setting Cancel/teardown, in their own experiments.
 - Approve the proposed retry/partial-result presentation and supported boundaries for escaped
   descendants. Cleanup-blocked behavior is required whenever the completion rule cannot pass.
 - Qualify phase 2 effective scope, remote identity and shared logging against the real-profile

@@ -1,0 +1,13 @@
+{
+  "case": "full-start-pipe",
+  "returncode": 71,
+  "elapsed": 0.0171,
+  "cleanup_verified": false,
+  "records": [],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 65536
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

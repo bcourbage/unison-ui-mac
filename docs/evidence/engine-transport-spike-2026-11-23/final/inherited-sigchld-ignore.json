@@ -1,0 +1,39 @@
+{
+  "case": "inherited-sigchld-ignore",
+  "returncode": 7,
+  "elapsed": 0.2695,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.00916,
+      "line": "S 7a432ff7c6405fc8 27122"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.010041,
+      "line": "TransportStarted 7a432ff7c6405fc8 27123 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.240292,
+      "line": "TransportExited 7a432ff7c6405fc8 27123 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.266257,
+      "line": "D 7a432ff7c6405fc8 1792"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.266295,
+      "line": "CleanupComplete 7a432ff7c6405fc8 27123 1792"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

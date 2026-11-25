@@ -1,0 +1,28 @@
+{
+  "case": "startup-before-fork",
+  "returncode": 143,
+  "elapsed": 0.0164,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.015033,
+      "line": "S 11665b45cb0c0d1c 26420"
+    },
+    {
+      "channel": "status",
+      "time": 0.015045,
+      "line": "D 11665b45cb0c0d1c 36608"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.015055,
+      "line": "CleanupComplete 11665b45cb0c0d1c 0 36608"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

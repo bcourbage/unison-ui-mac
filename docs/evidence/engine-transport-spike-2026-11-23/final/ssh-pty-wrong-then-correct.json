@@ -1,0 +1,68 @@
+{
+  "case": "ssh-pty-wrong-then-correct",
+  "returncode": 0,
+  "elapsed": 0.4749,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005932,
+      "line": "S 9567e1d5eea59148 27150"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006588,
+      "line": "TransportStarted 9567e1d5eea59148 27151 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.446367,
+      "line": "TransportExited 9567e1d5eea59148 27151 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.471565,
+      "line": "CleanupComplete 9567e1d5eea59148 27151 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.471576,
+      "line": "D 9567e1d5eea59148 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.045626,
+      "bytes": 1
+    },
+    {
+      "time": 0.051908,
+      "bytes": 77
+    },
+    {
+      "time": 0.058117,
+      "bytes": 2
+    },
+    {
+      "time": 0.231041,
+      "bytes": 1
+    },
+    {
+      "time": 0.237312,
+      "bytes": 77
+    },
+    {
+      "time": 0.249885,
+      "bytes": 2
+    },
+    {
+      "time": 0.449931,
+      "bytes": 19
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\n\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nauthenticated-spike"
+}

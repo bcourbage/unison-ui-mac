@@ -1,0 +1,108 @@
+{
+  "case": "stop-without-reading",
+  "returncode": -9,
+  "elapsed": 10.1084,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.006238,
+      "line": "S 1b3bf8a97ab155d2 91751"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006731,
+      "line": "TransportStarted 1b3bf8a97ab155d2 91752 0"
+    },
+    {
+      "channel": "status",
+      "time": 10.016137,
+      "line": "U 1b3bf8a97ab155d2 2"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 10.036729,
+      "line": "TransportExited 1b3bf8a97ab155d2 91752 9"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 10.061768,
+      "line": "CleanupComplete 1b3bf8a97ab155d2 91752 9"
+    },
+    {
+      "channel": "status",
+      "time": 10.062099,
+      "line": "D 1b3bf8a97ab155d2 9"
+    }
+  ],
+  "partial_bytes": {
+    "status": 0,
+    "lifecycle": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.051797,
+      "delivery_time": 0.051797,
+      "bytes": 1
+    },
+    {
+      "time": 0.058074,
+      "delivery_time": 0.058074,
+      "bytes": 77
+    },
+    {
+      "time": 10.095635,
+      "delivery_time": 10.095635,
+      "bytes": 2
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\n",
+  "observations": [
+    {
+      "label": "before-answer",
+      "time": 6.086753,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91751 91659 91751 Ss   -     \n91752 91751 91752 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "two-seconds-after-answer",
+      "time": 8.119177,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91751 91659 91751 Ss   -     \n91752 91751 91752 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false,
+      "sample": {
+        "returncode": 0,
+        "call_graph": "861 Thread_14593462   DispatchQueue_1: com.apple.main-thread  (serial)\n      861 start  (in dyld) + 6652  [0x183538d7c]\n        861 ???  (in ssh)  load address 0x104a70000 + 0x1ac50  [0x104a8ac50]\n          861 ???  (in ssh)  load address 0x104a70000 + 0x21498  [0x104a91498]\n            861 ???  (in ssh)  load address 0x104a70000 + 0x239f0  [0x104a939f0]\n              861 ???  (in ssh)  load address 0x104a70000 + 0x5a0b8  [0x104aca0b8]\n                861 ???  (in ssh)  load address 0x104a70000 + 0x5a048  [0x104aca048]\n                  861 ???  (in ssh)  load address 0x104a70000 + 0x27134  [0x104a97134]\n                    861 ???  (in ssh)  load address 0x104a70000 + 0x265bc  [0x104a965bc]\n                      861 ???  (in ssh)  load address 0x104a70000 + 0x25f7c  [0x104a95f7c]\n                        861 ???  (in ssh)  load address 0x104a70000 + 0x7098c  [0x104ae098c]\n                          861 readpassphrase  (in libsystem_c.dylib) + 848  [0x1836795b4]\n                            861 tcsetattr  (in libsystem_c.dylib) + 172  [0x183657da0]\n                              861 ioctl  (in libsystem_kernel.dylib) + 36  [0x1835cc330]\n                                861 __ioctl  (in libsystem_kernel.dylib) + 8  [0x1835cc344]\n\nTotal number in stack (recursive counted multiple, when >=5):\n\nSort by top of stack, same collapsed (when >= 5):\n        __ioctl  (in libsystem_kernel.dylib)        861",
+        "stderr": "Sampling process 91752 for 1 second with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 91752 written to file <path>\n"
+      }
+    },
+    {
+      "label": "after-helper-stop-unread",
+      "time": 10.095529,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91751 91659 91751 ?Es  -",
+      "ps_returncode": 0,
+      "note_exit": [
+        {
+          "pid": 91752,
+          "flags": 32817,
+          "fflags": 2147483648,
+          "data": 0
+        }
+      ],
+      "transport_exited": true,
+      "cleanup_complete": true
+    }
+  ],
+  "repeat": 1,
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "scope": "Signed helper; loopback key-passphrase SSH, not server-password or app prompt reader.",
+  "result": "observed"
+}

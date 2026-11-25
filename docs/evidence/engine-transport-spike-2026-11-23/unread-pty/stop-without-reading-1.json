@@ -1,0 +1,103 @@
+{
+  "case": "stop-without-reading",
+  "returncode": -9,
+  "elapsed": 8.5257,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007049,
+      "line": "S 1e938c0762fa6454 91541"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.008196,
+      "line": "TransportStarted 1e938c0762fa6454 91543 0"
+    },
+    {
+      "channel": "status",
+      "time": 8.434987,
+      "line": "U 1e938c0762fa6454 2"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 8.460749,
+      "line": "TransportExited 1e938c0762fa6454 91543 9"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 8.486908,
+      "line": "CleanupComplete 1e938c0762fa6454 91543 9"
+    },
+    {
+      "channel": "status",
+      "time": 8.487353,
+      "line": "D 1e938c0762fa6454 9"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.051604,
+      "delivery_time": 0.051604,
+      "bytes": 1
+    },
+    {
+      "time": 0.057902,
+      "delivery_time": 0.057902,
+      "bytes": 77
+    },
+    {
+      "time": 8.513489,
+      "delivery_time": 8.513489,
+      "bytes": 2
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\n",
+  "observations": [
+    {
+      "label": "before-answer",
+      "time": 6.087147,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91541 91469 91541 Ss   -     \n91543 91541 91543 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "two-seconds-after-answer",
+      "time": 8.115839,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91541 91469 91541 Ss   -     \n91543 91541 91543 S+   -",
+      "ps_returncode": 0,
+      "note_exit": [],
+      "transport_exited": false,
+      "cleanup_complete": false
+    },
+    {
+      "label": "after-helper-stop-unread",
+      "time": 8.513386,
+      "ps_fields": "pid ppid pgid stat wchan",
+      "ps": "91541 91469 91541 ?Es  -",
+      "ps_returncode": 0,
+      "note_exit": [
+        {
+          "pid": 91543,
+          "flags": 32817,
+          "fflags": 2147483648,
+          "data": 0
+        }
+      ],
+      "transport_exited": true,
+      "cleanup_complete": true
+    }
+  ],
+  "repeat": 1,
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "scope": "Signed helper; loopback key-passphrase SSH, not server-password or app prompt reader.",
+  "result": "observed"
+}

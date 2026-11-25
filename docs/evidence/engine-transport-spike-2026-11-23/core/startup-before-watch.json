@@ -1,0 +1,12 @@
+{
+  "case": "startup-before-watch",
+  "returncode": 143,
+  "elapsed": 0.0153,
+  "cleanup_verified": false,
+  "records": [],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

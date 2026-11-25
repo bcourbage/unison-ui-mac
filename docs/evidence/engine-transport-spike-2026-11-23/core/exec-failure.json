@@ -1,0 +1,38 @@
+{
+  "case": "exec-failure",
+  "returncode": 127,
+  "elapsed": 0.0744,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.020969,
+      "line": "S ff8a8db9cb985a2f 26414"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.02167,
+      "line": "TransportStarted ff8a8db9cb985a2f 26417 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.042761,
+      "line": "TransportExited ff8a8db9cb985a2f 26417 32512"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.068047,
+      "line": "CleanupComplete ff8a8db9cb985a2f 26417 32512"
+    },
+    {
+      "channel": "status",
+      "time": 0.068063,
+      "line": "D ff8a8db9cb985a2f 32512"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

@@ -1,0 +1,69 @@
+{
+  "date": "2026-11-24",
+  "base_commit": "82a19f75494e3f3791317cadc3d24f6b1a51c217",
+  "helper_sha256": "111335ce855c47bdfab31d083213dcdbde6f05d4d4cc271f7055a1d79808a204",
+  "current_trace_source_sha256": "b51cecdc7c13ec890542844a51c03df44c3e23fdc56a966147aed165cdb40e85",
+  "source_note": "The six initial unsampled observations ran before optional stack sampling was added. The three sampled observations used the recorded current source. Existing helper/run.py/ssh_fixture.py bytes were unchanged.",
+  "observations": [
+    {
+      "path": "unread-pty/drained-control-1.json",
+      "sha256": "249381f525c17153b588089a104829a3ab342520dfef2f681b606da6f57bec83",
+      "case": "drained-control",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty/drained-control-2.json",
+      "sha256": "8af3ee556c53ad960649864d627fe925557cfd3fb42ef614dbdf7b178850ec03",
+      "case": "drained-control",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty/resume-read-1.json",
+      "sha256": "111978292b3d1ed8926110d20004439a4cdf5afe2f32bc39e45086d86d35b58a",
+      "case": "resume-read",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty/resume-read-2.json",
+      "sha256": "15f2c57d6c81ccf62edee3bf0c3057785d661cf2c2bf22d5050112e61f716733",
+      "case": "resume-read",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty/stop-without-reading-1.json",
+      "sha256": "8952b0c4789c80ea6173530e855ed730a25fdc84a6eb8842e9e6701cb9692b45",
+      "case": "stop-without-reading",
+      "returncode": -9
+    },
+    {
+      "path": "unread-pty/stop-without-reading-2.json",
+      "sha256": "91feee4ba138bfcfd172a81da5861bbeeccb80b9a9bbfc3ffb6fe0dc130da763",
+      "case": "stop-without-reading",
+      "returncode": -9
+    },
+    {
+      "path": "unread-pty-sampled/drained-control-1.json",
+      "sha256": "452a64d95c4240eb61133179a00ec2d9ca4a422085403d5704575bf25505d1af",
+      "case": "drained-control",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty-sampled/resume-read-1.json",
+      "sha256": "41e7cbc77e0e8fd3af08813097e127c3cd64cc76e9c51209cb8bdc05f6ea6e0a",
+      "case": "resume-read",
+      "returncode": 255
+    },
+    {
+      "path": "unread-pty-sampled/stop-without-reading-1.json",
+      "sha256": "7e87b60b48c3644876170b8e094357694ce54e91a59894b5754a00d186b2e5eb",
+      "case": "stop-without-reading",
+      "returncode": -9
+    }
+  ],
+  "scope": "Component evidence, not production or AppKit/server-password qualification.",
+  "post_run_cleanup": {
+    "known_helper_and_transport_pids_absent": true,
+    "fixture_server_lifecycle": "Each SSHFixture context terminated and waited for its owned loopback sshd, then removed its temporary keys/configuration.",
+    "method": "Read-only ps for exact recorded helper/SSH PIDs; no process-name signals."
+  }
+}

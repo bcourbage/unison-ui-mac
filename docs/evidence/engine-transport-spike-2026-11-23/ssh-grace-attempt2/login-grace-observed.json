@@ -1,0 +1,43 @@
+{
+  "case": "ssh-login-grace-lingering-descendant",
+  "returncode": 0,
+  "elapsed": 2.1502,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005819,
+      "line": "S 7eee997a4d59bc07 26662"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006262,
+      "line": "TransportStarted 7eee997a4d59bc07 26663 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 1.787822,
+      "line": "TransportExited 7eee997a4d59bc07 26663 0"
+    },
+    {
+      "channel": "status",
+      "time": 2.094159,
+      "line": "U 7eee997a4d59bc07 1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 2.142059,
+      "line": "CleanupComplete 7eee997a4d59bc07 26663 0"
+    },
+    {
+      "channel": "status",
+      "time": 2.142109,
+      "line": "D 7eee997a4d59bc07 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nauthenticated-spike"
+}

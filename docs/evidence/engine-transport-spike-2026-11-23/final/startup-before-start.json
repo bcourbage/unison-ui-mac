@@ -1,0 +1,13 @@
+{
+  "case": "startup-before-start",
+  "returncode": 143,
+  "elapsed": 0.0164,
+  "cleanup_verified": false,
+  "records": [],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

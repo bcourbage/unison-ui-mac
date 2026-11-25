@@ -1,0 +1,44 @@
+{
+  "case": "unknown-membership-blocks",
+  "returncode": 7,
+  "elapsed": 0.086,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.007273,
+      "line": "S 7237400ac570363a 27107"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.007968,
+      "line": "TransportStarted 7237400ac570363a 27108 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.02905,
+      "line": "U 7237400ac570363a -1"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.029071,
+      "line": "TransportExited 7237400ac570363a 27108 1792"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.073824,
+      "line": "CleanupComplete 7237400ac570363a 27108 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.073857,
+      "line": "D 7237400ac570363a 1792"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [],
+  "output": ""
+}

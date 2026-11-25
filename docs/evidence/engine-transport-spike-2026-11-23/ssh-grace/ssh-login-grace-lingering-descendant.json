@@ -1,0 +1,61 @@
+{
+  "case": "ssh-login-grace-lingering-descendant",
+  "returncode": 255,
+  "elapsed": 6.6768,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.009669,
+      "line": "S 5edee7a03fff78c3 26866"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.010492,
+      "line": "TransportStarted 5edee7a03fff78c3 26867 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.300338,
+      "line": "TransportExited 5edee7a03fff78c3 26867 65280"
+    },
+    {
+      "channel": "status",
+      "time": 6.614357,
+      "line": "U 5edee7a03fff78c3 1"
+    },
+    {
+      "channel": "status",
+      "time": 6.666544,
+      "line": "D 5edee7a03fff78c3 65280"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 6.666569,
+      "line": "CleanupComplete 5edee7a03fff78c3 26867 65280"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.071442,
+      "bytes": 1
+    },
+    {
+      "time": 0.077779,
+      "bytes": 77
+    },
+    {
+      "time": 6.098669,
+      "bytes": 2
+    },
+    {
+      "time": 6.293848,
+      "bytes": 44
+    }
+  ],
+  "output": "\rEnter passphrase for key '<ssh-fixture>/encrypted': \r\nConnection closed by 127.0.0.1 port 50237\r\r\n"
+}

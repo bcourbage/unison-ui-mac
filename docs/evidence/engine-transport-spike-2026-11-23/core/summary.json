@@ -1,0 +1,6 @@
+{
+  "passed": 17,
+  "helper": "lifeline",
+  "grace_ms": 300,
+  "scope": "Signed helper under an owned harness; not the AppKit/OCaml prompt reader."
+}

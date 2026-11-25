@@ -1,0 +1,45 @@
+{
+  "case": "sigpipe-default-environment",
+  "returncode": 0,
+  "elapsed": 0.1369,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005153,
+      "line": "S 549b11135cbdcc0e 28790"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.00569,
+      "line": "TransportStarted 549b11135cbdcc0e 28791 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.110795,
+      "line": "TransportExited 549b11135cbdcc0e 28791 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.134155,
+      "line": "CleanupComplete 549b11135cbdcc0e 28791 0"
+    },
+    {
+      "channel": "status",
+      "time": 0.134171,
+      "line": "D 549b11135cbdcc0e 0"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "terminal_chunks": [
+    {
+      "time": 0.111768,
+      "delivery_time": 0.111768,
+      "bytes": 29
+    }
+  ],
+  "output": "SIGPIPE=default HELPER_ENV=0\n"
+}

@@ -1,0 +1,43 @@
+{
+  "case": "growing-membership-buffer",
+  "returncode": 7,
+  "elapsed": 0.6178,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.009042,
+      "line": "S 1a04ae00f6e893f7 26445"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.009773,
+      "line": "TransportStarted 1a04ae00f6e893f7 26446 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.241499,
+      "line": "TransportExited 1a04ae00f6e893f7 26446 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.555692,
+      "line": "U 1a04ae00f6e893f7 8"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.603769,
+      "line": "CleanupComplete 1a04ae00f6e893f7 26446 1792"
+    },
+    {
+      "channel": "status",
+      "time": 0.604707,
+      "line": "D 1a04ae00f6e893f7 1792"
+    }
+  ],
+  "partial_bytes": {
+    "status": 0,
+    "lifecycle": 0
+  },
+  "output": ""
+}

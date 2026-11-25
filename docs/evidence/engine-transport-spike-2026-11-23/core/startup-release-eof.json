@@ -1,0 +1,38 @@
+{
+  "case": "startup-release-eof",
+  "returncode": 70,
+  "elapsed": 0.0613,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.005559,
+      "line": "S db8998e80b603d2c 26423"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.006251,
+      "line": "TransportStarted db8998e80b603d2c 26424 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.027162,
+      "line": "TransportExited db8998e80b603d2c 26424 17920"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.052508,
+      "line": "CleanupComplete db8998e80b603d2c 26424 17920"
+    },
+    {
+      "channel": "status",
+      "time": 0.052524,
+      "line": "D db8998e80b603d2c 17920"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}

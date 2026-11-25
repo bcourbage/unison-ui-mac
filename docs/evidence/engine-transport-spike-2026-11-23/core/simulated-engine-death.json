@@ -1,0 +1,38 @@
+{
+  "case": "simulated-engine-death",
+  "returncode": -9,
+  "elapsed": 0.072,
+  "cleanup_verified": true,
+  "records": [
+    {
+      "channel": "status",
+      "time": 0.017047,
+      "line": "S 951933064127dbea 26462"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.018472,
+      "line": "TransportStarted 951933064127dbea 26463 0"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.048726,
+      "line": "TransportExited 951933064127dbea 26463 15"
+    },
+    {
+      "channel": "lifecycle",
+      "time": 0.070756,
+      "line": "CleanupComplete 951933064127dbea 26463 15"
+    },
+    {
+      "channel": "status",
+      "time": 0.070804,
+      "line": "D 951933064127dbea 15"
+    }
+  ],
+  "partial_bytes": {
+    "lifecycle": 0,
+    "status": 0
+  },
+  "output": ""
+}
