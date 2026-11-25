@@ -6,10 +6,10 @@ This is the living progress checklist for the engine-process work. It records th
 two engineering lanes, their review gates, and the work that follows. It does not
 authorize publication or imply that two workers are currently running.
 
-The [design](engine-process-design.md) defines the technical contracts. This plan
-updates the scheduling: the broad performance baseline moves out of immediate A
-work to a quiet session before C. The combined D/phase 2 investigation starts early,
-but its implementation does not. Reconcile any resulting design changes at review.
+The [design](engine-process-design.md) defines the technical contracts. Its sequence
+and this checklist place the broad performance baseline in a quiet session before
+C, outside immediate A work. The combined D/phase 2 investigation starts early,
+but its implementation does not.
 
 ## Dashboard
 
@@ -243,25 +243,7 @@ do not turn a local successful run into an accepted gate without review.
 | 2026-11-24 | Adopted this two-lane working checklist; deferred C and broad baseline; combined D/phase 2 study. | A and B can proceed independently, with milestone reports. |
 | 2026-11-24 | Unread-PTY stall reproduced and sampled; cleanup completes on resumed reads or owned-helper escalation. | Prompt-reading decision remains open; actual exit evidence is not a guarantee of immediate SSH exit. |
 | 2026-11-24 | Prompt decision settled: paused reading stays in phase 1; separate reader deferred. Full-grace TERM/KILL teardown is expected in the stalled state. | Measure production-setting Cancel/teardown and qualify the actual bridge/password path; no new reader experiment. |
-
-## Model assignments
-
-The maintainer accepted these assignments on November 24. They are task defaults,
-not evidence that any model switch or parallel worker has already been launched.
-
-| Work | Model and reasoning |
-|---|---|
-| A investigation and remedy selection | GPT-6.2 Astra, High |
-| A1 bounded implementation after the remedy is settled | GPT-6.2 Sol, High |
-| B process ownership and real bridge integration | GPT-6.2 Astra, High |
-| Combined D/phase 2 source study | GPT-6.2 Sol, High; Astra review |
-| C codec/fake worker after contracts settle | GPT-6.2 Sol, High |
-| Milestone adversarial reviews | GPT-6.2 Astra, High; Extra High for unresolved races |
-| Mechanical record/formatting edits with verified facts | GPT-6 Luna, Medium, optional |
-
-The current chat's model/effort may need to be selected in the app. Model overrides
-can be supplied for authorized delegated workers when that tool supports them;
-this plan does not itself launch workers or change app-wide settings.
+| 2026-11-24 | Aligned the design sequence and acceptance matrix with this checklist; moved model assignments to PR #244's description. | A requires no additional historical forensics; the broad baseline stays in a quiet session before C. |
 
 At each milestone, update the dashboard, task boxes and gate record together.
 Keep historical evidence intact; link a new result rather than overwriting the
